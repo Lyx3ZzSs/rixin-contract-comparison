@@ -1084,34 +1084,6 @@ h2 {
   background: #ffffff;
 }
 
-.pdf-mark-layer {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.pdf-diff-mark {
-  position: absolute;
-  padding: 0;
-  border: 2px solid rgba(73, 170, 160, 0.74);
-  border-radius: 2px;
-  background: rgba(73, 170, 160, 0.13);
-  cursor: pointer;
-  outline: 0;
-  pointer-events: auto;
-  transition:
-    border-color 140ms ease,
-    background 140ms ease,
-    box-shadow 140ms ease;
-}
-
-.pdf-diff-mark:hover,
-.pdf-diff-mark.active {
-  border-color: #e7b845;
-  background: rgba(231, 184, 69, 0.2);
-  box-shadow: 0 0 0 2px rgba(231, 184, 69, 0.22);
-}
-
 .empty-pane {
   display: grid;
   width: min(100%, 720px);

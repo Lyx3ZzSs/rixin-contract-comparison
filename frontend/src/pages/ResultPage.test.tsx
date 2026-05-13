@@ -94,8 +94,8 @@ describe("ResultPage", () => {
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument());
-    expect(screen.getByLabelText("原版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/original");
-    expect(screen.getByLabelText("新版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/compare");
+    expect(screen.getByLabelText("原版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/highlight/original");
+    expect(screen.getByLabelText("新版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/highlight/compare");
     expect(screen.getByRole("button", { name: "下载原版文件" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "下载新版文件" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "缩小预览" })).toBeInTheDocument();

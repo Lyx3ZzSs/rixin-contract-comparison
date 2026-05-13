@@ -27,7 +27,8 @@ def configure_storage(tmp_path: Path) -> None:
     settings.highlighted_dir = settings.storage_dir / "highlighted"
     settings.screenshots_dir = settings.storage_dir / "screenshots"
     settings.reports_dir = settings.storage_dir / "reports"
-    settings.use_mock_llm = True
+    settings.ocr_dir = settings.storage_dir / "ocr"
+    settings.document_extractor = "auto"
     settings.ensure_storage()
 
 
@@ -52,6 +53,7 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     payload = response.json()
     task_id = payload["task_id"]
     assert payload["diff_count"] >= 1
+    assert payload["extractor_used"] == "pymupdf"
     assert "preview_url" not in payload
     assert payload["original_pdf_url"] == f"/api/compare/{task_id}/original"
     assert payload["compare_pdf_url"] == f"/api/compare/{task_id}/compare"
@@ -61,6 +63,7 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     task_response = client.get(f"/api/compare/{task_id}")
     assert task_response.status_code == 200
     assert "preview_url" not in task_response.json()
+    assert task_response.json()["extractor_used"] == "pymupdf"
     assert task_response.json()["original_pdf_url"] == f"/api/compare/{task_id}/original"
     assert task_response.json()["compare_pdf_url"] == f"/api/compare/{task_id}/compare"
     assert task_response.json()["compare_highlight_pdf_url"] == f"/api/compare/{task_id}/highlight/compare"
@@ -71,6 +74,8 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert "original_screenshot_url" in first_diff
     assert "original_evidence" in first_diff
     assert "compare_evidence" in first_diff
+    assert first_diff["original_evidence"][0]["method"] == "char_exact"
+    assert first_diff["compare_evidence"][0]["method"] == "char_exact"
     report_response = client.get(f"/api/compare/{task_id}/report")
     assert report_response.status_code == 200
     assert not report_response.headers["content-disposition"].lower().startswith("inline")

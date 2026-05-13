@@ -35,13 +35,13 @@ class ReportGenerator:
         )
 
         story = [
-            Paragraph("AI 合同差异分析报告", styles["Title"]),
+            Paragraph("合同差异分析报告", styles["Title"]),
             Spacer(1, 0.7 * cm),
             Paragraph(f"任务编号：{escape(task.task_id)}", styles["Normal"]),
             Paragraph(f"原合同：{escape(task.original_filename)}", styles["Normal"]),
             Paragraph(f"对比合同：{escape(task.compare_filename)}", styles["Normal"]),
             Spacer(1, 0.5 * cm),
-            Paragraph("AI 总体摘要", styles["Heading2"]),
+            Paragraph("总体摘要", styles["Heading2"]),
             Paragraph(escape(task.ai_summary or "暂无摘要。"), styles["Normal"]),
             Spacer(1, 0.4 * cm),
             Paragraph("风险统计", styles["Heading2"]),
@@ -53,14 +53,14 @@ class ReportGenerator:
             Paragraph("差异明细表", styles["Heading2"]),
             self._diff_table(task.diffs, styles),
             PageBreak(),
-            Paragraph("高风险差异专题", styles["Heading2"]),
+            Paragraph("重点差异专题", styles["Heading2"]),
         ]
 
-        high_risk = [diff for diff in task.diffs if diff.ai_analysis and diff.ai_analysis.risk_level == "HIGH"]
-        if not high_risk:
-            story.append(Paragraph("未识别到高风险差异。", styles["Normal"]))
+        key_diffs = task.diffs[:5]
+        if not key_diffs:
+            story.append(Paragraph("未识别到差异。", styles["Normal"]))
         else:
-            for diff in high_risk:
+            for diff in key_diffs:
                 story.extend(self._diff_detail(diff, styles))
 
         story.append(PageBreak())
@@ -71,9 +71,9 @@ class ReportGenerator:
         story.extend(
             [
                 Spacer(1, 0.5 * cm),
-                Paragraph("AI 免责声明", styles["Heading2"]),
+                Paragraph("使用说明", styles["Heading2"]),
                 Paragraph(
-                    "本报告由 AI 辅助生成，仅用于合同差异审查参考，不构成正式法律意见。最终结论应由具备授权的业务、财务和法务人员复核确认。",
+                    "本报告基于程序化合同差异识别生成，仅用于合同差异审查参考，不构成正式法律意见。最终结论应由具备授权的业务、财务和法务人员复核确认。",
                     styles["Normal"],
                 ),
             ]
@@ -157,7 +157,7 @@ class ReportGenerator:
         return self._styled_table(data)
 
     def _diff_table(self, diffs: list[DiffItem], styles: dict[str, ParagraphStyle]) -> Table:
-        data = [["编号", "类型", "风险", "合同要素", "AI 摘要"]]
+        data = [["编号", "类型", "风险", "合同要素", "差异摘要"]]
         for diff in diffs:
             analysis = diff.ai_analysis
             data.append(

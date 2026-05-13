@@ -160,7 +160,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
             ref={originalViewerRef}
             side="original"
             title="原版"
-            src={toApiUrl(task.original_pdf_url)}
+            src={toApiUrl(task.original_highlight_pdf_url || task.original_pdf_url)}
             diffs={diffs}
             zoom={zoom}
             activeDiffId={activeDiffId}
@@ -192,7 +192,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
             ref={compareViewerRef}
             side="compare"
             title="新版"
-            src={toApiUrl(task.compare_pdf_url)}
+            src={toApiUrl(task.compare_highlight_pdf_url || task.compare_pdf_url)}
             diffs={diffs}
             zoom={zoom}
             activeDiffId={activeDiffId}

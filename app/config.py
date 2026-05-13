@@ -16,10 +16,17 @@ class Settings:
     highlighted_dir: Path = storage_dir / "highlighted"
     screenshots_dir: Path = storage_dir / "screenshots"
     reports_dir: Path = storage_dir / "reports"
+    ocr_dir: Path = storage_dir / "ocr"
 
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-    use_mock_llm: bool = os.getenv("USE_MOCK_LLM", "true").lower() in {"1", "true", "yes", "on"}
+    document_extractor: str = os.getenv("DOCUMENT_EXTRACTOR", "auto").lower()
+    pymupdf_min_text_chars: int = int(os.getenv("PYMUPDF_MIN_TEXT_CHARS", "1"))
+    paddleocr_access_token: str = os.getenv("PADDLEOCR_ACCESS_TOKEN", "")
+    paddleocr_model: str = os.getenv("PADDLEOCR_MODEL", "PP-OCRv5")
+    paddleocr_job_url: str = os.getenv("PADDLEOCR_JOB_URL", "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs")
+    paddleocr_timeout_seconds: int = int(os.getenv("PADDLEOCR_TIMEOUT_SECONDS", "120"))
+    paddleocr_poll_interval_seconds: float = float(os.getenv("PADDLEOCR_POLL_INTERVAL_SECONDS", "2"))
+    paddleocr_max_wait_seconds: int = int(os.getenv("PADDLEOCR_MAX_WAIT_SECONDS", "300"))
+    save_ocr_raw_result: bool = os.getenv("SAVE_OCR_RAW_RESULT", "true").lower() in {"1", "true", "yes", "on"}
 
     match_threshold: int = int(os.getenv("MATCH_THRESHOLD", "85"))
     report_font_path: str = os.getenv("REPORT_FONT_PATH", "")
@@ -34,6 +41,7 @@ class Settings:
             self.highlighted_dir,
             self.screenshots_dir,
             self.reports_dir,
+            self.ocr_dir,
         ]
 
     def ensure_storage(self) -> None:
@@ -42,4 +50,3 @@ class Settings:
 
 
 settings = Settings()
-

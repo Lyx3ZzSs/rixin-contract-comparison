@@ -26,11 +26,19 @@ class BBox(BaseModel):
         )
 
 
+class CharBox(BaseModel):
+    char: str
+    page_no: int
+    bbox: BBox
+    text_index: int | None = None
+
+
 class EvidenceBox(BaseModel):
     page_no: int
     bbox: BBox
     method: str = "clause_fallback"
     text: str = ""
+    highlight_type: DiffType | None = None
 
 
 class TextBlock(BaseModel):
@@ -38,6 +46,12 @@ class TextBlock(BaseModel):
     page_no: int
     text: str
     bbox: BBox
+    block_type: str = "text"
+    confidence: float | None = None
+    table_id: str = ""
+    row_index: int | None = None
+    column_index: int | None = None
+    char_boxes: list[CharBox] = Field(default_factory=list)
 
 
 class Page(BaseModel):
@@ -63,6 +77,13 @@ class Clause(BaseModel):
     page_numbers: list[int] = Field(default_factory=list)
     bboxes: list[EvidenceBox] = Field(default_factory=list)
     source_block_ids: list[str] = Field(default_factory=list)
+    char_boxes: list[CharBox | None] = Field(default_factory=list)
+
+
+class TextRange(BaseModel):
+    start: int
+    end: int
+    highlight_type: DiffType = "MODIFY"
 
 
 class ClausePair(BaseModel):
@@ -104,6 +125,8 @@ class DiffItem(BaseModel):
     readable_change: str = ""
     original_evidence: list[EvidenceBox] = Field(default_factory=list)
     compare_evidence: list[EvidenceBox] = Field(default_factory=list)
+    original_change_ranges: list[TextRange] = Field(default_factory=list)
+    compare_change_ranges: list[TextRange] = Field(default_factory=list)
     ai_analysis: AIAnalysis | None = None
     original_screenshot: str = ""
     compare_screenshot: str = ""
@@ -121,6 +144,9 @@ class CompareTask(BaseModel):
     original_highlight_pdf_path: str = ""
     compare_highlight_pdf_path: str = ""
     report_pdf_path: str = ""
+    extractor_used: str = ""
+    ocr_raw_result_path: str = ""
+    parse_warnings: list[str] = Field(default_factory=list)
     diff_count: int = 0
     high_risk_count: int = 0
     medium_risk_count: int = 0

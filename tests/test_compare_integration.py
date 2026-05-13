@@ -26,7 +26,8 @@ def configure_storage(tmp_path: Path) -> None:
     settings.highlighted_dir = settings.storage_dir / "highlighted"
     settings.screenshots_dir = settings.storage_dir / "screenshots"
     settings.reports_dir = settings.storage_dir / "reports"
-    settings.use_mock_llm = True
+    settings.ocr_dir = settings.storage_dir / "ocr"
+    settings.document_extractor = "auto"
     settings.ensure_storage()
 
 
@@ -58,10 +59,15 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
     task = CompareService().compare(original, compare, enable_ai_analysis=True, task_id="TTEST000001")
 
     assert task.status == "COMPLETED"
+    assert task.extractor_used == "pymupdf"
     assert task.diff_count >= 1
+    assert any(
+        evidence.method == "char_exact"
+        for diff in task.diffs
+        for evidence in [*diff.original_evidence, *diff.compare_evidence]
+    )
     assert Path(task.original_highlight_pdf_path).exists()
     assert Path(task.compare_highlight_pdf_path).exists()
     assert Path(task.report_pdf_path).exists()
     assert (settings.tasks_dir / "TTEST000001.json").exists()
     assert any(diff.original_screenshot or diff.compare_screenshot for diff in task.diffs)
-

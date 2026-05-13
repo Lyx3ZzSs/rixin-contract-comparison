@@ -1,16 +1,17 @@
-# AI 合同差异审查系统
+# 合同差异审查系统
 
-这是一个前后端分离的合同差异审查 MVP。后端 FastAPI 负责上传两份文本型 PDF 合同、按条款识别差异、生成 AI 风险审查结果、高亮 PDF、差异截图和 PDF 报告；前端 React 工作台负责上传、任务结果预览和产物下载。它面向合同审查流程，不是普通逐字 Diff 工具。
+这是一个前后端分离的合同差异审查 MVP。后端 FastAPI 负责上传两份 PDF 合同、通过可插拔文档识别器提取结构化文本和坐标、按条款识别差异、生成高亮 PDF、差异截图和 PDF 报告；前端 React 工作台负责上传、任务结果预览和产物下载。它面向合同审查流程，不是普通逐字 Diff 工具。
 
 ## 功能
 
-- 文本型 PDF 解析和条款切分。
+- 文档识别默认走 PyMuPDF，扫描件降级 PaddleOCR。
+- 文本型 PDF、扫描件 PDF 的结构化文本提取。
+- 条款切分和坐标证据绑定。
 - 条款编号、标题、正文相似度匹配。
 - 新增、删除、修改差异识别。
-- Mock LLM 风险审查，支持切换到 OpenAI SDK。
 - 原合同和对比合同高亮 PDF。
-- 差异截图和 `AI 合同差异分析报告` PDF。
-- React 预览页：左右 PDF iframe、差异列表、截图和 AI 分析。
+- 差异截图和 `合同差异分析报告` PDF。
+- React 预览页：左右 PDF 预览、同步滚动、差异点定位和页码标识。
 
 ## 安装与启动
 
@@ -63,23 +64,30 @@ python app/main.py
 VITE_API_BASE_URL=http://127.0.0.1:8001
 ```
 
-## LLM 配置
+## 文档识别配置
 
-默认使用 MockLLMClient，适合本地开发和无网络环境：
-
-```bash
-USE_MOCK_LLM=true
-```
-
-配置真实 OpenAI 调用：
+默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本时再降级到 PaddleOCR。
 
 ```bash
-OPENAI_API_KEY=your_key
-OPENAI_MODEL=gpt-4.1-mini
-USE_MOCK_LLM=false
+DOCUMENT_EXTRACTOR=auto
+PYMUPDF_MIN_TEXT_CHARS=1
 ```
 
-如果 OpenAI 调用失败，系统会把错误写入单条差异分析，不中断主流程。
+也可以显式指定 `pymupdf` 或 `paddleocr`。
+
+接入 PaddleOCR 时配置：
+
+```bash
+PADDLEOCR_ACCESS_TOKEN=your_token
+PADDLEOCR_MODEL=PP-OCRv5
+PADDLEOCR_JOB_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
+PADDLEOCR_TIMEOUT_SECONDS=120
+PADDLEOCR_POLL_INTERVAL_SECONDS=2
+PADDLEOCR_MAX_WAIT_SECONDS=300
+SAVE_OCR_RAW_RESULT=true
+```
+
+OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。当前系统不使用大模型直接判断差异，也不启用大模型总结；差异结果来自程序化条款匹配和结构化 diff。
 
 ## API 示例
 
@@ -137,15 +145,14 @@ cd frontend && npm test && npm run build
 
 ## 当前限制
 
-- 仅支持可复制文本的 PDF，不支持扫描件、图片型 PDF 或 OCR。
-- 暂不支持 Word、Excel、复杂表格结构化对比和图片识别。
+- PaddleOCR 需要可用 Access Token，扫描件和图片型 PDF 的识别质量取决于 OCR 返回结果。
+- 暂不支持 Word、Excel 和复杂表格深度 diff。
 - MVP 使用同步任务、本地 JSON 和本地文件存储。
-- 预览页使用浏览器原生 PDF 预览，不做 PDF.js 级别页内锚点定位。
+- 风险统计首期不接入大模型，默认按低风险兼容展示。
 
 ## 后续扩展
 
-- 增加 OCR 和版面结构识别。
+- 增强表格、金额、日期、主体信息等合同要素结构化抽取。
 - 引入异步任务队列和任务进度。
 - 用数据库替代本地 JSON。
-- 接入 PDF.js，实现差异点击后精确跳页和定位。
-- 增强表格、金额、日期、主体信息等合同要素结构化抽取。
+- 增加规则风险引擎或按需接入大模型审查总结。

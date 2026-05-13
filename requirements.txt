@@ -6,6 +6,5 @@ rapidfuzz
 reportlab
 pydantic>=2
 python-dotenv
-openai
 pytest
 httpx

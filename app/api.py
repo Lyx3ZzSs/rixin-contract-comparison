@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 
 from app.models import CompareTask
 from app.services.compare_service import CompareService
+from app.services.extractors import DocumentExtractionError
 from app.services.pdf_parser import PdfParseError
 from app.utils.file_utils import FileValidationError, assert_path_inside_storage, save_upload_file
 from app.utils.id_utils import generate_task_id
@@ -37,6 +38,8 @@ async def compare_contracts(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PdfParseError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except DocumentExtractionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"合同对比失败: {exc}") from exc
 
@@ -47,6 +50,8 @@ async def compare_contracts(
         "high_risk_count": task.high_risk_count,
         "medium_risk_count": task.medium_risk_count,
         "low_risk_count": task.low_risk_count,
+        "extractor_used": task.extractor_used,
+        "parse_warnings": task.parse_warnings,
         "original_pdf_url": f"/api/compare/{task.task_id}/original",
         "compare_pdf_url": f"/api/compare/{task.task_id}/compare",
         "report_url": f"/api/compare/{task.task_id}/report",
@@ -80,7 +85,7 @@ def get_diffs(task_id: str) -> dict:
 @router.get("/{task_id}/report")
 def download_report(task_id: str) -> FileResponse:
     task = _load_or_404(task_id)
-    return _file_response(task.report_pdf_path, "AI合同差异分析报告.pdf", "application/pdf")
+    return _file_response(task.report_pdf_path, "合同差异分析报告.pdf", "application/pdf")
 
 
 @router.get("/{task_id}/original")

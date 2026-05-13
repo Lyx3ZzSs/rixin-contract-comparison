@@ -8,12 +8,9 @@ from app.models import DiffItem, EvidenceBox
 
 
 class PdfHighlighter:
-    original_colors = {
-        "DELETE": (1, 0.25, 0.25),
-        "MODIFY": (1, 0.85, 0.1),
-    }
-    compare_colors = {
+    colors = {
         "ADD": (0.25, 0.8, 0.35),
+        "DELETE": (1, 0.25, 0.25),
         "MODIFY": (1, 0.85, 0.1),
     }
 
@@ -33,21 +30,58 @@ class PdfHighlighter:
                 risk = analysis.risk_level if analysis else "LOW"
                 summary = analysis.change_summary if analysis else diff.readable_change[:120]
                 if side == "original":
+                    snippet = diff.original_snippet
                     evidences = diff.original_evidence
-                    color = self.original_colors.get(diff.diff_type)
                 else:
+                    snippet = diff.compare_snippet
                     evidences = diff.compare_evidence
-                    color = self.compare_colors.get(diff.diff_type)
-                if not color:
-                    continue
-                for evidence in evidences:
-                    self._add_annotation(pdf, evidence, color, diff.diff_id, risk, summary)
+                if evidences:
+                    for evidence in evidences:
+                        color = self.colors.get(evidence.highlight_type or diff.diff_type)
+                        if not color:
+                            continue
+                        self._highlight_by_bbox(pdf, evidence, color, diff.diff_id, risk, summary)
             pdf.save(output_path)
         finally:
             pdf.close()
         return output_path
 
-    def _add_annotation(
+    def _search_and_highlight(
+        self,
+        pdf: fitz.Document,
+        snippet: str,
+        color: tuple[float, float, float],
+        diff_id: str,
+        risk_level: str,
+        summary: str,
+    ) -> bool:
+        search_text = snippet.strip()
+        if not search_text:
+            return False
+        found_any = False
+        for page_index in range(len(pdf)):
+            page = pdf[page_index]
+            results = page.search_for(search_text)
+            if not results:
+                continue
+            found_any = True
+            annot = page.add_highlight_annot(results)
+            annot.set_colors(stroke=color)
+            annot.set_opacity(0.5)
+            annot.set_info(content=f"{diff_id} | {risk_level} | {summary[:200]}")
+            annot.update()
+            if risk_level == "HIGH":
+                union = results[0]
+                for r in results[1:]:
+                    union |= r
+                box = page.add_rect_annot(union)
+                box.set_colors(stroke=(1, 0, 0))
+                box.set_border(width=1.2)
+                box.set_opacity(0.9)
+                box.update()
+        return found_any
+
+    def _highlight_by_bbox(
         self,
         pdf: fitz.Document,
         evidence: EvidenceBox,
@@ -64,7 +98,7 @@ class PdfHighlighter:
             return
         annot = page.add_highlight_annot(rect)
         annot.set_colors(stroke=color)
-        annot.set_opacity(0.35)
+        annot.set_opacity(0.5)
         annot.set_info(content=f"{diff_id} | {risk_level} | {summary[:200]}")
         annot.update()
         if risk_level == "HIGH":
@@ -73,4 +107,3 @@ class PdfHighlighter:
             box.set_border(width=1.2)
             box.set_opacity(0.9)
             box.update()
-
