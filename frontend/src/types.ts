@@ -10,6 +10,8 @@ export interface CompareResponse {
   medium_risk_count: number;
   low_risk_count: number;
   report_url: string;
+  original_pdf_url: string;
+  compare_pdf_url: string;
   original_highlight_pdf_url: string;
   compare_highlight_pdf_url: string;
   errors: string[];
@@ -32,6 +34,20 @@ export interface AIAnalysis {
   review_suggestion: string;
 }
 
+export interface BBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+export interface EvidenceBox {
+  page_no: number;
+  bbox: BBox;
+  method: string;
+  text: string;
+}
+
 export interface DiffItem {
   diff_id: string;
   diff_type: DiffType;
@@ -47,4 +63,6 @@ export interface DiffItem {
   compare_screenshot: string;
   original_screenshot_url?: string;
   compare_screenshot_url?: string;
+  original_evidence?: EvidenceBox[];
+  compare_evidence?: EvidenceBox[];
 }

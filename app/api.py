@@ -47,6 +47,8 @@ async def compare_contracts(
         "high_risk_count": task.high_risk_count,
         "medium_risk_count": task.medium_risk_count,
         "low_risk_count": task.low_risk_count,
+        "original_pdf_url": f"/api/compare/{task.task_id}/original",
+        "compare_pdf_url": f"/api/compare/{task.task_id}/compare",
         "report_url": f"/api/compare/{task.task_id}/report",
         "original_highlight_pdf_url": f"/api/compare/{task.task_id}/highlight/original",
         "compare_highlight_pdf_url": f"/api/compare/{task.task_id}/highlight/compare",
@@ -81,6 +83,18 @@ def download_report(task_id: str) -> FileResponse:
     return _file_response(task.report_pdf_path, "AI合同差异分析报告.pdf", "application/pdf")
 
 
+@router.get("/{task_id}/original")
+def preview_original_pdf(task_id: str) -> FileResponse:
+    task = _load_or_404(task_id)
+    return _file_response(task.original_pdf_path, task.original_filename or "original.pdf", "application/pdf", "inline")
+
+
+@router.get("/{task_id}/compare")
+def preview_compare_pdf(task_id: str) -> FileResponse:
+    task = _load_or_404(task_id)
+    return _file_response(task.compare_pdf_path, task.compare_filename or "compare.pdf", "application/pdf", "inline")
+
+
 @router.get("/{task_id}/highlight/original")
 def download_original_highlight(task_id: str) -> FileResponse:
     task = _load_or_404(task_id)
@@ -109,7 +123,12 @@ def _load_or_404(task_id: str) -> CompareTask:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-def _file_response(path_value: str, filename: str, media_type: str) -> FileResponse:
+def _file_response(
+    path_value: str,
+    filename: str,
+    media_type: str,
+    content_disposition_type: str = "attachment",
+) -> FileResponse:
     if not path_value:
         raise HTTPException(status_code=404, detail="文件尚未生成。")
     path = Path(path_value)
@@ -119,11 +138,18 @@ def _file_response(path_value: str, filename: str, media_type: str) -> FileRespo
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not path.exists():
         raise HTTPException(status_code=404, detail="文件不存在。")
-    return FileResponse(path, filename=filename, media_type=media_type)
+    return FileResponse(
+        path,
+        filename=filename,
+        media_type=media_type,
+        content_disposition_type=content_disposition_type,
+    )
 
 
 def _task_artifact_urls(task: CompareTask) -> dict[str, str]:
     return {
+        "original_pdf_url": f"/api/compare/{task.task_id}/original" if task.original_pdf_path else "",
+        "compare_pdf_url": f"/api/compare/{task.task_id}/compare" if task.compare_pdf_path else "",
         "report_url": f"/api/compare/{task.task_id}/report" if task.report_pdf_path else "",
         "original_highlight_pdf_url": (
             f"/api/compare/{task.task_id}/highlight/original" if task.original_highlight_pdf_path else ""

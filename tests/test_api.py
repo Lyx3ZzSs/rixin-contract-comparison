@@ -53,20 +53,38 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     task_id = payload["task_id"]
     assert payload["diff_count"] >= 1
     assert "preview_url" not in payload
+    assert payload["original_pdf_url"] == f"/api/compare/{task_id}/original"
+    assert payload["compare_pdf_url"] == f"/api/compare/{task_id}/compare"
     assert payload["report_url"] == f"/api/compare/{task_id}/report"
     assert payload["original_highlight_pdf_url"] == f"/api/compare/{task_id}/highlight/original"
 
     task_response = client.get(f"/api/compare/{task_id}")
     assert task_response.status_code == 200
     assert "preview_url" not in task_response.json()
+    assert task_response.json()["original_pdf_url"] == f"/api/compare/{task_id}/original"
+    assert task_response.json()["compare_pdf_url"] == f"/api/compare/{task_id}/compare"
     assert task_response.json()["compare_highlight_pdf_url"] == f"/api/compare/{task_id}/highlight/compare"
 
     diffs_response = client.get(f"/api/compare/{task_id}/diffs")
     assert diffs_response.status_code == 200
-    assert "original_screenshot_url" in diffs_response.json()["diffs"][0]
-    assert client.get(f"/api/compare/{task_id}/report").status_code == 200
+    first_diff = diffs_response.json()["diffs"][0]
+    assert "original_screenshot_url" in first_diff
+    assert "original_evidence" in first_diff
+    assert "compare_evidence" in first_diff
+    report_response = client.get(f"/api/compare/{task_id}/report")
+    assert report_response.status_code == 200
+    assert not report_response.headers["content-disposition"].lower().startswith("inline")
+    original_preview_response = client.get(f"/api/compare/{task_id}/original")
+    compare_preview_response = client.get(f"/api/compare/{task_id}/compare")
+    assert original_preview_response.status_code == 200
+    assert compare_preview_response.status_code == 200
+    assert "application/pdf" in original_preview_response.headers["content-type"]
+    assert "application/pdf" in compare_preview_response.headers["content-type"]
+    assert original_preview_response.headers["content-disposition"].lower().startswith("inline")
+    assert compare_preview_response.headers["content-disposition"].lower().startswith("inline")
     assert client.get(f"/api/compare/{task_id}/highlight/original").status_code == 200
     assert client.get(f"/api/compare/{task_id}/highlight/compare").status_code == 200
+    assert client.get("/api/compare/missing-task/original").status_code == 404
     assert client.get(f"/api/compare/{task_id}/preview").status_code == 404
 
 

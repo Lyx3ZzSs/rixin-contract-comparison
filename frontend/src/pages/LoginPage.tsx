@@ -21,7 +21,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
   }
 
   return (
-    <main className="login-page" style={{ "--login-bg": `url(${loginBackground})` } as CSSProperties}>
+    <main className="login-page" style={{ "--login-bg": `url("${loginBackground}")` } as CSSProperties}>
       <section className="login-slogan" aria-label="登录页标语">
         <h1>合同规范管理  合作高效共赢</h1>
         <p>严控风险.提升效率.保障合规.驱动价值</p>
