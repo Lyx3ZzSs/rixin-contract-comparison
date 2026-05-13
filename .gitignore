@@ -150,6 +150,9 @@ activemq-data/
 # Environments
 .env
 .envrc
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 .venv
 env/
 venv/
@@ -205,6 +208,11 @@ tempCodeRunnerFile.py
 
 # Ruff stuff:
 .ruff_cache/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
 
 # PyPI configuration file
 .pypirc

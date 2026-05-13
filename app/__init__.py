@@ -1,0 +1,2 @@
+"""AI contract comparison application."""
+
