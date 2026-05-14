@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Download, Eye, EyeOff, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronRight, Download, Eye, EyeOff, PanelRightOpen, ZoomIn, ZoomOut } from "lucide-react";
 
 import { PdfDocumentViewer, type PdfDocumentViewerHandle } from "../components/PdfDocumentViewer";
 import { getDiffs, getTask, toApiUrl } from "../lib/api";
-import type { CompareTask, DiffItem } from "../types";
+import type { CompareTask, DiffItem, DiffType } from "../types";
 
 interface ResultPageProps {
   taskId: string;
@@ -17,6 +17,8 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
   const [error, setError] = useState("");
   const [isOriginalVisible, setIsOriginalVisible] = useState(true);
   const [isSyncScroll, setIsSyncScroll] = useState(true);
+  const [isAuditPanelOpen, setIsAuditPanelOpen] = useState(false);
+  const [diffFilter, setDiffFilter] = useState<DiffFilter>("ALL");
   const [zoom, setZoom] = useState(1);
   const [activeDiffId, setActiveDiffId] = useState("");
   const originalViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
@@ -54,6 +56,11 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
   const linkedDiffs = useMemo(
     () => diffs.filter((diff) => (diff.original_evidence?.length ?? 0) > 0 || (diff.compare_evidence?.length ?? 0) > 0),
     [diffs],
+  );
+  const diffStats = useMemo(() => buildDiffStats(diffs), [diffs]);
+  const filteredDiffs = useMemo(
+    () => (diffFilter === "ALL" ? diffs : diffs.filter((diff) => diff.diff_type === diffFilter)),
+    [diffFilter, diffs],
   );
 
   function handleZoomOut() {
@@ -114,7 +121,10 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
 
   return (
     <section className="result-console" aria-labelledby="result-title">
-      <section className="pdf-review-page" aria-label="PDF 在线对比预览">
+      <section
+        className={isAuditPanelOpen ? "pdf-review-page audit-open" : "pdf-review-page audit-closed"}
+        aria-label="PDF 在线对比预览"
+      >
         <header className="pdf-review-bar">
           <div className="pdf-file-meta">
             <button className="preview-visibility" type="button" onClick={() => setIsOriginalVisible((value) => !value)}>
@@ -221,9 +231,165 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
           </button>
           <strong>同屏滚动</strong>
         </div>
+        <AuditPanel
+          activeDiffId={activeDiffId}
+          diffs={filteredDiffs}
+          filter={diffFilter}
+          isOpen={isAuditPanelOpen}
+          stats={diffStats}
+          onClose={() => setIsAuditPanelOpen(false)}
+          onFilterChange={setDiffFilter}
+          onSelectDiff={focusDiff}
+        />
+        <button
+          className="audit-panel-rail"
+          type="button"
+          aria-label="展开审计侧栏"
+          aria-hidden={isAuditPanelOpen}
+          disabled={isAuditPanelOpen}
+          tabIndex={isAuditPanelOpen ? -1 : undefined}
+          onClick={() => setIsAuditPanelOpen(true)}
+        >
+          <PanelRightOpen aria-hidden="true" />
+          审计
+        </button>
       </section>
     </section>
   );
+}
+
+type DiffFilter = "ALL" | DiffType;
+
+interface DiffStats {
+  all: number;
+  add: number;
+  delete: number;
+  modify: number;
+}
+
+function buildDiffStats(diffs: DiffItem[]): DiffStats {
+  return diffs.reduce(
+    (stats, diff) => {
+      stats.all += 1;
+      if (diff.diff_type === "ADD") {
+        stats.add += 1;
+      } else if (diff.diff_type === "DELETE") {
+        stats.delete += 1;
+      } else if (diff.diff_type === "MODIFY") {
+        stats.modify += 1;
+      }
+      return stats;
+    },
+    { all: 0, add: 0, delete: 0, modify: 0 },
+  );
+}
+
+function AuditPanel({
+  activeDiffId,
+  diffs,
+  filter,
+  isOpen,
+  stats,
+  onClose,
+  onFilterChange,
+  onSelectDiff,
+}: {
+  activeDiffId: string;
+  diffs: DiffItem[];
+  filter: DiffFilter;
+  isOpen: boolean;
+  stats: DiffStats;
+  onClose: () => void;
+  onFilterChange: (filter: DiffFilter) => void;
+  onSelectDiff: (diffId: string) => void;
+}) {
+  const statItems: Array<{ filter: DiffFilter; label: string; value: number }> = [
+    { filter: "ALL", label: "全部", value: stats.all },
+    { filter: "DELETE", label: "删除", value: stats.delete },
+    { filter: "ADD", label: "新增", value: stats.add },
+    { filter: "MODIFY", label: "修改", value: stats.modify },
+  ];
+  const hiddenTabIndex = isOpen ? undefined : -1;
+
+  return (
+    <aside className={isOpen ? "audit-panel is-open" : "audit-panel is-closed"} aria-label="审计统计侧栏" aria-hidden={!isOpen}>
+      <div className="audit-panel-head">
+        <div>
+          <p className="eyebrow">审计统计</p>
+          <h2>当前文档改动</h2>
+        </div>
+        <button className="audit-close-button" type="button" aria-label="收起审计侧栏" tabIndex={hiddenTabIndex} onClick={onClose}>
+          <ChevronRight aria-hidden="true" />
+        </button>
+      </div>
+
+      <div className="audit-stat-grid" aria-label="差异类型统计">
+        {statItems.map((item) => (
+          <button
+            key={item.filter}
+            className={filter === item.filter ? "audit-stat active" : "audit-stat"}
+            type="button"
+            onClick={() => onFilterChange(item.filter)}
+            aria-label={`筛选${item.label}差异`}
+            aria-pressed={filter === item.filter}
+            tabIndex={hiddenTabIndex}
+          >
+            <strong>{item.value}</strong>
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="audit-filter-row">
+        <strong>共 {diffs.length} 个改动点</strong>
+        <span>{filter === "ALL" ? "全部类型" : diffTypeLabel(filter)}</span>
+      </div>
+
+      <div className="audit-diff-list">
+        {diffs.length === 0 ? (
+          <div className="audit-empty">未发现改动点。</div>
+        ) : (
+          diffs.map((diff) => (
+            <button
+              key={diff.diff_id}
+              className={diff.diff_id === activeDiffId ? "audit-diff-card active" : "audit-diff-card"}
+              type="button"
+              aria-label={`审计定位差异 ${diff.diff_id}`}
+              tabIndex={hiddenTabIndex}
+              onClick={() => onSelectDiff(diff.diff_id)}
+            >
+              <span className={`audit-type-badge ${diff.diff_type.toLowerCase()}`}>{diffTypeLabel(diff.diff_type)}</span>
+              <strong>{diff.title || diff.clause_no || diff.diff_id}</strong>
+              <span>{diffSummary(diff)}</span>
+            </button>
+          ))
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function diffTypeLabel(type: DiffFilter): string {
+  if (type === "ADD") {
+    return "新增";
+  }
+  if (type === "DELETE") {
+    return "删除";
+  }
+  if (type === "MODIFY") {
+    return "修改";
+  }
+  return "全部";
+}
+
+function diffSummary(diff: DiffItem): string {
+  const summary = diff.readable_change || diff.compare_snippet || diff.original_snippet || diff.compare_text || diff.original_text;
+  return compactText(summary || "暂无摘要");
+}
+
+function compactText(value: string): string {
+  const text = value.replace(/\s+/g, " ").trim();
+  return text.length > 92 ? `${text.slice(0, 92)}...` : text;
 }
 
 function StateScreen({ title, detail, onBack }: { title: string; detail: string; onBack?: () => void }) {

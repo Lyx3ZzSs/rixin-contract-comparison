@@ -48,10 +48,10 @@ const mockTask: CompareTask = {
   updated_at: "2026-05-12T00:00:10Z",
   original_filename: "original.pdf",
   compare_filename: "compare.pdf",
-  diff_count: 1,
+  diff_count: 3,
   high_risk_count: 1,
-  medium_risk_count: 0,
-  low_risk_count: 0,
+  medium_risk_count: 1,
+  low_risk_count: 1,
   ai_summary: "付款期限延长，需关注回款风险。",
   report_url: "/api/compare/task-1/report",
   original_pdf_url: "/api/compare/task-1/original",
@@ -87,11 +87,43 @@ const mockDiffs: DiffItem[] = [
       review_suggestion: "建议业务确认授信周期。",
     },
   },
+  {
+    diff_id: "diff-2",
+    diff_type: "ADD",
+    clause_no: "2",
+    title: "发票",
+    original_text: "",
+    compare_text: "Seller shall provide invoice.",
+    original_snippet: "",
+    compare_snippet: "新增发票条款",
+    readable_change: "新增发票条款。",
+    original_screenshot: "",
+    compare_screenshot: "",
+    original_evidence: [],
+    compare_evidence: [{ page_no: 1, bbox: { x0: 72, y0: 180, x1: 240, y1: 206 }, method: "block", text: "invoice" }],
+    ai_analysis: null,
+  },
+  {
+    diff_id: "diff-3",
+    diff_type: "DELETE",
+    clause_no: "3",
+    title: "旧质保",
+    original_text: "Warranty lasts 12 months.",
+    compare_text: "",
+    original_snippet: "12 months",
+    compare_snippet: "",
+    readable_change: "删除旧质保约定。",
+    original_screenshot: "",
+    compare_screenshot: "",
+    original_evidence: [{ page_no: 1, bbox: { x0: 72, y0: 240, x1: 240, y1: 266 }, method: "block", text: "12 months" }],
+    compare_evidence: [],
+    ai_analysis: null,
+  },
 ];
 
 describe("ResultPage", () => {
   it("renders only the PDF.js comparison workspace", async () => {
-    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument());
     expect(screen.getByLabelText("原版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/highlight/original");
@@ -101,6 +133,9 @@ describe("ResultPage", () => {
     expect(screen.getByRole("button", { name: "缩小预览" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "放大预览" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "定位差异 diff-1" })).toHaveLength(1);
+    expect(container.querySelector(".audit-panel")).toHaveClass("is-closed");
+    expect(container.querySelector(".audit-panel")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument();
     expect(screen.queryByText("差异审查结果")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "审查详情" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "下载报告" })).not.toBeInTheDocument();
@@ -116,5 +151,52 @@ describe("ResultPage", () => {
     await user.click(screen.getByRole("button", { name: "放大预览" }));
 
     expect(screen.getAllByText("110%").length).toBeGreaterThan(0);
+  });
+
+  it("filters audit panel items and marks the selected diff", async () => {
+    const user = userEvent.setup();
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    expect(screen.getByRole("button", { name: "筛选全部差异" })).toHaveTextContent("3");
+    expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
+    await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
+
+    expect(screen.getByRole("button", { name: "审计定位差异 diff-2" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "审计定位差异 diff-1" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "审计定位差异 diff-3" })).not.toBeInTheDocument();
+
+    const addCard = screen.getByRole("button", { name: "审计定位差异 diff-2" });
+    await user.click(addCard);
+
+    expect(addCard).toHaveClass("active");
+  });
+
+  it("collapses and reopens the audit panel", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    expect(container.querySelector(".audit-panel")).toHaveClass("is-closed");
+    expect(container.querySelector(".audit-panel")).toHaveAttribute("aria-hidden", "true");
+
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    expect(container.querySelector(".audit-panel")).toHaveClass("is-open");
+
+    await user.click(screen.getByRole("button", { name: "收起审计侧栏" }));
+
+    expect(container.querySelector(".audit-panel")).toHaveClass("is-closed");
+    expect(container.querySelector(".audit-panel")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    expect(screen.getByLabelText("审计统计侧栏")).toBeInTheDocument();
+    expect(container.querySelector(".audit-panel")).toHaveClass("is-open");
   });
 });
