@@ -10,6 +10,7 @@ export interface CompareResponse {
   medium_risk_count: number;
   low_risk_count: number;
   report_url: string;
+  report_filename: string;
   original_pdf_url: string;
   compare_pdf_url: string;
   original_highlight_pdf_url: string;
@@ -23,6 +24,9 @@ export interface CompareTask extends CompareResponse {
   original_filename: string;
   compare_filename: string;
   ai_summary: string;
+  report_ai_analysis?: ReportAIAnalysis | null;
+  original_page_screenshots?: string[];
+  compare_page_screenshots?: string[];
 }
 
 export interface AIAnalysis {
@@ -32,6 +36,13 @@ export interface AIAnalysis {
   change_summary: string;
   risk_explanation: string;
   review_suggestion: string;
+}
+
+export interface ReportAIAnalysis {
+  risk_level: RiskLevel;
+  summary: string;
+  major_risks: string[];
+  review_suggestions: string[];
 }
 
 export interface BBox {

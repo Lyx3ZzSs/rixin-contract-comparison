@@ -28,6 +28,29 @@ class ScreenshotService:
                     diff.compare_screenshot = str(path)
         return diffs
 
+    def create_page_screenshots(
+        self,
+        pdf_path: str | Path,
+        output_dir: str | Path,
+        prefix: str,
+        max_pages: int,
+    ) -> list[str]:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        paths: list[str] = []
+        pdf = fitz.open(pdf_path)
+        try:
+            page_count = min(len(pdf), max_pages)
+            for page_index in range(page_count):
+                page = pdf[page_index]
+                output_path = output_dir / f"{prefix}_page_{page_index + 1:03d}.png"
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
+                pix.save(output_path)
+                paths.append(str(output_path))
+        finally:
+            pdf.close()
+        return paths
+
     def _capture(self, pdf_path: str | Path, snippet: str, evidence: EvidenceBox, output_path: Path) -> bool:
         pdf = fitz.open(pdf_path)
         try:

@@ -37,7 +37,7 @@ class CompareService:
         self,
         original_pdf: str | Path,
         compare_pdf: str | Path,
-        enable_ai_analysis: bool = True,
+        enable_ai_analysis: bool = False,
         task_id: str | None = None,
         original_filename: str | None = None,
         compare_filename: str | None = None,
@@ -105,14 +105,6 @@ class CompareService:
                 logger.exception("Screenshot generation failed")
                 task.errors.append(f"差异截图生成失败: {exc}")
 
-            try:
-                report_path = settings.reports_dir / task_id / "contract_compare_report.pdf"
-                self.report_generator.generate(task, report_path)
-                task.report_pdf_path = str(report_path)
-            except Exception as exc:
-                logger.exception("Report generation failed")
-                task.errors.append(f"PDF 报告生成失败: {exc}")
-
             task.status = "COMPLETED"
             task.updated_at = datetime.now(UTC).isoformat()
             save_task(task)
@@ -124,6 +116,32 @@ class CompareService:
             task.updated_at = datetime.now(UTC).isoformat()
             save_task(task)
             raise
+
+    def ensure_report(self, task: CompareTask) -> CompareTask:
+        settings.ensure_storage()
+        report_path = settings.reports_dir / task.task_id / "contract_compare_report.pdf"
+
+        page_screenshot_dir = settings.screenshots_dir / task.task_id / "pages"
+        if not task.original_page_screenshots and task.original_highlight_pdf_path:
+            task.original_page_screenshots = self.screenshot_service.create_page_screenshots(
+                task.original_highlight_pdf_path,
+                page_screenshot_dir,
+                "original",
+                settings.report_max_screenshot_pages,
+            )
+        if not task.compare_page_screenshots and task.compare_highlight_pdf_path:
+            task.compare_page_screenshots = self.screenshot_service.create_page_screenshots(
+                task.compare_highlight_pdf_path,
+                page_screenshot_dir,
+                "compare",
+                settings.report_max_screenshot_pages,
+            )
+
+        self.report_generator.generate(task, report_path)
+        task.report_pdf_path = str(report_path)
+        task.updated_at = datetime.now(UTC).isoformat()
+        save_task(task)
+        return task
 
     def _refresh_stats(self, task: CompareTask) -> None:
         task.diff_count = len(task.diffs)
@@ -142,9 +160,13 @@ class CompareService:
         if not diffs:
             return "未发现合同条款差异。"
         types = Counter(diff.diff_type for diff in diffs)
+        risks = Counter(diff.ai_analysis.risk_level if diff.ai_analysis else "LOW" for diff in diffs)
+        key_elements = Counter(diff.ai_analysis.contract_element for diff in diffs if diff.ai_analysis).most_common(3)
+        element_text = "、".join(element for element, _ in key_elements) or "一般条款"
         return (
             f"本次共识别 {len(diffs)} 处差异，其中新增 {types['ADD']} 处、删除 {types['DELETE']} 处、"
-            f"修改 {types['MODIFY']} 处。请结合业务背景逐条复核。"
+            f"修改 {types['MODIFY']} 处。风险分布为高风险 {risks['HIGH']} 处、中风险 {risks['MEDIUM']} 处、"
+            f"低风险 {risks['LOW']} 处，重点关注 {element_text}。请结合业务背景逐条复核。"
         )
 
     def _merge_extractor_names(self, original: str, compare: str) -> str:

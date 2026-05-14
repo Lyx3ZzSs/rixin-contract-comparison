@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from collections import Counter
+import re
+from datetime import datetime
 from html import escape
 from pathlib import Path
 
+import fitz
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
@@ -15,7 +17,21 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.config import settings
-from app.models import CompareTask, DiffItem
+from app.models import CompareTask
+from app.services.audit_summary import AuditItem, build_audit_items
+
+
+def build_report_title(task: CompareTask) -> str:
+    heading = _extract_pdf_heading(task.original_pdf_path) or _extract_pdf_heading(task.compare_pdf_path)
+    if not heading:
+        heading = Path(task.original_filename or task.compare_filename or "合同").stem
+    return f"{_clean_report_text(heading, 60)}差异分析报告"
+
+
+def build_report_filename(task: CompareTask) -> str:
+    title = build_report_title(task)
+    safe_title = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", title).strip(" ._") or "合同差异分析报告"
+    return f"{safe_title}.pdf"
 
 
 class ReportGenerator:
@@ -34,50 +50,23 @@ class ReportGenerator:
             bottomMargin=1.5 * cm,
         )
 
+        report_title = build_report_title(task)
         story = [
-            Paragraph("合同差异分析报告", styles["Title"]),
+            Paragraph(escape(report_title), styles["Title"]),
             Spacer(1, 0.7 * cm),
             Paragraph(f"任务编号：{escape(task.task_id)}", styles["Normal"]),
             Paragraph(f"原合同：{escape(task.original_filename)}", styles["Normal"]),
             Paragraph(f"对比合同：{escape(task.compare_filename)}", styles["Normal"]),
+            Paragraph(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]),
             Spacer(1, 0.5 * cm),
-            Paragraph("总体摘要", styles["Heading2"]),
-            Paragraph(escape(task.ai_summary or "暂无摘要。"), styles["Normal"]),
-            Spacer(1, 0.4 * cm),
-            Paragraph("风险统计", styles["Heading2"]),
-            self._risk_table(task, styles),
-            Spacer(1, 0.4 * cm),
-            Paragraph("合同要素分类统计", styles["Heading2"]),
-            self._element_table(task.diffs, styles),
-            PageBreak(),
-            Paragraph("差异明细表", styles["Heading2"]),
-            self._diff_table(task.diffs, styles),
-            PageBreak(),
-            Paragraph("重点差异专题", styles["Heading2"]),
+            Paragraph("审计统计", styles["Heading2"]),
+            self._audit_items_table(task, styles),
         ]
 
-        key_diffs = task.diffs[:5]
-        if not key_diffs:
-            story.append(Paragraph("未识别到差异。", styles["Normal"]))
-        else:
-            for diff in key_diffs:
-                story.extend(self._diff_detail(diff, styles))
-
         story.append(PageBreak())
-        story.append(Paragraph("全部差异截图明细", styles["Heading2"]))
-        for diff in task.diffs:
-            story.extend(self._diff_detail(diff, styles, include_images=True))
+        story.append(Paragraph("合同差异", styles["Heading2"]))
+        story.extend(self._page_screenshot_detail(task, styles))
 
-        story.extend(
-            [
-                Spacer(1, 0.5 * cm),
-                Paragraph("使用说明", styles["Heading2"]),
-                Paragraph(
-                    "本报告基于程序化合同差异识别生成，仅用于合同差异审查参考，不构成正式法律意见。最终结论应由具备授权的业务、财务和法务人员复核确认。",
-                    styles["Normal"],
-                ),
-            ]
-        )
         doc.build(story)
         return output_path
 
@@ -143,71 +132,97 @@ class ReportGenerator:
         }
         return styles
 
-    def _risk_table(self, task: CompareTask, styles: dict[str, ParagraphStyle]) -> Table:
-        data = [
-            ["差异总数", "高风险", "中风险", "低风险"],
-            [str(task.diff_count), str(task.high_risk_count), str(task.medium_risk_count), str(task.low_risk_count)],
-        ]
-        return self._styled_table(data)
-
-    def _element_table(self, diffs: list[DiffItem], styles: dict[str, ParagraphStyle]) -> Table:
-        counter = Counter(diff.ai_analysis.contract_element if diff.ai_analysis else "一般条款" for diff in diffs)
-        data = [["合同要素", "差异数量"]]
-        data.extend([[element, str(count)] for element, count in counter.most_common()] or [["无", "0"]])
-        return self._styled_table(data)
-
-    def _diff_table(self, diffs: list[DiffItem], styles: dict[str, ParagraphStyle]) -> Table:
-        data = [["编号", "类型", "风险", "合同要素", "差异摘要"]]
-        for diff in diffs:
-            analysis = diff.ai_analysis
+    def _audit_items_table(self, task: CompareTask, styles: dict[str, ParagraphStyle]) -> Table:
+        items = build_audit_items(task.diffs)
+        data = [["序号", "类型", "页码", "条款/标题", "改动内容"]]
+        if not items:
+            data.append(["-", "-", "-", "-", "未发现改动点。"])
+        for index, item in enumerate(items, start=1):
             data.append(
                 [
-                    diff.diff_id,
-                    diff.diff_type,
-                    analysis.risk_level if analysis else "LOW",
-                    analysis.contract_element if analysis else "一般条款",
-                    Paragraph(escape((analysis.change_summary if analysis else diff.readable_change)[:120]), styles["Small"]),
+                    str(index),
+                    self._diff_type_label(item.diff_type),
+                    self._audit_item_page(item),
+                    Paragraph(escape(_clean_report_text(item.title, 50)), styles["Small"]),
+                    Paragraph(escape(_clean_report_text(item.summary, 220)), styles["Small"]),
                 ]
             )
-        return self._styled_table(data, col_widths=[1.4 * cm, 1.5 * cm, 1.5 * cm, 3 * cm, 10 * cm])
-
-    def _diff_detail(
-        self,
-        diff: DiffItem,
-        styles: dict[str, ParagraphStyle],
-        include_images: bool = False,
-    ) -> list:
-        analysis = diff.ai_analysis
-        story = [
-            Paragraph(f"{escape(diff.diff_id)} {escape(diff.diff_type)} {escape(diff.title or diff.clause_no)}", styles["Heading2"]),
-            Paragraph(f"风险等级：{escape(analysis.risk_level if analysis else 'LOW')}", styles["Normal"]),
-            Paragraph(f"摘要：{escape(analysis.change_summary if analysis else diff.readable_change)}", styles["Normal"]),
-            Paragraph(f"复核建议：{escape(analysis.review_suggestion if analysis else '请人工复核。')}", styles["Normal"]),
-        ]
-        if include_images:
-            for label, screenshot in [("原合同截图", diff.original_screenshot), ("对比合同截图", diff.compare_screenshot)]:
-                if screenshot and Path(screenshot).exists():
-                    story.append(Paragraph(label, styles["Normal"]))
-                    story.append(Image(screenshot, width=15 * cm, height=5 * cm, kind="proportional"))
-                    story.append(Spacer(1, 0.2 * cm))
-        return story
-
-    def _styled_table(self, data: list, col_widths: list | None = None) -> Table:
-        table = Table(data, colWidths=col_widths, repeatRows=1)
+        table = Table(data, colWidths=[1.0 * cm, 1.4 * cm, 1.2 * cm, 3.5 * cm, 9.4 * cm], repeatRows=1)
         table.setStyle(
             TableStyle(
                 [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F3F4F6")),
                     ("FONTNAME", (0, 0), (-1, -1), getattr(self, "_font_name", "Helvetica")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
+                    ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D1D5DB")),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9FAFB")]),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                    ("TOPPADDING", (0, 0), (-1, -1), 5),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
                 ]
             )
         )
         return table
+
+    def _audit_item_page(self, item: AuditItem) -> str:
+        if item.diff_type == "ADD":
+            evidence = item.diff.compare_evidence
+        elif item.diff_type == "DELETE":
+            evidence = item.diff.original_evidence
+        else:
+            evidence = [*item.diff.original_evidence, *item.diff.compare_evidence]
+        pages = sorted({box.page_no for box in evidence if box.highlight_type in {item.diff_type, None}})
+        return "、".join(str(page) for page in pages) if pages else "-"
+
+    def _diff_type_label(self, diff_type: str) -> str:
+        return {"ADD": "新增", "DELETE": "删除", "MODIFY": "修改"}.get(diff_type, diff_type)
+
+    def _page_screenshot_detail(self, task: CompareTask, styles: dict[str, ParagraphStyle]) -> list:
+        story: list = []
+        max_pages = max(len(task.original_page_screenshots), len(task.compare_page_screenshots))
+        if max_pages == 0:
+            return [Paragraph("暂无页面截图。", styles["Normal"])]
+        for index in range(max_pages):
+            story.append(Paragraph(f"第 {index + 1} 页", styles["Heading2"]))
+            if index < len(task.original_page_screenshots) and Path(task.original_page_screenshots[index]).exists():
+                story.append(Paragraph("原版合同高亮截图", styles["Normal"]))
+                story.append(Image(task.original_page_screenshots[index], width=15 * cm, height=20 * cm, kind="proportional"))
+                story.append(Spacer(1, 0.2 * cm))
+            if index < len(task.compare_page_screenshots) and Path(task.compare_page_screenshots[index]).exists():
+                story.append(Paragraph("新版合同高亮截图", styles["Normal"]))
+                story.append(Image(task.compare_page_screenshots[index], width=15 * cm, height=20 * cm, kind="proportional"))
+                story.append(Spacer(1, 0.3 * cm))
+        return story
+
+
+def _extract_pdf_heading(path_value: str) -> str:
+    if not path_value:
+        return ""
+    path = Path(path_value)
+    if not path.exists():
+        return ""
+    try:
+        pdf = fitz.open(path)
+    except Exception:
+        return ""
+    try:
+        if len(pdf) == 0:
+            return ""
+        page = pdf[0]
+        blocks = sorted(page.get_text("blocks"), key=lambda block: (float(block[1]), float(block[0])))
+        for block in blocks:
+            text = str(block[4] if len(block) > 4 else "")
+            for line in text.splitlines():
+                heading = _clean_report_text(line, 60)
+                if heading:
+                    return heading
+    finally:
+        pdf.close()
+    return ""
+
+
+def _clean_report_text(value: str, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) > limit:
+        return f"{text[:limit]}..."
+    return text

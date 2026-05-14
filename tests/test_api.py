@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import unquote
 
 from fastapi.testclient import TestClient
 from reportlab.lib.pagesizes import A4
@@ -8,6 +9,7 @@ from reportlab.pdfgen import canvas
 
 from app.config import settings
 from app.main import app
+from app.utils.json_utils import load_task
 
 
 def make_pdf(path: Path, lines: list[str]) -> None:
@@ -29,6 +31,9 @@ def configure_storage(tmp_path: Path) -> None:
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.document_extractor = "auto"
+    settings.ai_llm_base_url = ""
+    settings.ai_llm_api_key = ""
+    settings.ai_llm_model = ""
     settings.ensure_storage()
 
 
@@ -47,7 +52,7 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
                 "original_file": ("original.pdf", original_file, "application/pdf"),
                 "compare_file": ("compare.pdf", compare_file, "application/pdf"),
             },
-            data={"enable_ai_analysis": "true"},
+            data={"enable_ai_analysis": "false"},
         )
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -58,6 +63,7 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert payload["original_pdf_url"] == f"/api/compare/{task_id}/original"
     assert payload["compare_pdf_url"] == f"/api/compare/{task_id}/compare"
     assert payload["report_url"] == f"/api/compare/{task_id}/report"
+    assert payload["report_filename"].endswith("差异分析报告.pdf")
     assert payload["original_highlight_pdf_url"] == f"/api/compare/{task_id}/highlight/original"
 
     task_response = client.get(f"/api/compare/{task_id}")
@@ -66,6 +72,7 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert task_response.json()["extractor_used"] == "pymupdf"
     assert task_response.json()["original_pdf_url"] == f"/api/compare/{task_id}/original"
     assert task_response.json()["compare_pdf_url"] == f"/api/compare/{task_id}/compare"
+    assert task_response.json()["report_url"] == f"/api/compare/{task_id}/report"
     assert task_response.json()["compare_highlight_pdf_url"] == f"/api/compare/{task_id}/highlight/compare"
 
     diffs_response = client.get(f"/api/compare/{task_id}/diffs")
@@ -76,9 +83,20 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert "compare_evidence" in first_diff
     assert first_diff["original_evidence"][0]["method"] == "char_exact"
     assert first_diff["compare_evidence"][0]["method"] == "char_exact"
+    assert first_diff["ai_analysis"] is None
     report_response = client.get(f"/api/compare/{task_id}/report")
     assert report_response.status_code == 200
     assert not report_response.headers["content-disposition"].lower().startswith("inline")
+    assert "差异分析报告.pdf" in unquote(report_response.headers["content-disposition"])
+    refreshed_task = client.get(f"/api/compare/{task_id}").json()
+    assert refreshed_task["report_filename"].endswith("差异分析报告.pdf")
+    task = load_task(task_id)
+    assert task.report_ai_analysis is None
+    assert refreshed_task["report_ai_analysis"] is None
+    assert refreshed_task["original_page_screenshots"]
+    assert refreshed_task["compare_page_screenshots"]
+    refreshed_diff = client.get(f"/api/compare/{task_id}/diffs").json()["diffs"][0]
+    assert refreshed_diff["ai_analysis"] is None
     original_preview_response = client.get(f"/api/compare/{task_id}/original")
     compare_preview_response = client.get(f"/api/compare/{task_id}/compare")
     assert original_preview_response.status_code == 200

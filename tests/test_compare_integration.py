@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import fitz
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from app.config import settings
 from app.services.compare_service import CompareService
+from app.services.report_generator import build_report_filename
 
 
 def make_pdf(path: Path, lines: list[str]) -> None:
@@ -28,6 +30,9 @@ def configure_storage(tmp_path: Path) -> None:
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.document_extractor = "auto"
+    settings.ai_llm_base_url = ""
+    settings.ai_llm_api_key = ""
+    settings.ai_llm_model = ""
     settings.ensure_storage()
 
 
@@ -56,7 +61,8 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
         ],
     )
 
-    task = CompareService().compare(original, compare, enable_ai_analysis=True, task_id="TTEST000001")
+    service = CompareService()
+    task = service.compare(original, compare, enable_ai_analysis=False, task_id="TTEST000001")
 
     assert task.status == "COMPLETED"
     assert task.extractor_used == "pymupdf"
@@ -68,6 +74,21 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
     )
     assert Path(task.original_highlight_pdf_path).exists()
     assert Path(task.compare_highlight_pdf_path).exists()
-    assert Path(task.report_pdf_path).exists()
+    assert task.report_pdf_path == ""
     assert (settings.tasks_dir / "TTEST000001.json").exists()
     assert any(diff.original_screenshot or diff.compare_screenshot for diff in task.diffs)
+
+    task = service.ensure_report(task)
+
+    assert Path(task.report_pdf_path).exists()
+    assert task.report_ai_analysis is None
+    assert build_report_filename(task).endswith("差异分析报告.pdf")
+    assert task.original_page_screenshots
+    assert task.compare_page_screenshots
+    assert all(diff.ai_analysis is None for diff in task.diffs)
+    with fitz.open(task.report_pdf_path) as report_pdf:
+        report_text = "\n".join(page.get_text() for page in report_pdf)
+    assert "差异分析报告" in report_text
+    assert "审计统计" in report_text
+    assert "合同差异" in report_text
+    assert "修改" in report_text

@@ -9,6 +9,7 @@ from app.models import CompareTask
 from app.services.compare_service import CompareService
 from app.services.extractors import DocumentExtractionError
 from app.services.pdf_parser import PdfParseError
+from app.services.report_generator import build_report_filename
 from app.utils.file_utils import FileValidationError, assert_path_inside_storage, save_upload_file
 from app.utils.id_utils import generate_task_id
 from app.utils.json_utils import load_task, to_jsonable
@@ -20,7 +21,7 @@ router = APIRouter(prefix="/api/compare", tags=["compare"])
 async def compare_contracts(
     original_file: UploadFile = File(...),
     compare_file: UploadFile = File(...),
-    enable_ai_analysis: bool = Form(True),
+    enable_ai_analysis: bool = Form(False),
 ) -> dict:
     task_id = generate_task_id()
     try:
@@ -55,6 +56,7 @@ async def compare_contracts(
         "original_pdf_url": f"/api/compare/{task.task_id}/original",
         "compare_pdf_url": f"/api/compare/{task.task_id}/compare",
         "report_url": f"/api/compare/{task.task_id}/report",
+        "report_filename": build_report_filename(task),
         "original_highlight_pdf_url": f"/api/compare/{task.task_id}/highlight/original",
         "compare_highlight_pdf_url": f"/api/compare/{task.task_id}/highlight/compare",
         "errors": task.errors,
@@ -85,7 +87,11 @@ def get_diffs(task_id: str) -> dict:
 @router.get("/{task_id}/report")
 def download_report(task_id: str) -> FileResponse:
     task = _load_or_404(task_id)
-    return _file_response(task.report_pdf_path, "合同差异分析报告.pdf", "application/pdf")
+    try:
+        task = CompareService().ensure_report(task)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"审计报告生成失败: {exc}") from exc
+    return _file_response(task.report_pdf_path, build_report_filename(task), "application/pdf")
 
 
 @router.get("/{task_id}/original")
@@ -155,7 +161,8 @@ def _task_artifact_urls(task: CompareTask) -> dict[str, str]:
     return {
         "original_pdf_url": f"/api/compare/{task.task_id}/original" if task.original_pdf_path else "",
         "compare_pdf_url": f"/api/compare/{task.task_id}/compare" if task.compare_pdf_path else "",
-        "report_url": f"/api/compare/{task.task_id}/report" if task.report_pdf_path else "",
+        "report_url": f"/api/compare/{task.task_id}/report" if task.status == "COMPLETED" else "",
+        "report_filename": build_report_filename(task),
         "original_highlight_pdf_url": (
             f"/api/compare/{task.task_id}/highlight/original" if task.original_highlight_pdf_path else ""
         ),

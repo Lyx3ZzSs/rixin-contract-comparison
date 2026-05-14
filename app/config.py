@@ -31,6 +31,23 @@ class Settings:
     match_threshold: int = int(os.getenv("MATCH_THRESHOLD", "85"))
     report_font_path: str = os.getenv("REPORT_FONT_PATH", "")
 
+    ai_llm_base_url: str = os.getenv("AI_LLM_BASE_URL", "")
+    ai_llm_api_key: str = os.getenv("AI_LLM_API_KEY", "")
+    ai_llm_model: str = os.getenv("AI_LLM_MODEL", "")
+    ai_analysis_timeout_seconds: int = int(os.getenv("AI_ANALYSIS_TIMEOUT_SECONDS", "30"))
+    ai_system_prompt: str = os.getenv(
+        "AI_SYSTEM_PROMPT",
+        (
+            "你是一名资深合同审查专家，擅长识别合同版本差异中的法律、财务、履约和商业风险。"
+            "请基于原文、新文和差异摘要进行审计分析，输出严格 JSON，不要输出 Markdown。"
+            "JSON 字段必须包含 risk_level、risk_score、contract_element、change_summary、"
+            "risk_explanation、review_suggestion。risk_level 只能是 LOW、MEDIUM、HIGH，"
+            "risk_score 为 0 到 100 的整数。重点关注付款、金额、数量、期限、交付、验收、"
+            "质量、违约责任、解除、争议解决、保密、主体信息等合同风险。"
+        ),
+    )
+    report_max_screenshot_pages: int = int(os.getenv("REPORT_MAX_SCREENSHOT_PAGES", "10"))
+
     max_upload_size_mb: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "30"))
 
     @property

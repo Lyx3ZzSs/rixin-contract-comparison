@@ -18,6 +18,8 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
   const [isOriginalVisible, setIsOriginalVisible] = useState(true);
   const [isSyncScroll, setIsSyncScroll] = useState(true);
   const [isAuditPanelOpen, setIsAuditPanelOpen] = useState(false);
+  const [isReportDownloading, setIsReportDownloading] = useState(false);
+  const [reportDownloadError, setReportDownloadError] = useState("");
   const [diffFilter, setDiffFilter] = useState<DiffFilter>("ALL");
   const [zoom, setZoom] = useState(1);
   const [activeDiffId, setActiveDiffId] = useState("");
@@ -54,11 +56,8 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
     };
   }, [taskId]);
 
-  const linkedDiffs = useMemo(
-    () => diffs.filter((diff) => (diff.original_evidence?.length ?? 0) > 0 || (diff.compare_evidence?.length ?? 0) > 0),
-    [diffs],
-  );
   const auditItems = useMemo(() => buildAuditItems(diffs), [diffs]);
+  const axisMarkers = useMemo(() => buildAxisMarkers(auditItems), [auditItems]);
   const auditStats = useMemo(() => buildAuditStats(auditItems), [auditItems]);
   const filteredAuditItems = useMemo(
     () => (diffFilter === "ALL" ? auditItems : auditItems.filter((item) => item.type === diffFilter)),
@@ -84,19 +83,25 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
     originalViewerRef.current?.syncScrollFrom(ratio);
   }
 
-  function focusDiff(diffId: string) {
+  function focusDiff(diffId: string, auditItemId?: string) {
     const diff = diffs.find((item) => item.diff_id === diffId);
     if (!diff) {
       return;
     }
     setActiveDiffId(diffId);
+    setActiveAuditItemId((currentId) => {
+      if (auditItemId !== undefined) {
+        return auditItemId;
+      }
+      const isCurrentSameDiff = auditItems.some((item) => item.id === currentId && item.diffId === diffId);
+      return isCurrentSameDiff ? currentId : auditItems.find((item) => item.diffId === diffId)?.id ?? "";
+    });
     originalViewerRef.current?.scrollToDiff(diff);
     compareViewerRef.current?.scrollToDiff(diff);
   }
 
   function focusAuditItem(item: AuditChangeItem) {
-    setActiveAuditItemId(item.id);
-    focusDiff(item.diffId);
+    focusDiff(item.diffId, item.id);
   }
 
   async function downloadPdfFile(url: string, filename: string) {
@@ -116,6 +121,22 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
     link.click();
     link.remove();
     URL.revokeObjectURL(objectUrl);
+  }
+
+  async function handleDownloadReport() {
+    const reportUrl = task?.report_url;
+    if (!reportUrl || isReportDownloading) {
+      return;
+    }
+    setIsReportDownloading(true);
+    setReportDownloadError("");
+    try {
+      await downloadPdfFile(toApiUrl(reportUrl), task.report_filename || "合同差异分析报告.pdf");
+    } catch (err) {
+      setReportDownloadError(err instanceof Error ? err.message : "报告下载失败。");
+    } finally {
+      setIsReportDownloading(false);
+    }
   }
 
   if (isLoading) {
@@ -156,21 +177,38 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
             比对轴
           </h1>
 
-          <div className="pdf-file-meta compare-file-meta">
-            <span className="pdf-tag compare">新版</span>
-            <strong title={task.compare_filename}>{task.compare_filename || "新版文件.pdf"}</strong>
+          <div className="pdf-bar-actions">
             <button
-              className="pdf-open-link"
+              className="report-export-button"
               type="button"
-              aria-label="下载新版文件"
-              onClick={() =>
-                void downloadPdfFile(toApiUrl(task.compare_pdf_url), task.compare_filename || "新版文件.pdf").catch(console.error)
-              }
+              disabled={!task.report_url || isReportDownloading}
+              title={task.report_url ? "导出合同差异分析报告" : "报告尚未生成"}
+              onClick={() => void handleDownloadReport()}
             >
               <Download aria-hidden="true" />
+              {isReportDownloading ? "导出中..." : "导出报告"}
             </button>
+            <div className="pdf-file-meta compare-file-meta">
+              <span className="pdf-tag compare">新版</span>
+              <strong title={task.compare_filename}>{task.compare_filename || "新版文件.pdf"}</strong>
+              <button
+                className="pdf-open-link"
+                type="button"
+                aria-label="下载新版文件"
+                onClick={() =>
+                  void downloadPdfFile(toApiUrl(task.compare_pdf_url), task.compare_filename || "新版文件.pdf").catch(console.error)
+                }
+              >
+                <Download aria-hidden="true" />
+              </button>
+            </div>
           </div>
         </header>
+        {reportDownloadError && (
+          <p className="report-export-error" role="alert">
+            {reportDownloadError}
+          </p>
+        )}
 
         <section className="pdf-compare" aria-label="左右合同 PDF 预览">
           <PdfDocumentViewer
@@ -187,20 +225,20 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
             onActivateDiff={focusDiff}
           />
           <div className="compare-axis" aria-label="差异比对轴">
-            {linkedDiffs.length === 0 ? (
+            {axisMarkers.length === 0 ? (
               <>
-                <i className="axis-marker teal" />
-                <i className="axis-marker amber" />
+                <i className="axis-marker add" />
+                <i className="axis-marker modify" />
               </>
             ) : (
-              linkedDiffs.map((diff, index) => (
+              axisMarkers.map((marker) => (
                 <button
-                  key={diff.diff_id}
-                  className={diff.diff_id === activeDiffId ? "axis-marker active" : "axis-marker"}
+                  key={marker.id}
+                  className={marker.id === activeAuditItemId ? `axis-marker ${marker.type.toLowerCase()} active` : `axis-marker ${marker.type.toLowerCase()}`}
                   type="button"
-                  style={{ top: `${((index + 1) / (linkedDiffs.length + 1)) * 100}%` }}
-                  aria-label={`定位差异 ${diff.diff_id}`}
-                  onClick={() => focusDiff(diff.diff_id)}
+                  style={{ top: `${marker.positionPercent}%` }}
+                  aria-label={`定位${diffTypeLabel(marker.type)}改动 ${marker.id}`}
+                  onClick={() => focusDiff(marker.diffId, marker.id)}
                 />
               ))
             )}
@@ -274,12 +312,88 @@ interface DiffStats {
   modify: number;
 }
 
+interface AxisMarkerItem {
+  id: string;
+  diffId: string;
+  type: DiffType;
+  pageNo: number;
+  y0: number;
+  positionPercent: number;
+}
+
 interface AuditChangeItem {
   id: string;
   diffId: string;
   type: DiffType;
   title: string;
   summary: string;
+  pageNo: number | null;
+  y0: number | null;
+}
+
+interface EvidenceLocation {
+  pageNo: number;
+  y0: number;
+}
+
+const ESTIMATED_PAGE_HEIGHT = 842;
+const AXIS_MIN_TOP = 3;
+const AXIS_MAX_TOP = 97;
+const AXIS_MIN_GAP = 2.5;
+
+function buildAxisMarkers(items: AuditChangeItem[]): AxisMarkerItem[] {
+  const candidates = items
+    .filter((item) => item.pageNo !== null && item.y0 !== null)
+    .map((item) => ({
+      id: item.id,
+      diffId: item.diffId,
+      type: item.type,
+      pageNo: item.pageNo as number,
+      y0: item.y0 as number,
+    }))
+    .sort((left, right) => {
+      const positionDiff = left.pageNo - right.pageNo || left.y0 - right.y0;
+      if (positionDiff !== 0) {
+        return positionDiff;
+      }
+      return axisTypePriority(left.type) - axisTypePriority(right.type) || left.id.localeCompare(right.id);
+    });
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  const maxPageNo = Math.max(...candidates.map((candidate) => candidate.pageNo), 1);
+  const documentHeight = maxPageNo * ESTIMATED_PAGE_HEIGHT;
+  const markers = candidates.map((candidate) => {
+    const documentY = (candidate.pageNo - 1) * ESTIMATED_PAGE_HEIGHT + candidate.y0;
+    const rawPercent = documentHeight > 0 ? (documentY / documentHeight) * 100 : 50;
+    return { ...candidate, positionPercent: clampAxisPercent(rawPercent) };
+  });
+  return enforceAxisSpacing(markers);
+}
+
+function axisTypePriority(type: DiffType): number {
+  return { ADD: 1, MODIFY: 2, DELETE: 3 }[type];
+}
+
+function enforceAxisSpacing(markers: AxisMarkerItem[]): AxisMarkerItem[] {
+  const spaced: AxisMarkerItem[] = [];
+  for (const marker of markers) {
+    const previous = spaced.at(-1);
+    if (!previous) {
+      spaced.push(marker);
+    } else {
+      spaced.push({
+        ...marker,
+        positionPercent: Math.min(AXIS_MAX_TOP, Math.max(marker.positionPercent, previous.positionPercent + AXIS_MIN_GAP)),
+      });
+    }
+  }
+  return spaced;
+}
+
+function clampAxisPercent(value: number): number {
+  return Math.min(AXIS_MAX_TOP, Math.max(AXIS_MIN_TOP, Number(value.toFixed(2))));
 }
 
 function buildAuditItems(diffs: DiffItem[]): AuditChangeItem[] {
@@ -292,33 +406,45 @@ function auditItemsForDiff(diff: DiffItem): AuditChangeItem[] {
   const hasTypedEvidence = [...originalEvidence, ...compareEvidence].some((evidence) => Boolean(evidence.highlight_type));
 
   if (!hasTypedEvidence) {
-    return [auditItem(diff, diff.diff_type, diffSummary(diff))];
+    return [auditItem(diff, diff.diff_type, diffSummary(diff), [...originalEvidence, ...compareEvidence])];
   }
 
   const items: AuditChangeItem[] = [];
-  const addText = evidenceText(compareEvidence, "ADD");
-  const deleteText = evidenceText(originalEvidence, "DELETE");
-  const originalModifyText = evidenceText(originalEvidence, "MODIFY");
-  const compareModifyText = evidenceText(compareEvidence, "MODIFY");
-  if (addText) {
-    items.push(auditItem(diff, "ADD", addText));
+  const addEvidence = typedEvidence(compareEvidence, "ADD");
+  const deleteEvidence = typedEvidence(originalEvidence, "DELETE");
+  const originalModifyEvidence = typedEvidence(originalEvidence, "MODIFY");
+  const compareModifyEvidence = typedEvidence(compareEvidence, "MODIFY");
+  const addText = evidenceText(addEvidence);
+  const deleteText = evidenceText(deleteEvidence);
+  const originalModifyText = evidenceText(originalModifyEvidence);
+  const compareModifyText = evidenceText(compareModifyEvidence);
+  if (addEvidence.length > 0) {
+    items.push(auditItem(diff, "ADD", addText, addEvidence));
   }
-  if (deleteText) {
-    items.push(auditItem(diff, "DELETE", deleteText));
+  if (deleteEvidence.length > 0) {
+    items.push(auditItem(diff, "DELETE", deleteText, deleteEvidence));
   }
-  if (originalModifyText || compareModifyText) {
-    items.push(auditItem(diff, "MODIFY", modifySummary(originalModifyText, compareModifyText)));
+  if (originalModifyEvidence.length > 0 || compareModifyEvidence.length > 0) {
+    items.push(auditItem(diff, "MODIFY", modifySummary(originalModifyText, compareModifyText), [...originalModifyEvidence, ...compareModifyEvidence]));
   }
-  return items;
+  return items.length > 0 ? items : [auditItem(diff, diff.diff_type, diffSummary(diff), [...originalEvidence, ...compareEvidence])];
 }
 
-function auditItem(diff: DiffItem, type: DiffType, summary: string): AuditChangeItem {
+function auditItem(
+  diff: DiffItem,
+  type: DiffType,
+  summary: string,
+  evidenceList: NonNullable<DiffItem["compare_evidence"]>,
+): AuditChangeItem {
+  const location = evidenceLocation(evidenceList);
   return {
     id: `${diff.diff_id}:${type}`,
     diffId: diff.diff_id,
     type,
     title: diff.title || diff.clause_no || diff.diff_id,
     summary: compactText(summary || diffSummary(diff)),
+    pageNo: location?.pageNo ?? null,
+    y0: location?.y0 ?? null,
   };
 }
 
@@ -340,8 +466,25 @@ function buildAuditStats(items: AuditChangeItem[]): DiffStats {
   return stats;
 }
 
-function evidenceText(evidenceList: NonNullable<DiffItem["compare_evidence"]>, type: DiffType): string {
-  return compactText(evidenceList.filter((evidence) => evidence.highlight_type === type).map((evidence) => evidence.text).join(" "));
+function typedEvidence(evidenceList: NonNullable<DiffItem["compare_evidence"]>, type: DiffType): NonNullable<DiffItem["compare_evidence"]> {
+  return evidenceList.filter((evidence) => evidence.highlight_type === type);
+}
+
+function evidenceText(evidenceList: NonNullable<DiffItem["compare_evidence"]>): string {
+  return compactText(evidenceList.map((evidence) => evidence.text).join(" "));
+}
+
+function evidenceLocation(evidenceList: NonNullable<DiffItem["compare_evidence"]>): EvidenceLocation | null {
+  const evidence = evidenceList
+    .filter((item) => item.page_no && item.bbox)
+    .sort((left, right) => left.page_no - right.page_no || left.bbox.y0 - right.bbox.y0)[0];
+  if (!evidence) {
+    return null;
+  }
+  return {
+    pageNo: evidence.page_no,
+    y0: evidence.bbox.y0,
+  };
 }
 
 function modifySummary(originalText: string, compareText: string): string {

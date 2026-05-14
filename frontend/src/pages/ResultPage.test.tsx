@@ -54,6 +54,7 @@ const mockTask: CompareTask = {
   low_risk_count: 1,
   ai_summary: "付款期限延长，需关注回款风险。",
   report_url: "/api/compare/task-1/report",
+  report_filename: "销售合同差异分析报告.pdf",
   original_pdf_url: "/api/compare/task-1/original",
   compare_pdf_url: "/api/compare/task-1/compare",
   original_highlight_pdf_url: "/api/compare/task-1/highlight/original",
@@ -126,9 +127,9 @@ const mockDiffs: DiffItem[] = [
     compare_evidence: [
       {
         page_no: 1,
-        bbox: { x0: 72, y0: 180, x1: 240, y1: 206 },
+        bbox: { x0: 72, y0: 60, x1: 240, y1: 86 },
         method: "block",
-        text: "invoice",
+        text: "",
         highlight_type: "ADD",
       },
     ],
@@ -169,9 +170,10 @@ describe("ResultPage", () => {
     expect(screen.getByLabelText("新版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/highlight/compare");
     expect(screen.getByRole("button", { name: "下载原版文件" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "下载新版文件" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导出报告" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "缩小预览" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "放大预览" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "定位差异 diff-1" })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "定位新增改动 diff-1:ADD" })).toBeInTheDocument();
     expect(container.querySelector(".audit-panel")).toHaveClass("is-closed");
     expect(container.querySelector(".audit-panel")).toHaveAttribute("aria-hidden", "true");
     expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument();
@@ -190,6 +192,54 @@ describe("ResultPage", () => {
     await user.click(screen.getByRole("button", { name: "放大预览" }));
 
     expect(screen.getAllByText("110%").length).toBeGreaterThan(0);
+  });
+
+  it("downloads the audit analysis report from the task report url", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async () => new Response(new Blob(["pdf"], { type: "application/pdf" }), { status: 200 }));
+    const createObjectUrl = vi.fn(() => "blob:report");
+    const revokeObjectUrl = vi.fn();
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      expect(this.download).toBe("销售合同差异分析报告.pdf");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectUrl, configurable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectUrl, configurable: true });
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "导出报告" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "导出报告" }));
+
+    expect(fetchMock).toHaveBeenCalledWith("http://api.test/api/compare/task-1/report");
+    expect(createObjectUrl).toHaveBeenCalled();
+    expect(anchorClick).toHaveBeenCalled();
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:report");
+  });
+
+  it("orders comparison axis markers by audit item position and colors them by audit type", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "定位新增改动 diff-2:ADD" })).toBeInTheDocument());
+
+    const topAddMarker = screen.getByRole("button", { name: "定位新增改动 diff-2:ADD" });
+    const mixedAddMarker = screen.getByRole("button", { name: "定位新增改动 diff-1:ADD" });
+    const mixedModifyMarker = screen.getByRole("button", { name: "定位修改改动 diff-1:MODIFY" });
+    const deleteMarker = screen.getByRole("button", { name: "定位删除改动 diff-3:DELETE" });
+    const markers = Array.from(container.querySelectorAll(".compare-axis .axis-marker"));
+
+    expect(markers).toHaveLength(4);
+    expect(topAddMarker).toHaveClass("add");
+    expect(mixedAddMarker).toHaveClass("add");
+    expect(mixedModifyMarker).toHaveClass("modify");
+    expect(deleteMarker).toHaveClass("delete");
+    expect(parseFloat(topAddMarker.style.top)).toBeLessThan(parseFloat(mixedAddMarker.style.top));
+    expect(parseFloat(mixedAddMarker.style.top)).toBeLessThan(parseFloat(mixedModifyMarker.style.top));
+    expect(parseFloat(mixedModifyMarker.style.top)).toBeLessThan(parseFloat(deleteMarker.style.top));
+
+    await user.click(mixedModifyMarker);
+
+    expect(mixedModifyMarker).toHaveClass("active");
   });
 
   it("filters audit panel items and marks the selected diff", async () => {

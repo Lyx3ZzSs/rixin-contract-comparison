@@ -87,7 +87,20 @@ PADDLEOCR_MAX_WAIT_SECONDS=300
 SAVE_OCR_RAW_RESULT=true
 ```
 
-OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。当前系统不使用大模型直接判断差异，也不启用大模型总结；差异结果来自程序化条款匹配和结构化 diff。
+OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
+
+接入 OpenAI-compatible 合同风险分析模型时配置：
+
+```bash
+AI_LLM_BASE_URL=https://api.example.com/v1
+AI_LLM_API_KEY=your_api_key
+AI_LLM_MODEL=your-model
+AI_ANALYSIS_TIMEOUT_SECONDS=30
+AI_SYSTEM_PROMPT=你是一名资深合同审查专家...
+REPORT_MAX_SCREENSHOT_PAGES=10
+```
+
+点击导出报告或请求 `/api/compare/{task_id}/report` 时，系统不会调用大模型分析，会生成包含基础信息、审计统计改动点表格和“合同差异”高亮截图的差异分析报告。
 
 ## API 示例
 
@@ -95,7 +108,7 @@ OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量�
 curl -X POST "http://127.0.0.1:8000/api/compare" \
   -F "original_file=@original.pdf" \
   -F "compare_file=@compare.pdf" \
-  -F "enable_ai_analysis=true"
+  -F "enable_ai_analysis=false"
 ```
 
 响应包含：
@@ -104,6 +117,7 @@ curl -X POST "http://127.0.0.1:8000/api/compare" \
 - `diff_count`
 - `high_risk_count`
 - `report_url`
+- `report_filename`
 - `original_highlight_pdf_url`
 - `compare_highlight_pdf_url`
 

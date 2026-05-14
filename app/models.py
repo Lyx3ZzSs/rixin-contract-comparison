@@ -111,6 +111,22 @@ class AIAnalysis(BaseModel):
         return value
 
 
+class ReportAIAnalysis(BaseModel):
+    risk_level: RiskLevel = "LOW"
+    summary: str = "未发现重大风险。"
+    major_risks: list[str] = Field(default_factory=list)
+    review_suggestions: list[str] = Field(default_factory=list)
+    raw_response: dict[str, Any] | None = None
+
+    @field_validator("risk_level", mode="before")
+    @classmethod
+    def normalize_risk_level(cls, value: str) -> str:
+        value = str(value).upper()
+        if value not in {"LOW", "MEDIUM", "HIGH"}:
+            raise ValueError("risk_level must be LOW, MEDIUM, or HIGH")
+        return value
+
+
 class DiffItem(BaseModel):
     diff_id: str
     diff_type: DiffType
@@ -152,5 +168,8 @@ class CompareTask(BaseModel):
     medium_risk_count: int = 0
     low_risk_count: int = 0
     ai_summary: str = ""
+    report_ai_analysis: ReportAIAnalysis | None = None
+    original_page_screenshots: list[str] = Field(default_factory=list)
+    compare_page_screenshots: list[str] = Field(default_factory=list)
     diffs: list[DiffItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

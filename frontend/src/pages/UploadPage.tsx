@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useMemo, useRef, useState } from "react";
 
 import { compareContracts } from "../lib/api";
 
@@ -10,7 +10,7 @@ export function UploadPage({ onTaskCreated }: UploadPageProps) {
   const [originalFile, setOriginalFile] = useState<File | null>(null);
   const [compareFile, setCompareFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [message, setMessage] = useState("等待上传两份 PDF 合同");
+  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   const canSubmit = useMemo(
@@ -29,7 +29,7 @@ export function UploadPage({ onTaskCreated }: UploadPageProps) {
     setError("");
     setMessage("正在上传并执行合同差异审查...");
     try {
-      const payload = await compareContracts(originalFile, compareFile, true);
+      const payload = await compareContracts(originalFile, compareFile, false);
       setMessage(`审查完成，识别 ${payload.diff_count} 项差异。`);
       onTaskCreated(payload.task_id);
     } catch (err) {
@@ -73,6 +73,7 @@ export function UploadPage({ onTaskCreated }: UploadPageProps) {
       <form className="compare-card" onSubmit={handleSubmit}>
         <div className="compare-card-head">
           <h2>原版文件</h2>
+          <span aria-hidden="true" />
           <h2>新版文件</h2>
         </div>
 
@@ -102,10 +103,6 @@ export function UploadPage({ onTaskCreated }: UploadPageProps) {
         </button>
         <div className="compare-actions" aria-label="辅助操作">
           <button type="button">使用示例</button>
-          <span />
-          <button type="button" disabled>
-            排除对比项
-          </button>
         </div>
         <p className={error ? "status-line error" : "status-line"} role="status">
           {error || ""}
@@ -124,18 +121,59 @@ interface FileInputProps {
 }
 
 function FileInput({ id, label, helper, file, onChange }: FileInputProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    onChange(event.target.files?.[0] ?? null);
+  }
+
+  function handleChooseFile() {
+    inputRef.current?.click();
+  }
+
+  function handleRemoveFile() {
+    if (inputRef.current) {
+      inputRef.current.value = "";
+    }
+    onChange(null);
+  }
+
+  const input = (
+    <input
+      aria-label={label}
+      id={id}
+      ref={inputRef}
+      type="file"
+      accept="application/pdf,.pdf"
+      onChange={handleFileChange}
+    />
+  );
+
+  if (file) {
+    return (
+      <div className="compare-file-zone has-file">
+        {input}
+        <span className="file-success-mark" aria-hidden="true" />
+        <span className="file-zone-title">{label}上传成功</span>
+        <span className="file-upload-name">{file.name}</span>
+        <div className="file-upload-actions">
+          <button type="button" className="file-reupload-button" onClick={handleChooseFile} aria-label={`重新上传${label}`}>
+            重新上传
+          </button>
+          <button type="button" className="file-remove-button" onClick={handleRemoveFile} aria-label={`删除${label}`}>
+            删除
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <label className={file ? "compare-file-zone has-file" : "compare-file-zone"} htmlFor={id}>
+    <label className="compare-file-zone" htmlFor={id}>
       <span className="file-ghost" aria-hidden="true" />
-      <span className="file-zone-title">{file ? file.name : "点击选择 PDF 文件"}</span>
+      <span className="file-zone-title">点击选择 PDF 文件</span>
       <span className="file-zone-helper">{helper}</span>
-      <input
-        aria-label={label}
-        id={id}
-        type="file"
-        accept="application/pdf,.pdf"
-        onChange={(event) => onChange(event.target.files?.[0] ?? null)}
-      />
+      {input}
     </label>
   );
 }
