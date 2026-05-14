@@ -194,6 +194,24 @@ describe("ResultPage", () => {
     expect(screen.getAllByText("110%").length).toBeGreaterThan(0);
   });
 
+  it("expands compare preview layout when original PDF is hidden", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument());
+    expect(container.querySelector(".pdf-compare")).toHaveClass("original-visible");
+
+    await user.click(screen.getByRole("button", { name: "隐藏原版" }));
+
+    expect(container.querySelector(".pdf-compare")).toHaveClass("original-hidden");
+    expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "显示原版" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "显示原版" }));
+
+    expect(container.querySelector(".pdf-compare")).toHaveClass("original-visible");
+  });
+
   it("downloads the audit analysis report from the task report url", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn(async () => new Response(new Blob(["pdf"], { type: "application/pdf" }), { status: 200 }));

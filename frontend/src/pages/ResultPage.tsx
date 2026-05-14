@@ -80,6 +80,9 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
       compareViewerRef.current?.syncScrollFrom(ratio);
       return;
     }
+    if (!isOriginalVisible) {
+      return;
+    }
     originalViewerRef.current?.syncScrollFrom(ratio);
   }
 
@@ -96,7 +99,9 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
       const isCurrentSameDiff = auditItems.some((item) => item.id === currentId && item.diffId === diffId);
       return isCurrentSameDiff ? currentId : auditItems.find((item) => item.diffId === diffId)?.id ?? "";
     });
-    originalViewerRef.current?.scrollToDiff(diff);
+    if (isOriginalVisible) {
+      originalViewerRef.current?.scrollToDiff(diff);
+    }
     compareViewerRef.current?.scrollToDiff(diff);
   }
 
@@ -210,7 +215,10 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
           </p>
         )}
 
-        <section className="pdf-compare" aria-label="左右合同 PDF 预览">
+        <section
+          className={isOriginalVisible ? "pdf-compare original-visible" : "pdf-compare original-hidden"}
+          aria-label="左右合同 PDF 预览"
+        >
           <PdfDocumentViewer
             ref={originalViewerRef}
             side="original"
@@ -219,7 +227,6 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
             diffs={diffs}
             zoom={zoom}
             activeDiffId={activeDiffId}
-            hidden={!isOriginalVisible}
             syncEnabled={isSyncScroll}
             onScrollRatio={handleScrollRatio}
             onActivateDiff={focusDiff}
