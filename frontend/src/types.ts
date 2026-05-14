@@ -46,6 +46,7 @@ export interface EvidenceBox {
   bbox: BBox;
   method: string;
   text: string;
+  highlight_type?: DiffType;
 }
 
 export interface DiffItem {

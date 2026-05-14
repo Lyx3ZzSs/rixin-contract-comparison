@@ -21,6 +21,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
   const [diffFilter, setDiffFilter] = useState<DiffFilter>("ALL");
   const [zoom, setZoom] = useState(1);
   const [activeDiffId, setActiveDiffId] = useState("");
+  const [activeAuditItemId, setActiveAuditItemId] = useState("");
   const originalViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
   const compareViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
 
@@ -57,10 +58,11 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
     () => diffs.filter((diff) => (diff.original_evidence?.length ?? 0) > 0 || (diff.compare_evidence?.length ?? 0) > 0),
     [diffs],
   );
-  const diffStats = useMemo(() => buildDiffStats(diffs), [diffs]);
-  const filteredDiffs = useMemo(
-    () => (diffFilter === "ALL" ? diffs : diffs.filter((diff) => diff.diff_type === diffFilter)),
-    [diffFilter, diffs],
+  const auditItems = useMemo(() => buildAuditItems(diffs), [diffs]);
+  const auditStats = useMemo(() => buildAuditStats(auditItems), [auditItems]);
+  const filteredAuditItems = useMemo(
+    () => (diffFilter === "ALL" ? auditItems : auditItems.filter((item) => item.type === diffFilter)),
+    [auditItems, diffFilter],
   );
 
   function handleZoomOut() {
@@ -90,6 +92,11 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
     setActiveDiffId(diffId);
     originalViewerRef.current?.scrollToDiff(diff);
     compareViewerRef.current?.scrollToDiff(diff);
+  }
+
+  function focusAuditItem(item: AuditChangeItem) {
+    setActiveAuditItemId(item.id);
+    focusDiff(item.diffId);
   }
 
   async function downloadPdfFile(url: string, filename: string) {
@@ -232,14 +239,14 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
           <strong>同屏滚动</strong>
         </div>
         <AuditPanel
-          activeDiffId={activeDiffId}
-          diffs={filteredDiffs}
+          activeAuditItemId={activeAuditItemId}
           filter={diffFilter}
+          items={filteredAuditItems}
           isOpen={isAuditPanelOpen}
-          stats={diffStats}
+          stats={auditStats}
           onClose={() => setIsAuditPanelOpen(false)}
           onFilterChange={setDiffFilter}
-          onSelectDiff={focusDiff}
+          onSelectItem={focusAuditItem}
         />
         <button
           className="audit-panel-rail"
@@ -267,41 +274,101 @@ interface DiffStats {
   modify: number;
 }
 
-function buildDiffStats(diffs: DiffItem[]): DiffStats {
-  return diffs.reduce(
-    (stats, diff) => {
-      stats.all += 1;
-      if (diff.diff_type === "ADD") {
-        stats.add += 1;
-      } else if (diff.diff_type === "DELETE") {
-        stats.delete += 1;
-      } else if (diff.diff_type === "MODIFY") {
-        stats.modify += 1;
+interface AuditChangeItem {
+  id: string;
+  diffId: string;
+  type: DiffType;
+  title: string;
+  summary: string;
+}
+
+function buildAuditItems(diffs: DiffItem[]): AuditChangeItem[] {
+  return diffs.flatMap((diff) => auditItemsForDiff(diff));
+}
+
+function auditItemsForDiff(diff: DiffItem): AuditChangeItem[] {
+  const originalEvidence = diff.original_evidence ?? [];
+  const compareEvidence = diff.compare_evidence ?? [];
+  const hasTypedEvidence = [...originalEvidence, ...compareEvidence].some((evidence) => Boolean(evidence.highlight_type));
+
+  if (!hasTypedEvidence) {
+    return [auditItem(diff, diff.diff_type, diffSummary(diff))];
+  }
+
+  const items: AuditChangeItem[] = [];
+  const addText = evidenceText(compareEvidence, "ADD");
+  const deleteText = evidenceText(originalEvidence, "DELETE");
+  const originalModifyText = evidenceText(originalEvidence, "MODIFY");
+  const compareModifyText = evidenceText(compareEvidence, "MODIFY");
+  if (addText) {
+    items.push(auditItem(diff, "ADD", addText));
+  }
+  if (deleteText) {
+    items.push(auditItem(diff, "DELETE", deleteText));
+  }
+  if (originalModifyText || compareModifyText) {
+    items.push(auditItem(diff, "MODIFY", modifySummary(originalModifyText, compareModifyText)));
+  }
+  return items;
+}
+
+function auditItem(diff: DiffItem, type: DiffType, summary: string): AuditChangeItem {
+  return {
+    id: `${diff.diff_id}:${type}`,
+    diffId: diff.diff_id,
+    type,
+    title: diff.title || diff.clause_no || diff.diff_id,
+    summary: compactText(summary || diffSummary(diff)),
+  };
+}
+
+function buildAuditStats(items: AuditChangeItem[]): DiffStats {
+  const stats = items.reduce(
+    (nextStats, item) => {
+      if (item.type === "ADD") {
+        nextStats.add += 1;
+      } else if (item.type === "DELETE") {
+        nextStats.delete += 1;
+      } else if (item.type === "MODIFY") {
+        nextStats.modify += 1;
       }
-      return stats;
+      return nextStats;
     },
     { all: 0, add: 0, delete: 0, modify: 0 },
   );
+  stats.all = items.length;
+  return stats;
+}
+
+function evidenceText(evidenceList: NonNullable<DiffItem["compare_evidence"]>, type: DiffType): string {
+  return compactText(evidenceList.filter((evidence) => evidence.highlight_type === type).map((evidence) => evidence.text).join(" "));
+}
+
+function modifySummary(originalText: string, compareText: string): string {
+  if (originalText && compareText) {
+    return `原文：${originalText} 修改后：${compareText}`;
+  }
+  return originalText || compareText;
 }
 
 function AuditPanel({
-  activeDiffId,
-  diffs,
+  activeAuditItemId,
   filter,
+  items,
   isOpen,
   stats,
   onClose,
   onFilterChange,
-  onSelectDiff,
+  onSelectItem,
 }: {
-  activeDiffId: string;
-  diffs: DiffItem[];
+  activeAuditItemId: string;
   filter: DiffFilter;
+  items: AuditChangeItem[];
   isOpen: boolean;
   stats: DiffStats;
   onClose: () => void;
   onFilterChange: (filter: DiffFilter) => void;
-  onSelectDiff: (diffId: string) => void;
+  onSelectItem: (item: AuditChangeItem) => void;
 }) {
   const statItems: Array<{ filter: DiffFilter; label: string; value: number }> = [
     { filter: "ALL", label: "全部", value: stats.all },
@@ -341,31 +408,52 @@ function AuditPanel({
       </div>
 
       <div className="audit-filter-row">
-        <strong>共 {diffs.length} 个改动点</strong>
+        <strong>共 {items.length} 个改动点</strong>
         <span>{filter === "ALL" ? "全部类型" : diffTypeLabel(filter)}</span>
       </div>
 
       <div className="audit-diff-list">
-        {diffs.length === 0 ? (
+        {items.length === 0 ? (
           <div className="audit-empty">未发现改动点。</div>
         ) : (
-          diffs.map((diff) => (
-            <button
-              key={diff.diff_id}
-              className={diff.diff_id === activeDiffId ? "audit-diff-card active" : "audit-diff-card"}
-              type="button"
-              aria-label={`审计定位差异 ${diff.diff_id}`}
+          items.map((item) => (
+            <AuditDiffCard
+              key={item.id}
+              active={item.id === activeAuditItemId}
+              item={item}
               tabIndex={hiddenTabIndex}
-              onClick={() => onSelectDiff(diff.diff_id)}
-            >
-              <span className={`audit-type-badge ${diff.diff_type.toLowerCase()}`}>{diffTypeLabel(diff.diff_type)}</span>
-              <strong>{diff.title || diff.clause_no || diff.diff_id}</strong>
-              <span>{diffSummary(diff)}</span>
-            </button>
+              onSelect={onSelectItem}
+            />
           ))
         )}
       </div>
     </aside>
+  );
+}
+
+function AuditDiffCard({
+  active,
+  item,
+  tabIndex,
+  onSelect,
+}: {
+  active: boolean;
+  item: AuditChangeItem;
+  tabIndex: number | undefined;
+  onSelect: (item: AuditChangeItem) => void;
+}) {
+  return (
+    <button
+      className={active ? "audit-diff-card active" : "audit-diff-card"}
+      type="button"
+      aria-label={`审计定位改动 ${item.id}`}
+      tabIndex={tabIndex}
+      onClick={() => onSelect(item)}
+    >
+      <span className={`audit-type-badge ${item.type.toLowerCase()}`}>{diffTypeLabel(item.type)}</span>
+      <strong>{item.title}</strong>
+      <span>{item.summary}</span>
+    </button>
   );
 }
 

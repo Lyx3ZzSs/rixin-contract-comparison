@@ -76,8 +76,31 @@ const mockDiffs: DiffItem[] = [
     compare_screenshot: "",
     original_screenshot_url: "/api/compare/task-1/screenshot/original.png",
     compare_screenshot_url: "/api/compare/task-1/screenshot/compare.png",
-    original_evidence: [{ page_no: 1, bbox: { x0: 72, y0: 120, x1: 240, y1: 146 }, method: "block", text: "30 days" }],
-    compare_evidence: [{ page_no: 1, bbox: { x0: 72, y0: 120, x1: 240, y1: 146 }, method: "block", text: "45 days" }],
+    original_evidence: [
+      {
+        page_no: 1,
+        bbox: { x0: 72, y0: 120, x1: 240, y1: 146 },
+        method: "block",
+        text: "30 days",
+        highlight_type: "MODIFY",
+      },
+    ],
+    compare_evidence: [
+      {
+        page_no: 1,
+        bbox: { x0: 72, y0: 120, x1: 240, y1: 146 },
+        method: "block",
+        text: "45 days",
+        highlight_type: "MODIFY",
+      },
+      {
+        page_no: 1,
+        bbox: { x0: 250, y0: 120, x1: 340, y1: 146 },
+        method: "block",
+        text: "新增付款说明",
+        highlight_type: "ADD",
+      },
+    ],
     ai_analysis: {
       risk_level: "HIGH",
       risk_score: 86,
@@ -100,7 +123,15 @@ const mockDiffs: DiffItem[] = [
     original_screenshot: "",
     compare_screenshot: "",
     original_evidence: [],
-    compare_evidence: [{ page_no: 1, bbox: { x0: 72, y0: 180, x1: 240, y1: 206 }, method: "block", text: "invoice" }],
+    compare_evidence: [
+      {
+        page_no: 1,
+        bbox: { x0: 72, y0: 180, x1: 240, y1: 206 },
+        method: "block",
+        text: "invoice",
+        highlight_type: "ADD",
+      },
+    ],
     ai_analysis: null,
   },
   {
@@ -115,7 +146,15 @@ const mockDiffs: DiffItem[] = [
     readable_change: "删除旧质保约定。",
     original_screenshot: "",
     compare_screenshot: "",
-    original_evidence: [{ page_no: 1, bbox: { x0: 72, y0: 240, x1: 240, y1: 266 }, method: "block", text: "12 months" }],
+    original_evidence: [
+      {
+        page_no: 1,
+        bbox: { x0: 72, y0: 240, x1: 240, y1: 266 },
+        method: "block",
+        text: "12 months",
+        highlight_type: "DELETE",
+      },
+    ],
     compare_evidence: [],
     ai_analysis: null,
   },
@@ -160,20 +199,31 @@ describe("ResultPage", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
 
-    expect(screen.getByRole("button", { name: "筛选全部差异" })).toHaveTextContent("3");
+    expect(screen.getByRole("button", { name: "筛选全部差异" })).toHaveTextContent("4");
     expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("1");
-    expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("2");
     expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
     await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
 
-    expect(screen.getByRole("button", { name: "审计定位差异 diff-2" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "审计定位差异 diff-1" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "审计定位差异 diff-3" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:ADD" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "审计定位改动 diff-2:ADD" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "审计定位改动 diff-3:DELETE" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:ADD" })).toHaveTextContent("新增");
 
-    const addCard = screen.getByRole("button", { name: "审计定位差异 diff-2" });
+    const addCard = screen.getByRole("button", { name: "审计定位改动 diff-2:ADD" });
     await user.click(addCard);
 
     expect(addCard).toHaveClass("active");
+
+    await user.click(screen.getByRole("button", { name: "筛选修改差异" }));
+
+    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:MODIFY" })).toHaveTextContent("修改");
+    expect(screen.queryByRole("button", { name: "审计定位改动 diff-2:ADD" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "筛选删除差异" }));
+
+    expect(screen.getByRole("button", { name: "审计定位改动 diff-3:DELETE" })).toHaveTextContent("删除");
+    expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
   });
 
   it("collapses and reopens the audit panel", async () => {
