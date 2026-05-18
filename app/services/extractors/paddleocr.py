@@ -48,7 +48,7 @@ class PaddleOCRExtractor:
             json_url = self._json_result_url(result_payload)
             if not json_url:
                 return result_payload
-            result_response = client.get(json_url, headers=headers)
+            result_response = client.get(json_url)
             result_response.raise_for_status()
             downloaded = self._parse_result_text(result_response.text)
             return {"job": job_payload, "result": result_payload, "downloaded": downloaded}
@@ -61,7 +61,12 @@ class PaddleOCRExtractor:
             response = client.get(job_url, headers=headers)
             response.raise_for_status()
             last_payload = response.json()
-            status = str(self._first_value(last_payload, "state", "status", "jobStatus") or "").lower()
+            data = last_payload.get("data") if isinstance(last_payload.get("data"), dict) else {}
+            status = str(
+                self._first_value(last_payload, "state", "status", "jobStatus")
+                or self._first_value(data, "state", "status", "jobStatus")
+                or ""
+            ).lower()
             if status in {"done", "success", "succeeded", "completed", "finished"}:
                 return last_payload
             if status in {"failed", "fail", "error", "cancelled", "canceled"}:
@@ -138,6 +143,8 @@ class PaddleOCRExtractor:
 
     def _page_results(self, payload: Any) -> list[Any]:
         candidates = payload.get("downloaded") if isinstance(payload, dict) else payload
+        if candidates is None:
+            candidates = payload
         if isinstance(candidates, dict):
             for key in ("pages", "ocrResults", "ocr_results", "results"):
                 value = candidates.get(key)
