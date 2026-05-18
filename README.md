@@ -66,28 +66,29 @@ VITE_API_BASE_URL=http://127.0.0.1:8001
 
 ## 文档识别配置
 
-默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本时再降级到 PaddleOCR。
+默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本时再降级到本地 PaddleOCR SDK。
 
 ```bash
 DOCUMENT_EXTRACTOR=auto
 PYMUPDF_MIN_TEXT_CHARS=1
 ```
 
-也可以显式指定 `pymupdf` 或 `paddleocr`。
+也可以显式指定 `pymupdf` 或 `paddleocr`。`paddleocr` 使用本地 `from paddleocr import PaddleOCR`，不再调用远端 job API。
 
-接入 PaddleOCR 时配置：
+接入本地 PP-OCRv5 时配置：
 
 ```bash
-PADDLEOCR_ACCESS_TOKEN=your_token
-PADDLEOCR_MODEL=PP-OCRv5
-PADDLEOCR_JOB_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
-PADDLEOCR_TIMEOUT_SECONDS=120
-PADDLEOCR_POLL_INTERVAL_SECONDS=2
-PADDLEOCR_MAX_WAIT_SECONDS=300
+PADDLEOCR_VERSION=PP-OCRv5
+PADDLEOCR_DEVICE=cpu
+PADDLEOCR_RETURN_WORD_BOX=true
+PADDLEOCR_USE_DOC_ORIENTATION_CLASSIFY=false
+PADDLEOCR_USE_DOC_UNWARPING=false
+PADDLEOCR_USE_TEXTLINE_ORIENTATION=false
+PADDLEOCR_TEXT_REC_SCORE_THRESH=0.0
 SAVE_OCR_RAW_RESULT=true
 ```
 
-OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
+OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。开启 `PADDLEOCR_RETURN_WORD_BOX=true` 后，系统会把 PaddleOCR 返回的 `text_word_region`/`text_word_boxes` 转为字符或词级坐标，用于更细粒度的差异定位。差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
 
 接入 OpenAI-compatible 合同风险分析模型时配置：
 

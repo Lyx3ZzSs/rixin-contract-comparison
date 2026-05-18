@@ -8,6 +8,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _env_bool(name: str, default: str) -> bool:
+    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
+
+
 class Settings:
     base_dir: Path = Path(__file__).resolve().parents[1]
     storage_dir: Path = Path(os.getenv("STORAGE_DIR", base_dir / "storage"))
@@ -20,13 +24,26 @@ class Settings:
 
     document_extractor: str = os.getenv("DOCUMENT_EXTRACTOR", "auto").lower()
     pymupdf_min_text_chars: int = int(os.getenv("PYMUPDF_MIN_TEXT_CHARS", "1"))
-    paddleocr_access_token: str = os.getenv("PADDLEOCR_ACCESS_TOKEN", "")
-    paddleocr_model: str = os.getenv("PADDLEOCR_MODEL", "PP-OCRv5")
-    paddleocr_job_url: str = os.getenv("PADDLEOCR_JOB_URL", "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs")
-    paddleocr_timeout_seconds: int = int(os.getenv("PADDLEOCR_TIMEOUT_SECONDS", "120"))
-    paddleocr_poll_interval_seconds: float = float(os.getenv("PADDLEOCR_POLL_INTERVAL_SECONDS", "2"))
-    paddleocr_max_wait_seconds: int = int(os.getenv("PADDLEOCR_MAX_WAIT_SECONDS", "300"))
-    save_ocr_raw_result: bool = os.getenv("SAVE_OCR_RAW_RESULT", "true").lower() in {"1", "true", "yes", "on"}
+    paddleocr_version: str = os.getenv("PADDLEOCR_VERSION", os.getenv("PADDLEOCR_MODEL", "PP-OCRv5"))
+    paddleocr_device: str = os.getenv("PADDLEOCR_DEVICE", "cpu")
+    paddleocr_return_word_box: bool = _env_bool("PADDLEOCR_RETURN_WORD_BOX", "true")
+    paddleocr_text_rec_score_thresh: float = float(os.getenv("PADDLEOCR_TEXT_REC_SCORE_THRESH", "0.0"))
+    paddleocr_use_doc_orientation_classify: bool = _env_bool("PADDLEOCR_USE_DOC_ORIENTATION_CLASSIFY", "false")
+    paddleocr_use_doc_unwarping: bool = _env_bool("PADDLEOCR_USE_DOC_UNWARPING", "false")
+    paddleocr_use_textline_orientation: bool = _env_bool("PADDLEOCR_USE_TEXTLINE_ORIENTATION", "false")
+    save_ocr_raw_result: bool = _env_bool("SAVE_OCR_RAW_RESULT", "true")
+
+    paddleocr_vl_url: str = os.getenv("PADDLEOCR_VL_URL", "")
+    paddleocr_vl_token: str = os.getenv("PADDLEOCR_VL_TOKEN", "")
+    paddleocr_vl_model: str = os.getenv("PADDLEOCR_VL_MODEL", "PaddleOCR-VL-1.5")
+    paddleocr_vl_api_mode: str = os.getenv("PADDLEOCR_VL_API_MODE", "auto").lower()
+    paddleocr_vl_timeout_seconds: int = int(os.getenv("PADDLEOCR_VL_TIMEOUT_SECONDS", "60"))
+    paddleocr_vl_poll_interval_seconds: float = float(os.getenv("PADDLEOCR_VL_POLL_INTERVAL_SECONDS", "2"))
+    paddleocr_vl_max_wait_seconds: int = int(os.getenv("PADDLEOCR_VL_MAX_WAIT_SECONDS", "300"))
+    paddleocr_vl_prompt: str = os.getenv(
+        "PADDLEOCR_VL_PROMPT",
+        "请识别图片中的合同文本，按阅读顺序输出 JSON 数组，每项包含 text、bbox 和 confidence。",
+    )
 
     match_threshold: int = int(os.getenv("MATCH_THRESHOLD", "85"))
     report_font_path: str = os.getenv("REPORT_FONT_PATH", "")

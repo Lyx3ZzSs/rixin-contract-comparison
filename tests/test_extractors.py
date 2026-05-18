@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import fitz
 import pytest
 
+from app.config import settings
 from app.models import BBox, Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError
 from app.services.extractors.base import ExtractionResult
@@ -12,7 +14,9 @@ from app.services.extractors.paddleocr import PaddleOCRExtractor
 from app.services.extractors.pymupdf import PyMuPDFExtractor
 
 
-def test_build_document_extractor_defaults_to_auto() -> None:
+def test_build_document_extractor_defaults_to_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "document_extractor", "auto")
+
     extractor = build_document_extractor()
 
     assert isinstance(extractor, AutoDocumentExtractor)
@@ -67,6 +71,78 @@ def test_paddleocr_payload_to_document_maps_pruned_result(tmp_path: Path) -> Non
     assert block.bbox.x1 == 240
     assert block.bbox.y1 == 124
     assert block.confidence == 0.98
+
+
+def test_paddleocr_sdk_payload_maps_word_boxes(tmp_path: Path) -> None:
+    pdf = tmp_path / "scan.pdf"
+    doc = fitz.open()
+    doc.new_page(width=200, height=100)
+    doc.save(str(pdf))
+    doc.close()
+    payload = [
+        {
+            "input_path": str(pdf),
+            "page_index": 0,
+            "doc_preprocessor_res": {"output_img_shape": [200, 400, 3]},
+            "rec_texts": ["合同A"],
+            "rec_scores": [0.99],
+            "rec_polys": [[[40, 20], [160, 20], [160, 40], [40, 40]]],
+            "text_word": [["合", "同", "A"]],
+            "text_word_region": [
+                [
+                    ((40, 20), (80, 20), (80, 40), (40, 40)),
+                    ((80, 20), (120, 20), (120, 40), (80, 40)),
+                    ((120, 20), (160, 20), (160, 40), (120, 40)),
+                ]
+            ],
+        }
+    ]
+
+    document = PaddleOCRExtractor().payload_to_document(payload, pdf)
+
+    block = document.pages[0].blocks[0]
+    assert block.text == "合同A"
+    assert block.bbox.x0 == 20
+    assert block.bbox.y0 == 10
+    assert block.bbox.x1 == 80
+    assert block.bbox.y1 == 20
+    assert [char_box.char for char_box in block.char_boxes] == ["合", "同", "A"]
+    assert [char_box.text_index for char_box in block.char_boxes] == [0, 1, 2]
+    assert block.char_boxes[0].bbox.x0 == 20
+    assert block.char_boxes[1].bbox.x0 == 40
+
+
+def test_paddleocr_extract_uses_sdk_predict(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pdf = tmp_path / "scan.pdf"
+    doc = fitz.open()
+    doc.new_page(width=200, height=100)
+    doc.save(str(pdf))
+    doc.close()
+    calls: list[tuple[str, bool]] = []
+
+    class FakeOCR:
+        def predict(self, path: str, return_word_box: bool):
+            calls.append((path, return_word_box))
+            return [
+                {
+                    "page_index": 0,
+                    "doc_preprocessor_res": {"output_img_shape": [100, 200, 3]},
+                    "rec_texts": ["扫描合同"],
+                    "rec_scores": [0.95],
+                    "rec_boxes": [[20, 10, 120, 30]],
+                    "text_word": [["扫", "描", "合", "同"]],
+                    "text_word_boxes": [[[20, 10, 45, 30], [45, 10, 70, 30], [70, 10, 95, 30], [95, 10, 120, 30]]],
+                }
+            ]
+
+    monkeypatch.setattr(settings, "save_ocr_raw_result", False)
+
+    result = PaddleOCRExtractor(ocr=FakeOCR()).extract(pdf, task_id="TSDK")
+
+    assert calls == [(str(pdf), True)]
+    assert result.extractor_used == "paddleocr"
+    assert result.document.pages[0].blocks[0].text == "扫描合同"
+    assert result.document.pages[0].blocks[0].char_boxes[0].char == "扫"
 
 
 def test_auto_document_extractor_falls_back_to_paddleocr() -> None:

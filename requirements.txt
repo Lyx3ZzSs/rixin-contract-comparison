@@ -8,3 +8,5 @@ pydantic>=2
 python-dotenv
 pytest
 httpx
+paddleocr>=3.5.0
+paddlepaddle
