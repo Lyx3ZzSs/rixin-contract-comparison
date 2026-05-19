@@ -112,37 +112,86 @@ def test_paddleocr_sdk_payload_maps_word_boxes(tmp_path: Path) -> None:
     assert block.char_boxes[1].bbox.x0 == 40
 
 
-def test_paddleocr_extract_uses_sdk_predict(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_paddleocr_extract_uses_remote_ocr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     pdf = tmp_path / "scan.pdf"
     doc = fitz.open()
     doc.new_page(width=200, height=100)
     doc.save(str(pdf))
     doc.close()
-    calls: list[tuple[str, bool]] = []
 
-    class FakeOCR:
-        def predict(self, path: str, return_word_box: bool):
-            calls.append((path, return_word_box))
-            return [
-                {
-                    "page_index": 0,
-                    "doc_preprocessor_res": {"output_img_shape": [100, 200, 3]},
-                    "rec_texts": ["扫描合同"],
-                    "rec_scores": [0.95],
-                    "rec_boxes": [[20, 10, 120, 30]],
-                    "text_word": [["扫", "描", "合", "同"]],
-                    "text_word_boxes": [[[20, 10, 45, 30], [45, 10, 70, 30], [70, 10, 95, 30], [95, 10, 120, 30]]],
-                }
-            ]
+    calls: list[tuple[str, dict, dict]] = []
 
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "errorCode": 0,
+                "errorMsg": "Success",
+                "result": {
+                    "ocrResults": [
+                        {
+                            "prunedResult": {
+                                "rec_texts": ["扫描合同"],
+                                "rec_scores": [0.95],
+                                "rec_boxes": [[20, 10, 120, 30]],
+                                "text_word": [["扫", "描", "合", "同"]],
+                                "text_word_boxes": [
+                                    [[20, 10, 45, 30], [45, 10, 70, 30], [70, 10, 95, 30], [95, 10, 120, 30]]
+                                ],
+                            }
+                        }
+                    ],
+                    "dataInfo": {"type": "pdf", "numPages": 1, "pages": [{"width": 400, "height": 200}]},
+                },
+            }
+
+    class FakeClient:
+        def __init__(self, timeout: int):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, headers: dict, json: dict):
+            calls.append((url, headers, json))
+            return FakeResponse()
+
+    monkeypatch.setattr("app.services.extractors.paddleocr.httpx.Client", FakeClient)
+    monkeypatch.setattr(settings, "paddleocr_job_url", "https://ocr.example.test/")
+    monkeypatch.setattr(settings, "paddleocr_access_token", "secret")
+    monkeypatch.setattr(settings, "paddleocr_timeout_seconds", 12)
     monkeypatch.setattr(settings, "save_ocr_raw_result", False)
 
-    result = PaddleOCRExtractor(ocr=FakeOCR()).extract(pdf, task_id="TSDK")
+    result = PaddleOCRExtractor().extract(pdf, task_id="TREMOTE")
 
-    assert calls == [(str(pdf), True)]
+    assert len(calls) == 1
+    assert calls[0][0] == "https://ocr.example.test/ocr"
+    assert calls[0][1]["Authorization"] == "Bearer secret"
+    assert calls[0][2]["fileType"] == 0
+    assert calls[0][2]["returnWordBox"] is True
     assert result.extractor_used == "paddleocr"
-    assert result.document.pages[0].blocks[0].text == "扫描合同"
-    assert result.document.pages[0].blocks[0].char_boxes[0].char == "扫"
+    block = result.document.pages[0].blocks[0]
+    assert block.text == "扫描合同"
+    assert block.bbox.x0 == 10
+    assert block.bbox.y0 == 5
+    assert block.bbox.x1 == 60
+    assert block.bbox.y1 == 15
+    assert block.char_boxes[0].char == "扫"
+
+
+def test_paddleocr_requires_remote_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pdf = tmp_path / "scan.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    monkeypatch.setattr(settings, "paddleocr_job_url", "")
+
+    with pytest.raises(DocumentExtractionError, match="PADDLEOCR_JOB_URL"):
+        PaddleOCRExtractor().extract(pdf)
 
 
 def test_auto_document_extractor_falls_back_to_paddleocr() -> None:

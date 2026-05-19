@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any
 
 import fitz
+import httpx
 
 from app.config import settings
 from app.models import BBox, CharBox, Document, Page, TextBlock
@@ -15,9 +16,6 @@ from app.services.extractors.base import DocumentExtractionError, ExtractionResu
 
 class PaddleOCRExtractor:
     name = "paddleocr"
-
-    def __init__(self, ocr: Any | None = None) -> None:
-        self._ocr = ocr
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         path = Path(path)
@@ -32,42 +30,90 @@ class PaddleOCRExtractor:
         return ExtractionResult(document=document, extractor_used=self.name, raw_result_path=raw_path)
 
     def _predict_pdf(self, path: Path) -> list[dict[str, Any]]:
-        ocr = self._get_ocr()
+        url = self._ocr_url()
+        headers = {"Content-Type": "application/json"}
+        if settings.paddleocr_access_token:
+            headers["Authorization"] = f"Bearer {settings.paddleocr_access_token}"
+        body = self._request_body(path)
         try:
-            results = ocr.predict(str(path), return_word_box=settings.paddleocr_return_word_box)
-        except Exception as exc:
-            raise DocumentExtractionError(f"PaddleOCR SDK 识别失败: {exc}") from exc
-        return [self._result_to_payload(result) for result in results or []]
+            with httpx.Client(timeout=settings.paddleocr_timeout_seconds) as client:
+                response = client.post(url, headers=headers, json=body)
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise DocumentExtractionError(f"远端 PP-OCRv5 请求失败 ({url}, HTTP {exc.response.status_code}): {detail}") from exc
+        except httpx.ConnectError as exc:
+            raise DocumentExtractionError(f"无法连接远端 PP-OCRv5 服务 ({url}): {exc}") from exc
+        except httpx.TimeoutException as exc:
+            raise DocumentExtractionError(f"远端 PP-OCRv5 请求超时 ({url}): {exc}") from exc
+        except ValueError as exc:
+            raise DocumentExtractionError(f"远端 PP-OCRv5 返回内容不是 JSON: {exc}") from exc
+        if payload.get("errorCode") not in (0, None):
+            raise DocumentExtractionError(f"远端 PP-OCRv5 识别失败: {payload.get('errorMsg') or payload}")
+        return self._normalize_remote_payload(payload)
 
-    def _get_ocr(self) -> Any:
-        if self._ocr is not None:
-            return self._ocr
-        self._ensure_runtime_cache()
-        try:
-            from paddleocr import PaddleOCR
-        except ImportError as exc:
-            raise DocumentExtractionError("未安装 paddleocr，无法使用本地 PaddleOCR SDK。") from exc
+    def _ocr_url(self) -> str:
+        base = settings.paddleocr_job_url.strip().rstrip("/")
+        if not base:
+            raise DocumentExtractionError("未配置 PADDLEOCR_JOB_URL，无法调用远端 PP-OCRv5。")
+        return base if base.endswith("/ocr") else f"{base}/ocr"
 
-        try:
-            self._ocr = PaddleOCR(
-                use_doc_orientation_classify=settings.paddleocr_use_doc_orientation_classify,
-                use_doc_unwarping=settings.paddleocr_use_doc_unwarping,
-                use_textline_orientation=settings.paddleocr_use_textline_orientation,
-                return_word_box=settings.paddleocr_return_word_box,
-                ocr_version=settings.paddleocr_version,
-                device=settings.paddleocr_device,
-                text_rec_score_thresh=settings.paddleocr_text_rec_score_thresh,
-            )
-        except Exception as exc:
-            raise DocumentExtractionError(f"PaddleOCR SDK 初始化失败: {exc}") from exc
-        return self._ocr
+    def _request_body(self, path: Path) -> dict[str, Any]:
+        return {
+            "file": base64.b64encode(path.read_bytes()).decode("ascii"),
+            "fileType": 0,
+            "useDocOrientationClassify": settings.paddleocr_use_doc_orientation_classify,
+            "useDocUnwarping": settings.paddleocr_use_doc_unwarping,
+            "useTextlineOrientation": settings.paddleocr_use_textline_orientation,
+            "textRecScoreThresh": settings.paddleocr_text_rec_score_thresh,
+            "returnWordBox": settings.paddleocr_return_word_box,
+            "visualize": False,
+        }
 
-    def _ensure_runtime_cache(self) -> None:
-        if os.getenv("MPLCONFIGDIR"):
-            return
-        cache_dir = settings.storage_dir / "matplotlib"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        os.environ["MPLCONFIGDIR"] = str(cache_dir)
+    def _normalize_remote_payload(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise DocumentExtractionError(f"远端 PP-OCRv5 返回缺少 result: {payload}")
+        ocr_results = result.get("ocrResults") or result.get("ocr_results")
+        if not isinstance(ocr_results, list):
+            raise DocumentExtractionError(f"远端 PP-OCRv5 返回缺少 ocrResults: {payload}")
+        pages = self._remote_pages(result.get("dataInfo"))
+        normalized: list[dict[str, Any]] = []
+        for index, item in enumerate(ocr_results):
+            pruned = self._unwrap_page_result(item)
+            if not isinstance(pruned, dict):
+                continue
+            page_payload = dict(pruned)
+            page_payload.setdefault("page_index", index)
+            if index < len(pages):
+                image_width, image_height = pages[index]
+                preprocessor = dict(page_payload.get("doc_preprocessor_res") or {})
+                preprocessor.setdefault("output_img_shape", [image_height, image_width, 3])
+                page_payload["doc_preprocessor_res"] = preprocessor
+            normalized.append(page_payload)
+        return normalized
+
+    def _remote_pages(self, data_info: Any) -> list[tuple[int, int]]:
+        if not isinstance(data_info, dict):
+            return []
+        if data_info.get("type") == "image":
+            width = data_info.get("width")
+            height = data_info.get("height")
+            if isinstance(width, int) and isinstance(height, int):
+                return [(width, height)]
+        pages = data_info.get("pages")
+        if not isinstance(pages, list):
+            return []
+        result: list[tuple[int, int]] = []
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            width = page.get("width")
+            height = page.get("height")
+            if isinstance(width, int) and isinstance(height, int):
+                result.append((width, height))
+        return result
 
     def _result_to_payload(self, result: Any) -> dict[str, Any]:
         if isinstance(result, dict):

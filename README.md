@@ -66,20 +66,20 @@ VITE_API_BASE_URL=http://127.0.0.1:8001
 
 ## 文档识别配置
 
-默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本时再降级到本地 PaddleOCR SDK。
+默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本时再降级到远端 PP-OCRv5 服务。
 
 ```bash
 DOCUMENT_EXTRACTOR=auto
 PYMUPDF_MIN_TEXT_CHARS=1
 ```
 
-也可以显式指定 `pymupdf` 或 `paddleocr`。`paddleocr` 使用本地 `from paddleocr import PaddleOCR`，不再调用远端 job API。
+也可以显式指定 `pymupdf` 或 `paddleocr`。`paddleocr` 会调用 `PADDLEOCR_JOB_URL` 指向的远端 `/ocr` 接口，不再使用本地 PaddleOCR SDK。
 
-接入本地 PP-OCRv5 时配置：
+接入远端 PP-OCRv5 时配置：
 
 ```bash
-PADDLEOCR_VERSION=PP-OCRv5
-PADDLEOCR_DEVICE=cpu
+PADDLEOCR_JOB_URL=https://u1013288-8b13-35b9cafe.westc.seetacloud.com:8443/
+PADDLEOCR_TIMEOUT_SECONDS=120
 PADDLEOCR_RETURN_WORD_BOX=true
 PADDLEOCR_USE_DOC_ORIENTATION_CLASSIFY=false
 PADDLEOCR_USE_DOC_UNWARPING=false
@@ -88,7 +88,7 @@ PADDLEOCR_TEXT_REC_SCORE_THRESH=0.0
 SAVE_OCR_RAW_RESULT=true
 ```
 
-OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。开启 `PADDLEOCR_RETURN_WORD_BOX=true` 后，系统会把 PaddleOCR 返回的 `text_word_region`/`text_word_boxes` 转为字符或词级坐标，用于更细粒度的差异定位。差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
+OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。远端接口使用 JSON base64 传 PDF，`fileType=0`，服务入口为 `{PADDLEOCR_JOB_URL}/ocr`。开启 `PADDLEOCR_RETURN_WORD_BOX=true` 后，系统会把 PaddleOCR 返回的 `text_word_region`/`text_word_boxes` 转为字符或词级坐标，用于更细粒度的差异定位。差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
 
 接入 OpenAI-compatible 合同风险分析模型时配置：
 
@@ -160,7 +160,7 @@ cd frontend && npm test && npm run build
 
 ## 当前限制
 
-- PaddleOCR 需要可用 Access Token，扫描件和图片型 PDF 的识别质量取决于 OCR 返回结果。
+- PaddleOCR 需要配置可用的远端 `PADDLEOCR_JOB_URL`，扫描件和图片型 PDF 的识别质量取决于远端 OCR 返回结果。
 - 暂不支持 Word、Excel 和复杂表格深度 diff。
 - MVP 使用同步任务、本地 JSON 和本地文件存储。
 - 风险统计首期不接入大模型，默认按低风险兼容展示。

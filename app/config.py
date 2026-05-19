@@ -24,8 +24,9 @@ class Settings:
 
     document_extractor: str = os.getenv("DOCUMENT_EXTRACTOR", "auto").lower()
     pymupdf_min_text_chars: int = int(os.getenv("PYMUPDF_MIN_TEXT_CHARS", "1"))
-    paddleocr_version: str = os.getenv("PADDLEOCR_VERSION", os.getenv("PADDLEOCR_MODEL", "PP-OCRv5"))
-    paddleocr_device: str = os.getenv("PADDLEOCR_DEVICE", "cpu")
+    paddleocr_job_url: str = os.getenv("PADDLEOCR_JOB_URL", "")
+    paddleocr_access_token: str = os.getenv("PADDLEOCR_ACCESS_TOKEN", "")
+    paddleocr_timeout_seconds: int = int(os.getenv("PADDLEOCR_TIMEOUT_SECONDS", "120"))
     paddleocr_return_word_box: bool = _env_bool("PADDLEOCR_RETURN_WORD_BOX", "true")
     paddleocr_text_rec_score_thresh: float = float(os.getenv("PADDLEOCR_TEXT_REC_SCORE_THRESH", "0.0"))
     paddleocr_use_doc_orientation_classify: bool = _env_bool("PADDLEOCR_USE_DOC_ORIENTATION_CLASSIFY", "false")
@@ -33,17 +34,12 @@ class Settings:
     paddleocr_use_textline_orientation: bool = _env_bool("PADDLEOCR_USE_TEXTLINE_ORIENTATION", "false")
     save_ocr_raw_result: bool = _env_bool("SAVE_OCR_RAW_RESULT", "true")
 
-    paddleocr_vl_url: str = os.getenv("PADDLEOCR_VL_URL", "")
-    paddleocr_vl_token: str = os.getenv("PADDLEOCR_VL_TOKEN", "")
-    paddleocr_vl_model: str = os.getenv("PADDLEOCR_VL_MODEL", "PaddleOCR-VL-1.5")
-    paddleocr_vl_api_mode: str = os.getenv("PADDLEOCR_VL_API_MODE", "auto").lower()
-    paddleocr_vl_timeout_seconds: int = int(os.getenv("PADDLEOCR_VL_TIMEOUT_SECONDS", "60"))
-    paddleocr_vl_poll_interval_seconds: float = float(os.getenv("PADDLEOCR_VL_POLL_INTERVAL_SECONDS", "2"))
-    paddleocr_vl_max_wait_seconds: int = int(os.getenv("PADDLEOCR_VL_MAX_WAIT_SECONDS", "300"))
-    paddleocr_vl_prompt: str = os.getenv(
-        "PADDLEOCR_VL_PROMPT",
-        "请识别图片中的合同文本，按阅读顺序输出 JSON 数组，每项包含 text、bbox 和 confidence。",
-    )
+    # OCR image preprocessing (OpenCV)
+    enable_preprocessing: bool = _env_bool("ENABLE_OCR_PREPROCESSING", "true")
+    preprocess_dpi: int = int(os.getenv("PREPROCESS_DPI", "250"))
+    preprocess_enable_contrast: bool = _env_bool("PREPROCESS_ENABLE_CONTRAST", "true")
+    preprocess_enable_sharpen: bool = _env_bool("PREPROCESS_ENABLE_SHARPEN", "true")
+    preprocess_enable_denoise: bool = _env_bool("PREPROCESS_ENABLE_DENOISE", "false")
 
     match_threshold: int = int(os.getenv("MATCH_THRESHOLD", "85"))
     report_font_path: str = os.getenv("REPORT_FONT_PATH", "")

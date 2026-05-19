@@ -5,7 +5,6 @@ from pathlib import Path
 from app.config import settings
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.paddleocr import PaddleOCRExtractor
-from app.services.extractors.paddleocr_vl import PaddleOCRVLExtractor
 from app.services.extractors.pymupdf import PyMuPDFExtractor
 
 
@@ -52,6 +51,4 @@ def build_document_extractor(name: str | None = None):
         return PyMuPDFExtractor()
     if extractor_name in {"paddleocr", "paddle_ocr", "paddle"}:
         return PaddleOCRExtractor()
-    if extractor_name in {"paddleocr_vl", "paddleocr-vl", "vl"}:
-        return PaddleOCRVLExtractor()
     raise DocumentExtractionError(f"不支持的文档识别器: {extractor_name}")
