@@ -63,6 +63,7 @@ class Settings:
     ai_llm_api_key: str = os.getenv("AI_LLM_API_KEY", "")
     ai_llm_model: str = os.getenv("AI_LLM_MODEL", "")
     ai_analysis_timeout_seconds: int = int(os.getenv("AI_ANALYSIS_TIMEOUT_SECONDS", "30"))
+    ai_extraction_timeout_seconds: int = int(os.getenv("AI_EXTRACTION_TIMEOUT_SECONDS", "120"))
     ai_system_prompt: str = os.getenv(
         "AI_SYSTEM_PROMPT",
         (

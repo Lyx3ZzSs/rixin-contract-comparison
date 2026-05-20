@@ -1,9 +1,12 @@
 import { ChangeEvent, useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/pdf";
 
 import { extractionFields } from "../data/extractionFields";
+import { extractFields } from "../lib/api";
+import type { ExtractionFieldValue } from "../types";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -90,6 +93,10 @@ interface ExtractionFieldSetupProps {
 function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetupProps) {
   const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
   const [fields, setFields] = useState(extractionFields);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractionError, setExtractionError] = useState("");
+  const [results, setResults] = useState<ExtractionFieldValue[] | null>(null);
+  const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(2);
 
   function toggleSemanticExtraction(fieldId: string) {
     setFields((currentFields) =>
@@ -103,29 +110,79 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
     setFields((currentFields) => currentFields.filter((field) => field.id !== fieldId));
   }
 
+  async function handleStartExtraction() {
+    const activeFields = fields.filter((f) => f.semanticExtraction);
+    if (activeFields.length === 0) return;
+
+    setIsExtracting(true);
+    setExtractionError("");
+    setCurrentStep(3);
+
+    try {
+      const response = await extractFields(file, activeFields);
+      setResults(response.results);
+      if (response.errors.length > 0) {
+        setExtractionError(response.errors.join("; "));
+      }
+    } catch (err) {
+      setExtractionError(err instanceof Error ? err.message : "提取失败，请重试");
+      setCurrentStep(2);
+    } finally {
+      setIsExtracting(false);
+    }
+  }
+
+  function handleExport() {
+    if (!results) return;
+    const header = "字段名称,提取值,状态\n";
+    const rows = results
+      .map(
+        (r) =>
+          `"${r.field_name}","${r.value || ""}","${r.status === "found" ? "已找到" : r.status === "not_found" ? "未找到" : "错误"}"`,
+      )
+      .join("\n");
+    const bom = "﻿";
+    const blob = new Blob([bom + header + rows], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${file.name.replace(/\.[^.]+$/, "")}_提取结果.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const activeFieldCount = fields.filter((f) => f.semanticExtraction).length;
+
   return (
     <section className="extract-flow" aria-labelledby="extract-flow-title">
       <header className="extract-flow-header">
         <button className="extract-close-button" type="button" onClick={onBack} aria-label="返回上传文件">
           ×
         </button>
-        <h1 id="extract-flow-title">合同提取</h1>
-        <ol className="extract-steps" aria-label="合同提取步骤">
-          <li className="done">
-            <span>✓</span>
-            选择合同
-          </li>
-          <li className="active">
-            <span>2</span>
-            设置提取字段
-          </li>
-          <li>
-            <span>3</span>
-            数据提取
-          </li>
-        </ol>
-        <button className="extract-flow-submit" type="button">
-          开始提取
+        <div className="extract-flow-center">
+          <h1 id="extract-flow-title">合同提取</h1>
+          <ol className="extract-steps" aria-label="合同提取步骤">
+            <li className="done">
+              <span>✓</span>
+              选择合同
+            </li>
+            <li className={currentStep >= 2 ? (results ? "done" : "active") : ""}>
+              <span>{currentStep >= 3 && results ? "✓" : "2"}</span>
+              设置提取字段
+            </li>
+            <li className={currentStep >= 3 ? "active" : ""}>
+              <span>3</span>
+              数据提取
+            </li>
+          </ol>
+        </div>
+        <button
+          className="extract-flow-submit"
+          type="button"
+          onClick={results ? handleExport : handleStartExtraction}
+          disabled={isExtracting || (!results && activeFieldCount === 0)}
+        >
+          {isExtracting ? "正在提取..." : results ? "导出" : "开始提取"}
         </button>
       </header>
 
@@ -152,71 +209,122 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
         </main>
 
         <aside className="extract-field-panel" aria-label="字段列表">
-          <div className="extract-field-panel-head">
-            <h2>字段列表</h2>
-            <div className="extract-field-actions" aria-label="字段操作">
-              <button type="button">+ 自定义添加</button>
-              <button type="button">从字段库/模板添加</button>
-              <button type="button">从Excel导入</button>
-            </div>
-          </div>
-          <div className="extract-field-grid" role="table" aria-label="提取字段列表">
-            <div className="extract-field-row header" role="row">
-              <strong role="columnheader">字段名称</strong>
-              <strong role="columnheader">字段类型</strong>
-              <strong role="columnheader">字段描述</strong>
-              <strong role="columnheader">语义提取</strong>
-              <strong role="columnheader">操作</strong>
-            </div>
-            {fields.map((field) => (
-              <div className="extract-field-row" role="row" key={field.id}>
-                <span className="field-name" role="cell" title={field.name}>
-                  {field.name}
-                </span>
-                <span className="field-type" role="cell">
-                  {field.type}
-                </span>
-                <span className="field-description" role="cell" title={field.description}>
-                  {field.description}
-                </span>
-                <span className="field-semantic" role="cell">
-                  <button
-                    className={field.semanticExtraction ? "field-switch on" : "field-switch"}
-                    type="button"
-                    aria-label={`${field.name}语义提取`}
-                    aria-pressed={field.semanticExtraction}
-                    onClick={() => toggleSemanticExtraction(field.id)}
-                  />
-                </span>
-                <span role="cell" className="field-actions">
-                  <button type="button">编辑</button>
-                  <button type="button" onClick={() => removeField(field.id)}>
-                    移除
-                  </button>
-                </span>
+          {isExtracting && !results ? (
+            <div className="extract-card-view">
+              <div className="extract-card-header">
+                <h2>提取字段信息</h2>
               </div>
-            ))}
-          </div>
+              <div className="extract-status-bar">
+                <span className="extract-status-spinner" aria-hidden="true" />
+                正在提取合同的结构信息
+              </div>
+              <div className="extract-card-list">
+                {fields.filter((f) => f.semanticExtraction).map((field) => (
+                  <div className="extract-card-item" key={field.id}>
+                    <span className="extract-card-name">{field.name}</span>
+                    <span className="extract-card-value loading">提取中...</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : results ? (
+            <div className="extract-card-view">
+              <div className="extract-card-header">
+                <h2>提取字段信息</h2>
+                <button type="button" className="extract-back-link" onClick={() => { setResults(null); setCurrentStep(2); }}>
+                  返回字段设置
+                </button>
+              </div>
+              {extractionError && (
+                <div className="extract-error-banner" role="alert">{extractionError}</div>
+              )}
+              <div className="extract-card-list">
+                {results.map((r) => (
+                  <div className="extract-card-item" key={r.field_id}>
+                    <span className="extract-card-name">{r.field_name}</span>
+                    <span className={`extract-card-value${r.status === "not_found" ? " empty" : r.status === "error" ? " error" : ""}`}>
+                      {r.status === "found" ? (r.value || "—") : r.status === "not_found" ? "未找到" : "提取失败"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="extract-field-panel-head">
+                <h2>字段列表</h2>
+                <div className="extract-field-actions" aria-label="字段操作">
+                  <button type="button">+ 自定义添加</button>
+                  <button type="button">从字段库/模板添加</button>
+                  <button type="button">从Excel导入</button>
+                </div>
+              </div>
+              <div className="extract-field-grid" role="table" aria-label="提取字段列表">
+                <div className="extract-field-row header" role="row">
+                  <strong role="columnheader">字段名称</strong>
+                  <strong role="columnheader">字段类型</strong>
+                  <strong role="columnheader">字段描述</strong>
+                  <strong role="columnheader">语义提取</strong>
+                  <strong role="columnheader">操作</strong>
+                </div>
+                {fields.map((field) => (
+                  <div className="extract-field-row" role="row" key={field.id}>
+                    <span className="field-name" role="cell" title={field.name}>
+                      {field.name}
+                    </span>
+                    <span className="field-type" role="cell">
+                      {field.type}
+                    </span>
+                    <span className="field-description" role="cell" title={field.description}>
+                      {field.description}
+                    </span>
+                    <span className="field-semantic" role="cell">
+                      <button
+                        className={field.semanticExtraction ? "field-switch on" : "field-switch"}
+                        type="button"
+                        aria-label={`${field.name}语义提取`}
+                        aria-pressed={field.semanticExtraction}
+                        onClick={() => toggleSemanticExtraction(field.id)}
+                      />
+                    </span>
+                    <span role="cell" className="field-actions">
+                      <button type="button">编辑</button>
+                      <button type="button" onClick={() => removeField(field.id)}>
+                        移除
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </aside>
       </div>
     </section>
   );
 }
 
+
 function FlatPdfPreview({ src, file }: { src: string; file: File }) {
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [zoom, setZoom] = useState(1);
 
   useEffect(() => {
     if (!src) {
       setPdf(null);
       setLoadState("idle");
+      setCurrentPage(1);
+      setZoom(1);
       return undefined;
     }
 
     let isMounted = true;
     const loadingTask = pdfjsLib.getDocument(src);
     setLoadState("loading");
+    setCurrentPage(1);
+    setZoom(1);
     loadingTask.promise
       .then((document) => {
         if (!isMounted) {
@@ -239,18 +347,76 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
     };
   }, [src]);
 
+  function goToPreviousPage() {
+    setCurrentPage((page) => Math.max(1, page - 1));
+  }
+
+  function goToNextPage() {
+    setCurrentPage((page) => Math.min(pdf?.numPages ?? page, page + 1));
+  }
+
+  function handlePageChange(event: ChangeEvent<HTMLInputElement>) {
+    const totalPages = pdf?.numPages ?? 1;
+    const nextPage = Number(event.target.value);
+    if (!Number.isFinite(nextPage)) {
+      return;
+    }
+    setCurrentPage(Math.min(totalPages, Math.max(1, nextPage)));
+  }
+
+  function zoomOut() {
+    setZoom((value) => Math.max(0.6, Number((value - 0.1).toFixed(2))));
+  }
+
+  function zoomIn() {
+    setZoom((value) => Math.min(1.8, Number((value + 0.1).toFixed(2))));
+  }
+
   if (!src || loadState === "idle") {
     return <DocumentFallback file={file} />;
   }
 
+  const totalPages = pdf?.numPages ?? 0;
+  const renderedZoom = 0.78 * zoom;
+
   return (
-    <div className="extract-flat-pdf" aria-label="合同 PDF 平铺预览">
+    <div className="extract-flat-pdf" aria-label="合同 PDF 预览">
       {loadState === "loading" && <div className="extract-document-loading">正在载入 PDF...</div>}
       {loadState === "error" && <DocumentFallback file={file} />}
-      {pdf &&
-        Array.from({ length: pdf.numPages }, (_, index) => (
-          <ExtractPdfPageCanvas key={`${src}-${index + 1}`} pdf={pdf} pageNumber={index + 1} zoom={0.78} />
-        ))}
+      {pdf && (
+        <>
+          <ExtractPdfPageCanvas key={`${src}-${currentPage}-${renderedZoom}`} pdf={pdf} pageNumber={currentPage} zoom={renderedZoom} />
+          <div className="extract-pdf-toolbar" aria-label="PDF预览工具栏">
+            <button type="button" onClick={goToPreviousPage} disabled={currentPage <= 1} aria-label="上一页" title="上一页">
+              <ChevronLeft aria-hidden="true" />
+            </button>
+            <label className="extract-page-control">
+              <input
+                aria-label="当前页码"
+                type="number"
+                min={1}
+                max={totalPages}
+                value={currentPage}
+                onChange={handlePageChange}
+              />
+              <span>/ {totalPages}</span>
+            </label>
+            <button type="button" onClick={goToNextPage} disabled={currentPage >= totalPages} aria-label="下一页" title="下一页">
+              <ChevronRight aria-hidden="true" />
+            </button>
+            <span className="extract-toolbar-separator" aria-hidden="true" />
+            <button type="button" onClick={zoomOut} disabled={zoom <= 0.6} aria-label="缩小PDF" title="缩小">
+              <ZoomOut aria-hidden="true" />
+            </button>
+            <output className="extract-zoom-value" aria-label="当前缩放比例">
+              {Math.round(zoom * 100)}%
+            </output>
+            <button type="button" onClick={zoomIn} disabled={zoom >= 1.8} aria-label="放大PDF" title="放大">
+              <ZoomIn aria-hidden="true" />
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -42,6 +42,19 @@ async def save_upload_file(upload_file: UploadFile, task_id: str, label: str) ->
     return destination
 
 
+async def save_upload_file_generic(upload_file: UploadFile, task_id: str, label: str) -> Path:
+    content = await upload_file.read()
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    if len(content) > max_bytes:
+        raise FileValidationError(f"文件超过 {settings.max_upload_size_mb}MB 限制。")
+    task_dir = settings.uploads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    filename = safe_filename(upload_file.filename or "document")
+    destination = task_dir / f"{label}_{filename}"
+    destination.write_bytes(content)
+    return destination
+
+
 def assert_path_inside_storage(path: Path) -> None:
     path = path.resolve()
     storage = settings.storage_dir.resolve()

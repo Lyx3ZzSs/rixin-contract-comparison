@@ -6,6 +6,7 @@ from typing import Any
 
 from app.config import settings
 from app.models import CompareTask
+from app.models_extraction import ExtractionTask
 
 
 def to_jsonable(model: Any) -> dict[str, Any]:
@@ -31,4 +32,21 @@ def load_task(task_id: str) -> CompareTask:
         raise FileNotFoundError(f"任务不存在: {task_id}")
     data = json.loads(path.read_text(encoding="utf-8"))
     return CompareTask(**data)
+
+
+def save_extraction_task(task: ExtractionTask) -> Path:
+    settings.tasks_dir.mkdir(parents=True, exist_ok=True)
+    path = task_json_path(task.task_id)
+    path.write_text(json.dumps(to_jsonable(task), ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def load_extraction_task(task_id: str) -> ExtractionTask:
+    path = task_json_path(task_id)
+    if not path.exists():
+        raise FileNotFoundError(f"提取任务不存在: {task_id}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("task_type") != "extraction":
+        raise FileNotFoundError(f"任务 {task_id} 不是提取任务。")
+    return ExtractionTask(**data)
 

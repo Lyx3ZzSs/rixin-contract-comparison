@@ -78,3 +78,26 @@ export interface DiffItem {
   original_evidence?: EvidenceBox[];
   compare_evidence?: EvidenceBox[];
 }
+
+export type ExtractionFieldStatus = "found" | "not_found" | "error";
+
+export interface ExtractionFieldValue {
+  field_id: string;
+  field_name: string;
+  value: string;
+  confidence: number;
+  source_snippet: string;
+  status: ExtractionFieldStatus;
+}
+
+export interface ExtractionTaskResponse {
+  task_id: string;
+  task_type: string;
+  status: TaskStatus;
+  filename: string;
+  file_url: string;
+  extractor_used: string;
+  fields: { id: string; name: string; type: string; description: string; semantic_extraction: boolean }[];
+  results: ExtractionFieldValue[];
+  errors: string[];
+}
