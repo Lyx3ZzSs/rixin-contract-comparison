@@ -4,8 +4,11 @@ from pathlib import Path
 
 from app.config import settings
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
-from app.services.extractors.paddleocr import PaddleOCRExtractor
+from app.services.extractors.base import DocumentExtractor
+from app.services.extractors.paddleocr_vl import PaddleOCRVLExtractor
+from app.services.extractors.ppocrv5 import PPOCRV5Extractor
 from app.services.extractors.pymupdf import PyMuPDFExtractor
+from app.services.extractors.vl_ocr_hybrid import VLOCRHybridExtractor
 
 
 class AutoDocumentExtractor:
@@ -14,11 +17,11 @@ class AutoDocumentExtractor:
     def __init__(
         self,
         primary: PyMuPDFExtractor | None = None,
-        fallback: PaddleOCRExtractor | None = None,
+        fallback: DocumentExtractor | None = None,
         min_text_chars: int | None = None,
     ) -> None:
         self.primary = primary or PyMuPDFExtractor()
-        self.fallback = fallback or PaddleOCRExtractor()
+        self.fallback = fallback or VLOCRHybridExtractor()
         self.min_text_chars = settings.pymupdf_min_text_chars if min_text_chars is None else min_text_chars
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
@@ -28,18 +31,18 @@ class AutoDocumentExtractor:
             if text_length >= self.min_text_chars:
                 return result
             fallback = self.fallback.extract(path, task_id=task_id)
-            fallback.extractor_used = "pymupdf_fallback_paddleocr"
-            fallback.warnings.insert(0, f"PyMuPDF 文本量过少({text_length} 字)，已降级 PaddleOCR。")
+            fallback.extractor_used = "auto_vl_ocr_hybrid"
+            fallback.warnings.insert(0, f"PyMuPDF 文本量过少({text_length} 字)，已切换 VL + PP-OCRv5 混合抽取。")
             return fallback
         except DocumentExtractionError as pymupdf_error:
             try:
                 fallback = self.fallback.extract(path, task_id=task_id)
-            except DocumentExtractionError as paddle_error:
+            except DocumentExtractionError as hybrid_error:
                 raise DocumentExtractionError(
-                    f"PyMuPDF 抽取失败: {pymupdf_error}; PaddleOCR 抽取失败: {paddle_error}"
-                ) from paddle_error
-            fallback.extractor_used = "pymupdf_fallback_paddleocr"
-            fallback.warnings.insert(0, f"PyMuPDF 抽取失败，已降级 PaddleOCR: {pymupdf_error}")
+                    f"PyMuPDF 抽取失败: {pymupdf_error}; VL + PP-OCRv5 混合抽取失败: {hybrid_error}"
+                ) from hybrid_error
+            fallback.extractor_used = "auto_vl_ocr_hybrid"
+            fallback.warnings.insert(0, f"PyMuPDF 抽取失败，已切换 VL + PP-OCRv5 混合抽取: {pymupdf_error}")
             return fallback
 
 
@@ -49,6 +52,10 @@ def build_document_extractor(name: str | None = None):
         return AutoDocumentExtractor()
     if extractor_name in {"pymupdf", "fitz", "pdf_text"}:
         return PyMuPDFExtractor()
-    if extractor_name in {"paddleocr", "paddle_ocr", "paddle"}:
-        return PaddleOCRExtractor()
+    if extractor_name in {"paddleocr_vl", "paddleocrvl", "vl"}:
+        return PaddleOCRVLExtractor()
+    if extractor_name in {"ppocrv5", "pp_ocrv5", "paddleocr", "paddle_ocr", "paddle"}:
+        return PPOCRV5Extractor()
+    if extractor_name in {"vl_ocr_hybrid", "hybrid", "ocr_structure", "paddleocr_vl_ppocrv5"}:
+        return VLOCRHybridExtractor()
     raise DocumentExtractionError(f"不支持的文档识别器: {extractor_name}")

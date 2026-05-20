@@ -2,23 +2,72 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 
 from app.models import BBox, CharBox, Clause, Document, EvidenceBox
+from app.services.table_compare import TableComparator
 from app.services.normalizer import TextNormalizer
+
+
+@dataclass(frozen=True)
+class ClauseUnit:
+    text: str
+    char_boxes: list[CharBox | None]
+    page_no: int
+    block_id: str
+    block_type: str
+    bbox: BBox
+    evidence: EvidenceBox
+    layout_block_id: str = ""
+    layout_order: int | None = None
 
 
 class ClauseSplitter:
     clause_start_pattern = re.compile(
         r"^\s*((第[一二三四五六七八九十百千万0-9]+[章节条])|([一二三四五六七八九十]+、)|(（[一二三四五六七八九十0-9]+）)|(\d+(?:\.\d+){0,3}[\.、]?))\s*(.*)$"
     )
+    skip_block_types = {
+        "footer",
+        "header",
+        "page_footer",
+        "page_header",
+        "image",
+        "figure",
+        "seal",
+        "chart",
+        "formula",
+    }
+    table_block_types = {"table", "table_title"}
+    cover_block_types = {"doc_title", "title"}
 
     def __init__(self, text_normalizer: TextNormalizer | None = None) -> None:
         self.normalizer = text_normalizer or TextNormalizer()
+        self.table_detector = TableComparator()
 
     def split(self, document: Document, prefix: str) -> list[Clause]:
-        units = []
+        units = self._collect_units(document)
+        if not units:
+            return []
+
+        units = self._trim_cover_units(self._order_units(units))
+        if not units:
+            return []
+
+        clauses, saw_marker = self._detect_clause_items(units)
+        if not saw_marker:
+            clauses = self._single_unit_items(units)
+
+        return self._build_clauses(clauses, prefix)
+
+    def _collect_units(self, document: Document) -> list[ClauseUnit]:
+        units: list[ClauseUnit] = []
         for page in document.pages:
             for block in page.blocks:
+                block_type = (block.block_type or "").lower()
+                if block_type in self.skip_block_types:
+                    continue
+                if self.table_detector.is_table_block(block):
+                    continue
                 normalized_block = self.normalizer.normalize(block.text)
                 if not normalized_block:
                     continue
@@ -28,31 +77,70 @@ class ClauseSplitter:
                 pieces = self._split_block_lines(normalized_block)
                 for piece, start, end in pieces:
                     units.append(
-                        {
-                            "text": piece,
-                            "char_boxes": normalized_char_boxes[start:end],
-                            "page_no": block.page_no,
-                            "block_id": block.block_id,
-                            "evidence": EvidenceBox(
+                        ClauseUnit(
+                            text=piece,
+                            char_boxes=normalized_char_boxes[start:end],
+                            page_no=block.page_no,
+                            block_id=block.block_id,
+                            block_type=block_type,
+                            bbox=block.bbox,
+                            evidence=EvidenceBox(
                                 page_no=block.page_no,
                                 bbox=block.bbox,
                                 method="block_fallback",
                                 text=piece[:300],
                             ),
-                        }
+                            layout_block_id=block.layout_block_id,
+                            layout_order=block.layout_order,
+                        )
                     )
+        return units
 
-        if not units:
-            return []
+    def _order_units(self, units: list[ClauseUnit]) -> list[ClauseUnit]:
+        ordered: list[ClauseUnit] = []
+        pages = sorted({unit.page_no for unit in units})
+        for page_no in pages:
+            page_units = [unit for unit in units if unit.page_no == page_no]
+            if self._can_trust_layout_order(page_units):
+                page_units.sort(key=lambda unit: (unit.layout_order or 0, unit.bbox.y0, unit.bbox.x0, unit.block_id))
+            else:
+                page_units.sort(key=lambda unit: (unit.bbox.y0, unit.bbox.x0, unit.layout_order or 0, unit.block_id))
+            ordered.extend(page_units)
+        return ordered
 
+    def _can_trust_layout_order(self, units: list[ClauseUnit]) -> bool:
+        with_order = [unit for unit in units if unit.layout_order is not None]
+        if len(with_order) < 2:
+            return False
+        by_y = sorted(with_order, key=lambda unit: (unit.bbox.y0, unit.bbox.x0))
+        return all(
+            (left.layout_order or 0) <= (right.layout_order or 0)
+            for left, right in zip(by_y, by_y[1:], strict=False)
+        )
+
+    def _detect_clause_items(self, units: list[ClauseUnit]) -> tuple[list[dict], bool]:
         clauses: list[dict] = []
         current: dict | None = None
         saw_marker = False
+        entered_body = False
         for unit in units:
-            marker = self._parse_marker(unit["text"])
-            starts_clause = marker is not None and not self._is_table_continuation(current, marker)
+            marker = self._parse_marker(unit.text)
+            block_type = unit.block_type
+            if not entered_body and self._is_pre_body_noise(unit, marker):
+                continue
+            if current is not None and self._is_listing_table_continuation(current, unit.text, marker):
+                continue
+            starts_clause = (
+                marker is not None
+                and block_type not in self.table_block_types
+                and not self._is_table_continuation(current, marker)
+                and not self._is_quantity_or_amount_marker(unit.text, marker)
+            )
             if starts_clause:
                 saw_marker = True
+                entered_body = True
+            elif block_type not in self.cover_block_types and current is not None:
+                entered_body = True
             if starts_clause or current is None:
                 if current is not None:
                     clauses.append(current)
@@ -60,35 +148,37 @@ class ClauseSplitter:
                 current = {
                     "clause_no": clause_no,
                     "title": title,
-                    "texts": [unit["text"]],
-                    "char_boxes": [unit["char_boxes"]],
-                    "page_numbers": [unit["page_no"]],
-                    "bboxes": [unit["evidence"]],
-                    "source_block_ids": [unit["block_id"]],
+                    "texts": [unit.text],
+                    "char_boxes": [unit.char_boxes],
+                    "page_numbers": [unit.page_no],
+                    "bboxes": [unit.evidence],
+                    "source_block_ids": [unit.block_id],
                 }
             else:
-                current["texts"].append(unit["text"])
-                current["char_boxes"].append(unit["char_boxes"])
-                current["page_numbers"].append(unit["page_no"])
-                current["bboxes"].append(unit["evidence"])
-                current["source_block_ids"].append(unit["block_id"])
+                current["texts"].append(unit.text)
+                current["char_boxes"].append(unit.char_boxes)
+                current["page_numbers"].append(unit.page_no)
+                current["bboxes"].append(unit.evidence)
+                current["source_block_ids"].append(unit.block_id)
         if current is not None:
             clauses.append(current)
+        return clauses, saw_marker
 
-        if not saw_marker:
-            clauses = [
-                {
-                    "clause_no": "",
-                    "title": self._title_from_text(unit["text"]),
-                    "texts": [unit["text"]],
-                    "char_boxes": [unit["char_boxes"]],
-                    "page_numbers": [unit["page_no"]],
-                    "bboxes": [unit["evidence"]],
-                    "source_block_ids": [unit["block_id"]],
-                }
-                for unit in units
-            ]
+    def _single_unit_items(self, units: list[ClauseUnit]) -> list[dict]:
+        return [
+            {
+                "clause_no": "",
+                "title": self._title_from_text(unit.text),
+                "texts": [unit.text],
+                "char_boxes": [unit.char_boxes],
+                "page_numbers": [unit.page_no],
+                "bboxes": [unit.evidence],
+                "source_block_ids": [unit.block_id],
+            }
+            for unit in units
+        ]
 
+    def _build_clauses(self, clauses: list[dict], prefix: str) -> list[Clause]:
         result: list[Clause] = []
         for index, item in enumerate(clauses, start=1):
             text = "\n".join(item["texts"]).strip()
@@ -107,6 +197,85 @@ class ClauseSplitter:
                 )
             )
         return result
+
+    def _is_pre_body_noise(self, unit: ClauseUnit, marker: tuple[str, str] | None) -> bool:
+        block_type = unit.block_type
+        text = unit.text
+        if self._is_formal_marker_tuple(marker):
+            return False
+        if self._is_standalone_body_title(text):
+            return True
+        if block_type in self.cover_block_types:
+            return True
+        compact = re.sub(r"\s+", "", text or "")
+        if self._is_cover_noise_text(compact):
+            return True
+        return False
+
+    def _trim_cover_units(self, units: list[ClauseUnit]) -> list[ClauseUnit]:
+        start_index = self._body_start_index(units)
+        if start_index is None or start_index == 0:
+            return units
+        pre_body = units[:start_index]
+        if any(self._looks_like_body_numbered_unit(unit) for unit in pre_body):
+            return units
+        if not any(self._looks_like_cover_unit(unit) for unit in pre_body):
+            return units
+        return units[start_index:]
+
+    def _body_start_index(self, units: list[ClauseUnit]) -> int | None:
+        for index, unit in enumerate(units):
+            text = unit.text
+            marker = self._parse_marker(text)
+            if self._is_body_intro(text) or self._is_formal_body_marker(marker):
+                return index
+        return None
+
+    def _looks_like_cover_unit(self, unit: ClauseUnit) -> bool:
+        compact = re.sub(r"\s+", "", unit.text or "")
+        block_type = unit.block_type
+        return block_type in self.cover_block_types or self._is_cover_noise_text(compact) or bool(
+            re.search(r"(采购合同|合同编号|签订日期|签订地点|甲方|乙方|项目|系统|中广核)", compact)
+        )
+
+    def _looks_like_body_numbered_unit(self, unit: ClauseUnit) -> bool:
+        marker = self._parse_marker(unit.text)
+        if marker is None:
+            return False
+        clause_no, _ = marker
+        return bool(
+            self._is_formal_clause_marker(clause_no)
+            or re.fullmatch(r"\d+\.\d+(?:\.\d+)*", clause_no or "")
+        )
+
+    def _is_body_intro(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", text or "")
+        return compact == "正文" or "达成合同如下" in compact
+
+    def _is_formal_body_marker(self, marker: tuple[str, str] | None) -> bool:
+        if marker is None:
+            return False
+        clause_no, title = marker
+        if self._is_formal_clause_marker(clause_no):
+            return True
+        return bool(re.fullmatch(r"[一二三四五六七八九十]+", clause_no or "") and title)
+
+    def _is_standalone_body_title(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", text or "")
+        return compact == "正文"
+
+    def _is_cover_noise_text(self, compact: str) -> bool:
+        return bool(
+            re.search(r"合同编号|项目编号|采购合同$|买方[:：]|卖方[:：]|甲方[:：]|乙方[:：]|签订地点|签订日期", compact)
+            or compact in {"甲方", "乙方", "买方", "卖方"}
+            or re.fullmatch(r"共\d+页第\d+页", compact)
+        )
+
+    def _is_formal_marker_tuple(self, marker: tuple[str, str] | None) -> bool:
+        if marker is None:
+            return False
+        clause_no, _ = marker
+        return self._is_formal_clause_marker(clause_no)
 
     def _split_block_lines(self, text: str) -> list[tuple[str, int, int]]:
         lines = self._line_ranges(text)
@@ -162,6 +331,41 @@ class ClauseSplitter:
 
     def _is_formal_clause_marker(self, clause_no: str) -> bool:
         return bool(re.fullmatch(r"第[一二三四五六七八九十百千万0-9]+[章节条]", clause_no or ""))
+
+    def _is_quantity_or_amount_marker(self, text: str, marker: tuple[str, str]) -> bool:
+        clause_no, _ = marker
+        if self._is_formal_clause_marker(clause_no):
+            return False
+        first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+        compact = re.sub(r"\s+", "", first_line)
+        if re.fullmatch(r"\d{1,3}", compact):
+            return True
+        if re.match(r"^\s*\d+\s*(套|台|个|项|批|份|万元|元|%)", first_line):
+            return True
+        if re.match(r"^\s*\d{4}\s*年", first_line):
+            return True
+        return False
+
+    def _is_listing_table_continuation(
+        self,
+        current: dict,
+        text: str,
+        marker: tuple[str, str] | None = None,
+    ) -> bool:
+        title = current.get("title", "")
+        current_text = "\n".join(current.get("texts", []))
+        if "标的物" not in title or "提供以下设备" not in current_text:
+            return False
+        if self._is_formal_body_marker(marker):
+            return False
+        if marker is not None and not self._is_quantity_or_amount_marker(text, marker):
+            return False
+        compact = re.sub(r"\s+", "", text or "")
+        if not compact:
+            return False
+        if compact.startswith("上述价格") or compact.startswith("上述费用") or compact.startswith("该价格"):
+            return False
+        return True
 
     def _title_from_text(self, text: str) -> str:
         first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""

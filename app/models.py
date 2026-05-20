@@ -48,6 +48,9 @@ class TextBlock(BaseModel):
     bbox: BBox
     block_type: str = "text"
     confidence: float | None = None
+    layout_block_id: str = ""
+    layout_order: int | None = None
+    layout_bbox: BBox | None = None
     table_id: str = ""
     row_index: int | None = None
     column_index: int | None = None

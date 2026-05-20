@@ -5,7 +5,7 @@ import unicodedata
 
 
 class TextNormalizer:
-    page_number_pattern = re.compile(r"^\s*(第\s*)?\d+\s*(页)?\s*$")
+    page_number_pattern = re.compile(r"^\s*((第\s*)?\d+\s*(页)?|共\s*\d+\s*页\s*第\s*\d+\s*页)\s*$")
 
     def normalize(self, text: str) -> str:
         text = unicodedata.normalize("NFKC", text or "")
@@ -31,4 +31,3 @@ class TextNormalizer:
 
 
 normalizer = TextNormalizer()
-

@@ -9,6 +9,7 @@ from pathlib import Path
 from app.config import settings
 from app.models import CompareTask
 from app.services.clause_splitter import ClauseSplitter
+from app.services.cover_metadata import CoverMetadataComparator
 from app.services.diff_engine import DiffEngine
 from app.services.evidence_locator import EvidenceLocator
 from app.services.extractors import build_document_extractor
@@ -16,6 +17,7 @@ from app.services.matcher import ClauseMatcher
 from app.services.pdf_highlighter import PdfHighlighter
 from app.services.report_generator import ReportGenerator
 from app.services.screenshot_service import ScreenshotService
+from app.services.table_compare import TableComparator
 from app.utils.id_utils import generate_task_id
 from app.utils.json_utils import save_task
 
@@ -25,6 +27,8 @@ logger = logging.getLogger(__name__)
 class CompareService:
     def __init__(self) -> None:
         self.extractor = build_document_extractor()
+        self.cover_metadata = CoverMetadataComparator()
+        self.table_comparator = TableComparator()
         self.splitter = ClauseSplitter()
         self.matcher = ClauseMatcher(settings.match_threshold)
         self.diff_engine = DiffEngine()
@@ -69,11 +73,20 @@ class CompareService:
 
             original_doc = original_extraction.document
             compare_doc = compare_extraction.document
+            metadata_diffs = self.cover_metadata.build_diffs(original_doc, compare_doc)
+            table_diffs, table_warnings = self.table_comparator.build_diffs(
+                original_doc,
+                compare_doc,
+                start_index=len(metadata_diffs) + 1,
+            )
+            task.parse_warnings.extend(table_warnings)
             original_clauses = self.splitter.split(original_doc, "O")
             compare_clauses = self.splitter.split(compare_doc, "N")
             pairs = self.matcher.match(original_clauses, compare_clauses)
-            diffs = self.diff_engine.build_diffs(pairs)
+            clause_diffs = self.diff_engine.build_diffs(pairs, start_index=len(metadata_diffs) + len(table_diffs) + 1)
+            diffs = [*metadata_diffs, *table_diffs, *clause_diffs]
             diffs = self.evidence_locator.locate(diffs, original_clauses, compare_clauses)
+            diffs = self.diff_engine.deduplicate_overlaps(diffs)
             task.diffs = diffs
             task.ai_summary = self._program_summary(diffs)
             self._refresh_stats(task)
