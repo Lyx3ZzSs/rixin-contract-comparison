@@ -56,13 +56,6 @@ class Settings:
     hybrid_save_merged_raw: bool = _env_bool("HYBRID_SAVE_MERGED_RAW", "true")
     save_ocr_raw_result: bool = _env_bool("SAVE_OCR_RAW_RESULT", "true")
 
-    # OCR image preprocessing (OpenCV)
-    enable_preprocessing: bool = _env_bool("ENABLE_OCR_PREPROCESSING", "true")
-    preprocess_dpi: int = int(os.getenv("PREPROCESS_DPI", "250"))
-    preprocess_enable_contrast: bool = _env_bool("PREPROCESS_ENABLE_CONTRAST", "true")
-    preprocess_enable_sharpen: bool = _env_bool("PREPROCESS_ENABLE_SHARPEN", "true")
-    preprocess_enable_denoise: bool = _env_bool("PREPROCESS_ENABLE_DENOISE", "false")
-
     match_threshold: int = int(os.getenv("MATCH_THRESHOLD", "85"))
     report_font_path: str = os.getenv("REPORT_FONT_PATH", "")
 

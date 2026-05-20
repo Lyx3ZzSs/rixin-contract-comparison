@@ -96,10 +96,10 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "AI智能合同提取工具" })).toBeInTheDocument();
     expect(screen.getByLabelText("上传合同提取文件")).not.toHaveAttribute("multiple");
     expect(screen.queryByText(/数量不超过5份/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "开始提取" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "开始提取" })).not.toBeInTheDocument();
   });
 
-  it("enables extraction after a file is selected", async () => {
+  it("opens field setup after selecting a file", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
@@ -109,10 +109,12 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "合同提取" }));
     await user.upload(screen.getByLabelText("上传合同提取文件"), new File(["contract"], "contract.pdf", { type: "application/pdf" }));
 
-    await user.click(screen.getByRole("button", { name: "开始提取" }));
-
-    expect(screen.getByRole("button", { name: "提取中..." })).toBeDisabled();
-    expect(screen.getByRole("status")).toHaveTextContent("正在提取合同数据...");
+    expect(screen.queryByText("即将进行合同提取，请稍后")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "字段列表" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始提取" })).toBeInTheDocument();
+    expect(screen.getByLabelText("合同文件列表")).toHaveTextContent("contract.pdf");
+    expect(screen.getByLabelText("提取字段列表")).toHaveTextContent("甲方名称");
+    expect(screen.queryByText("提取ID:")).not.toBeInTheDocument();
   });
 
   it("adds a created task to comparison records", async () => {
