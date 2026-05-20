@@ -1,15 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { LoginPage } from "./pages/LoginPage";
+import { ExtractionPage } from "./pages/ExtractionPage";
 import { ResultPage } from "./pages/ResultPage";
 import { UploadPage } from "./pages/UploadPage";
 
 const AUTH_STORAGE_KEY = "rixin_contract_auth_user";
+const HISTORY_STORAGE_KEY = "rixin_contract_compare_history";
+const MAX_HISTORY_ITEMS = 8;
 
-function readRoute(): { name: "home" } | { name: "task"; taskId: string } {
+interface ComparisonHistoryItem {
+  taskId: string;
+  createdAt: string;
+}
+
+function readRoute(): { name: "home" } | { name: "extract" } | { name: "task"; taskId: string } {
   const match = window.location.pathname.match(/^\/tasks\/([^/]+)$/);
   if (match) {
     return { name: "task", taskId: decodeURIComponent(match[1]) };
+  }
+  if (window.location.pathname === "/extract") {
+    return { name: "extract" };
   }
   return { name: "home" };
 }
@@ -19,10 +30,18 @@ function navigateToTask(taskId: string): void {
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
+function navigateToExtraction(): void {
+  window.history.pushState({}, "", "/extract");
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
 export function App() {
   const [route, setRoute] = useState(readRoute);
   const [currentUser, setCurrentUser] = useState(() => window.localStorage.getItem(AUTH_STORAGE_KEY));
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  const [isComparisonMenuOpen, setIsComparisonMenuOpen] = useState(true);
+  const [isExtractionMenuOpen, setIsExtractionMenuOpen] = useState(true);
+  const [comparisonHistory, setComparisonHistory] = useState(readComparisonHistory);
 
   useEffect(() => {
     const onPopState = () => setRoute(readRoute());
@@ -46,11 +65,43 @@ export function App() {
     navigateHome();
   }
 
+  function handleTaskCreated(taskId: string) {
+    setComparisonHistory((currentHistory) => {
+      const nextHistory = [
+        { taskId, createdAt: new Date().toISOString() },
+        ...currentHistory.filter((item) => item.taskId !== taskId),
+      ].slice(0, MAX_HISTORY_ITEMS);
+      window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(nextHistory));
+      return nextHistory;
+    });
+    navigateToTask(taskId);
+  }
+
+  function handleComparisonMenuClick() {
+    if (!isSidebarExpanded) {
+      navigateHome();
+      return;
+    }
+    setIsComparisonMenuOpen((value) => !value);
+  }
+
+  function handleExtractionMenuClick() {
+    if (!isSidebarExpanded) {
+      setIsSidebarExpanded(true);
+      setIsExtractionMenuOpen(true);
+      return;
+    }
+    setIsExtractionMenuOpen((value) => !value);
+  }
+
   const content = useMemo(() => {
     if (route.name === "task") {
       return <ResultPage taskId={route.taskId} onBack={() => navigateHome()} />;
     }
-    return <UploadPage onTaskCreated={navigateToTask} />;
+    if (route.name === "extract") {
+      return <ExtractionPage />;
+    }
+    return <UploadPage onTaskCreated={handleTaskCreated} />;
   }, [route]);
 
   if (!currentUser) {
@@ -60,18 +111,85 @@ export function App() {
   return (
     <div className={isSidebarExpanded ? "oa-frame sidebar-expanded" : "oa-frame"}>
       <aside className="oa-sidebar" aria-label="主导航">
-        <strong className="oa-sidebar-title">{isSidebarExpanded ? "合同智能对比" : "对比"}</strong>
+        <strong className="oa-sidebar-title">{isSidebarExpanded ? "合同智能助手" : "合同"}</strong>
         <nav className="oa-nav">
-          <button className="active" type="button" onClick={navigateHome}>
-            <span className="oa-nav-icon" aria-hidden="true">
-              []
-            </span>
-            <span>{isSidebarExpanded ? "对比合同" : "合同对比"}</span>
-          </button>
-          <button type="button" disabled>
-            <span className="oa-history-icon" aria-hidden="true" />
-            <span>对比记录</span>
-          </button>
+          <div className={isComparisonMenuOpen ? "oa-nav-group open" : "oa-nav-group"}>
+            <button
+              className={route.name === "task" || route.name === "home" ? "active" : ""}
+              type="button"
+              onClick={handleComparisonMenuClick}
+              aria-expanded={isSidebarExpanded ? isComparisonMenuOpen : undefined}
+            >
+              <span className="oa-nav-icon" aria-hidden="true">
+                []
+              </span>
+              <span>{isSidebarExpanded ? "合同智能对比" : "对比"}</span>
+              {isSidebarExpanded && <span className="oa-menu-chevron" aria-hidden="true" />}
+            </button>
+            {isSidebarExpanded && isComparisonMenuOpen && (
+              <div className="oa-subnav" aria-label="合同智能对比菜单">
+                <button className={route.name === "home" ? "active" : ""} type="button" onClick={navigateHome}>
+                  <span className="oa-subnav-dot" aria-hidden="true" />
+                  <span>合同对比</span>
+                </button>
+                <button
+                  className={route.name === "task" ? "active" : ""}
+                  type="button"
+                  onClick={() => {
+                    if (comparisonHistory[0]) {
+                      navigateToTask(comparisonHistory[0].taskId);
+                    }
+                  }}
+                >
+                  <span className="oa-history-icon" aria-hidden="true" />
+                  <span>对比记录</span>
+                </button>
+                {comparisonHistory.length > 0 &&
+                  comparisonHistory.map((item) => (
+                    <button
+                      key={item.taskId}
+                      className={route.name === "task" && route.taskId === item.taskId ? "active" : ""}
+                      type="button"
+                      onClick={() => navigateToTask(item.taskId)}
+                      aria-current={route.name === "task" && route.taskId === item.taskId ? "page" : undefined}
+                    >
+                      <span className="oa-subnav-dot" aria-hidden="true" />
+                      <span className="oa-history-entry">
+                        <strong>{shortTaskId(item.taskId)}</strong>
+                        <small>{formatHistoryTime(item.createdAt)}</small>
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            )}
+          </div>
+          <div className={isExtractionMenuOpen ? "oa-nav-group open" : "oa-nav-group"}>
+            <button
+              type="button"
+              onClick={handleExtractionMenuClick}
+              aria-expanded={isSidebarExpanded ? isExtractionMenuOpen : undefined}
+            >
+              <span className="oa-extract-icon" aria-hidden="true" />
+              <span>{isSidebarExpanded ? "合同智能提取" : "提取"}</span>
+              {isSidebarExpanded && <span className="oa-menu-chevron" aria-hidden="true" />}
+            </button>
+            {isSidebarExpanded && isExtractionMenuOpen && (
+              <div className="oa-subnav" aria-label="合同智能提取菜单">
+                <button className={route.name === "extract" ? "active" : ""} type="button" onClick={navigateToExtraction}>
+                  <span className="oa-subnav-dot" aria-hidden="true" />
+                  <span>合同提取</span>
+                </button>
+                <button type="button">
+                  <span className="oa-history-icon" aria-hidden="true" />
+                  <span>提取记录</span>
+                </button>
+                <button type="button">
+                  <span className="oa-field-icon" aria-hidden="true" />
+                  <span>提取字段管理</span>
+                </button>
+              </div>
+            )}
+          </div>
         </nav>
         {isSidebarExpanded && (
           <div className="oa-user-panel" aria-label="当前用户">
@@ -108,4 +226,42 @@ export function App() {
 function navigateHome(): void {
   window.history.pushState({}, "", "/");
   window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+function readComparisonHistory(): ComparisonHistoryItem[] {
+  try {
+    const value = window.localStorage.getItem(HISTORY_STORAGE_KEY);
+    if (!value) {
+      return [];
+    }
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .filter(
+        (item): item is ComparisonHistoryItem =>
+          typeof item?.taskId === "string" && typeof item?.createdAt === "string",
+      )
+      .slice(0, MAX_HISTORY_ITEMS);
+  } catch {
+    return [];
+  }
+}
+
+function shortTaskId(taskId: string): string {
+  return taskId.length > 16 ? `${taskId.slice(0, 8)}...${taskId.slice(-4)}` : taskId;
+}
+
+function formatHistoryTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "最近创建";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
