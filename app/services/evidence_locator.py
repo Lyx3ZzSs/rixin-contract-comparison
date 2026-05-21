@@ -46,8 +46,10 @@ class EvidenceLocator:
         fallback_type: str,
         side: str,
     ) -> list[EvidenceBox]:
-        if clause is None or not ranges:
+        if clause is None:
             return self._mark_fallback(fallback, snippet, fallback_type, side)
+        if not ranges:
+            return []
 
         precise: list[EvidenceBox] = []
         for text_range in ranges:

@@ -21,14 +21,20 @@ class TableUnit:
 class TableComparator:
     table_headers = {"序号", "产品名称", "详细配置", "品牌", "单位", "数量", "单价", "金额", "备注"}
     noise_pattern = re.compile(r"^(共\d+页第\d+页|第?\d+页|小计|\d+\s*套总计|\d+\s*套合计|\d+\s*套总合计)$")
+    table_block_types = {"table", "table_title", "table_cell"}
 
     def build_diffs(self, original: Document, compare: Document, start_index: int = 1) -> tuple[list[DiffItem], list[str]]:
+        warnings: list[str] = []
+        if not self._has_structured_table(original) and not self._has_structured_table(compare):
+            if any(page.blocks for page in [*original.pages, *compare.pages]):
+                warnings.append("未获得结构化表格区域，已跳过表格比对。")
+            return [], warnings
+
         original_units = self.extract_units(original)
         compare_units = self.extract_units(compare)
         if not original_units and not compare_units:
             return [], []
 
-        warnings: list[str] = []
         original_unmatched, compare_unmatched = self._unmatched_units(original_units, compare_units)
         if not original_unmatched and not compare_unmatched:
             return [], warnings
@@ -77,28 +83,7 @@ class TableComparator:
 
     def is_table_block(self, block: TextBlock) -> bool:
         block_type = (block.block_type or "").lower()
-        if block_type in {"table", "table_title"}:
-            return True
-        text = self._clean_text(block.text)
-        if not text:
-            return False
-        lines = [line for line in text.splitlines() if line.strip()]
-        compact_lines = {self._normalize(line) for line in lines}
-        header_hits = len(compact_lines & self.table_headers)
-        if header_hits >= 2:
-            return True
-        if len(lines) >= 3 and header_hits >= 1:
-            return True
-        first = compact_lines.pop() if len(compact_lines) == 1 else self._normalize(lines[0])
-        if re.fullmatch(r"\d{1,2}", first) and len(lines) >= 2:
-            return True
-        if len(lines) >= 2 and self._looks_like_product_table_text(text):
-            return True
-        if len(lines) >= 3 and any(re.fullmatch(r"\d{1,3}(,\d{3})*(\.\d+)?", line.strip()) for line in lines):
-            return True
-        if len(lines) >= 4 and any(re.fullmatch(r"\d+(\.\d+)?", self._normalize(line)) for line in lines):
-            return True
-        return False
+        return block_type in self.table_block_types
 
     def _unmatched_units(self, original: list[TableUnit], compare: list[TableUnit]) -> tuple[list[TableUnit], list[TableUnit]]:
         compare_counts = Counter(unit.normalized for unit in compare)
@@ -164,9 +149,7 @@ class TableComparator:
         lines = [line.strip() for line in self._clean_text(block.text).splitlines() if line.strip()]
         if not lines:
             return []
-        if (block.block_type or "").lower() in {"table", "table_title"}:
-            return lines
-        if len(lines) >= 3 and self._normalize(lines[0]) in self.table_headers:
+        if (block.block_type or "").lower() in self.table_block_types:
             return lines
         return ["\n".join(lines)]
 
@@ -197,34 +180,8 @@ class TableComparator:
         text = text.replace("；", "").replace("，", "").replace("。", "")
         return text
 
-    def _looks_like_product_table_text(self, text: str) -> bool:
-        compact = self._normalize(text)
-        table_terms = (
-            "cpu",
-            "内存",
-            "硬盘",
-            "sata",
-            "网口",
-            "串口",
-            "usb",
-            "双电源",
-            "单电源",
-            "航天联志",
-            "hp/超云",
-            "reton",
-            "国能日新",
-            "凝思",
-            "小计",
-            "预测服务器",
-            "气象服务器",
-            "工作站",
-            "kvm",
-            "显示器",
-            "防火墙",
-            "交换机",
-            "机柜",
-        )
-        return any(term in compact for term in table_terms)
+    def _has_structured_table(self, document: Document) -> bool:
+        return any(self.is_table_block(block) for page in document.pages for block in page.blocks)
 
     def _clean_text(self, text: str) -> str:
         text = unicodedata.normalize("NFKC", text or "").replace("\r", "\n")

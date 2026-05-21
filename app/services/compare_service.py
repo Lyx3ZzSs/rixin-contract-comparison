@@ -7,12 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import settings
-from app.models import CompareTask
+from app.models import Clause, CompareTask
 from app.services.clause_splitter import ClauseSplitter
 from app.services.cover_metadata import CoverMetadataComparator
 from app.services.diff_engine import DiffEngine
 from app.services.evidence_locator import EvidenceLocator
 from app.services.extractors import build_document_extractor
+from app.services.extractors.base import DocumentExtractionError, DocumentExtractor, ExtractionResult
 from app.services.matcher import ClauseMatcher
 from app.services.pdf_highlighter import PdfHighlighter
 from app.services.report_generator import ReportGenerator
@@ -25,8 +26,13 @@ logger = logging.getLogger(__name__)
 
 
 class CompareService:
-    def __init__(self) -> None:
-        self.extractor = build_document_extractor()
+    def __init__(
+        self,
+        extractor: DocumentExtractor | None = None,
+        structured_extractor: DocumentExtractor | None = None,
+    ) -> None:
+        self.extractor = extractor or build_document_extractor()
+        self.structured_extractor = structured_extractor
         self.cover_metadata = CoverMetadataComparator()
         self.table_comparator = TableComparator()
         self.splitter = ClauseSplitter()
@@ -41,7 +47,6 @@ class CompareService:
         self,
         original_pdf: str | Path,
         compare_pdf: str | Path,
-        enable_ai_analysis: bool = False,
         task_id: str | None = None,
         original_filename: str | None = None,
         compare_filename: str | None = None,
@@ -60,6 +65,13 @@ class CompareService:
         try:
             original_extraction = self.extractor.extract(original_pdf, task_id=task_id)
             compare_extraction = self.extractor.extract(compare_pdf, task_id=task_id)
+            original_extraction, compare_extraction = self._align_structured_extractions(
+                original_pdf,
+                compare_pdf,
+                task_id,
+                original_extraction,
+                compare_extraction,
+            )
             task.extractor_used = self._merge_extractor_names(
                 original_extraction.extractor_used,
                 compare_extraction.extractor_used,
@@ -85,7 +97,9 @@ class CompareService:
             pairs = self.matcher.match(original_clauses, compare_clauses)
             clause_diffs = self.diff_engine.build_diffs(pairs, start_index=len(metadata_diffs) + len(table_diffs) + 1)
             diffs = [*metadata_diffs, *table_diffs, *clause_diffs]
-            diffs = self.evidence_locator.locate(diffs, original_clauses, compare_clauses)
+            original_locate_clauses = self._clauses_for_evidence(original_clauses, [pair.original for pair in pairs])
+            compare_locate_clauses = self._clauses_for_evidence(compare_clauses, [pair.compare for pair in pairs])
+            diffs = self.evidence_locator.locate(diffs, original_locate_clauses, compare_locate_clauses)
             diffs = self.diff_engine.deduplicate_overlaps(diffs)
             task.diffs = diffs
             task.ai_summary = self._program_summary(diffs)
@@ -169,6 +183,75 @@ class CompareService:
         shutil.copyfile(source, destination)
         return destination
 
+    def _align_structured_extractions(
+        self,
+        original_pdf: str | Path,
+        compare_pdf: str | Path,
+        task_id: str,
+        original: ExtractionResult,
+        compare: ExtractionResult,
+    ) -> tuple[ExtractionResult, ExtractionResult]:
+        if not settings.align_structured_extraction:
+            return original, compare
+
+        original_structured = self._is_structured_extractor_used(original.extractor_used)
+        compare_structured = self._is_structured_extractor_used(compare.extractor_used)
+        original_pymupdf = self._is_pymupdf_extractor_used(original.extractor_used)
+        compare_pymupdf = self._is_pymupdf_extractor_used(compare.extractor_used)
+
+        if original_structured and compare_pymupdf:
+            compare = self._upgrade_to_structured_extraction(compare_pdf, task_id, compare, "compare", original.extractor_used)
+        elif compare_structured and original_pymupdf:
+            original = self._upgrade_to_structured_extraction(original_pdf, task_id, original, "original", compare.extractor_used)
+        return original, compare
+
+    def _upgrade_to_structured_extraction(
+        self,
+        pdf_path: str | Path,
+        task_id: str,
+        current: ExtractionResult,
+        side: str,
+        reference_extractor_used: str,
+    ) -> ExtractionResult:
+        try:
+            extractor = self.structured_extractor or self._matching_structured_extractor(reference_extractor_used)
+            upgraded = extractor.extract(pdf_path, task_id=task_id)
+        except DocumentExtractionError as exc:
+            current.warnings.append(
+                f"为保持表格边界一致，{side} 尝试切换结构化 OCR 抽取失败，已保留 PyMuPDF 结果: {exc}"
+            )
+            return current
+        except Exception as exc:  # pragma: no cover - defensive around remote OCR clients
+            logger.exception("Structured extraction alignment failed")
+            current.warnings.append(
+                f"为保持表格边界一致，{side} 尝试切换结构化 OCR 抽取失败，已保留 PyMuPDF 结果: {exc}"
+            )
+            return current
+
+        upgraded.warnings = [
+            *current.warnings,
+            f"为保持表格边界一致，{side} 已从 PyMuPDF 切换为结构化 OCR 抽取。",
+            *upgraded.warnings,
+        ]
+        return upgraded
+
+    def _is_pymupdf_extractor_used(self, extractor_used: str) -> bool:
+        return (extractor_used or "").lower() == "pymupdf"
+
+    def _is_structured_extractor_used(self, extractor_used: str) -> bool:
+        name = (extractor_used or "").lower()
+        if not name or "ocr_only" in name:
+            return False
+        return any(marker in name for marker in ("ppstructure", "paddleocr_vl", "vl_ocr_hybrid"))
+
+    def _matching_structured_extractor(self, extractor_used: str) -> DocumentExtractor:
+        name = (extractor_used or "").lower()
+        if "vl_ocr_hybrid" in name:
+            return build_document_extractor("vl_ocr_hybrid")
+        if "paddleocr_vl" in name:
+            return build_document_extractor("paddleocr_vl")
+        return build_document_extractor("ppstructure_ocr_hybrid")
+
     def _program_summary(self, diffs) -> str:
         if not diffs:
             return "未发现合同条款差异。"
@@ -181,6 +264,13 @@ class CompareService:
             f"修改 {types['MODIFY']} 处。风险分布为高风险 {risks['HIGH']} 处、中风险 {risks['MEDIUM']} 处、"
             f"低风险 {risks['LOW']} 处，重点关注 {element_text}。请结合业务背景逐条复核。"
         )
+
+    def _clauses_for_evidence(self, base_clauses: list[Clause], pair_clauses: list[Clause | None]) -> list[Clause]:
+        by_id = {clause.clause_id: clause for clause in base_clauses}
+        for clause in pair_clauses:
+            if clause is not None:
+                by_id[clause.clause_id] = clause
+        return list(by_id.values())
 
     def _merge_extractor_names(self, original: str, compare: str) -> str:
         if original == compare:

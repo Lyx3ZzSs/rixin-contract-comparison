@@ -16,6 +16,11 @@ from app.services.extractors.base import DocumentExtractionError, ExtractionResu
 
 class PPOCRV5Extractor:
     name = "ppocrv5"
+    page_number_pattern = re.compile(
+        r"^(?:共\s*\d+\s*页\s*)?(?:第\s*)?\d+\s*页$|^第\s*\d+\s*/\s*共\s*\d+\s*页$|^[-—]?\s*\d+\s*[-—]?$",
+        re.IGNORECASE,
+    )
+    per_mille_ocr_pattern = re.compile(r"(?P<number>\d+(?:[.,]\d+)?)%0(?=\D|$)")
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         path = Path(path)
@@ -126,13 +131,138 @@ class PPOCRV5Extractor:
             page_payload = page_results[fallback_index] if fallback_index < len(page_results) else {}
             page_no = self._page_no(page_payload, fallback_index)
             width, height = page_sizes[page_no - 1] if 0 <= page_no - 1 < len(page_sizes) else (595.0, 842.0)
-            blocks = self._blocks_from_page(page_no, width, height, page_payload)
+            blocks = self._classify_page_blocks(self._blocks_from_page(page_no, width, height, page_payload), width, height)
             pages.append(Page(page_no=page_no, width=width, height=height, blocks=blocks))
 
         pages.sort(key=lambda page: page.page_no)
+        self._correct_verified_per_mille_ocr(pages, source_path)
         if not any(block.text.strip() for page in pages for block in page.blocks):
             raise DocumentExtractionError("PP-OCRv5 未返回可用于对比的文本。")
         return Document(filename=source_path.name, path=str(source_path), page_count=page_count, pages=pages)
+
+    def _correct_verified_per_mille_ocr(self, pages: list[Page], source_path: Path) -> int:
+        page_texts = self._pdf_page_texts(source_path)
+        if not page_texts:
+            return 0
+
+        corrected_count = 0
+        for page in pages:
+            native_text = page_texts[page.page_no - 1] if 0 <= page.page_no - 1 < len(page_texts) else ""
+            native_compact = self._compact_text(native_text)
+            if "‰" not in native_compact:
+                continue
+            for block in page.blocks:
+                corrected_text = self._correct_line_per_mille_text(block.text, native_compact)
+                if corrected_text == block.text:
+                    continue
+                replacements = self._per_mille_replacements(block.text, native_compact)
+                block.text = corrected_text
+                block.char_boxes = self._correct_per_mille_char_boxes(block.text, block.char_boxes, replacements)
+                corrected_count += len(replacements)
+        return corrected_count
+
+    def _pdf_page_texts(self, path: Path) -> list[str]:
+        try:
+            pdf = fitz.open(path)
+        except Exception:
+            return []
+        try:
+            return [page.get_text() for page in pdf]
+        finally:
+            pdf.close()
+
+    def _correct_line_per_mille_text(self, text: str, native_compact: str) -> str:
+        replacements = self._per_mille_replacements(text, native_compact)
+        if not replacements:
+            return text
+        corrected = text
+        for percent_index, _ in reversed(replacements):
+            corrected = f"{corrected[:percent_index]}‰{corrected[percent_index + 2:]}"
+        return corrected
+
+    def _per_mille_replacements(self, text: str, native_compact: str) -> list[tuple[int, int]]:
+        replacements: list[tuple[int, int]] = []
+        for match in self.per_mille_ocr_pattern.finditer(text or ""):
+            percent_index = match.end("number")
+            zero_index = percent_index + 1
+            candidate = f"{text[:percent_index]}‰{text[zero_index + 1:]}"
+            if self._verified_per_mille_context(text, candidate, match.start(), match.end(), native_compact):
+                replacements.append((percent_index, zero_index))
+        return replacements
+
+    def _verified_per_mille_context(
+        self,
+        original: str,
+        corrected: str,
+        match_start: int,
+        match_end: int,
+        native_compact: str,
+    ) -> bool:
+        if not native_compact:
+            return False
+        if self._compact_text(corrected) in native_compact:
+            return True
+        context_start = max(0, match_start - 12)
+        context_end = min(len(original), match_end + 12)
+        context = corrected[context_start : max(context_start, context_end - 1)]
+        return self._compact_text(context) in native_compact
+
+    def _correct_per_mille_char_boxes(
+        self,
+        corrected_text: str,
+        char_boxes: list[CharBox],
+        replacements: list[tuple[int, int]],
+    ) -> list[CharBox]:
+        if not char_boxes or not replacements:
+            return char_boxes
+
+        by_index = {char_box.text_index: char_box for char_box in char_boxes if char_box.text_index is not None}
+        if not by_index:
+            return char_boxes
+
+        replacement_map = {percent_index: zero_index for percent_index, zero_index in replacements}
+        corrected_boxes: list[CharBox] = []
+        original_index = 0
+        corrected_index = 0
+        original_length = max(by_index) + 1
+        while original_index < original_length:
+            zero_index = replacement_map.get(original_index)
+            if zero_index == original_index + 1:
+                percent_box = by_index.get(original_index)
+                zero_box = by_index.get(zero_index)
+                merged_box = self._merge_char_box_pair(percent_box, zero_box, corrected_index)
+                if merged_box is not None:
+                    corrected_boxes.append(merged_box)
+                original_index += 2
+                corrected_index += 1
+                continue
+
+            char_box = by_index.get(original_index)
+            if char_box is not None:
+                char = corrected_text[corrected_index] if corrected_index < len(corrected_text) else char_box.char
+                corrected_boxes.append(char_box.model_copy(update={"char": char, "text_index": corrected_index}))
+            original_index += 1
+            corrected_index += 1
+        return corrected_boxes
+
+    def _merge_char_box_pair(
+        self,
+        left: CharBox | None,
+        right: CharBox | None,
+        text_index: int,
+    ) -> CharBox | None:
+        base = left or right
+        if base is None:
+            return None
+        if left is None or right is None:
+            return base.model_copy(update={"char": "‰", "text_index": text_index})
+        bbox = BBox(
+            x0=min(left.bbox.x0, right.bbox.x0),
+            y0=min(left.bbox.y0, right.bbox.y0),
+            x1=max(left.bbox.x1, right.bbox.x1),
+            y1=max(left.bbox.y1, right.bbox.y1),
+        )
+        return CharBox(char="‰", page_no=base.page_no, bbox=bbox, text_index=text_index)
 
     def _blocks_from_page(self, page_no: int, width: float, height: float, page_payload: Any) -> list[TextBlock]:
         pruned = self._unwrap_page_result(page_payload)
@@ -155,6 +285,9 @@ class PPOCRV5Extractor:
                 continue
             box_value = boxes[index - 1] if index - 1 < len(boxes) else None
             bbox = self._bbox_from_any(box_value, width, height, image_width, image_height)
+            confidence = self._optional_float(scores[index - 1] if index - 1 < len(scores) else None)
+            if self._is_low_confidence_edge_noise(text, bbox, width, height, confidence):
+                continue
             blocks.append(
                 TextBlock(
                     block_id=f"p{page_no}_ppocrv5_b{index}",
@@ -162,7 +295,7 @@ class PPOCRV5Extractor:
                     text=text,
                     bbox=bbox,
                     block_type="ocr_line",
-                    confidence=self._optional_float(scores[index - 1] if index - 1 < len(scores) else None),
+                    confidence=confidence,
                     char_boxes=self._char_boxes_for_line(
                         pruned,
                         line_index=index - 1,
@@ -176,6 +309,58 @@ class PPOCRV5Extractor:
                 )
             )
         return sorted(blocks, key=lambda block: (block.bbox.y0, block.bbox.x0))
+
+    def _classify_page_blocks(self, blocks: list[TextBlock], width: float, height: float) -> list[TextBlock]:
+        if not blocks:
+            return blocks
+        return [self._classify_margin_block(block, width, height) for block in blocks]
+
+    def _classify_margin_block(self, block: TextBlock, width: float, height: float) -> TextBlock:
+        if block.block_type != "ocr_line":
+            return block
+        text = self._compact_text(block.text)
+        if not text:
+            return block
+        top_limit = height * 0.08
+        bottom_limit = height * 0.92
+        near_top = block.bbox.y1 <= top_limit
+        near_bottom = block.bbox.y0 >= bottom_limit
+        if self.page_number_pattern.fullmatch(text) and near_bottom:
+            return block.model_copy(update={"block_type": "page_footer"})
+        if near_bottom:
+            return block.model_copy(update={"block_type": "footer"})
+        if near_top and self._looks_like_running_header(text, width, block):
+            return block.model_copy(update={"block_type": "header"})
+        return block
+
+    def _looks_like_running_header(self, text: str, width: float, block: TextBlock) -> bool:
+        if len(text) > 40:
+            return False
+        if self._looks_like_clause_start(text):
+            return False
+        if re.search(r"(合同|协议|条款|甲方|乙方)", text) and block.bbox.x0 < width * 0.2:
+            return False
+        return bool(re.search(r"[A-Za-z0-9][A-Za-z0-9._/-]{3,}", text) or len(text) <= 8)
+
+    def _looks_like_clause_start(self, text: str) -> bool:
+        compact = self._compact_text(text)
+        return bool(
+            re.match(r"^第[一二三四五六七八九十百千万0-9]+[章节条]", compact)
+            or re.match(r"^[一二三四五六七八九十]+、", compact)
+            or re.match(r"^\d+(?:\.\d+){0,3}[.、]", compact)
+        )
+
+    def _compact_text(self, text: str) -> str:
+        return re.sub(r"\s+", "", text or "")
+
+    def _median(self, values: list[float]) -> float:
+        if not values:
+            return 1.0
+        ordered = sorted(values)
+        middle = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[middle]
+        return (ordered[middle - 1] + ordered[middle]) / 2
 
     def _blocks_from_result_items(self, page_no: int, width: float, height: float, items: list[Any]) -> list[TextBlock]:
         blocks: list[TextBlock] = []
@@ -192,6 +377,9 @@ class PPOCRV5Extractor:
                 width,
                 height,
             )
+            confidence = self._optional_float(self._first_value(item, "score", "confidence", "recScore", "rec_score"))
+            if self._is_low_confidence_edge_noise(text, bbox, width, height, confidence):
+                continue
             blocks.append(
                 TextBlock(
                     block_id=f"p{page_no}_ppocrv5_b{index}",
@@ -199,10 +387,32 @@ class PPOCRV5Extractor:
                     text=text,
                     bbox=bbox,
                     block_type="ocr_line",
-                    confidence=self._optional_float(self._first_value(item, "score", "confidence", "recScore", "rec_score")),
+                    confidence=confidence,
                 )
             )
         return sorted(blocks, key=lambda block: (block.bbox.y0, block.bbox.x0))
+
+    def _is_low_confidence_edge_noise(
+        self,
+        text: str,
+        bbox: BBox,
+        width: float,
+        height: float,
+        confidence: float | None,
+    ) -> bool:
+        if confidence is None or confidence >= settings.ppocrv5_edge_noise_score_thresh:
+            return False
+        compact = self._compact_text(text)
+        if not compact or len(compact) > settings.ppocrv5_edge_noise_max_chars:
+            return False
+        margin_x = max(0.0, width * settings.ppocrv5_edge_noise_margin_ratio)
+        margin_y = max(0.0, height * settings.ppocrv5_edge_noise_margin_ratio)
+        return (
+            bbox.x0 <= margin_x
+            or bbox.x1 >= width - margin_x
+            or bbox.y0 <= margin_y
+            or bbox.y1 >= height - margin_y
+        )
 
     def _char_boxes_for_line(
         self,

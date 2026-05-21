@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.models import CompareTask
@@ -21,7 +21,6 @@ router = APIRouter(prefix="/api/compare", tags=["compare"])
 async def compare_contracts(
     original_file: UploadFile = File(...),
     compare_file: UploadFile = File(...),
-    enable_ai_analysis: bool = Form(False),
 ) -> dict:
     task_id = generate_task_id()
     try:
@@ -30,7 +29,6 @@ async def compare_contracts(
         task = CompareService().compare(
             original_path,
             compare_path,
-            enable_ai_analysis=enable_ai_analysis,
             task_id=task_id,
             original_filename=original_file.filename,
             compare_filename=compare_file.filename,

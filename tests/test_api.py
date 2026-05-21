@@ -52,7 +52,6 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
                 "original_file": ("original.pdf", original_file, "application/pdf"),
                 "compare_file": ("compare.pdf", compare_file, "application/pdf"),
             },
-            data={"enable_ai_analysis": "false"},
         )
     assert response.status_code == 200, response.text
     payload = response.json()

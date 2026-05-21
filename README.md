@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 文档识别默认走 PyMuPDF，扫描件切换到远端 PaddleOCR-VL-1.5。
+- 文档识别默认走 PyMuPDF，扫描件切换到远端 PP-OCRv5。
 - 文本型 PDF、扫描件 PDF 的结构化文本提取。
 - 条款切分和坐标证据绑定。
 - 条款编号、标题、正文相似度匹配。
@@ -66,19 +66,44 @@ VITE_API_BASE_URL=http://127.0.0.1:8001
 
 ## 文档识别配置
 
-默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本或文本量不足时切换到远端 PaddleOCR-VL-1.5 + PP-OCRv5 混合抽取。混合模式中 VL 只负责结构块和版面类型，PP-OCRv5 负责真实文本、行坐标和词/字符坐标。
+默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本或文本量不足时切换到结构化 OCR。扫描件链路优先使用 PP-Structure 做版面/表格结构识别，并使用 PP-OCRv5 提供真实文本、行坐标和词/字符坐标；如果 PP-Structure 不可用，会回退到仅 PP-OCRv5 文本抽取，并跳过结构化表格比对。
 
 ```bash
 DOCUMENT_EXTRACTOR=auto
 PYMUPDF_MIN_TEXT_CHARS=1
+ALIGN_STRUCTURED_EXTRACTION=true
 ```
 
-也可以显式指定 `pymupdf`、`vl_ocr_hybrid`、`paddleocr_vl` 或 `ppocrv5`。`vl_ocr_hybrid` 会同时调用 `{PADDLEOCR_VL_URL}/layout-parsing` 和 `{PPOCRV5_URL}/ocr`，最终对比文本以 PP-OCRv5 为准。
+也可以显式指定 `pymupdf`、`ppocrv5`、`ppstructure_ocr_hybrid`、`vl_ocr_hybrid` 或 `paddleocr_vl`。`ppstructure_ocr_hybrid` 会同时调用 `{PPSTRUCTURE_URL}/layout-parsing` 和 `{PPOCRV5_URL}/ocr`，最终对比文本以 PP-OCRv5 为准；`vl_ocr_hybrid` 是实验/可选链路，会同时调用 `{PADDLEOCR_VL_URL}/layout-parsing` 和 `{PPOCRV5_URL}/ocr`。
 
-接入远端 PaddleOCR-VL-1.5 时配置：
+`ALIGN_STRUCTURED_EXTRACTION=true` 时，如果同一对比任务中一侧已经切换到结构化抽取、另一侧仍为 PyMuPDF，系统会将 PyMuPDF 侧重新用结构化抽取器处理，以保持表格边界一致，避免表格文本被当作正文条款参与比对。
+
+接入默认扫描件识别链路时配置：
 
 ```bash
-PADDLEOCR_VL_URL=https://u1013288-8b13-35b9cafe.westc.seetacloud.com:8443/
+PPSTRUCTURE_URL=https://your-ppstructure-host/
+PPSTRUCTURE_TIMEOUT_SECONDS=600
+PPSTRUCTURE_USE_DOC_ORIENTATION_CLASSIFY=false
+PPSTRUCTURE_USE_DOC_UNWARPING=false
+PPSTRUCTURE_USE_TEXTLINE_ORIENTATION=false
+PPSTRUCTURE_USE_TABLE_RECOGNITION=true
+PPSTRUCTURE_USE_SEAL_RECOGNITION=false
+PPSTRUCTURE_USE_REGION_DETECTION=true
+PPSTRUCTURE_FORMAT_BLOCK_CONTENT=true
+PPOCRV5_URL=https://your-ppocrv5-host/
+PPOCRV5_TIMEOUT_SECONDS=600
+PPOCRV5_RETURN_WORD_BOX=true
+PPOCRV5_USE_DOC_ORIENTATION_CLASSIFY=false
+PPOCRV5_USE_DOC_UNWARPING=false
+PPOCRV5_USE_TEXTLINE_ORIENTATION=false
+PPOCRV5_TEXT_REC_SCORE_THRESH=0.0
+SAVE_OCR_RAW_RESULT=true
+```
+
+如需显式启用实验性的 PaddleOCR-VL-1.5 版面结构链路，再额外配置：
+
+```bash
+PADDLEOCR_VL_URL=https://your-paddleocr-vl-host/
 PADDLEOCR_VL_TIMEOUT_SECONDS=600
 PADDLEOCR_VL_PAGE_MODE=true
 PADDLEOCR_VL_RETRY_COUNT=1
@@ -93,20 +118,12 @@ PADDLEOCR_VL_MERGE_LAYOUT_BLOCKS=true
 PADDLEOCR_VL_PRETTIFY_MARKDOWN=false
 #PADDLEOCR_VL_MAX_PIXELS=0
 #PADDLEOCR_VL_MAX_NEW_TOKENS=0
-PPOCRV5_URL=https://your-ppocrv5-host/
-PPOCRV5_TIMEOUT_SECONDS=600
-PPOCRV5_RETURN_WORD_BOX=true
-PPOCRV5_USE_DOC_ORIENTATION_CLASSIFY=false
-PPOCRV5_USE_DOC_UNWARPING=false
-PPOCRV5_USE_TEXTLINE_ORIENTATION=false
-PPOCRV5_TEXT_REC_SCORE_THRESH=0.0
 HYBRID_LAYOUT_OVERLAP_THRESHOLD=0.5
 HYBRID_LAYOUT_CENTER_FALLBACK=true
 HYBRID_SAVE_MERGED_RAW=true
-SAVE_OCR_RAW_RESULT=true
 ```
 
-OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。默认 `PADDLEOCR_VL_PAGE_MODE=true`，VL 会按页提交远端并合并结果，避免整份 PDF 一次请求导致超时；单页超时时错误信息会包含页码。系统把 PP-OCRv5 的文字行按坐标归属到 VL 的结构块，继承 `doc_title`、`text`、`table`、`footer` 等类型；差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
+OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。默认扫描件链路不依赖 VL；系统会用 PP-Structure 的结构区域标记 PP-OCRv5 文字行，不再基于 OCR 文本关键词推断表格区域。显式启用 `vl_ocr_hybrid` 时，默认 `PADDLEOCR_VL_PAGE_MODE=true`，VL 会按页提交远端并合并结果，避免整份 PDF 一次请求导致超时；单页超时时错误信息会包含页码。差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
 
 接入 OpenAI-compatible 合同风险分析模型时配置：
 
@@ -126,8 +143,7 @@ REPORT_MAX_SCREENSHOT_PAGES=10
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/compare" \
   -F "original_file=@original.pdf" \
-  -F "compare_file=@compare.pdf" \
-  -F "enable_ai_analysis=false"
+  -F "compare_file=@compare.pdf"
 ```
 
 响应包含：
@@ -178,7 +194,7 @@ cd frontend && npm test && npm run build
 
 ## 当前限制
 
-- 扫描件混合抽取需要同时配置可用的 `PADDLEOCR_VL_URL` 和 `PPOCRV5_URL`，识别质量取决于远端结构模型和 OCR 模型返回结果。
+- 扫描件默认抽取需要配置可用的 `PPOCRV5_URL`；实验性的 `vl_ocr_hybrid` 才需要同时配置 `PADDLEOCR_VL_URL`。
 - 暂不支持 Word、Excel 和复杂表格深度 diff。
 - MVP 使用同步任务、本地 JSON 和本地文件存储。
 - 风险统计首期不接入大模型，默认按低风险兼容展示。

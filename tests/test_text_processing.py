@@ -140,6 +140,112 @@ def test_clause_splitter_preserves_char_boxes_for_split_clauses() -> None:
     assert clauses[1].char_boxes[0].char == "2"
 
 
+def test_clause_splitter_does_not_guess_unnumbered_ocr_lines_as_titles() -> None:
+    document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1_b1",
+                        page_no=1,
+                        text="14.2其他约定",
+                        bbox=BBox(x0=80, y0=80, x1=180, y1=96),
+                        block_type="ocr_line",
+                    ),
+                    TextBlock(
+                        block_id="p1_b2",
+                        page_no=1,
+                        text="系统开放性与可配置性要求",
+                        bbox=BBox(x0=110, y0=114, x1=236, y1=127),
+                        block_type="ocr_line",
+                    ),
+                    TextBlock(
+                        block_id="p1_b3",
+                        page_no=1,
+                        text="预测文件上报接口开放",
+                        bbox=BBox(x0=130, y0=138, x1=235, y1=150),
+                        block_type="ocr_line",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert len(clauses) == 1
+    assert "系统开放性与可配置性要求" in clauses[0].text
+    assert "预测文件上报接口开放" in clauses[0].text
+
+
+def test_clause_splitter_uses_geometry_when_any_layout_order_is_missing() -> None:
+    document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1_b1",
+                        page_no=1,
+                        text="7.2在质保期内，乙方有权按照成本价收",
+                        bbox=BBox(x0=86, y0=700, x1=530, y1=716),
+                        block_type="text",
+                        layout_order=20,
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p2_b1",
+                        page_no=2,
+                        text="取维护费。",
+                        bbox=BBox(x0=66, y0=64, x1=121, y1=78),
+                        block_type="text",
+                        layout_order=1,
+                    ),
+                    TextBlock(
+                        block_id="p2_b2",
+                        page_no=2,
+                        text="7.3验收标准如下。",
+                        bbox=BBox(x0=89, y0=88, x1=230, y1=101),
+                        block_type="text",
+                        layout_order=2,
+                    ),
+                    TextBlock(
+                        block_id="p2_noise",
+                        page_no=2,
+                        text="心",
+                        bbox=BBox(x0=0, y0=533, x1=7, y1=604),
+                        block_type="ocr_line",
+                        layout_order=None,
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    clause_72 = next(clause for clause in clauses if clause.clause_no == "7.2")
+    assert "取维护费。" in clause_72.text
+    assert "心" not in clause_72.text
+
+
 def test_clause_splitter_keeps_product_table_cells_in_parent_clause() -> None:
     document = Document(
         filename="table.pdf",
@@ -162,18 +268,21 @@ def test_clause_splitter_keeps_product_table_cells_in_parent_clause() -> None:
                         page_no=1,
                         text="产品名称\n规格型号\n数量\n单价（元）\n合计（元）\n智能电表采集终",
                         bbox=BBox(x0=10, y0=35, x1=500, y1=65),
+                        block_type="table",
                     ),
                     TextBlock(
                         block_id="p1_b3",
                         page_no=1,
                         text="端\nHY-EM300\n120 台\n1,230.00\n147,600.00",
                         bbox=BBox(x0=10, y0=70, x1=500, y1=100),
+                        block_type="table",
                     ),
                     TextBlock(
                         block_id="p1_b4",
                         page_no=1,
                         text="边缘网关\nHY-GW200\n20 台\n2,500.00\n50,000.00",
                         bbox=BBox(x0=10, y0=105, x1=500, y1=135),
+                        block_type="table",
                     ),
                     TextBlock(
                         block_id="p1_b5",
@@ -322,12 +431,14 @@ def test_clause_splitter_excludes_listing_table_from_subject_clause() -> None:
                         page_no=1,
                         text="序号\n产品名称\n详细配置\n品牌\n单位\n数量\n单价\n金额\n备注",
                         bbox=BBox(x0=60, y0=180, x1=520, y1=210),
+                        block_type="table",
                     ),
                     TextBlock(
                         block_id="p1_row",
                         page_no=1,
                         text="1\n预测服务器\n14020R 双电\nCPU:1*4 核;内存:\n16G;硬盘:2T SATA;\n航天联志\n台\n1\n8500\n8500",
                         bbox=BBox(x0=60, y0=220, x1=520, y1=320),
+                        block_type="table",
                     ),
                     TextBlock(
                         block_id="p1_price",
@@ -354,7 +465,95 @@ def test_clause_splitter_excludes_listing_table_from_subject_clause() -> None:
     assert "上述价格" in clauses[0].text
 
 
-def test_table_comparator_skips_large_unreliable_table_reordering() -> None:
+def test_clause_splitter_keeps_price_explanation_after_listing_table() -> None:
+    document = Document(
+        filename="subject.pdf",
+        path="subject.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1_title",
+                        page_no=1,
+                        text="一、标的物",
+                        bbox=BBox(x0=80, y0=120, x1=160, y1=145),
+                    ),
+                    TextBlock(
+                        block_id="p1_intro",
+                        page_no=1,
+                        text="乙方应向甲方合格地提供以下设备：",
+                        bbox=BBox(x0=80, y0=150, x1=360, y1=170),
+                    ),
+                    TextBlock(
+                        block_id="p1_model",
+                        page_no=1,
+                        text="288G9E/A2202AS",
+                        bbox=BBox(x0=170, y0=190, x1=250, y1=210),
+                        block_type="table",
+                    ),
+                    TextBlock(
+                        block_id="p1_config",
+                        page_no=1,
+                        text="StoneWall-200BF",
+                        bbox=BBox(x0=170, y0=220, x1=250, y1=240),
+                        block_type="table",
+                    ),
+                    TextBlock(
+                        block_id="p1_price1",
+                        page_no=1,
+                        text="上述价格为含13%增值税价格，总金额包括光伏功率预测系统V2.0软件部分价格，支",
+                        bbox=BBox(x0=80, y0=280, x1=540, y1=300),
+                    ),
+                    TextBlock(
+                        block_id="p1_price2",
+                        page_no=1,
+                        text="持该系统所需的硬件设备价格。该价格为固定不变价，包括设备及随机附件的设计、采购、",
+                        bbox=BBox(x0=60, y0=310, x1=540, y1=330),
+                    ),
+                    TextBlock(
+                        block_id="p1_price3",
+                        page_no=1,
+                        text="制造、税类（包含关税）、包装、运输、保险费用：还包含安装调试、技术服务（包含技术",
+                        bbox=BBox(x0=60, y0=340, x1=540, y1=360),
+                    ),
+                    TextBlock(
+                        block_id="p1_price4",
+                        page_no=1,
+                        text="资料、图纸的提供）、质保期内服务的费用。",
+                        bbox=BBox(x0=60, y0=370, x1=360, y1=390),
+                    ),
+                    TextBlock(
+                        block_id="p1_price5",
+                        page_no=1,
+                        text="上述价格不包含二次搬运、征地、阻工、爆破、通信接口协调等费用。",
+                        bbox=BBox(x0=80, y0=400, x1=500, y1=420),
+                    ),
+                    TextBlock(
+                        block_id="p1_next",
+                        page_no=1,
+                        text="二、乙方义务",
+                        bbox=BBox(x0=80, y0=450, x1=180, y1=470),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["一", "二"]
+    assert "288G9E" not in clauses[0].text
+    assert "StoneWall" not in clauses[0].text
+    assert "上述价格为含13%" in clauses[0].text
+    assert "持该系统所需的硬件设备价格" in clauses[0].text
+    assert "制造、税类" in clauses[0].text
+
+
+def test_table_comparator_does_not_infer_table_from_unstructured_text() -> None:
     original = table_document(
         [
             ("o1", "序号", "table"),
@@ -380,7 +579,17 @@ def test_table_comparator_skips_large_unreliable_table_reordering() -> None:
     diffs, warnings = TableComparator().build_diffs(original, compare)
 
     assert diffs == []
-    assert warnings == ["表格抽取顺序差异较大，已跳过大范围表格字符级高亮。"]
+    assert warnings == ["部分表格文本无法可靠按行/单元格配对，已跳过大范围表格字符级高亮。"]
+
+
+def test_table_comparator_warns_when_no_structured_table_regions() -> None:
+    original = table_document([("o1", "序号\n产品名称\n预测服务器", "text")])
+    compare = table_document([("n1", "序号\n产品名称\n预测服务器", "text")])
+
+    diffs, warnings = TableComparator().build_diffs(original, compare)
+
+    assert diffs == []
+    assert warnings == ["未获得结构化表格区域，已跳过表格比对。"]
 
 
 def test_table_comparator_reports_small_cell_change() -> None:
@@ -486,6 +695,196 @@ def test_cover_metadata_compares_cover_fields_without_title_false_positive() -> 
     assert date_diff.compare_evidence[0].highlight_type == "MODIFY"
 
 
+def test_cover_metadata_joins_split_same_line_date_and_marks_deleted_day() -> None:
+    original = Document(
+        filename="original.pdf",
+        path="original.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="o_label",
+                        page_no=1,
+                        text="签订日期",
+                        bbox=BBox(x0=100, y0=120, x1=160, y1=140),
+                        block_type="table",
+                    ),
+                    TextBlock(
+                        block_id="o_value",
+                        page_no=1,
+                        text="2026年4月21日",
+                        bbox=BBox(x0=200, y0=120, x1=310, y1=140),
+                        block_type="table",
+                        char_boxes=[
+                            CharBox(
+                                char=char,
+                                page_no=1,
+                                bbox=BBox(x0=200 + index * 10, y0=120, x1=208 + index * 10, y1=140),
+                                text_index=index,
+                            )
+                            for index, char in enumerate("2026年4月21日")
+                        ],
+                    ),
+                ],
+            ),
+            Page(page_no=2, width=595, height=842, blocks=[TextBlock(block_id="o_body", page_no=2, text="正文", bbox=BBox(x0=280, y0=80, x1=340, y1=110))]),
+        ],
+    )
+    compare = Document(
+        filename="compare.pdf",
+        path="compare.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="n_label",
+                        page_no=1,
+                        text="签订日期",
+                        bbox=BBox(x0=100, y0=120, x1=160, y1=140),
+                        block_type="table",
+                    ),
+                    TextBlock(
+                        block_id="n_value_month",
+                        page_no=1,
+                        text="2026年4月",
+                        bbox=BBox(x0=200, y0=120, x1=270, y1=140),
+                        block_type="table",
+                    ),
+                    TextBlock(
+                        block_id="n_value_day",
+                        page_no=1,
+                        text="日",
+                        bbox=BBox(x0=300, y0=120, x1=310, y1=140),
+                        block_type="table",
+                    ),
+                ],
+            ),
+            Page(page_no=2, width=595, height=842, blocks=[TextBlock(block_id="n_body", page_no=2, text="正文", bbox=BBox(x0=280, y0=80, x1=340, y1=110))]),
+        ],
+    )
+
+    fields = CoverMetadataComparator().extract(compare)
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    assert fields["sign_date"].value == "2026年4月日"
+    date_diff = next(diff for diff in diffs if diff.title == "封面字段：签订日期")
+    assert date_diff.diff_type == "MODIFY"
+    assert date_diff.original_text == "2026年4月21日"
+    assert date_diff.compare_text == "2026年4月日"
+    assert date_diff.original_snippet == "21"
+    assert date_diff.compare_snippet == ""
+    assert [(item.start, item.end, item.highlight_type) for item in date_diff.original_change_ranges] == [(7, 9, "DELETE")]
+    assert date_diff.compare_change_ranges == []
+    assert [(evidence.text, evidence.highlight_type) for evidence in date_diff.original_evidence] == [("21", "DELETE")]
+    assert date_diff.compare_evidence == []
+
+
+def test_cover_metadata_reports_original_only_extra_cover_text() -> None:
+    original = cover_document("XX-C-260520", "2026年4月21日")
+    original.pages[0].blocks.insert(
+        1,
+        TextBlock(
+            block_id="p1_extra_no",
+            page_no=1,
+            text="GxN-26042-00044",
+            bbox=BBox(x0=392, y0=7, x1=543, y1=34.5),
+            block_type="text",
+        ),
+    )
+    original.pages[0].blocks.insert(
+        2,
+        TextBlock(
+            block_id="p1_extra_char",
+            page_no=1,
+            text="永",
+            bbox=BBox(x0=496.5, y0=38, x1=528.5, y1=71.5),
+            block_type="text",
+        ),
+    )
+    compare = cover_document("XX-C-260520", "2026年4月21日")
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    extra_diffs = [diff for diff in diffs if diff.title == "封面额外文本"]
+    assert [(diff.diff_type, diff.original_text) for diff in extra_diffs] == [
+        ("DELETE", "GxN-26042-00044"),
+        ("DELETE", "永"),
+    ]
+    assert all(diff.original_evidence[0].method == "cover_extra" for diff in extra_diffs)
+    assert all(diff.original_evidence[0].highlight_type == "DELETE" for diff in extra_diffs)
+
+
+def test_cover_metadata_ignores_short_edge_cover_noise() -> None:
+    original = cover_document("XX-C-260520", "2026年4月21日")
+    original.pages[0].blocks.extend(
+        [
+            TextBlock(
+                block_id="p1_edge_noise_word",
+                page_no=1,
+                text="城日限",
+                bbox=BBox(x0=566, y0=330, x1=597, y1=402.5),
+                block_type="text",
+            ),
+            TextBlock(
+                block_id="p1_edge_noise_char",
+                page_no=1,
+                text="国",
+                bbox=BBox(x0=577.5, y0=393, x1=597, y1=414.5),
+                block_type="text",
+            ),
+        ]
+    )
+    compare = cover_document("XX-C-260520", "2026年4月21日")
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    assert not any(diff.title == "封面额外文本" for diff in diffs)
+
+
+def test_cover_metadata_treats_split_tax_number_as_field() -> None:
+    original = cover_document("XX-C-260520", "2026年4月21日")
+    original.pages[0].blocks.append(
+        TextBlock(
+            block_id="p1_tax",
+            page_no=1,
+            text="税号:91320000720580314W",
+            bbox=BBox(x0=140, y0=700, x1=380, y1=720),
+            block_type="text",
+        )
+    )
+    compare = cover_document("XX-C-260520", "2026年4月21日")
+    compare.pages[0].blocks.extend(
+        [
+            TextBlock(
+                block_id="p1_tax_label",
+                page_no=1,
+                text="税号:",
+                bbox=BBox(x0=140, y0=700, x1=190, y1=720),
+                block_type="text",
+            ),
+            TextBlock(
+                block_id="p1_tax_value",
+                page_no=1,
+                text="91320000720580314W",
+                bbox=BBox(x0=200, y0=700, x1=380, y1=720),
+                block_type="text",
+            ),
+        ]
+    )
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    assert not any(diff.title in {"封面字段：税号", "封面额外文本"} for diff in diffs)
+
+
 def test_clause_matcher_matches_by_clause_number() -> None:
     document = Document(
         filename="sample.pdf",
@@ -515,6 +914,65 @@ def test_clause_matcher_matches_by_clause_number() -> None:
     assert pairs[0].score == 100
 
 
+def test_clause_matcher_reconciles_numbered_compare_clause_inside_original_parent() -> None:
+    shared_intro = "14.2其他约定\n附件一技术服务条款"
+    original_parent_text = (
+        f"{shared_intro}\n"
+        "出支\n"
+        "系统开放性与可配置性要求\n"
+        "预测文件上报接口开放\n"
+        "乙方须提供功率预测系统完整的文件上报接口，包括但不限于：中短期预测文件、超短期预测文件、\n"
+        "理论可用功率文件、测风塔/光伏气象文件的上报方式、上报路径、文件命名规则、字段结构、文件格式\n"
+        "规范（含字段定义、编码标准、时间戳格式）。接口文档须以书面形式交付甲方，并确保甲方技术人员\n"
+        "可独立完成对接配置。供方系统须具备充分的开放性、透明性与可对接性，支持与需方相关业务系统进\n"
+        "行双向数据互通，确保上下游数据可自由流转、无缝交互。"
+    )
+    compare_body_text = (
+        "1.预测文件上报接口开放\n"
+        "乙方须提供功率预测系统完整的文件上报接口，包括但不限于：中短期预测文件、超短期预测文件、\n"
+        "理论可用功率文件、测风塔/光伏气象文件的上报方式、上报路径、文件命名规则、字段结构、文件格式\n"
+        "规范（含字段定义、编码标准、时间截格式）。接口文档须以书面形式交付甲方，并确保甲方技术人员\n"
+        "可独立完成对接配置。供方系统须具备充分的开放性、透明性与可对接性，支持与需方相关业务系统进\n"
+        "行双向数据互通，确保上下游数据可自由流转、无缝交互。"
+    )
+    original = [
+        clause_with_boxes("O060", original_parent_text).model_copy(
+            update={"clause_no": "14.2", "title": "其他约定", "normalized_text": original_parent_text}
+        )
+    ]
+    compare = [
+        clause_with_boxes("N060", shared_intro).model_copy(
+            update={"clause_no": "14.2", "title": "其他约定", "normalized_text": shared_intro}
+        ),
+        clause_with_boxes("N061", "一、系统开放性与可配置性要求").model_copy(
+            update={"clause_no": "一", "title": "系统开放性与可配置性要求"}
+        ),
+        clause_with_boxes("N062", compare_body_text).model_copy(
+            update={"clause_no": "1", "title": "预测文件上报接口开放"}
+        ),
+    ]
+
+    pairs = ClauseMatcher().match(original, compare)
+    diffs = DiffEngine().build_diffs(pairs)
+
+    assert not any(diff.diff_type == "ADD" and diff.compare_clause_id in {"N061", "N062"} for diff in diffs)
+
+    title_diff = next(diff for diff in diffs if diff.compare_clause_id == "N061")
+    assert title_diff.diff_type == "MODIFY"
+    assert title_diff.original_change_ranges == []
+    assert [title_diff.compare_text[r.start:r.end] for r in title_diff.compare_change_ranges] == ["一、"]
+
+    body_diff = next(diff for diff in diffs if diff.compare_clause_id == "N062")
+    original_fragments = [body_diff.original_text[r.start:r.end] for r in body_diff.original_change_ranges]
+    compare_fragments = [body_diff.compare_text[r.start:r.end] for r in body_diff.compare_change_ranges]
+
+    assert original_fragments == ["戳"]
+    assert compare_fragments == ["1.", "截"]
+    assert [r.highlight_type for r in body_diff.compare_change_ranges] == ["ADD", "MODIFY"]
+    for unchanged in ["上报路径、", "文件命名规则、", "字段结构、", "文件格式", "规范", "编码标准", "无缝交互。"]:
+        assert unchanged not in "".join(compare_fragments)
+
+
 def test_diff_engine_reports_character_level_ranges() -> None:
     left = Clause(
         clause_id="O001",
@@ -535,6 +993,65 @@ def test_diff_engine_reports_character_level_ranges() -> None:
     assert [(item.start, item.end) for item in diff.compare_change_ranges] == [(3, 6)]
     assert [item.highlight_type for item in diff.original_change_ranges] == ["MODIFY"]
     assert [item.highlight_type for item in diff.compare_change_ranges] == ["MODIFY"]
+
+
+def test_diff_engine_reports_percent_to_per_mille_as_modify_with_number_context() -> None:
+    left = Clause(
+        clause_id="O001",
+        text="物价款的3%作为违约金",
+        normalized_text="物价款的3%作为违约金",
+    )
+    right = Clause(
+        clause_id="N001",
+        text="物价款的3‰作为违约金",
+        normalized_text="物价款的3‰作为违约金",
+    )
+
+    diff = DiffEngine().build_diffs([ClausePair(original=left, compare=right)])[0]
+
+    assert diff.original_snippet == "3%"
+    assert diff.compare_snippet == "3‰"
+    assert [left.text[item.start:item.end] for item in diff.original_change_ranges] == ["3%"]
+    assert [right.text[item.start:item.end] for item in diff.compare_change_ranges] == ["3‰"]
+    assert [item.highlight_type for item in diff.original_change_ranges] == ["MODIFY"]
+    assert [item.highlight_type for item in diff.compare_change_ranges] == ["MODIFY"]
+
+
+def test_diff_engine_marks_added_colon_without_deleting_shared_date_label() -> None:
+    diff = DiffEngine().build_diffs(
+        [
+            ClausePair(
+                original=Clause(clause_id="O001", text="日期", normalized_text="日期"),
+                compare=Clause(clause_id="N001", text="日期:", normalized_text="日期:"),
+            )
+        ]
+    )[0]
+
+    assert diff.original_change_ranges == []
+    assert [diff.compare_text[item.start:item.end] for item in diff.compare_change_ranges] == [":"]
+    assert [item.highlight_type for item in diff.compare_change_ranges] == ["ADD"]
+
+
+def test_diff_engine_refines_repeated_date_label_in_large_modify_hunk() -> None:
+    left_text = "法人\n法人代表或:\n日期:2026.\n日期\n附件一技术服务条款\n出支"
+    right_text = "法人代表或授权委托人:\n法人代表或授权委托人:\n(签字)\n(签字)\n日期:\n日期:\n附件一技术服务条款"
+
+    diff = DiffEngine().build_diffs(
+        [
+            ClausePair(
+                original=Clause(clause_id="O001", text=left_text, normalized_text="left"),
+                compare=Clause(clause_id="N001", text=right_text, normalized_text="right"),
+            )
+        ]
+    )[0]
+
+    original_fragments = [diff.original_text[item.start:item.end] for item in diff.original_change_ranges]
+    compare_fragments = [diff.compare_text[item.start:item.end] for item in diff.compare_change_ranges]
+
+    assert not any(fragment == "日期" for fragment in original_fragments)
+    assert "2026." in original_fragments
+    assert "出支" in original_fragments
+    assert ":" in compare_fragments
 
 
 def test_diff_engine_classifies_insert_and_delete_ranges() -> None:
@@ -617,6 +1134,44 @@ def test_diff_engine_skips_whitespace_only_ranges() -> None:
     for r in diff.original_change_ranges:
         snippet = left.text[r.start : r.end]
         assert snippet.strip(), f"Whitespace-only range should be filtered: {repr(snippet)}"
+
+
+def test_diff_engine_ignores_line_wrap_movement_in_contract_paragraph() -> None:
+    left_text = (
+        "上述价格为含13%增值税价格,总金额包括光伏功率预测系统V2.0软件部分价格,支\n"
+        "持该系统所需的硬件设备价格。该价格为固定不变价,包括设备及随机附件的设计、采购、\n"
+        "制造、税类(包含关税)、包装、运输、保险费用:还包含安装调试、技术服务(包含技术\n"
+        "资料、图纸的提供)、质保期内服务的费用。"
+    )
+    right_text = (
+        "上述价格为含13%增值税价格,总金额包括光伏功率预测系统V2.0软件部分价格,\n"
+        "支持该系统所需的硬件设备价格。该价格为固定不变价,包括设备及随机附件的设计、采\n"
+        "购、制造、税类(包含关税)、包装、运输、保险费用;还包含调试、技术服务(包含技\n"
+        "术资料、图纸的提供)、质保期内服务的费用。"
+    )
+
+    diff = DiffEngine().build_diffs(
+        [
+            ClausePair(
+                original=Clause(clause_id="O001", text=left_text, normalized_text="left"),
+                compare=Clause(clause_id="N001", text=right_text, normalized_text="right"),
+            )
+        ]
+    )[0]
+
+    original_snippets = [left_text[item.start : item.end] for item in diff.original_change_ranges]
+    compare_snippets = [right_text[item.start : item.end] for item in diff.compare_change_ranges]
+
+    assert "支" not in original_snippets
+    assert "支" not in compare_snippets
+    assert "购、" not in original_snippets
+    assert "购、" not in compare_snippets
+    assert "术" not in original_snippets
+    assert "术" not in compare_snippets
+    assert ":" in original_snippets
+    assert ";" in compare_snippets
+    assert "安装" in original_snippets
+    assert "安装" not in compare_snippets
 
 
 def test_evidence_locator_maps_ranges_to_character_boxes() -> None:
@@ -715,6 +1270,17 @@ def test_highlight_rule_modify_marks_both_sides_yellow() -> None:
     assert located.compare_evidence
     assert {evidence.highlight_type for evidence in located.original_evidence} == {"MODIFY"}
     assert {evidence.highlight_type for evidence in located.compare_evidence} == {"MODIFY"}
+
+
+def test_highlight_rule_modify_does_not_mark_side_without_change_ranges() -> None:
+    left = clause_with_boxes("O001", "成本价收心取维护费。")
+    right = clause_with_boxes("N001", "成本价收取维护费。")
+    diff = DiffEngine().build_diffs([ClausePair(original=left, compare=right)])[0]
+
+    located = EvidenceLocator().locate([diff], [left], [right])[0]
+
+    assert [evidence.text for evidence in located.original_evidence] == ["心"]
+    assert located.compare_evidence == []
 
 
 def test_compare_side_add_wins_over_overlapping_modify_evidence() -> None:

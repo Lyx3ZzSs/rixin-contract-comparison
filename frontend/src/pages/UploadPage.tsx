@@ -29,7 +29,7 @@ export function UploadPage({ onTaskCreated }: UploadPageProps) {
     setError("");
     setMessage("正在上传并执行合同差异审查...");
     try {
-      const payload = await compareContracts(originalFile, compareFile, false);
+      const payload = await compareContracts(originalFile, compareFile);
       setMessage(`审查完成，识别 ${payload.diff_count} 项差异。`);
       onTaskCreated(payload.task_id);
     } catch (err) {

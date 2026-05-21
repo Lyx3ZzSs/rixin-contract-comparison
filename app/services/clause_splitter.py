@@ -110,7 +110,7 @@ class ClauseSplitter:
 
     def _can_trust_layout_order(self, units: list[ClauseUnit]) -> bool:
         with_order = [unit for unit in units if unit.layout_order is not None]
-        if len(with_order) < 2:
+        if len(with_order) < 2 or len(with_order) != len(units):
             return False
         by_y = sorted(with_order, key=lambda unit: (unit.bbox.y0, unit.bbox.x0))
         return all(
@@ -128,12 +128,9 @@ class ClauseSplitter:
             block_type = unit.block_type
             if not entered_body and self._is_pre_body_noise(unit, marker):
                 continue
-            if current is not None and self._is_listing_table_continuation(current, unit.text, marker):
-                continue
             starts_clause = (
                 marker is not None
                 and block_type not in self.table_block_types
-                and not self._is_table_continuation(current, marker)
                 and not self._is_quantity_or_amount_marker(unit.text, marker)
             )
             if starts_clause:
@@ -287,7 +284,7 @@ class ClauseSplitter:
         current: list[tuple[str, int, int]] = []
         for line, start, end in lines:
             marker = self._parse_marker(line)
-            if marker and current and not self._is_table_lines_continuation(current, marker):
+            if marker and current:
                 pieces.append(self._join_line_ranges(current))
                 current = [(line, start, end)]
             else:
@@ -306,29 +303,6 @@ class ClauseSplitter:
         title = self._title_from_text(rest)
         return clause_no, title
 
-    def _is_table_continuation(self, current: dict | None, marker: tuple[str, str]) -> bool:
-        if current is None or not self._is_product_table_context("\n".join(current["texts"])):
-            return False
-        clause_no, _ = marker
-        return not self._is_formal_clause_marker(clause_no)
-
-    def _is_table_lines_continuation(
-        self,
-        current_lines: list[tuple[str, int, int]],
-        marker: tuple[str, str],
-    ) -> bool:
-        current_text = "\n".join(line for line, _, _ in current_lines)
-        if not self._is_product_table_context(current_text):
-            return False
-        clause_no, _ = marker
-        return not self._is_formal_clause_marker(clause_no)
-
-    def _is_product_table_context(self, text: str) -> bool:
-        compact = re.sub(r"\s+", "", text or "")
-        if "产品名称" not in compact:
-            return False
-        return "规格型号" in compact or "单价" in compact or "合计" in compact
-
     def _is_formal_clause_marker(self, clause_no: str) -> bool:
         return bool(re.fullmatch(r"第[一二三四五六七八九十百千万0-9]+[章节条]", clause_no or ""))
 
@@ -345,27 +319,6 @@ class ClauseSplitter:
         if re.match(r"^\s*\d{4}\s*年", first_line):
             return True
         return False
-
-    def _is_listing_table_continuation(
-        self,
-        current: dict,
-        text: str,
-        marker: tuple[str, str] | None = None,
-    ) -> bool:
-        title = current.get("title", "")
-        current_text = "\n".join(current.get("texts", []))
-        if "标的物" not in title or "提供以下设备" not in current_text:
-            return False
-        if self._is_formal_body_marker(marker):
-            return False
-        if marker is not None and not self._is_quantity_or_amount_marker(text, marker):
-            return False
-        compact = re.sub(r"\s+", "", text or "")
-        if not compact:
-            return False
-        if compact.startswith("上述价格") or compact.startswith("上述费用") or compact.startswith("该价格"):
-            return False
-        return True
 
     def _title_from_text(self, text: str) -> str:
         first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""

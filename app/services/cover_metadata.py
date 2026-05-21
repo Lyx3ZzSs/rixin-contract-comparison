@@ -4,9 +4,18 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
-from app.models import Document, EvidenceBox, TextBlock, TextRange, DiffItem
+from app.models import BBox, CharBox, Document, EvidenceBox, TextBlock, TextRange, DiffItem
+from app.services.diff_engine import DiffEngine
 from app.services.normalizer import TextNormalizer
 from app.utils.id_utils import generate_diff_id
+
+
+@dataclass
+class CoverValuePart:
+    block: TextBlock
+    text: str
+    start: int
+    end: int
 
 
 @dataclass
@@ -15,6 +24,20 @@ class CoverField:
     label: str
     value: str
     evidences: list[EvidenceBox] = field(default_factory=list)
+    value_parts: list[CoverValuePart] = field(default_factory=list)
+
+
+@dataclass
+class CoverExtraText:
+    value: str
+    evidence: EvidenceBox
+    block_id: str
+
+
+@dataclass
+class CoverExtraction:
+    fields: dict[str, CoverField] = field(default_factory=dict)
+    consumed_block_ids: set[str] = field(default_factory=set)
 
 
 class CoverMetadataComparator:
@@ -23,6 +46,7 @@ class CoverMetadataComparator:
         "project_title": "项目名称",
         "buyer": "甲方",
         "seller": "乙方",
+        "tax_no": "税号",
         "sign_place": "签订地点",
         "sign_date": "签订日期",
     }
@@ -34,17 +58,21 @@ class CoverMetadataComparator:
         "买方": "buyer",
         "乙方": "seller",
         "卖方": "seller",
+        "税号": "tax_no",
+        "纳税人识别号": "tax_no",
         "签订地点": "sign_place",
         "签订日期": "sign_date",
     }
-    field_order = ["contract_no", "project_title", "buyer", "seller", "sign_place", "sign_date"]
+    field_order = ["contract_no", "project_title", "buyer", "seller", "tax_no", "sign_place", "sign_date"]
 
     def __init__(self, normalizer: TextNormalizer | None = None) -> None:
         self.normalizer = normalizer or TextNormalizer()
 
     def build_diffs(self, original: Document, compare: Document, start_index: int = 1) -> list[DiffItem]:
-        original_fields = self.extract(original)
-        compare_fields = self.extract(compare)
+        original_extraction = self._extract_cover(original)
+        compare_extraction = self._extract_cover(compare)
+        original_fields = original_extraction.fields
+        compare_fields = compare_extraction.fields
         diffs: list[DiffItem] = []
         next_index = start_index
         for key in self.field_order:
@@ -58,9 +86,14 @@ class CoverMetadataComparator:
                 continue
             diffs.append(self._build_diff(key, left, right, next_index))
             next_index += 1
+        extra_diffs = self._build_extra_text_diffs(original, compare, original_extraction, compare_extraction, next_index)
+        diffs.extend(extra_diffs)
         return diffs
 
     def extract(self, document: Document) -> dict[str, CoverField]:
+        return self._extract_cover(document).fields
+
+    def _extract_cover(self, document: Document) -> CoverExtraction:
         blocks = self._cover_blocks(document)
         fields: dict[str, CoverField] = {}
         consumed: set[str] = set()
@@ -74,16 +107,19 @@ class CoverMetadataComparator:
                     continue
                 key, value = parsed
                 evidences = [self._evidence(block, line)]
+                value_parts = self._value_parts_from_line(block, value) if value else []
                 if not value and key != "contract_no":
-                    value, extra_evidences, extra_ids = self._nearby_value(block, blocks)
+                    value, extra_evidences, extra_ids, extra_parts = self._nearby_value(block, blocks)
                     evidences.extend(extra_evidences)
                     consumed.update(extra_ids)
+                    value_parts.extend(extra_parts)
                 if not value and key != "contract_no":
-                    value, extra_evidences, extra_ids = self._next_value(lines, line_index, blocks, index)
+                    value, extra_evidences, extra_ids, extra_parts = self._next_value(lines, line_index, blocks, index)
                     evidences.extend(extra_evidences)
                     consumed.update(extra_ids)
+                    value_parts.extend(extra_parts)
                 if value:
-                    self._set_field(fields, key, value, evidences)
+                    self._set_field(fields, key, value, evidences, value_parts)
                     consumed.add(block.block_id)
 
         first_page_no = min((block.page_no for block in blocks), default=1)
@@ -105,13 +141,14 @@ class CoverMetadataComparator:
                     evidences.append(self._evidence(block, block.text))
             value = "\n".join(title_lines).strip()
             if value:
+                consumed.update(block.block_id for block in title_blocks)
                 fields["project_title"] = CoverField(
                     key="project_title",
                     label=self.field_labels["project_title"],
                     value=value,
                     evidences=evidences,
                 )
-        return fields
+        return CoverExtraction(fields=fields, consumed_block_ids=consumed)
 
     def _cover_blocks(self, document: Document) -> list[TextBlock]:
         blocks: list[TextBlock] = []
@@ -141,21 +178,28 @@ class CoverMetadataComparator:
         line_index: int,
         blocks: list[TextBlock],
         block_index: int,
-    ) -> tuple[str, list[EvidenceBox], set[str]]:
+    ) -> tuple[str, list[EvidenceBox], set[str], list[CoverValuePart]]:
         if line_index + 1 < len(lines) and not self._parse_labeled_line(lines[line_index + 1]):
             values = [line for line in lines[line_index + 1 :] if not self._parse_labeled_line(line) and not self._is_noise_line(line)]
             if values:
-                return "\n".join(values).strip(), [], set()
+                value = "\n".join(values).strip()
+                current_block = blocks[block_index]
+                return value, [self._evidence(current_block, value)], set(), self._value_parts_from_line(current_block, value)
         for next_block in blocks[block_index + 1 : block_index + 4]:
             next_lines = self._lines(next_block.text)
             if not next_lines:
                 continue
             if self._parse_labeled_line(next_lines[0]) or self._is_noise_line(next_lines[0]):
                 continue
-            return next_lines[0], [self._evidence(next_block, next_lines[0])], {next_block.block_id}
-        return "", [], set()
+            return (
+                next_lines[0],
+                [self._evidence(next_block, next_lines[0])],
+                {next_block.block_id},
+                self._value_parts_from_line(next_block, next_lines[0]),
+            )
+        return "", [], set(), []
 
-    def _nearby_value(self, label_block: TextBlock, blocks: list[TextBlock]) -> tuple[str, list[EvidenceBox], set[str]]:
+    def _nearby_value(self, label_block: TextBlock, blocks: list[TextBlock]) -> tuple[str, list[EvidenceBox], set[str], list[CoverValuePart]]:
         candidates: list[tuple[float, TextBlock, str]] = []
         label_mid_y = (label_block.bbox.y0 + label_block.bbox.y1) / 2
         label_height = max(1.0, label_block.bbox.y1 - label_block.bbox.y0)
@@ -177,31 +221,60 @@ class CoverMetadataComparator:
                 continue
             candidates.append((y_distance * 10 + max(0.0, x_gap), block, value))
         if not candidates:
-            return "", [], set()
-        _, block, value = min(candidates, key=lambda item: item[0])
-        return value, [self._evidence(block, value)], {block.block_id}
+            return "", [], set(), []
+        candidates.sort(key=lambda item: (item[1].bbox.x0, item[0], item[1].block_id))
+        value = "".join(item[2] for item in candidates)
+        evidences = [self._evidence(block, text) for _, block, text in candidates]
+        block_ids = {block.block_id for _, block, _ in candidates}
+        value_parts: list[CoverValuePart] = []
+        cursor = 0
+        for _, block, text in candidates:
+            value_parts.append(CoverValuePart(block=block, text=text, start=cursor, end=cursor + len(text)))
+            cursor += len(text)
+        return value, evidences, block_ids, value_parts
 
-    def _set_field(self, fields: dict[str, CoverField], key: str, value: str, evidences: list[EvidenceBox]) -> None:
+    def _set_field(
+        self,
+        fields: dict[str, CoverField],
+        key: str,
+        value: str,
+        evidences: list[EvidenceBox],
+        value_parts: list[CoverValuePart] | None = None,
+    ) -> None:
         if key in fields:
             return
-        fields[key] = CoverField(key=key, label=self.field_labels.get(key, key), value=value, evidences=evidences)
+        fields[key] = CoverField(
+            key=key,
+            label=self.field_labels.get(key, key),
+            value=value,
+            evidences=evidences,
+            value_parts=value_parts or [],
+        )
 
     def _build_diff(self, key: str, left: CoverField | None, right: CoverField | None, index: int) -> DiffItem:
         label = self.field_labels.get(key, key)
         if left and right:
+            original_snippet, compare_snippet, original_ranges, compare_ranges = DiffEngine()._changed_snippets(
+                left.value,
+                right.value,
+            )
             return DiffItem(
                 diff_id=generate_diff_id(index),
                 diff_type="MODIFY",
                 title=f"封面字段：{label}",
                 original_text=left.value,
                 compare_text=right.value,
-                original_snippet=left.value,
-                compare_snippet=right.value,
-                readable_change=f"封面字段【{label}】变更：{left.value} -> {right.value}",
-                original_evidence=self._mark(left.evidences, "MODIFY"),
-                compare_evidence=self._mark(right.evidences, "MODIFY"),
-                original_change_ranges=[TextRange(start=0, end=len(left.value), highlight_type="MODIFY")],
-                compare_change_ranges=[TextRange(start=0, end=len(right.value), highlight_type="MODIFY")],
+                original_snippet=original_snippet,
+                compare_snippet=compare_snippet,
+                readable_change=self._field_readable_change(label, left.value, right.value, original_snippet, compare_snippet),
+                original_evidence=self._field_evidence(left, original_ranges, "MODIFY"),
+                compare_evidence=(
+                    self._mark(right.evidences, "MODIFY")
+                    if key == "sign_date" and not compare_ranges and len(right.value_parts) == 1
+                    else self._field_evidence(right, compare_ranges, "MODIFY")
+                ),
+                original_change_ranges=original_ranges,
+                compare_change_ranges=compare_ranges,
             )
         if right:
             return DiffItem(
@@ -226,11 +299,204 @@ class CoverMetadataComparator:
             original_change_ranges=[TextRange(start=0, end=len(left.value), highlight_type="DELETE")],
         )
 
+    def _build_extra_text_diffs(
+        self,
+        original: Document,
+        compare: Document,
+        original_extraction: CoverExtraction,
+        compare_extraction: CoverExtraction,
+        start_index: int,
+    ) -> list[DiffItem]:
+        if not self._has_cover_metadata(original_extraction) and not self._has_cover_metadata(compare_extraction):
+            return []
+        original_extras = self._extra_texts(original, original_extraction)
+        compare_extras = self._extra_texts(compare, compare_extraction)
+        compare_keys = {self._normalize_extra(extra.value) for extra in compare_extras}
+        original_keys = {self._normalize_extra(extra.value) for extra in original_extras}
+        diffs: list[DiffItem] = []
+        next_index = start_index
+
+        for extra in original_extras:
+            if self._normalize_extra(extra.value) in compare_keys:
+                continue
+            diffs.append(self._build_extra_delete(extra, next_index))
+            next_index += 1
+
+        for extra in compare_extras:
+            if self._normalize_extra(extra.value) in original_keys:
+                continue
+            diffs.append(self._build_extra_add(extra, next_index))
+            next_index += 1
+        return diffs
+
+    def _has_cover_metadata(self, extraction: CoverExtraction) -> bool:
+        return any(key in extraction.fields for key in self.field_order)
+
+    def _extra_texts(self, document: Document, extraction: CoverExtraction) -> list[CoverExtraText]:
+        width_by_page = {page.page_no: page.width for page in document.pages}
+        extras: list[CoverExtraText] = []
+        seen: set[str] = set()
+        for block in self._cover_blocks(document):
+            if block.block_id in extraction.consumed_block_ids or self._skip_extra_block(block):
+                continue
+            for line in self._lines(block.text):
+                if self._skip_extra_line(line, block, width_by_page.get(block.page_no, 0.0)):
+                    continue
+                key = self._normalize_extra(line)
+                if not key or key in seen:
+                    continue
+                extras.append(
+                    CoverExtraText(
+                        value=line,
+                        evidence=self._evidence(block, line),
+                        block_id=block.block_id,
+                    )
+                )
+                seen.add(key)
+        return extras
+
+    def _build_extra_delete(self, extra: CoverExtraText, index: int) -> DiffItem:
+        return DiffItem(
+            diff_id=generate_diff_id(index),
+            diff_type="DELETE",
+            title="封面额外文本",
+            original_text=extra.value,
+            original_snippet=extra.value,
+            readable_change=f"删除封面额外文本：{extra.value}",
+            original_evidence=self._mark_extra([extra.evidence], "DELETE"),
+            original_change_ranges=[TextRange(start=0, end=len(extra.value), highlight_type="DELETE")],
+        )
+
+    def _build_extra_add(self, extra: CoverExtraText, index: int) -> DiffItem:
+        return DiffItem(
+            diff_id=generate_diff_id(index),
+            diff_type="ADD",
+            title="封面额外文本",
+            compare_text=extra.value,
+            compare_snippet=extra.value,
+            readable_change=f"新增封面额外文本：{extra.value}",
+            compare_evidence=self._mark_extra([extra.evidence], "ADD"),
+            compare_change_ranges=[TextRange(start=0, end=len(extra.value), highlight_type="ADD")],
+        )
+
     def _mark(self, evidences: list[EvidenceBox], highlight_type: str) -> list[EvidenceBox]:
         return [evidence.model_copy(update={"highlight_type": highlight_type, "method": "cover_metadata"}) for evidence in evidences]
 
+    def _mark_extra(self, evidences: list[EvidenceBox], highlight_type: str) -> list[EvidenceBox]:
+        return [evidence.model_copy(update={"highlight_type": highlight_type, "method": "cover_extra"}) for evidence in evidences]
+
     def _evidence(self, block: TextBlock, text: str) -> EvidenceBox:
         return EvidenceBox(page_no=block.page_no, bbox=block.bbox, method="cover_metadata", text=text[:300])
+
+    def _field_evidence(
+        self,
+        field: CoverField,
+        ranges: list[TextRange],
+        fallback_highlight_type: str | None = None,
+    ) -> list[EvidenceBox]:
+        evidences: list[EvidenceBox] = []
+        for text_range in ranges:
+            evidences.extend(self._evidence_for_field_range(field, text_range, fallback_highlight_type))
+        return evidences
+
+    def _evidence_for_field_range(
+        self,
+        field: CoverField,
+        text_range: TextRange,
+        fallback_highlight_type: str | None = None,
+    ) -> list[EvidenceBox]:
+        start = max(0, text_range.start)
+        end = min(len(field.value), text_range.end)
+        if start >= end:
+            return []
+        precise: list[EvidenceBox] = []
+        for part in field.value_parts:
+            overlap_start = max(start, part.start)
+            overlap_end = min(end, part.end)
+            if overlap_start >= overlap_end:
+                continue
+            local_start = overlap_start - part.start
+            local_end = overlap_end - part.start
+            precise.extend(
+                self._evidence_for_block_text_range(
+                    part.block,
+                    part.text,
+                    local_start,
+                    local_end,
+                    text_range.highlight_type,
+                    fallback_highlight_type,
+                )
+            )
+        if precise:
+            return precise
+        fragment = field.value[start:end]
+        highlight_type = fallback_highlight_type or text_range.highlight_type
+        return [
+            evidence.model_copy(update={"text": fragment, "highlight_type": highlight_type, "method": "cover_metadata"})
+            for evidence in field.evidences
+            if fragment and fragment in evidence.text
+        ] or [
+            evidence.model_copy(update={"highlight_type": highlight_type, "method": "cover_metadata"})
+            for evidence in field.evidences
+        ]
+
+    def _evidence_for_block_text_range(
+        self,
+        block: TextBlock,
+        text: str,
+        start: int,
+        end: int,
+        highlight_type: str,
+        fallback_highlight_type: str | None = None,
+    ) -> list[EvidenceBox]:
+        effective_highlight_type = fallback_highlight_type or highlight_type
+        if not block.char_boxes:
+            fragment = text[start:end]
+            return [self._evidence(block, fragment).model_copy(update={"highlight_type": effective_highlight_type})]
+        block_start = self._find_text_index(block.text, text)
+        if block_start is None:
+            fragment = text[start:end]
+            return [self._evidence(block, fragment).model_copy(update={"highlight_type": effective_highlight_type})]
+        wanted_start = block_start + start
+        wanted_end = block_start + end
+        char_boxes = [
+            char_box
+            for char_box in block.char_boxes
+            if char_box.text_index is not None and wanted_start <= char_box.text_index < wanted_end
+        ]
+        if not char_boxes:
+            fragment = text[start:end]
+            return [self._evidence(block, fragment).model_copy(update={"highlight_type": effective_highlight_type})]
+        return [
+            EvidenceBox(
+                page_no=page_no,
+                bbox=bbox,
+                method="cover_metadata",
+                text=fragment,
+                highlight_type=highlight_type,
+            )
+            for page_no, bbox, fragment in self._merge_char_boxes(char_boxes)
+        ]
+
+    def _merge_char_boxes(self, char_boxes: list[CharBox]) -> list[tuple[int, BBox, str]]:
+        if not char_boxes:
+            return []
+        ordered = sorted(char_boxes, key=lambda item: (item.page_no, item.bbox.y0, item.bbox.x0))
+        merged: list[tuple[int, BBox, str]] = []
+        current_page = ordered[0].page_no
+        current_bbox = ordered[0].bbox
+        current_text = ordered[0].char
+        for char_box in ordered[1:]:
+            if char_box.page_no == current_page and abs(self._mid_y(char_box.bbox) - self._mid_y(current_bbox)) <= 4.0:
+                current_bbox = self._union(current_bbox, char_box.bbox)
+                current_text += char_box.char
+                continue
+            merged.append((current_page, self._pad(current_bbox), current_text))
+            current_page = char_box.page_no
+            current_bbox = char_box.bbox
+            current_text = char_box.char
+        merged.append((current_page, self._pad(current_bbox), current_text))
+        return merged
 
     def _is_title_candidate(self, block: TextBlock) -> bool:
         text = self.normalizer.normalize(block.text)
@@ -253,6 +519,71 @@ class CoverMetadataComparator:
         compact = re.sub(r"\s+", "", line)
         return bool(re.fullmatch(r"(第)?\d+页", compact) or re.fullmatch(r"共\d+页第\d+页", compact))
 
+    def _skip_extra_block(self, block: TextBlock) -> bool:
+        block_type = (block.block_type or "").lower()
+        return block_type in {"header", "footer", "page_header", "page_footer", "number", "table", "table_title", "seal"}
+
+    def _skip_extra_line(self, line: str, block: TextBlock, page_width: float) -> bool:
+        if self._is_noise_line(line) or self._parse_labeled_line(line) or self._is_title_line(line):
+            return True
+        compact = re.sub(r"\s+", "", line)
+        if not compact:
+            return True
+        return self._is_edge_noise(compact, block, page_width)
+
+    def _is_edge_noise(self, compact: str, block: TextBlock, page_width: float) -> bool:
+        if page_width <= 0 or len(compact) > 4:
+            return False
+        margin = page_width * 0.04
+        return block.bbox.x0 <= margin or block.bbox.x1 >= page_width - margin
+
+    def _value_parts_from_line(self, block: TextBlock, value: str) -> list[CoverValuePart]:
+        if not value:
+            return []
+        start = self._find_text_index(block.text, value)
+        if start is None:
+            return [CoverValuePart(block=block, text=value, start=0, end=len(value))]
+        return [CoverValuePart(block=block, text=value, start=0, end=len(value))]
+
+    def _find_text_index(self, source: str, value: str) -> int | None:
+        index = source.find(value)
+        if index >= 0:
+            return index
+        normalized_value = unicodedata.normalize("NFKC", value)
+        normalized_source = unicodedata.normalize("NFKC", source)
+        index = normalized_source.find(normalized_value)
+        return index if index >= 0 else None
+
+    def _field_readable_change(
+        self,
+        label: str,
+        original: str,
+        compare: str,
+        original_snippet: str,
+        compare_snippet: str,
+    ) -> str:
+        if original_snippet and not compare_snippet:
+            return f"封面字段【{label}】删除：{original_snippet}"
+        if compare_snippet and not original_snippet:
+            return f"封面字段【{label}】新增：{compare_snippet}"
+        if original_snippet or compare_snippet:
+            return f"封面字段【{label}】变更：{original_snippet} -> {compare_snippet}"
+        return f"封面字段【{label}】变更：{original} -> {compare}"
+
+    def _union(self, left: BBox, right: BBox) -> BBox:
+        return BBox(
+            x0=min(left.x0, right.x0),
+            y0=min(left.y0, right.y0),
+            x1=max(left.x1, right.x1),
+            y1=max(left.y1, right.y1),
+        )
+
+    def _pad(self, bbox: BBox) -> BBox:
+        return BBox(x0=max(0.0, bbox.x0 - 0.8), y0=max(0.0, bbox.y0 - 0.8), x1=bbox.x1 + 0.8, y1=bbox.y1 + 0.8)
+
+    def _mid_y(self, bbox: BBox) -> float:
+        return (bbox.y0 + bbox.y1) / 2
+
     def _is_body_start(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", text)
         if compact == "正文" or "达成合同如下" in compact:
@@ -265,6 +596,9 @@ class CoverMetadataComparator:
         if key in {"contract_no", "sign_date"}:
             text = re.sub(r"\s+", "", text)
         return text
+
+    def _normalize_extra(self, value: str) -> str:
+        return self.normalizer.normalize_for_match(value)
 
     def _lines(self, text: str) -> list[str]:
         return [line.strip() for line in self._clean_text(text).splitlines() if line.strip()]

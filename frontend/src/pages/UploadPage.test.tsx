@@ -31,7 +31,7 @@ describe("UploadPage", () => {
     await user.click(screen.getByRole("button", { name: "开始对比" }));
 
     await waitFor(() => expect(compareContracts).toHaveBeenCalled());
-    expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File), false);
+    expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File));
     expect(onTaskCreated).toHaveBeenCalledWith("task-1");
   });
 
