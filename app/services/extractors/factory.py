@@ -5,11 +5,9 @@ from pathlib import Path
 from app.config import settings
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.base import DocumentExtractor
-from app.services.extractors.paddleocr_vl import PaddleOCRVLExtractor
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
 from app.services.extractors.ppstructure_ocr_hybrid import PPStructureOCRHybridExtractor
 from app.services.extractors.pymupdf import PyMuPDFExtractor
-from app.services.extractors.vl_ocr_hybrid import VLOCRHybridExtractor
 
 
 class AutoDocumentExtractor:
@@ -58,12 +56,8 @@ def build_document_extractor(name: str | None = None):
         return AutoDocumentExtractor()
     if extractor_name in {"pymupdf", "fitz", "pdf_text"}:
         return PyMuPDFExtractor()
-    if extractor_name in {"paddleocr_vl", "paddleocrvl", "vl"}:
-        return PaddleOCRVLExtractor()
     if extractor_name in {"ppocrv5", "pp_ocrv5", "paddleocr", "paddle_ocr", "paddle"}:
         return PPOCRV5Extractor()
     if extractor_name in {"ppstructure_ocr_hybrid", "ppstructure_ppocrv5", "structure_ocr", "ppstructure"}:
         return PPStructureOCRHybridExtractor()
-    if extractor_name in {"vl_ocr_hybrid", "hybrid", "ocr_structure", "paddleocr_vl_ppocrv5"}:
-        return VLOCRHybridExtractor()
     raise DocumentExtractionError(f"不支持的文档识别器: {extractor_name}")

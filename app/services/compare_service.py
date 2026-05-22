@@ -242,14 +242,9 @@ class CompareService:
         name = (extractor_used or "").lower()
         if not name or "ocr_only" in name:
             return False
-        return any(marker in name for marker in ("ppstructure", "paddleocr_vl", "vl_ocr_hybrid"))
+        return "ppstructure" in name
 
     def _matching_structured_extractor(self, extractor_used: str) -> DocumentExtractor:
-        name = (extractor_used or "").lower()
-        if "vl_ocr_hybrid" in name:
-            return build_document_extractor("vl_ocr_hybrid")
-        if "paddleocr_vl" in name:
-            return build_document_extractor("paddleocr_vl")
         return build_document_extractor("ppstructure_ocr_hybrid")
 
     def _program_summary(self, diffs) -> str:

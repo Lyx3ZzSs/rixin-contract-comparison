@@ -97,7 +97,7 @@ PYMUPDF_MIN_TEXT_CHARS=1
 ALIGN_STRUCTURED_EXTRACTION=true
 ```
 
-也可以显式指定 `pymupdf`、`ppocrv5`、`ppstructure_ocr_hybrid`、`vl_ocr_hybrid` 或 `paddleocr_vl`。`ppstructure_ocr_hybrid` 会同时调用 `{PPSTRUCTURE_URL}/layout-parsing` 和 `{PPOCRV5_URL}/ocr`，最终对比文本以 PP-OCRv5 为准；`vl_ocr_hybrid` 是实验/可选链路，会同时调用 `{PADDLEOCR_VL_URL}/layout-parsing` 和 `{PPOCRV5_URL}/ocr`。
+也可以显式指定 `pymupdf`、`ppocrv5` 或 `ppstructure_ocr_hybrid`。`ppstructure_ocr_hybrid` 会同时调用 `{PPSTRUCTURE_URL}/layout-parsing` 和 `{PPOCRV5_URL}/ocr`，最终对比文本以 PP-OCRv5 为准。
 
 `ALIGN_STRUCTURED_EXTRACTION=true` 时，如果同一对比任务中一侧已经切换到结构化抽取、另一侧仍为 PyMuPDF，系统会将 PyMuPDF 侧重新用结构化抽取器处理，以保持表格边界一致，避免表格文本被当作正文条款参与比对。
 
@@ -123,43 +123,9 @@ PPOCRV5_TEXT_REC_SCORE_THRESH=0.0
 SAVE_OCR_RAW_RESULT=true
 ```
 
-如需显式启用实验性的 PaddleOCR-VL-1.5 版面结构链路，再额外配置：
+OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。扫描件默认链路使用 PP-Structure 的结构区域标记 PP-OCRv5 文字行，不再基于 OCR 文本关键词推断表格区域。差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
 
-```bash
-PADDLEOCR_VL_URL=https://your-paddleocr-vl-host/
-PADDLEOCR_VL_TIMEOUT_SECONDS=600
-PADDLEOCR_VL_PAGE_MODE=true
-PADDLEOCR_VL_RETRY_COUNT=1
-PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY=false
-PADDLEOCR_VL_USE_DOC_UNWARPING=false
-PADDLEOCR_VL_USE_LAYOUT_DETECTION=true
-PADDLEOCR_VL_USE_CHART_RECOGNITION=false
-PADDLEOCR_VL_USE_SEAL_RECOGNITION=false
-PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK=true
-PADDLEOCR_VL_FORMAT_BLOCK_CONTENT=true
-PADDLEOCR_VL_MERGE_LAYOUT_BLOCKS=true
-PADDLEOCR_VL_PRETTIFY_MARKDOWN=false
-#PADDLEOCR_VL_MAX_PIXELS=0
-#PADDLEOCR_VL_MAX_NEW_TOKENS=0
-HYBRID_LAYOUT_OVERLAP_THRESHOLD=0.5
-HYBRID_LAYOUT_CENTER_FALLBACK=true
-HYBRID_SAVE_MERGED_RAW=true
-```
-
-OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。默认扫描件链路不依赖 VL；系统会用 PP-Structure 的结构区域标记 PP-OCRv5 文字行，不再基于 OCR 文本关键词推断表格区域。显式启用 `vl_ocr_hybrid` 时，默认 `PADDLEOCR_VL_PAGE_MODE=true`，VL 会按页提交远端并合并结果，避免整份 PDF 一次请求导致超时；单页超时时错误信息会包含页码。差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
-
-接入 OpenAI-compatible 合同风险分析模型时配置：
-
-```bash
-AI_LLM_BASE_URL=https://api.example.com/v1
-AI_LLM_API_KEY=your_api_key
-AI_LLM_MODEL=your-model
-AI_ANALYSIS_TIMEOUT_SECONDS=30
-AI_SYSTEM_PROMPT=你是一名资深合同审查专家...
-REPORT_MAX_SCREENSHOT_PAGES=10
-```
-
-点击导出报告或请求 `/api/compare/{task_id}/report` 时，系统不会调用大模型分析，会生成包含基础信息、审计统计改动点表格和“合同差异”高亮截图的差异分析报告。
+点击导出报告或请求 `/api/compare/{task_id}/report` 时，系统不会调用大模型，会生成包含基础信息、审计统计改动点表格和“合同差异”高亮截图的差异分析报告。`AI_LLM_*` 配置仅用于合同字段提取。
 
 ## API 示例
 
@@ -217,10 +183,10 @@ cd frontend && npm test && npm run build
 
 ## 当前限制
 
-- 扫描件默认抽取需要配置可用的 `PPOCRV5_URL`；实验性的 `vl_ocr_hybrid` 才需要同时配置 `PADDLEOCR_VL_URL`。
+- 扫描件默认抽取需要配置可用的 `PPOCRV5_URL`；如需结构化表格边界，还需要配置 `PPSTRUCTURE_URL`。
 - 合同字段提取的 Word 支持依赖 LibreOffice；合同对比仍暂不支持 Word、Excel 和复杂表格深度 diff。
 - MVP 使用同步任务、本地 JSON 和本地文件存储。
-- 风险统计首期不接入大模型，默认按低风险兼容展示。
+- 报告导出不会在导出时重新调用大模型；风险统计基于任务已有的差异分析结果。
 
 ## 后续扩展
 
