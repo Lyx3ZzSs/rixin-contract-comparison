@@ -6,6 +6,7 @@
 
 - 文档识别默认走 PyMuPDF，扫描件切换到远端 PP-OCRv5。
 - 文本型 PDF、扫描件 PDF 的结构化文本提取。
+- 合同字段提取统一走远端 PP-OCRv5 + OpenAI-compatible LLM，支持 PDF、Word 和常见图片输入。
 - 条款切分和坐标证据绑定。
 - 条款编号、标题、正文相似度匹配。
 - 新增、删除、修改差异识别。
@@ -65,6 +66,28 @@ VITE_API_BASE_URL=http://127.0.0.1:8001
 ```
 
 ## 文档识别配置
+
+合同字段提取功能使用远端 PP-OCRv5 先抽取 OCR 文本，再调用 OpenAI-compatible LLM 完成字段抽取。支持 `.pdf`、`.doc`、`.docx`、`.png`、`.jpg`、`.jpeg`、`.bmp`；Word 文件会先通过 LibreOffice 转为 PDF 后提交 PP-OCRv5。
+
+```bash
+PPOCRV5_URL=https://your-ppocrv5-host/
+PPOCRV5_ACCESS_TOKEN=
+PPOCRV5_TIMEOUT_SECONDS=600
+PPOCRV5_RETURN_WORD_BOX=true
+PPOCRV5_USE_DOC_ORIENTATION_CLASSIFY=false
+PPOCRV5_USE_DOC_UNWARPING=false
+PPOCRV5_USE_TEXTLINE_ORIENTATION=false
+PPOCRV5_TEXT_REC_SCORE_THRESH=0.0
+AI_LLM_BASE_URL=https://api.example.com/v1
+AI_LLM_API_KEY=your_api_key
+AI_LLM_MODEL=your-model
+AI_EXTRACTION_TIMEOUT_SECONDS=120
+SAVE_EXTRACTION_RAW_RESULT=true
+EXTRACTION_MAX_DOCUMENT_SIZE_MB=60
+EXTRACTION_MAX_IMAGE_SIZE_MB=5
+```
+
+字段抽取会复用 `EXTRACTION_TASK_DESCRIPTION`、`EXTRACTION_OUTPUT_FORMAT`、`EXTRACTION_RULES_STR` 和 `EXTRACTION_FEW_SHOT_DEMO` 作为 LLM 提示词约束。OCR 和 LLM 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量和字段抽取质量。
 
 默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本或文本量不足时切换到结构化 OCR。扫描件链路优先使用 PP-Structure 做版面/表格结构识别，并使用 PP-OCRv5 提供真实文本、行坐标和词/字符坐标；如果 PP-Structure 不可用，会回退到仅 PP-OCRv5 文本抽取，并跳过结构化表格比对。
 
@@ -195,7 +218,7 @@ cd frontend && npm test && npm run build
 ## 当前限制
 
 - 扫描件默认抽取需要配置可用的 `PPOCRV5_URL`；实验性的 `vl_ocr_hybrid` 才需要同时配置 `PADDLEOCR_VL_URL`。
-- 暂不支持 Word、Excel 和复杂表格深度 diff。
+- 合同字段提取的 Word 支持依赖 LibreOffice；合同对比仍暂不支持 Word、Excel 和复杂表格深度 diff。
 - MVP 使用同步任务、本地 JSON 和本地文件存储。
 - 风险统计首期不接入大模型，默认按低风险兼容展示。
 

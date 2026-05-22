@@ -172,3 +172,81 @@ def test_cors_allows_frontend_dev_origin() -> None:
     )
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+
+
+def test_api_extract_accepts_png_with_ppocrv5_llm(monkeypatch, tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    monkeypatch.setattr(settings, "ppocrv5_url", "https://ocr.example.test")
+    monkeypatch.setattr(settings, "ai_llm_base_url", "https://llm.example.test/v1")
+    monkeypatch.setattr(settings, "ai_llm_api_key", "secret")
+    monkeypatch.setattr(settings, "ai_llm_model", "contract-model")
+    monkeypatch.setattr(settings, "save_extraction_raw_result", False)
+
+    class FakeResponse:
+        text = ""
+        status_code = 200
+
+        def __init__(self, payload: dict):
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, timeout: int):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, headers: dict, json: dict):
+            if url.endswith("/ocr"):
+                assert json["fileType"] == 1
+                return FakeResponse(
+                    {
+                        "errorCode": 0,
+                        "result": {
+                            "dataInfo": {"type": "image", "width": 400, "height": 300},
+                            "ocrResults": [{"prunedResult": {"rec_texts": ["甲方：日新公司"], "rec_scores": [0.99]}}],
+                        },
+                    }
+                )
+            assert url.endswith("/chat/completions")
+            assert "甲方：日新公司" in json["messages"][1]["content"]
+            return FakeResponse({"choices": [{"message": {"content": '{"甲方名称":"日新公司"}'}}]})
+
+    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
+    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/extract",
+        files={"file": ("contract.png", b"\x89PNG\r\n\x1a\ncontent", "image/png")},
+        data={"fields": '[{"id":"party-a-name","name":"甲方名称","type":"文本","description":"甲方名称"}]'},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "COMPLETED"
+    assert payload["extractor_used"] == "ppocrv5_llm"
+    assert payload["results"][0]["value"] == "日新公司"
+
+
+def test_api_extract_rejects_unsupported_file(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/extract",
+        files={"file": ("contract.txt", b"plain text", "text/plain")},
+        data={"fields": '[{"id":"party-a-name","name":"甲方名称","type":"文本","description":"甲方名称"}]'},
+    )
+
+    assert response.status_code == 400
+    assert "仅支持 PDF、Word、PNG、JPG、JPEG、BMP 文件" in response.json()["detail"]

@@ -35,7 +35,9 @@ class ExtractionTask(BaseModel):
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     filename: str = ""
     file_path: str = ""
+    converted_file_path: str = ""
     extractor_used: str = ""
+    raw_result_path: str = ""
     fields: list[ExtractionFieldDef] = Field(default_factory=list)
     results: list[ExtractionFieldValue] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

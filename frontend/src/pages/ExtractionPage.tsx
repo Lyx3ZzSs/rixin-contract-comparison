@@ -170,15 +170,14 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
   }
 
   async function handleStartExtraction() {
-    const activeFields = fields.filter((f) => f.semanticExtraction);
-    if (activeFields.length === 0) return;
+    if (fields.length === 0) return;
 
     setIsExtracting(true);
     setExtractionError("");
     setCurrentStep(3);
 
     try {
-      const response = await extractFields(file, activeFields);
+      const response = await extractFields(file, fields);
       setResults(response.results);
       if (response.errors.length > 0) {
         setExtractionError(response.errors.join("; "));
@@ -210,7 +209,7 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
     URL.revokeObjectURL(url);
   }
 
-  const activeFieldCount = fields.filter((f) => f.semanticExtraction).length;
+  const activeFieldCount = fields.length;
 
   return (
     <section className="extract-flow" aria-labelledby="extract-flow-title">
@@ -278,7 +277,7 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
                 正在提取合同的结构信息
               </div>
               <div className="extract-card-list">
-                {fields.filter((f) => f.semanticExtraction).map((field) => (
+                {fields.map((field) => (
                   <div className="extract-card-item" key={field.id}>
                     <span className="extract-card-name">{field.name}</span>
                     <span className="extract-card-value loading">提取中...</span>

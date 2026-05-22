@@ -29,17 +29,21 @@ class PPOCRV5Extractor:
         if path.suffix.lower() != ".pdf":
             raise DocumentExtractionError("仅支持 PDF 文件。")
 
-        payload = self._predict_pdf(path)
+        payload = self.predict(path, file_type=0)
         raw_path = self._save_raw_result(payload, task_id, path) if settings.save_ocr_raw_result and task_id else ""
         document = self.payload_to_document(payload, path)
         return ExtractionResult(document=document, extractor_used=self.name, raw_result_path=raw_path)
 
     def _predict_pdf(self, path: Path) -> list[dict[str, Any]]:
+        return self.predict(path, file_type=0)
+
+    def predict(self, path: str | Path, file_type: int = 0) -> list[dict[str, Any]]:
+        path = Path(path)
         url = self._ocr_url()
         headers = {"Content-Type": "application/json"}
         if settings.ppocrv5_access_token:
             headers["Authorization"] = f"Bearer {settings.ppocrv5_access_token}"
-        body = self._request_body(path)
+        body = self._request_body(path, file_type=file_type)
         try:
             with httpx.Client(timeout=settings.ppocrv5_timeout_seconds) as client:
                 response = client.post(url, headers=headers, json=body)
@@ -64,10 +68,10 @@ class PPOCRV5Extractor:
             raise DocumentExtractionError("未配置 PPOCRV5_URL，无法调用远端 PP-OCRv5。")
         return base if base.endswith("/ocr") else f"{base}/ocr"
 
-    def _request_body(self, path: Path) -> dict[str, Any]:
+    def _request_body(self, path: Path, file_type: int = 0) -> dict[str, Any]:
         return {
             "file": base64.b64encode(path.read_bytes()).decode("ascii"),
-            "fileType": 0,
+            "fileType": file_type,
             "useDocOrientationClassify": settings.ppocrv5_use_doc_orientation_classify,
             "useDocUnwarping": settings.ppocrv5_use_doc_unwarping,
             "useTextlineOrientation": settings.ppocrv5_use_textline_orientation,
