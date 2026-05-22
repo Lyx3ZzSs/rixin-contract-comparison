@@ -318,6 +318,36 @@ def test_word_preprocessor_requires_libreoffice(monkeypatch: pytest.MonkeyPatch,
     source = tmp_path / "contract.docx"
     source.write_bytes(b"word")
     monkeypatch.setattr("app.services.ppocrv5_llm_extraction.shutil.which", lambda name: None)
+    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.sys.platform", "linux")
+    monkeypatch.setattr(settings, "libreoffice_path", "")
 
-    with pytest.raises(PPOCRV5LLMExtractionError, match="未安装 LibreOffice"):
+    with pytest.raises(PPOCRV5LLMExtractionError, match="LIBREOFFICE_PATH"):
         ExtractionFilePreprocessor().prepare(source)
+
+
+def test_find_libreoffice_detects_macos_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.shutil.which", lambda name: None)
+    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.sys.platform", "darwin")
+    monkeypatch.setattr(settings, "libreoffice_path", "")
+
+    macos_standard_path = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+    original_is_file = Path.is_file
+
+    def fake_is_file(self):
+        if str(self) == macos_standard_path:
+            return True
+        return original_is_file(self)
+
+    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.Path.is_file", fake_is_file)
+
+    preprocessor = ExtractionFilePreprocessor()
+    assert preprocessor._find_libreoffice_executable() == macos_standard_path
+
+
+def test_find_libreoffice_uses_env_var(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake_bin = tmp_path / "custom_soffice"
+    fake_bin.write_bytes(b"binary")
+    monkeypatch.setattr(settings, "libreoffice_path", str(fake_bin))
+
+    preprocessor = ExtractionFilePreprocessor()
+    assert preprocessor._find_libreoffice_executable() == str(fake_bin)

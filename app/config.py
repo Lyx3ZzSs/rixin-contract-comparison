@@ -54,6 +54,7 @@ class Settings:
 
     match_threshold: int = int(os.getenv("MATCH_THRESHOLD", "85"))
     report_font_path: str = os.getenv("REPORT_FONT_PATH", "")
+    libreoffice_path: str = os.getenv("LIBREOFFICE_PATH", "")
 
     ai_llm_base_url: str = os.getenv("AI_LLM_BASE_URL", "")
     ai_llm_api_key: str = os.getenv("AI_LLM_API_KEY", "")

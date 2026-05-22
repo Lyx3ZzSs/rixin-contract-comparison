@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,12 +49,27 @@ class ExtractionFilePreprocessor:
             return PreparedExtractionFile(path=converted, file_type=0, converted_file_path=str(converted))
         raise PPOCRV5LLMExtractionError("仅支持 PDF、Word、PNG、JPG、JPEG、BMP 文件。")
 
+    def _find_libreoffice_executable(self) -> str | None:
+        if settings.libreoffice_path and Path(settings.libreoffice_path).is_file():
+            return settings.libreoffice_path
+        executable = shutil.which("libreoffice") or shutil.which("soffice")
+        if executable:
+            return executable
+        if sys.platform == "darwin":
+            macos_path = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+            if Path(macos_path).is_file():
+                return macos_path
+        return None
+
     def _convert_word_to_pdf(self, path: Path) -> Path:
         output_dir = path.parent / "converted"
         output_dir.mkdir(parents=True, exist_ok=True)
-        executable = shutil.which("libreoffice") or shutil.which("soffice")
+        executable = self._find_libreoffice_executable()
         if not executable:
-            raise PPOCRV5LLMExtractionError("未安装 LibreOffice，无法解析 Word 文件。")
+            raise PPOCRV5LLMExtractionError(
+                "未安装 LibreOffice，无法解析 Word 文件。"
+                "请安装 LibreOffice 或设置 LIBREOFFICE_PATH 环境变量。"
+            )
 
         command = [
             executable,
