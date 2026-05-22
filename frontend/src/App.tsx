@@ -2,22 +2,23 @@ import { useEffect, useMemo, useState } from "react";
 
 import { LoginPage } from "./pages/LoginPage";
 import { ExtractionPage } from "./pages/ExtractionPage";
+import { ComparisonRecordsPage } from "./pages/ComparisonRecordsPage";
 import { ResultPage } from "./pages/ResultPage";
 import { UploadPage } from "./pages/UploadPage";
 
 const AUTH_STORAGE_KEY = "rixin_contract_auth_user";
-const HISTORY_STORAGE_KEY = "rixin_contract_compare_history";
-const MAX_HISTORY_ITEMS = 8;
 
-interface ComparisonHistoryItem {
-  taskId: string;
-  createdAt: string;
-}
-
-function readRoute(): { name: "home" } | { name: "extract" } | { name: "task"; taskId: string } {
+function readRoute():
+  | { name: "home" }
+  | { name: "records" }
+  | { name: "extract" }
+  | { name: "task"; taskId: string } {
   const match = window.location.pathname.match(/^\/tasks\/([^/]+)$/);
   if (match) {
     return { name: "task", taskId: decodeURIComponent(match[1]) };
+  }
+  if (window.location.pathname === "/compare/records") {
+    return { name: "records" };
   }
   if (window.location.pathname === "/extract") {
     return { name: "extract" };
@@ -35,13 +36,17 @@ function navigateToExtraction(): void {
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
+function navigateToComparisonRecords(): void {
+  window.history.pushState({}, "", "/compare/records");
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
 export function App() {
   const [route, setRoute] = useState(readRoute);
   const [currentUser, setCurrentUser] = useState(() => window.localStorage.getItem(AUTH_STORAGE_KEY));
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isComparisonMenuOpen, setIsComparisonMenuOpen] = useState(true);
   const [isExtractionMenuOpen, setIsExtractionMenuOpen] = useState(true);
-  const [comparisonHistory, setComparisonHistory] = useState(readComparisonHistory);
 
   useEffect(() => {
     const onPopState = () => setRoute(readRoute());
@@ -66,14 +71,6 @@ export function App() {
   }
 
   function handleTaskCreated(taskId: string) {
-    setComparisonHistory((currentHistory) => {
-      const nextHistory = [
-        { taskId, createdAt: new Date().toISOString() },
-        ...currentHistory.filter((item) => item.taskId !== taskId),
-      ].slice(0, MAX_HISTORY_ITEMS);
-      window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(nextHistory));
-      return nextHistory;
-    });
     navigateToTask(taskId);
   }
 
@@ -101,6 +98,9 @@ export function App() {
     if (route.name === "extract") {
       return <ExtractionPage />;
     }
+    if (route.name === "records") {
+      return <ComparisonRecordsPage onOpenTask={navigateToTask} onCreateComparison={navigateHome} />;
+    }
     return <UploadPage onTaskCreated={handleTaskCreated} />;
   }, [route]);
 
@@ -115,7 +115,7 @@ export function App() {
         <nav className="oa-nav">
           <div className={isComparisonMenuOpen ? "oa-nav-group open" : "oa-nav-group"}>
             <button
-              className={route.name === "task" || route.name === "home" ? "active" : ""}
+              className={route.name === "task" || route.name === "home" || route.name === "records" ? "active" : ""}
               type="button"
               onClick={handleComparisonMenuClick}
               aria-expanded={isSidebarExpanded ? isComparisonMenuOpen : undefined}
@@ -133,33 +133,14 @@ export function App() {
                   <span>合同对比</span>
                 </button>
                 <button
-                  className={route.name === "task" ? "active" : ""}
+                  className={route.name === "records" ? "active" : ""}
                   type="button"
-                  onClick={() => {
-                    if (comparisonHistory[0]) {
-                      navigateToTask(comparisonHistory[0].taskId);
-                    }
-                  }}
+                  onClick={navigateToComparisonRecords}
+                  aria-current={route.name === "records" ? "page" : undefined}
                 >
                   <span className="oa-history-icon" aria-hidden="true" />
                   <span>对比记录</span>
                 </button>
-                {comparisonHistory.length > 0 &&
-                  comparisonHistory.map((item) => (
-                    <button
-                      key={item.taskId}
-                      className={route.name === "task" && route.taskId === item.taskId ? "active" : ""}
-                      type="button"
-                      onClick={() => navigateToTask(item.taskId)}
-                      aria-current={route.name === "task" && route.taskId === item.taskId ? "page" : undefined}
-                    >
-                      <span className="oa-subnav-dot" aria-hidden="true" />
-                      <span className="oa-history-entry">
-                        <strong>{shortTaskId(item.taskId)}</strong>
-                        <small>{formatHistoryTime(item.createdAt)}</small>
-                      </span>
-                    </button>
-                  ))}
               </div>
             )}
           </div>
@@ -226,42 +207,4 @@ export function App() {
 function navigateHome(): void {
   window.history.pushState({}, "", "/");
   window.dispatchEvent(new PopStateEvent("popstate"));
-}
-
-function readComparisonHistory(): ComparisonHistoryItem[] {
-  try {
-    const value = window.localStorage.getItem(HISTORY_STORAGE_KEY);
-    if (!value) {
-      return [];
-    }
-    const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed
-      .filter(
-        (item): item is ComparisonHistoryItem =>
-          typeof item?.taskId === "string" && typeof item?.createdAt === "string",
-      )
-      .slice(0, MAX_HISTORY_ITEMS);
-  } catch {
-    return [];
-  }
-}
-
-function shortTaskId(taskId: string): string {
-  return taskId.length > 16 ? `${taskId.slice(0, 8)}...${taskId.slice(-4)}` : taskId;
-}
-
-function formatHistoryTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "最近创建";
-  }
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
 }

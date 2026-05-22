@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { CSSProperties } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/pdf";
@@ -14,6 +15,13 @@ import type { DiffItem, EvidenceBox } from "../types";
 import { getCurrentPageFromScroll } from "./pdfPageScroll";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+
+interface PageHighlight {
+  diffId: string;
+  type: "ADD" | "DELETE" | "MODIFY";
+  evidence: EvidenceBox;
+  fallback: boolean;
+}
 
 export interface PdfDocumentViewerHandle {
   scrollToDiff: (diff: DiffItem) => void;
@@ -44,6 +52,8 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
       hidden = false,
       syncEnabled,
       onScrollRatio,
+      activeDiffId,
+      onActivateDiff,
     },
     ref,
   ) {
@@ -187,6 +197,9 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
                 pdf={pdf}
                 pageNumber={index + 1}
                 zoom={zoom}
+                highlights={getPageHighlights(diffs, side, index + 1)}
+                activeDiffId={activeDiffId}
+                onActivateDiff={onActivateDiff}
               />
             ))}
         </div>
@@ -206,8 +219,11 @@ const PdfPageCanvas = forwardRef<
     pdf: PDFDocumentProxy;
     pageNumber: number;
     zoom: number;
+    highlights: PageHighlight[];
+    activeDiffId: string;
+    onActivateDiff: (diffId: string) => void;
   }
->(function PdfPageCanvas({ pdf, pageNumber, zoom }, ref) {
+>(function PdfPageCanvas({ pdf, pageNumber, zoom, highlights, activeDiffId, onActivateDiff }, ref) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
 
@@ -261,10 +277,131 @@ const PdfPageCanvas = forwardRef<
       data-page-number={pageNumber}
     >
       <canvas ref={canvasRef} aria-label={`第 ${pageNumber} 页`} />
+      <PdfHighlightLayer
+        activeDiffId={activeDiffId}
+        highlights={highlights}
+        zoom={zoom}
+        onActivateDiff={onActivateDiff}
+      />
     </div>
   );
 });
 
 function getEvidence(diff: DiffItem, side: "original" | "compare"): EvidenceBox[] {
   return side === "original" ? (diff.original_evidence ?? []) : (diff.compare_evidence ?? []);
+}
+
+export function getPageHighlights(
+  diffs: DiffItem[],
+  side: "original" | "compare",
+  pageNumber: number,
+): PageHighlight[] {
+  const highlights: PageHighlight[] = [];
+  for (const diff of diffs) {
+    const evidences = getEvidence(diff, side)
+      .filter((evidence) => evidence.page_no === pageNumber)
+      .sort((left, right) => left.bbox.y0 - right.bbox.y0 || left.bbox.x0 - right.bbox.x0);
+
+    for (const evidence of evidences) {
+      const type = evidence.highlight_type ?? diff.diff_type;
+      const fallback = evidence.method === "block_fallback";
+      const previous = highlights[highlights.length - 1];
+      if (previous && canMergeHighlight(previous, diff.diff_id, type, evidence, fallback)) {
+        previous.evidence = mergeEvidence(previous.evidence, evidence);
+        continue;
+      }
+      highlights.push({ diffId: diff.diff_id, type, evidence, fallback });
+    }
+  }
+  return highlights;
+}
+
+function canMergeHighlight(
+  current: PageHighlight,
+  diffId: string,
+  type: PageHighlight["type"],
+  next: EvidenceBox,
+  fallback: boolean,
+): boolean {
+  if (current.diffId !== diffId || current.type !== type || current.fallback || fallback) {
+    return false;
+  }
+  const currentBox = current.evidence.bbox;
+  const nextBox = next.bbox;
+  const currentHeight = Math.max(1, currentBox.y1 - currentBox.y0);
+  const nextHeight = Math.max(1, nextBox.y1 - nextBox.y0);
+  const centerDelta = Math.abs((currentBox.y0 + currentBox.y1) / 2 - (nextBox.y0 + nextBox.y1) / 2);
+  const horizontalGap = nextBox.x0 - currentBox.x1;
+  return centerDelta <= Math.max(currentHeight, nextHeight) * 0.5 && horizontalGap >= 0 && horizontalGap <= 12;
+}
+
+function mergeEvidence(left: EvidenceBox, right: EvidenceBox): EvidenceBox {
+  return {
+    ...left,
+    bbox: {
+      x0: Math.min(left.bbox.x0, right.bbox.x0),
+      y0: Math.min(left.bbox.y0, right.bbox.y0),
+      x1: Math.max(left.bbox.x1, right.bbox.x1),
+      y1: Math.max(left.bbox.y1, right.bbox.y1),
+    },
+    text: [left.text, right.text].filter(Boolean).join(" "),
+  };
+}
+
+export function highlightStyle(highlight: PageHighlight, zoom: number): CSSProperties {
+  const { bbox } = highlight.evidence;
+  if (highlight.fallback) {
+    return {
+      left: `${Math.max(0, bbox.x0 * zoom - 8)}px`,
+      top: `${bbox.y0 * zoom}px`,
+      width: "5px",
+      height: `${Math.max(1, (bbox.y1 - bbox.y0) * zoom)}px`,
+    };
+  }
+
+  const height = Math.max(2.5, 2.5 * zoom);
+  return {
+    left: `${bbox.x0 * zoom}px`,
+    top: `${bbox.y1 * zoom - height}px`,
+    width: `${Math.max(1, (bbox.x1 - bbox.x0) * zoom)}px`,
+    height: `${height}px`,
+  };
+}
+
+export function PdfHighlightLayer({
+  activeDiffId,
+  highlights,
+  zoom,
+  onActivateDiff,
+}: {
+  activeDiffId: string;
+  highlights: PageHighlight[];
+  zoom: number;
+  onActivateDiff: (diffId: string) => void;
+}) {
+  if (!activeDiffId) {
+    return null;
+  }
+
+  return (
+    <div className="pdf-highlight-layer" aria-hidden={false}>
+      {highlights
+        .filter((highlight) => highlight.diffId === activeDiffId)
+        .map((highlight, index) => (
+          <button
+            type="button"
+            key={`${highlight.diffId}-${index}`}
+            className={[
+              "pdf-highlight-box",
+              highlight.type.toLowerCase(),
+              highlight.fallback ? "fallback" : "underline",
+              "active",
+            ].join(" ")}
+            style={highlightStyle(highlight, zoom)}
+            aria-label={`定位差异 ${highlight.diffId}`}
+            onClick={() => onActivateDiff(highlight.diffId)}
+          />
+        ))}
+    </div>
+  );
 }

@@ -12,7 +12,7 @@ from app.services.pdf_parser import PdfParseError
 from app.services.report_generator import build_report_filename
 from app.utils.file_utils import FileValidationError, assert_path_inside_storage, save_upload_file
 from app.utils.id_utils import generate_task_id
-from app.utils.json_utils import load_task, to_jsonable
+from app.utils.json_utils import list_compare_tasks, load_task, to_jsonable
 
 router = APIRouter(prefix="/api/compare", tags=["compare"])
 
@@ -59,6 +59,28 @@ async def compare_contracts(
         "compare_highlight_pdf_url": f"/api/compare/{task.task_id}/highlight/compare",
         "errors": task.errors,
     }
+
+
+@router.get("/records")
+def list_records() -> dict:
+    records = []
+    for task in list_compare_tasks():
+        records.append(
+            {
+                "task_id": task.task_id,
+                "status": task.status,
+                "created_at": task.created_at,
+                "updated_at": task.updated_at,
+                "original_filename": task.original_filename,
+                "compare_filename": task.compare_filename,
+                "diff_count": task.diff_count,
+                "high_risk_count": task.high_risk_count,
+                "medium_risk_count": task.medium_risk_count,
+                "low_risk_count": task.low_risk_count,
+                "report_url": f"/api/compare/{task.task_id}/report" if task.status == "COMPLETED" else "",
+            }
+        )
+    return {"records": records}
 
 
 @router.get("/{task_id}")

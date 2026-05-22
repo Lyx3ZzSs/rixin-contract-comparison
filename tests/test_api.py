@@ -9,7 +9,9 @@ from reportlab.pdfgen import canvas
 
 from app.config import settings
 from app.main import app
-from app.utils.json_utils import load_task
+from app.models import CompareTask
+from app.models_extraction import ExtractionTask
+from app.utils.json_utils import load_task, save_extraction_task, save_task
 
 
 def make_pdf(path: Path, lines: list[str]) -> None:
@@ -114,6 +116,49 @@ def test_root_is_not_a_backend_page() -> None:
     client = TestClient(app)
     response = client.get("/")
     assert response.status_code == 404
+
+
+def test_compare_records_list_uses_compare_tasks_only(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TOLDER",
+            status="COMPLETED",
+            created_at="2026-05-20T10:00:00+00:00",
+            updated_at="2026-05-20T10:30:00+00:00",
+            original_filename="old-a.pdf",
+            compare_filename="old-b.pdf",
+            diff_count=1,
+            high_risk_count=0,
+            medium_risk_count=1,
+            low_risk_count=0,
+        )
+    )
+    save_task(
+        CompareTask(
+            task_id="TNEWER",
+            status="PROCESSING",
+            created_at="2026-05-21T09:00:00+00:00",
+            updated_at="2026-05-21T09:05:00+00:00",
+            original_filename="new-a.pdf",
+            compare_filename="new-b.pdf",
+            diff_count=3,
+            high_risk_count=1,
+            medium_risk_count=1,
+            low_risk_count=1,
+        )
+    )
+    save_extraction_task(ExtractionTask(task_id="TEXT001", filename="extract.pdf"))
+
+    client = TestClient(app)
+    response = client.get("/api/compare/records")
+
+    assert response.status_code == 200, response.text
+    records = response.json()["records"]
+    assert [record["task_id"] for record in records] == ["TNEWER", "TOLDER"]
+    assert records[0]["report_url"] == ""
+    assert records[1]["report_url"] == "/api/compare/TOLDER/report"
+    assert all(record["task_id"] != "TEXT001" for record in records)
 
 
 def test_cors_allows_frontend_dev_origin() -> None:

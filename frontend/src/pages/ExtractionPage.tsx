@@ -1,14 +1,21 @@
-import { ChangeEvent, useEffect, useRef, useState } from "react";
+import { forwardRef, type ChangeEvent, type UIEvent, useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/pdf";
 
-import { extractionFields } from "../data/extractionFields";
+import { getCurrentPageFromScroll } from "../components/pdfPageScroll";
+import { extractionFields, type ExtractionFieldDefinition } from "../data/extractionFields";
 import { extractFields } from "../lib/api";
 import type { ExtractionFieldValue } from "../types";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+
+const DEFAULT_PREVIEW_ZOOM = 1;
+const PREVIEW_RENDER_SCALE = 0.9;
+const MIN_PREVIEW_ZOOM = 0.8;
+const MAX_PREVIEW_ZOOM = 1.8;
+const PREVIEW_ZOOM_STEP = 0.1;
 
 export function ExtractionPage() {
   const [file, setFile] = useState<File | null>(null);
@@ -97,6 +104,12 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
   const [extractionError, setExtractionError] = useState("");
   const [results, setResults] = useState<ExtractionFieldValue[] | null>(null);
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(2);
+  const [editingFieldId, setEditingFieldId] = useState("");
+  const [fieldDraft, setFieldDraft] = useState<Pick<ExtractionFieldDefinition, "name" | "type" | "description">>({
+    name: "",
+    type: "",
+    description: "",
+  });
 
   function toggleSemanticExtraction(fieldId: string) {
     setFields((currentFields) =>
@@ -108,6 +121,52 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
 
   function removeField(fieldId: string) {
     setFields((currentFields) => currentFields.filter((field) => field.id !== fieldId));
+    if (editingFieldId === fieldId) {
+      cancelFieldEdit();
+    }
+  }
+
+  function startFieldEdit(field: ExtractionFieldDefinition) {
+    setEditingFieldId(field.id);
+    setFieldDraft({
+      name: field.name,
+      type: field.type,
+      description: field.description,
+    });
+  }
+
+  function updateFieldDraft(key: keyof typeof fieldDraft, value: string) {
+    setFieldDraft((currentDraft) => ({ ...currentDraft, [key]: value }));
+  }
+
+  function cancelFieldEdit() {
+    setEditingFieldId("");
+    setFieldDraft({ name: "", type: "", description: "" });
+  }
+
+  function saveFieldEdit() {
+    if (!editingFieldId) {
+      return;
+    }
+    const nextName = fieldDraft.name.trim();
+    const nextType = fieldDraft.type.trim();
+    const nextDescription = fieldDraft.description.trim();
+    if (!nextName || !nextType) {
+      return;
+    }
+    setFields((currentFields) =>
+      currentFields.map((field) =>
+        field.id === editingFieldId
+          ? {
+              ...field,
+              name: nextName,
+              type: nextType,
+              description: nextDescription,
+            }
+          : field,
+      ),
+    );
+    cancelFieldEdit();
   }
 
   async function handleStartExtraction() {
@@ -269,15 +328,46 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
                 </div>
                 {fields.map((field) => (
                   <div className="extract-field-row" role="row" key={field.id}>
-                    <span className="field-name" role="cell" title={field.name}>
-                      {field.name}
-                    </span>
-                    <span className="field-type" role="cell">
-                      {field.type}
-                    </span>
-                    <span className="field-description" role="cell" title={field.description}>
-                      {field.description}
-                    </span>
+                    {editingFieldId === field.id ? (
+                      <>
+                        <span className="field-name editing" role="cell">
+                          <input
+                            className="field-edit-input"
+                            aria-label="编辑字段名称"
+                            value={fieldDraft.name}
+                            onChange={(event) => updateFieldDraft("name", event.target.value)}
+                          />
+                        </span>
+                        <span className="field-type editing" role="cell">
+                          <input
+                            className="field-edit-input"
+                            aria-label="编辑字段类型"
+                            value={fieldDraft.type}
+                            onChange={(event) => updateFieldDraft("type", event.target.value)}
+                          />
+                        </span>
+                        <span className="field-description editing" role="cell">
+                          <input
+                            className="field-edit-input"
+                            aria-label="编辑字段描述"
+                            value={fieldDraft.description}
+                            onChange={(event) => updateFieldDraft("description", event.target.value)}
+                          />
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="field-name" role="cell" title={field.name}>
+                          {field.name}
+                        </span>
+                        <span className="field-type" role="cell">
+                          {field.type}
+                        </span>
+                        <span className="field-description" role="cell" title={field.description}>
+                          {field.description}
+                        </span>
+                      </>
+                    )}
                     <span className="field-semantic" role="cell">
                       <button
                         className={field.semanticExtraction ? "field-switch on" : "field-switch"}
@@ -288,10 +378,25 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
                       />
                     </span>
                     <span role="cell" className="field-actions">
-                      <button type="button">编辑</button>
-                      <button type="button" onClick={() => removeField(field.id)}>
-                        移除
-                      </button>
+                      {editingFieldId === field.id ? (
+                        <>
+                          <button type="button" onClick={saveFieldEdit} disabled={!fieldDraft.name.trim() || !fieldDraft.type.trim()}>
+                            保存
+                          </button>
+                          <button type="button" onClick={cancelFieldEdit}>
+                            取消
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" onClick={() => startFieldEdit(field)}>
+                            编辑
+                          </button>
+                          <button type="button" onClick={() => removeField(field.id)}>
+                            移除
+                          </button>
+                        </>
+                      )}
                     </span>
                   </div>
                 ))}
@@ -309,14 +414,16 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [currentPage, setCurrentPage] = useState(1);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(DEFAULT_PREVIEW_ZOOM);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const pageRefs = useRef(new Map<number, HTMLDivElement>());
 
   useEffect(() => {
     if (!src) {
       setPdf(null);
       setLoadState("idle");
       setCurrentPage(1);
-      setZoom(1);
+      setZoom(DEFAULT_PREVIEW_ZOOM);
       return undefined;
     }
 
@@ -324,7 +431,7 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
     const loadingTask = pdfjsLib.getDocument(src);
     setLoadState("loading");
     setCurrentPage(1);
-    setZoom(1);
+    setZoom(DEFAULT_PREVIEW_ZOOM);
     loadingTask.promise
       .then((document) => {
         if (!isMounted) {
@@ -347,29 +454,63 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
     };
   }, [src]);
 
+  const updateCurrentPageFromScroll = useCallback(() => {
+    const scrollNode = scrollRef.current;
+    if (!scrollNode) {
+      return;
+    }
+    const pages = Array.from(pageRefs.current.entries())
+      .map(([pageNumber, node]) => ({
+        pageNumber,
+        offsetTop: node.offsetTop,
+        offsetHeight: node.offsetHeight,
+      }))
+      .sort((left, right) => left.pageNumber - right.pageNumber);
+    setCurrentPage(getCurrentPageFromScroll(scrollNode.scrollTop, scrollNode.clientHeight, pages));
+  }, []);
+
+  useEffect(() => {
+    const frameId = window.requestAnimationFrame(updateCurrentPageFromScroll);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [pdf, updateCurrentPageFromScroll, zoom]);
+
+  function scrollToPage(pageNumber: number) {
+    const totalPages = pdf?.numPages ?? 1;
+    const targetPage = Math.min(totalPages, Math.max(1, pageNumber));
+    const scrollNode = scrollRef.current;
+    const pageNode = pageRefs.current.get(targetPage);
+    if (scrollNode && pageNode) {
+      scrollNode.scrollTo({ top: Math.max(0, pageNode.offsetTop - 16), behavior: "smooth" });
+    }
+    setCurrentPage(targetPage);
+  }
+
   function goToPreviousPage() {
-    setCurrentPage((page) => Math.max(1, page - 1));
+    scrollToPage(currentPage - 1);
   }
 
   function goToNextPage() {
-    setCurrentPage((page) => Math.min(pdf?.numPages ?? page, page + 1));
+    scrollToPage(currentPage + 1);
   }
 
   function handlePageChange(event: ChangeEvent<HTMLInputElement>) {
-    const totalPages = pdf?.numPages ?? 1;
     const nextPage = Number(event.target.value);
     if (!Number.isFinite(nextPage)) {
       return;
     }
-    setCurrentPage(Math.min(totalPages, Math.max(1, nextPage)));
+    scrollToPage(nextPage);
   }
 
   function zoomOut() {
-    setZoom((value) => Math.max(0.6, Number((value - 0.1).toFixed(2))));
+    setZoom((value) => Math.max(MIN_PREVIEW_ZOOM, Number((value - PREVIEW_ZOOM_STEP).toFixed(2))));
   }
 
   function zoomIn() {
-    setZoom((value) => Math.min(1.8, Number((value + 0.1).toFixed(2))));
+    setZoom((value) => Math.min(MAX_PREVIEW_ZOOM, Number((value + PREVIEW_ZOOM_STEP).toFixed(2))));
+  }
+
+  function handleScroll(_event: UIEvent<HTMLDivElement>) {
+    updateCurrentPageFromScroll();
   }
 
   if (!src || loadState === "idle") {
@@ -377,7 +518,7 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
   }
 
   const totalPages = pdf?.numPages ?? 0;
-  const renderedZoom = 0.78 * zoom;
+  const renderedZoom = PREVIEW_RENDER_SCALE * zoom;
 
   return (
     <div className="extract-flat-pdf" aria-label="合同 PDF 预览">
@@ -385,7 +526,23 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
       {loadState === "error" && <DocumentFallback file={file} />}
       {pdf && (
         <>
-          <ExtractPdfPageCanvas key={`${src}-${currentPage}-${renderedZoom}`} pdf={pdf} pageNumber={currentPage} zoom={renderedZoom} />
+          <div ref={scrollRef} className="extract-pdf-scroll-shell" onScroll={handleScroll}>
+            {Array.from({ length: pdf.numPages }, (_, index) => (
+              <ExtractPdfPageCanvas
+                key={`${src}-${index + 1}-${renderedZoom}`}
+                ref={(node) => {
+                  if (node) {
+                    pageRefs.current.set(index + 1, node);
+                  } else {
+                    pageRefs.current.delete(index + 1);
+                  }
+                }}
+                pdf={pdf}
+                pageNumber={index + 1}
+                zoom={renderedZoom}
+              />
+            ))}
+          </div>
           <div className="extract-pdf-toolbar" aria-label="PDF预览工具栏">
             <button type="button" onClick={goToPreviousPage} disabled={currentPage <= 1} aria-label="上一页" title="上一页">
               <ChevronLeft aria-hidden="true" />
@@ -404,14 +561,13 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
             <button type="button" onClick={goToNextPage} disabled={currentPage >= totalPages} aria-label="下一页" title="下一页">
               <ChevronRight aria-hidden="true" />
             </button>
-            <span className="extract-toolbar-separator" aria-hidden="true" />
-            <button type="button" onClick={zoomOut} disabled={zoom <= 0.6} aria-label="缩小PDF" title="缩小">
+            <button type="button" onClick={zoomOut} disabled={zoom <= MIN_PREVIEW_ZOOM} aria-label="缩小PDF" title="缩小">
               <ZoomOut aria-hidden="true" />
             </button>
             <output className="extract-zoom-value" aria-label="当前缩放比例">
               {Math.round(zoom * 100)}%
             </output>
-            <button type="button" onClick={zoomIn} disabled={zoom >= 1.8} aria-label="放大PDF" title="放大">
+            <button type="button" onClick={zoomIn} disabled={zoom >= MAX_PREVIEW_ZOOM} aria-label="放大PDF" title="放大">
               <ZoomIn aria-hidden="true" />
             </button>
           </div>
@@ -421,7 +577,10 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
   );
 }
 
-function ExtractPdfPageCanvas({ pdf, pageNumber, zoom }: { pdf: PDFDocumentProxy; pageNumber: number; zoom: number }) {
+const ExtractPdfPageCanvas = forwardRef<
+  HTMLDivElement,
+  { pdf: PDFDocumentProxy; pageNumber: number; zoom: number }
+>(function ExtractPdfPageCanvas({ pdf, pageNumber, zoom }, ref) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
 
@@ -464,11 +623,16 @@ function ExtractPdfPageCanvas({ pdf, pageNumber, zoom }: { pdf: PDFDocumentProxy
   }, [pageNumber, pdf, zoom]);
 
   return (
-    <div className="extract-pdf-page-frame" style={{ width: pageSize.width || undefined, height: pageSize.height || undefined }}>
+    <div
+      ref={ref}
+      className="extract-pdf-page-frame"
+      style={{ width: pageSize.width || undefined, height: pageSize.height || undefined }}
+      data-page-number={pageNumber}
+    >
       <canvas ref={canvasRef} aria-label={`第 ${pageNumber} 页`} />
     </div>
   );
-}
+});
 
 function DocumentFallback({ file }: { file: File }) {
   return (

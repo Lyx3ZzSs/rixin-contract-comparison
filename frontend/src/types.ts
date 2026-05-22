@@ -29,6 +29,20 @@ export interface CompareTask extends CompareResponse {
   compare_page_screenshots?: string[];
 }
 
+export interface CompareRecordSummary {
+  task_id: string;
+  status: TaskStatus;
+  created_at: string;
+  updated_at: string;
+  original_filename: string;
+  compare_filename: string;
+  diff_count: number;
+  high_risk_count: number;
+  medium_risk_count: number;
+  low_risk_count: number;
+  report_url: string;
+}
+
 export interface AIAnalysis {
   risk_level: RiskLevel;
   risk_score: number;

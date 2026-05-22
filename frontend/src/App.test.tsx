@@ -27,6 +27,26 @@ vi.mock("./pages/ResultPage", () => ({
   ),
 }));
 
+vi.mock("./pages/ComparisonRecordsPage", () => ({
+  ComparisonRecordsPage: ({
+    onOpenTask,
+    onCreateComparison,
+  }: {
+    onOpenTask: (taskId: string) => void;
+    onCreateComparison: () => void;
+  }) => (
+    <section>
+      <h1>对比记录</h1>
+      <button type="button" onClick={() => onOpenTask("task-1")}>
+        查看结果
+      </button>
+      <button type="button" onClick={onCreateComparison}>
+        新建合同对比
+      </button>
+    </section>
+  ),
+}));
+
 describe("App", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -48,24 +68,35 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "登录系统" })).toBeInTheDocument();
   });
 
-  it("shows comparison records inside the expanded contract dropdown", async () => {
+  it("opens comparison records as a standalone page from the expanded contract menu", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
-    window.localStorage.setItem(
-      "rixin_contract_compare_history",
-      JSON.stringify([{ taskId: "task-1", createdAt: "2026-05-20T10:30:00.000Z" }]),
-    );
 
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
+    await user.click(screen.getByRole("button", { name: "对比记录" }));
 
     expect(screen.getByRole("button", { name: "合同智能对比" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: "合同对比" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "对比记录" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "对比记录" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByLabelText("合同智能对比菜单")).toHaveTextContent("对比记录");
-    expect(screen.queryByText("暂无对比记录")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /task-1/ })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/compare/records");
+    expect(screen.getByRole("heading", { name: "对比记录" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /task-1/ })).not.toBeInTheDocument();
+  });
+
+  it("opens a task from the standalone comparison records page", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.history.replaceState({}, "", "/compare/records");
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "查看结果" }));
+
+    expect(window.location.pathname).toBe("/tasks/task-1");
+    expect(screen.getByRole("heading", { name: "对比结果 task-1" })).toBeInTheDocument();
   });
 
   it("shows extraction tools as a sibling dropdown", async () => {
@@ -117,17 +148,16 @@ describe("App", () => {
     expect(screen.queryByText("提取ID:")).not.toBeInTheDocument();
   });
 
-  it("adds a created task to comparison records", async () => {
+  it("opens a newly created task without writing sidebar history", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "创建任务" }));
-    await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
 
     expect(screen.getByRole("heading", { name: "对比结果 task-2" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /task-2/ })).toHaveAttribute("aria-current", "page");
-    expect(window.localStorage.getItem("rixin_contract_compare_history")).toContain("task-2");
+    expect(window.location.pathname).toBe("/tasks/task-2");
+    expect(window.localStorage.getItem("rixin_contract_compare_history")).toBeNull();
   });
 });
