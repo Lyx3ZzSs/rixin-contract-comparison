@@ -16,10 +16,24 @@
 
 ## 安装与启动
 
+准备后端环境变量：
+
+```bash
+cp .env.example .env
+```
+
+`.env.example` 使用安全占位值；接入扫描件 OCR、结构化版面识别或合同字段提取时，再按实际环境填写 `PPOCRV5_URL`、`PPSTRUCTURE_URL` 和 `AI_LLM_*`。
+
 安装后端依赖：
 
 ```bash
 python -m pip install -r requirements.txt
+```
+
+项目同时提供 `pyproject.toml`，新环境也可以使用可编辑安装：
+
+```bash
+python -m pip install -e ".[dev]"
 ```
 
 启动后端 API：
@@ -28,10 +42,11 @@ python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --port 8000
 ```
 
-启动前端：
+准备并启动前端：
 
 ```bash
 cd frontend
+cp .env.example .env
 npm install
 npm run dev
 ```
@@ -66,6 +81,8 @@ VITE_API_BASE_URL=http://127.0.0.1:8001
 ```
 
 ## 文档识别配置
+
+后端运行配置集中在 `.env`，模板见 `.env.example`；代码读取和校验入口在 `app/config.py`，默认提示词在 `app/config_defaults.py`。
 
 合同字段提取功能使用远端 PP-OCRv5 先抽取 OCR 文本，再调用 OpenAI-compatible LLM 完成字段抽取。支持 `.pdf`、`.doc`、`.docx`、`.png`、`.jpg`、`.jpeg`、`.bmp`；Word 文件会先通过 LibreOffice 转为 PDF 后提交 PP-OCRv5。
 
@@ -177,6 +194,7 @@ REPORT_FONT_PATH=/path/to/your/chinese-font.ttf
 ## 测试
 
 ```bash
+python -m compileall app tests
 python -m pytest
 cd frontend && npm test && npm run build
 ```

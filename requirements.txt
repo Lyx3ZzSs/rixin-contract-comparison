@@ -5,6 +5,7 @@ pymupdf
 rapidfuzz
 reportlab
 pydantic>=2
+pydantic-settings>=2
 python-dotenv
 pytest
 httpx
