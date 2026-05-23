@@ -183,6 +183,16 @@ describe("ExtractionPage PDF preview", () => {
       async () =>
         new Response(
           JSON.stringify({
+            task_id: "E001",
+            task_type: "extraction",
+            status: "COMPLETED",
+            stage: "",
+            filename: "contract.pdf",
+            file_url: "/api/extract/E001/file",
+            extractor_used: "ppocrv5_llm",
+            fields: [
+              { id: "contract-amount", name: "合同金额", type: "金额", description: "合同总金额", semantic_extraction: false },
+            ],
             results: [
               {
                 field_id: "contract-amount",
@@ -233,6 +243,16 @@ describe("ExtractionPage PDF preview", () => {
       async () =>
         new Response(
           JSON.stringify({
+            task_id: "E002",
+            task_type: "extraction",
+            status: "COMPLETED",
+            stage: "",
+            filename: "contract.pdf",
+            file_url: "/api/extract/E002/file",
+            extractor_used: "ppocrv5_llm",
+            fields: [
+              { id: "payment-terms", name: "付款条款", type: "文本", description: "付款条款", semantic_extraction: true },
+            ],
             results: [
               {
                 field_id: "payment-terms",

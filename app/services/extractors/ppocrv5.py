@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +12,11 @@ import fitz
 import httpx
 
 from app.config import settings
+from app.clients import get_ocr_client
 from app.models import BBox, CharBox, Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
+
+logger = logging.getLogger(__name__)
 
 
 class PPOCRV5Extractor:
@@ -43,12 +48,16 @@ class PPOCRV5Extractor:
         headers = {"Content-Type": "application/json"}
         if settings.ppocrv5_access_token:
             headers["Authorization"] = f"Bearer {settings.ppocrv5_access_token}"
+        t = time.perf_counter()
         body = self._request_body(path, file_type=file_type)
+        logger.info("OCR请求体构建(Base64编码) 耗时 %.2fs", time.perf_counter() - t)
         try:
-            with httpx.Client(timeout=settings.ppocrv5_timeout_seconds) as client:
-                response = client.post(url, headers=headers, json=body)
-                response.raise_for_status()
-                payload = response.json()
+            t = time.perf_counter()
+            client = get_ocr_client()
+            response = client.post(url, headers=headers, json=body)
+            response.raise_for_status()
+            payload = response.json()
+            logger.info("OCR HTTP请求 耗时 %.2fs", time.perf_counter() - t)
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text[:500] if exc.response is not None else str(exc)
             raise DocumentExtractionError(f"远端 PP-OCRv5 请求失败 ({url}, HTTP {exc.response.status_code}): {detail}") from exc
@@ -69,8 +78,11 @@ class PPOCRV5Extractor:
         return base if base.endswith("/ocr") else f"{base}/ocr"
 
     def _request_body(self, path: Path, file_type: int = 0) -> dict[str, Any]:
+        raw = path.read_bytes()
+        encoded = base64.b64encode(raw).decode("ascii")
+        del raw
         return {
-            "file": base64.b64encode(path.read_bytes()).decode("ascii"),
+            "file": encoded,
             "fileType": file_type,
             "useDocOrientationClassify": settings.ppocrv5_use_doc_orientation_classify,
             "useDocUnwarping": settings.ppocrv5_use_doc_unwarping,

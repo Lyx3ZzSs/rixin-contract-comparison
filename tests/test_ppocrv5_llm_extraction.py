@@ -63,6 +63,14 @@ def llm_payload(content: object) -> dict:
     return {"choices": [{"message": {"content": text}}]}
 
 
+def _install_fake_client(monkeypatch: pytest.MonkeyPatch, fake_client: object) -> None:
+    """Replace both shared httpx clients with *fake_client*."""
+    import app.clients as clients_mod
+
+    monkeypatch.setattr(clients_mod, "_ocr_client", fake_client)
+    monkeypatch.setattr(clients_mod, "_llm_client", fake_client)
+
+
 def test_ppocrv5_llm_extracts_fields_from_pdf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     configure_extraction(monkeypatch)
     source = tmp_path / "contract.pdf"
@@ -70,14 +78,8 @@ def test_ppocrv5_llm_extracts_fields_from_pdf(monkeypatch: pytest.MonkeyPatch, t
     calls: list[tuple[str, dict, dict]] = []
 
     class FakeClient:
-        def __init__(self, timeout: int):
+        def __init__(self, timeout=None):
             self.timeout = timeout
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
 
         def post(self, url: str, headers: dict, json: dict):
             calls.append((url, headers, json))
@@ -97,8 +99,7 @@ def test_ppocrv5_llm_extracts_fields_from_pdf(monkeypatch: pytest.MonkeyPatch, t
                 )
             )
 
-    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
-    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+    _install_fake_client(monkeypatch, FakeClient())
 
     result = PPOCRV5LLMExtractionClient().extract_fields(
         source,
@@ -125,14 +126,8 @@ def test_ppocrv5_llm_uses_image_file_type(monkeypatch: pytest.MonkeyPatch, tmp_p
     ocr_bodies: list[dict] = []
 
     class FakeClient:
-        def __init__(self, timeout: int):
+        def __init__(self, timeout=None):
             pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
 
         def post(self, url: str, headers: dict, json: dict):
             if url.endswith("/ocr"):
@@ -140,8 +135,7 @@ def test_ppocrv5_llm_uses_image_file_type(monkeypatch: pytest.MonkeyPatch, tmp_p
                 return FakeResponse(ocr_payload("甲方：日新公司", data_type="image"))
             return FakeResponse(llm_payload({"甲方名称": "日新公司"}))
 
-    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
-    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+    _install_fake_client(monkeypatch, FakeClient())
 
     result = PPOCRV5LLMExtractionClient().extract_fields(
         source,
@@ -161,14 +155,8 @@ def test_ppocrv5_llm_parses_markdown_json_and_list_results(
     source.write_bytes(b"%PDF-1.7\n")
 
     class FakeClient:
-        def __init__(self, timeout: int):
+        def __init__(self, timeout=None):
             pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
 
         def post(self, url: str, headers: dict, json: dict):
             if url.endswith("/ocr"):
@@ -179,8 +167,7 @@ def test_ppocrv5_llm_parses_markdown_json_and_list_results(
                 )
             )
 
-    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
-    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+    _install_fake_client(monkeypatch, FakeClient())
 
     result = PPOCRV5LLMExtractionClient().extract_fields(
         source,
@@ -200,22 +187,15 @@ def test_ppocrv5_llm_marks_missing_fields_not_found(
     source.write_bytes(b"%PDF-1.7\n")
 
     class FakeClient:
-        def __init__(self, timeout: int):
+        def __init__(self, timeout=None):
             pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
 
         def post(self, url: str, headers: dict, json: dict):
             if url.endswith("/ocr"):
                 return FakeResponse(ocr_payload("合同正文"))
             return FakeResponse(llm_payload({"甲方名称": {"value": "未知", "confidence": 0, "evidence": ""}}))
 
-    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
-    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+    _install_fake_client(monkeypatch, FakeClient())
 
     result = PPOCRV5LLMExtractionClient().extract_fields(
         source,
@@ -242,14 +222,8 @@ def test_explicit_extraction_uses_direct_label_without_llm(
     calls: list[str] = []
 
     class FakeClient:
-        def __init__(self, timeout: int):
+        def __init__(self, timeout=None):
             pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
 
         def post(self, url: str, headers: dict, json: dict):
             calls.append(url)
@@ -257,8 +231,7 @@ def test_explicit_extraction_uses_direct_label_without_llm(
                 return FakeResponse(ocr_payload("合同金额：人民币100万元"))
             pytest.fail("explicit fields must not call the LLM")
 
-    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
-    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+    _install_fake_client(monkeypatch, FakeClient())
 
     result = PPOCRV5LLMExtractionClient().extract_fields(
         source,
@@ -286,22 +259,15 @@ def test_explicit_extraction_does_not_infer_party_structure(
     source.write_bytes(b"%PDF-1.7\n")
 
     class FakeClient:
-        def __init__(self, timeout: int):
+        def __init__(self, timeout=None):
             pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
 
         def post(self, url: str, headers: dict, json: dict):
             if url.endswith("/ocr"):
                 return FakeResponse(ocr_payload("甲方：日新公司", "法定代表人：张三"))
             pytest.fail("explicit fields must not call the LLM")
 
-    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
-    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+    _install_fake_client(monkeypatch, FakeClient())
 
     result = PPOCRV5LLMExtractionClient().extract_fields(
         source,
@@ -326,14 +292,8 @@ def test_mixed_explicit_and_semantic_fields_only_send_semantic_to_llm(
     llm_fields: list[list[dict]] = []
 
     class FakeClient:
-        def __init__(self, timeout: int):
+        def __init__(self, timeout=None):
             pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
 
         def post(self, url: str, headers: dict, json: dict):
             if url.endswith("/ocr"):
@@ -343,8 +303,7 @@ def test_mixed_explicit_and_semantic_fields_only_send_semantic_to_llm(
             llm_fields.append(request_payload["fields"])
             return FakeResponse(llm_payload({"甲方名称": "日新公司"}))
 
-    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
-    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+    _install_fake_client(monkeypatch, FakeClient())
 
     result = PPOCRV5LLMExtractionClient().extract_fields(
         source,
@@ -382,19 +341,13 @@ def test_ppocrv5_llm_rejects_empty_ocr_text(monkeypatch: pytest.MonkeyPatch, tmp
     source.write_bytes(b"%PDF-1.7\n")
 
     class FakeClient:
-        def __init__(self, timeout: int):
+        def __init__(self, timeout=None):
             pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
 
         def post(self, url: str, headers: dict, json: dict):
             return FakeResponse(ocr_payload(""))
 
-    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
+    _install_fake_client(monkeypatch, FakeClient())
 
     with pytest.raises(PPOCRV5LLMExtractionError, match="未返回可用于字段提取的文本"):
         PPOCRV5LLMExtractionClient().extract_fields(source, [ExtractionFieldDef(id="party-a-name", name="甲方名称")])
@@ -406,22 +359,15 @@ def test_ppocrv5_llm_rejects_non_json_llm_response(monkeypatch: pytest.MonkeyPat
     source.write_bytes(b"%PDF-1.7\n")
 
     class FakeClient:
-        def __init__(self, timeout: int):
+        def __init__(self, timeout=None):
             pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
 
         def post(self, url: str, headers: dict, json: dict):
             if url.endswith("/ocr"):
                 return FakeResponse(ocr_payload("甲方：日新公司"))
             return FakeResponse(llm_payload("无法处理"))
 
-    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
-    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+    _install_fake_client(monkeypatch, FakeClient())
 
     with pytest.raises(PPOCRV5LLMExtractionError, match="LLM 返回内容不是 JSON"):
         PPOCRV5LLMExtractionClient().extract_fields(source, [ExtractionFieldDef(id="party-a-name", name="甲方名称")])
@@ -430,8 +376,10 @@ def test_ppocrv5_llm_rejects_non_json_llm_response(monkeypatch: pytest.MonkeyPat
 def test_word_preprocessor_converts_with_libreoffice(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     source = tmp_path / "contract.docx"
     source.write_bytes(b"word")
+    captured_commands: list[list[str]] = []
 
     def fake_run(command, check, capture_output, text, timeout):
+        captured_commands.append(command)
         output_dir = Path(command[command.index("--outdir") + 1])
         (output_dir / "contract.pdf").write_bytes(b"%PDF-1.7\n")
 
@@ -450,6 +398,9 @@ def test_word_preprocessor_converts_with_libreoffice(monkeypatch: pytest.MonkeyP
     assert prepared.file_type == 0
     assert prepared.path.name == "contract.pdf"
     assert prepared.converted_file_path.endswith("contract.pdf")
+    cmd = captured_commands[0]
+    assert "--norestore" in cmd
+    assert any(arg.startswith("--accept=socket,host=127.0.0.1,port=2002") for arg in cmd)
 
 
 def test_word_preprocessor_requires_libreoffice(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -6,7 +6,7 @@ import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/pdf";
 
 import { getCurrentPageFromScroll } from "../components/pdfPageScroll";
 import type { ExtractionFieldDefinition } from "../data/extractionFields";
-import { createExtractionPreview, extractFields } from "../lib/api";
+import { createExtractionPreview, extractFields, getExtractionTask } from "../lib/api";
 import { readExtractionFieldLibrary } from "../lib/extractionFieldLibrary";
 import type { ExtractionFieldValue } from "../types";
 
@@ -108,6 +108,7 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionError, setExtractionError] = useState("");
   const [results, setResults] = useState<ExtractionFieldValue[] | null>(null);
+  const [extractionStage, setExtractionStage] = useState("");
   const [expandedResultIds, setExpandedResultIds] = useState<Set<string>>(() => new Set());
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(2);
   const [editingFieldId, setEditingFieldId] = useState("");
@@ -211,20 +212,54 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
     cancelFieldEdit();
   }
 
+  const stageMessages: Record<string, string> = {
+    preprocessing: "正在预处理文件...",
+    ocr: "正在识别文字...",
+    extracting: "正在提取字段...",
+    llm: "正在 AI 分析...",
+  };
+
   async function handleStartExtraction() {
     if (fields.length === 0) return;
 
     setIsExtracting(true);
     setExtractionError("");
+    setExtractionStage("preprocessing");
     setExpandedResultIds(new Set());
     setCurrentStep(3);
 
     try {
-      const response = await extractFields(file, fields);
-      setResults(response.results);
-      if (response.errors.length > 0) {
-        setExtractionError(response.errors.join("; "));
+      const initial = await extractFields(file, fields);
+      if (initial.status === "COMPLETED") {
+        setResults(initial.results);
+        if (initial.errors.length > 0) {
+          setExtractionError(initial.errors.join("; "));
+        }
+        return;
       }
+      if (initial.status === "FAILED") {
+        throw new Error(initial.errors.join("; ") || "提取失败");
+      }
+
+      const maxAttempts = 180;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const poll = await getExtractionTask(initial.task_id);
+        if (poll.stage) {
+          setExtractionStage(poll.stage);
+        }
+        if (poll.status === "COMPLETED") {
+          setResults(poll.results);
+          if (poll.errors.length > 0) {
+            setExtractionError(poll.errors.join("; "));
+          }
+          return;
+        }
+        if (poll.status === "FAILED") {
+          throw new Error(poll.errors.join("; ") || "提取失败");
+        }
+      }
+      throw new Error("提取超时，请稍后查看结果");
     } catch (err) {
       setExtractionError(err instanceof Error ? err.message : "提取失败，请重试");
       setCurrentStep(2);
@@ -236,6 +271,7 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
   function returnToFieldSetup() {
     setResults(null);
     setExpandedResultIds(new Set());
+    setExtractionStage("");
     setCurrentStep(2);
   }
 
@@ -347,7 +383,7 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
               </div>
               <div className="extract-status-bar">
                 <span className="extract-status-spinner" aria-hidden="true" />
-                正在提取合同的结构信息
+                {stageMessages[extractionStage] || "正在提取合同的结构信息"}
               </div>
               <div className="extract-card-list">
                 {fields.map((field) => (

@@ -258,14 +258,8 @@ def test_api_extract_accepts_png_with_ppocrv5_llm(monkeypatch, tmp_path: Path) -
             return self._payload
 
     class FakeClient:
-        def __init__(self, timeout: int):
+        def __init__(self, timeout=None):
             pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
 
         def post(self, url: str, headers: dict, json: dict):
             if url.endswith("/ocr"):
@@ -283,8 +277,9 @@ def test_api_extract_accepts_png_with_ppocrv5_llm(monkeypatch, tmp_path: Path) -
             assert "甲方：日新公司" in json["messages"][1]["content"]
             return FakeResponse({"choices": [{"message": {"content": '{"甲方名称":"日新公司"}'}}]})
 
-    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
-    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+    fake_client = FakeClient()
+    monkeypatch.setattr("app.clients._ocr_client", fake_client)
+    monkeypatch.setattr("app.clients._llm_client", fake_client)
 
     client = TestClient(app)
     response = client.post(
@@ -295,9 +290,14 @@ def test_api_extract_accepts_png_with_ppocrv5_llm(monkeypatch, tmp_path: Path) -
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["status"] == "COMPLETED"
-    assert payload["extractor_used"] == "ppocrv5_llm"
-    assert payload["results"][0]["value"] == "日新公司"
+    task_id = payload["task_id"]
+
+    poll_response = client.get(f"/api/extract/{task_id}")
+    assert poll_response.status_code == 200
+    polled = poll_response.json()
+    assert polled["status"] == "COMPLETED"
+    assert polled["extractor_used"] == "ppocrv5_llm"
+    assert polled["results"][0]["value"] == "日新公司"
 
 
 def test_api_extract_rejects_unsupported_file(tmp_path: Path) -> None:

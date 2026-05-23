@@ -109,6 +109,7 @@ export interface ExtractionTaskResponse {
   task_id: string;
   task_type: string;
   status: TaskStatus;
+  stage: string;
   filename: string;
   file_url: string;
   extractor_used: string;

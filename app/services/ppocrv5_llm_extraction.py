@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,10 +15,13 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.clients import get_llm_client
 from app.models_extraction import ExtractionFieldDef, ExtractionFieldValue
 from app.services.extractors.base import DocumentExtractionError
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
 from app.utils.file_utils import EXTRACTION_IMAGE_EXTENSIONS
+
+logger = logging.getLogger(__name__)
 
 
 class PPOCRV5LLMExtractionError(ValueError):
@@ -49,7 +55,7 @@ class ExtractionFilePreprocessor:
             return PreparedExtractionFile(path=converted, file_type=0, converted_file_path=str(converted))
         raise PPOCRV5LLMExtractionError("仅支持 PDF、Word、PNG、JPG、JPEG、BMP 文件。")
 
-    def _find_libreoffice_executable(self) -> str | None:
+    def _find_libreoffice_executable(self) -> str:
         if settings.libreoffice_path and Path(settings.libreoffice_path).is_file():
             return settings.libreoffice_path
         executable = shutil.which("libreoffice") or shutil.which("soffice")
@@ -59,21 +65,21 @@ class ExtractionFilePreprocessor:
             macos_path = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
             if Path(macos_path).is_file():
                 return macos_path
-        return None
+        raise PPOCRV5LLMExtractionError(
+            "未安装 LibreOffice，无法解析 Word 文件。"
+            "请安装 LibreOffice 或设置 LIBREOFFICE_PATH 环境变量。"
+        )
 
     def _convert_word_to_pdf(self, path: Path) -> Path:
         output_dir = path.parent / "converted"
         output_dir.mkdir(parents=True, exist_ok=True)
         executable = self._find_libreoffice_executable()
-        if not executable:
-            raise PPOCRV5LLMExtractionError(
-                "未安装 LibreOffice，无法解析 Word 文件。"
-                "请安装 LibreOffice 或设置 LIBREOFFICE_PATH 环境变量。"
-            )
-
+        accept_arg = f"socket,host={settings.libreoffice_host},port={settings.libreoffice_port};urp;"
         command = [
             executable,
             "--headless",
+            "--norestore",
+            f"--accept={accept_arg}",
             "--convert-to",
             "pdf",
             "--outdir",
@@ -86,7 +92,7 @@ class ExtractionFilePreprocessor:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=settings.ppocrv5_timeout_seconds,
+                timeout=settings.libreoffice_timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
             raise PPOCRV5LLMExtractionError("Word 转 PDF 超时。") from exc
@@ -111,11 +117,16 @@ class PPOCRV5LLMExtractionClient:
         self.preprocessor = preprocessor or ExtractionFilePreprocessor()
         self.ocr_extractor = ocr_extractor or PPOCRV5Extractor()
 
+    def _log_timing(self, task_id: str | None, stage: str, elapsed: float) -> None:
+        tag = task_id or "—"
+        logger.info("[%s] %s 耗时 %.2fs", tag, stage, elapsed)
+
     def extract_fields(
         self,
         file_path: str | Path,
         field_defs: list[ExtractionFieldDef],
         task_id: str | None = None,
+        stage_callback: Any = None,
     ) -> PPOCRV5LLMExtractionResult:
         if not field_defs:
             return PPOCRV5LLMExtractionResult(results=[])
@@ -123,43 +134,74 @@ class PPOCRV5LLMExtractionClient:
         if semantic_fields and not self._is_llm_configured():
             raise PPOCRV5LLMExtractionError("未配置 AI_LLM_BASE_URL、AI_LLM_API_KEY 或 AI_LLM_MODEL，无法执行合同字段提取。")
 
+        t_start = time.perf_counter()
+
+        t = time.perf_counter()
         prepared = self.preprocessor.prepare(file_path)
+        self._log_timing(task_id, "预处理(文件准备)", time.perf_counter() - t)
+
+        if stage_callback:
+            stage_callback("ocr")
+        t = time.perf_counter()
         try:
             ocr_payload = self.ocr_extractor.predict(prepared.path, file_type=prepared.file_type)
         except DocumentExtractionError as exc:
             raise PPOCRV5LLMExtractionError(str(exc)) from exc
+        self._log_timing(task_id, "OCR识别", time.perf_counter() - t)
 
         ocr_text = self._ocr_text(ocr_payload)
         if not ocr_text.strip():
             raise PPOCRV5LLMExtractionError("PP-OCRv5 未返回可用于字段提取的文本。")
 
-        explicit_results = {
-            result.field_id: result
-            for result in self._extract_explicit_fields(
-                ocr_text,
-                [field for field in field_defs if not field.semantic_extraction],
-            )
-        }
+        if stage_callback:
+            stage_callback("extracting")
+        explicit_fields = [field for field in field_defs if not field.semantic_extraction]
+
+        explicit_results: dict[str, ExtractionFieldValue] = {}
         llm_request: dict[str, Any] | None = None
         llm_payload: dict[str, Any] | None = None
         parsed: Any = None
         semantic_results: dict[str, ExtractionFieldValue] = {}
-        if semantic_fields:
-            llm_request = self._llm_request_payload(ocr_text, semantic_fields)
-            llm_payload = self._post_llm_json(llm_request)
-            content = self._llm_content(llm_payload)
-            parsed = self._parse_json_string(content)
-            if parsed is None:
-                raise PPOCRV5LLMExtractionError("LLM 返回内容不是 JSON。")
-            semantic_results = {
-                result.field_id: result
-                for result in self._parse_field_results(parsed, semantic_fields, extraction_method="semantic")
-            }
+
+        if semantic_fields and explicit_fields:
+            t = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = {
+                    executor.submit(self._extract_explicit_fields, ocr_text, explicit_fields): "explicit",
+                    executor.submit(self._run_semantic_extraction, ocr_text, semantic_fields, stage_callback): "semantic",
+                }
+                for future in as_completed(futures):
+                    label = futures[future]
+                    if label == "explicit":
+                        explicit_results = {r.field_id: r for r in future.result()}
+                    else:
+                        parsed, llm_req, llm_resp, sem_results = future.result()
+                        llm_request = llm_req
+                        llm_payload = llm_resp
+                        parsed = parsed
+                        semantic_results = {r.field_id: r for r in sem_results}
+            self._log_timing(task_id, "字段提取(显式+语义并行)", time.perf_counter() - t)
+        else:
+            if explicit_fields:
+                t = time.perf_counter()
+                explicit_results = {
+                    result.field_id: result
+                    for result in self._extract_explicit_fields(ocr_text, explicit_fields)
+                }
+                self._log_timing(task_id, "显式字段提取", time.perf_counter() - t)
+            if semantic_fields:
+                t = time.perf_counter()
+                parsed, llm_request, llm_payload, sem_list = self._run_semantic_extraction(
+                    ocr_text, semantic_fields, stage_callback,
+                )
+                semantic_results = {r.field_id: r for r in sem_list}
+                self._log_timing(task_id, "LLM语义提取", time.perf_counter() - t)
 
         results = [
             semantic_results[field.id] if field.semantic_extraction else explicit_results[field.id]
             for field in field_defs
         ]
+        t = time.perf_counter()
         raw_result_path = self._save_raw_result(
             {
                 "prepared_file": str(prepared.path),
@@ -174,11 +216,31 @@ class PPOCRV5LLMExtractionClient:
             task_id,
             Path(file_path),
         )
+        self._log_timing(task_id, "结果保存", time.perf_counter() - t)
+
+        self._log_timing(task_id, "提取完成(总耗时)", time.perf_counter() - t_start)
         return PPOCRV5LLMExtractionResult(
             results=results,
             raw_result_path=raw_result_path,
             converted_file_path=prepared.converted_file_path,
         )
+
+    def _run_semantic_extraction(
+        self,
+        ocr_text: str,
+        semantic_fields: list[ExtractionFieldDef],
+        stage_callback: Any = None,
+    ) -> tuple[Any, dict[str, Any] | None, dict[str, Any] | None, list[ExtractionFieldValue]]:
+        if stage_callback:
+            stage_callback("llm")
+        llm_request = self._llm_request_payload(ocr_text, semantic_fields)
+        llm_payload = self._post_llm_json(llm_request)
+        content = self._llm_content(llm_payload)
+        parsed = self._parse_json_string(content)
+        if parsed is None:
+            raise PPOCRV5LLMExtractionError("LLM 返回内容不是 JSON。")
+        results = self._parse_field_results(parsed, semantic_fields, extraction_method="semantic")
+        return parsed, llm_request, llm_payload, results
 
     def _is_llm_configured(self) -> bool:
         return bool(settings.ai_llm_base_url and settings.ai_llm_api_key and settings.ai_llm_model)
@@ -290,10 +352,10 @@ class PPOCRV5LLMExtractionClient:
         if settings.ai_llm_api_key:
             headers["Authorization"] = f"Bearer {settings.ai_llm_api_key}"
         try:
-            with httpx.Client(timeout=settings.ai_extraction_timeout_seconds) as client:
-                response = client.post(url, headers=headers, json=body)
-                response.raise_for_status()
-                payload = response.json()
+            client = get_llm_client()
+            response = client.post(url, headers=headers, json=body)
+            response.raise_for_status()
+            payload = response.json()
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text[:500] if exc.response is not None else str(exc)
             status_code = exc.response.status_code if exc.response is not None else "unknown"

@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     match_threshold: int = Field(default=85, ge=0, le=100)
     report_font_path: str = ""
     libreoffice_path: str = ""
+    libreoffice_host: str = "127.0.0.1"
+    libreoffice_port: int = Field(default=2002, ge=1, le=65535)
+    libreoffice_timeout_seconds: int = Field(default=30, ge=5, le=120)
 
     ai_llm_base_url: str = ""
     ai_llm_api_key: str = ""

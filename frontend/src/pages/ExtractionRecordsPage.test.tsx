@@ -45,6 +45,7 @@ describe("ExtractionRecordsPage", () => {
       task_id: "E001",
       task_type: "extraction",
       status: "COMPLETED",
+      stage: "",
       filename: "合同.pdf",
       file_url: "/api/extract/E001/file",
       extractor_used: "ppocrv5_llm",

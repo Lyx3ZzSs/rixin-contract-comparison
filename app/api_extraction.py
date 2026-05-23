@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -11,9 +14,10 @@ from app.services.ppocrv5_llm_extraction import ExtractionFilePreprocessor, PPOC
 from app.services.extraction_service import ExtractionService
 from app.utils.file_utils import FileValidationError, assert_path_inside_storage, save_upload_file_generic
 from app.utils.id_utils import generate_task_id
-from app.utils.json_utils import list_extraction_tasks, load_extraction_task, to_jsonable
+from app.utils.json_utils import list_extraction_tasks, load_extraction_task, save_extraction_task, to_jsonable
 
 router = APIRouter(prefix="/api/extract", tags=["extraction"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("")
@@ -32,16 +36,30 @@ async def extract_fields(
     task_id = generate_task_id()
     try:
         file_path = await save_upload_file_generic(file, task_id, "source")
-        task = ExtractionService().extract(
+    except FileValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    service = ExtractionService()
+    task = ExtractionTask(
+        task_id=task_id,
+        filename=file.filename or "",
+        file_path=str(file_path),
+        fields=field_defs,
+        extractor_used=service.client.name,
+    )
+    save_extraction_task(task)
+
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(
+        None,
+        functools.partial(
+            service.extract,
             file_path=str(file_path),
             field_defs=field_defs,
             task_id=task_id,
             filename=file.filename or "",
-        )
-    except FileValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"提取失败: {exc}") from exc
+        ),
+    )
 
     data = to_jsonable(task)
     data["file_url"] = f"/api/extract/{task.task_id}/file"
