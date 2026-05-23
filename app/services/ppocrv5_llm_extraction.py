@@ -119,7 +119,8 @@ class PPOCRV5LLMExtractionClient:
     ) -> PPOCRV5LLMExtractionResult:
         if not field_defs:
             return PPOCRV5LLMExtractionResult(results=[])
-        if not self._is_llm_configured():
+        semantic_fields = [field for field in field_defs if field.semantic_extraction]
+        if semantic_fields and not self._is_llm_configured():
             raise PPOCRV5LLMExtractionError("未配置 AI_LLM_BASE_URL、AI_LLM_API_KEY 或 AI_LLM_MODEL，无法执行合同字段提取。")
 
         prepared = self.preprocessor.prepare(file_path)
@@ -132,23 +133,43 @@ class PPOCRV5LLMExtractionClient:
         if not ocr_text.strip():
             raise PPOCRV5LLMExtractionError("PP-OCRv5 未返回可用于字段提取的文本。")
 
-        llm_request = self._llm_request_payload(ocr_text, field_defs)
-        llm_payload = self._post_llm_json(llm_request)
-        content = self._llm_content(llm_payload)
-        parsed = self._parse_json_string(content)
-        if parsed is None:
-            raise PPOCRV5LLMExtractionError("LLM 返回内容不是 JSON。")
+        explicit_results = {
+            result.field_id: result
+            for result in self._extract_explicit_fields(
+                ocr_text,
+                [field for field in field_defs if not field.semantic_extraction],
+            )
+        }
+        llm_request: dict[str, Any] | None = None
+        llm_payload: dict[str, Any] | None = None
+        parsed: Any = None
+        semantic_results: dict[str, ExtractionFieldValue] = {}
+        if semantic_fields:
+            llm_request = self._llm_request_payload(ocr_text, semantic_fields)
+            llm_payload = self._post_llm_json(llm_request)
+            content = self._llm_content(llm_payload)
+            parsed = self._parse_json_string(content)
+            if parsed is None:
+                raise PPOCRV5LLMExtractionError("LLM 返回内容不是 JSON。")
+            semantic_results = {
+                result.field_id: result
+                for result in self._parse_field_results(parsed, semantic_fields, extraction_method="semantic")
+            }
 
-        results = self._parse_field_results(parsed, field_defs)
+        results = [
+            semantic_results[field.id] if field.semantic_extraction else explicit_results[field.id]
+            for field in field_defs
+        ]
         raw_result_path = self._save_raw_result(
             {
                 "prepared_file": str(prepared.path),
                 "converted_file_path": prepared.converted_file_path,
                 "ocr": ocr_payload,
                 "ocr_text": ocr_text,
-                "llm_request": self._request_log(llm_request),
+                "llm_request": self._request_log(llm_request) if llm_request else None,
                 "llm_response": llm_payload,
                 "parsed_result": parsed,
+                "explicit_result": [result.model_dump() for result in explicit_results.values()],
             },
             task_id,
             Path(file_path),
@@ -314,7 +335,57 @@ class PPOCRV5LLMExtractionClient:
             except json.JSONDecodeError:
                 return None
 
-    def _parse_field_results(self, payload: Any, field_defs: list[ExtractionFieldDef]) -> list[ExtractionFieldValue]:
+    def _extract_explicit_fields(
+        self,
+        ocr_text: str,
+        field_defs: list[ExtractionFieldDef],
+    ) -> list[ExtractionFieldValue]:
+        lines = [line.strip() for line in ocr_text.splitlines() if line.strip()]
+        return [self._extract_explicit_field(lines, field) for field in field_defs]
+
+    def _extract_explicit_field(self, lines: list[str], field: ExtractionFieldDef) -> ExtractionFieldValue:
+        labels = self._explicit_labels(field)
+        for line in lines:
+            for label in labels:
+                match = re.search(rf"{re.escape(label)}\s*[:：=]\s*(?P<value>.+?)\s*$", line)
+                if not match:
+                    continue
+                value = match.group("value").strip()
+                if not value:
+                    continue
+                return ExtractionFieldValue(
+                    field_id=field.id,
+                    field_name=field.name,
+                    value=value,
+                    confidence=1.0,
+                    source_snippet=line,
+                    status="found",
+                    extraction_method="explicit",
+                )
+        return ExtractionFieldValue(
+            field_id=field.id,
+            field_name=field.name,
+            value="",
+            confidence=0.0,
+            source_snippet="",
+            status="not_found",
+            extraction_method="explicit",
+        )
+
+    def _explicit_labels(self, field: ExtractionFieldDef) -> list[str]:
+        labels: list[str] = []
+        for value in (field.name, field.description):
+            label = value.strip()
+            if label and label not in labels:
+                labels.append(label)
+        return labels
+
+    def _parse_field_results(
+        self,
+        payload: Any,
+        field_defs: list[ExtractionFieldDef],
+        extraction_method: str | None = None,
+    ) -> list[ExtractionFieldValue]:
         field_payload = self._field_payload(payload)
         results: list[ExtractionFieldValue] = []
         for field in field_defs:
@@ -329,6 +400,7 @@ class PPOCRV5LLMExtractionClient:
                     confidence=self._clamp_confidence(confidence) if status == "found" else 0.0,
                     source_snippet=source_snippet,
                     status=status,
+                    extraction_method=extraction_method,
                 )
             )
         return results

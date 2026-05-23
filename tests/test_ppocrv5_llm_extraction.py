@@ -227,6 +227,144 @@ def test_ppocrv5_llm_marks_missing_fields_not_found(
     assert result.results[0].confidence == 0.0
 
 
+def test_explicit_extraction_uses_direct_label_without_llm(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(settings, "ppocrv5_url", "https://ocr.example.test")
+    monkeypatch.setattr(settings, "ppocrv5_access_token", "ocr-secret")
+    monkeypatch.setattr(settings, "ai_llm_base_url", "")
+    monkeypatch.setattr(settings, "ai_llm_api_key", "")
+    monkeypatch.setattr(settings, "ai_llm_model", "")
+    monkeypatch.setattr(settings, "save_extraction_raw_result", False)
+    source = tmp_path / "contract.pdf"
+    source.write_bytes(b"%PDF-1.7\n")
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, timeout: int):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, headers: dict, json: dict):
+            calls.append(url)
+            if url.endswith("/ocr"):
+                return FakeResponse(ocr_payload("合同金额：人民币100万元"))
+            pytest.fail("explicit fields must not call the LLM")
+
+    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
+    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+
+    result = PPOCRV5LLMExtractionClient().extract_fields(
+        source,
+        [ExtractionFieldDef(id="amount", name="合同金额", description="合同总金额", semantic_extraction=False)],
+    )
+
+    assert [url.rsplit("/", 1)[-1] for url in calls] == ["ocr"]
+    assert result.results[0].status == "found"
+    assert result.results[0].value == "人民币100万元"
+    assert result.results[0].confidence == 1.0
+    assert result.results[0].source_snippet == "合同金额：人民币100万元"
+    assert result.results[0].extraction_method == "explicit"
+
+
+def test_explicit_extraction_does_not_infer_party_structure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(settings, "ppocrv5_url", "https://ocr.example.test")
+    monkeypatch.setattr(settings, "ai_llm_base_url", "")
+    monkeypatch.setattr(settings, "ai_llm_api_key", "")
+    monkeypatch.setattr(settings, "ai_llm_model", "")
+    monkeypatch.setattr(settings, "save_extraction_raw_result", False)
+    source = tmp_path / "contract.pdf"
+    source.write_bytes(b"%PDF-1.7\n")
+
+    class FakeClient:
+        def __init__(self, timeout: int):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, headers: dict, json: dict):
+            if url.endswith("/ocr"):
+                return FakeResponse(ocr_payload("甲方：日新公司", "法定代表人：张三"))
+            pytest.fail("explicit fields must not call the LLM")
+
+    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
+    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+
+    result = PPOCRV5LLMExtractionClient().extract_fields(
+        source,
+        [
+            ExtractionFieldDef(id="party-a-name", name="甲方名称", semantic_extraction=False),
+            ExtractionFieldDef(id="party-a-legal-rep", name="甲方法定代表人", semantic_extraction=False),
+        ],
+    )
+
+    assert [item.status for item in result.results] == ["not_found", "not_found"]
+    assert [item.value for item in result.results] == ["", ""]
+    assert all(item.extraction_method == "explicit" for item in result.results)
+
+
+def test_mixed_explicit_and_semantic_fields_only_send_semantic_to_llm(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    configure_extraction(monkeypatch)
+    source = tmp_path / "contract.pdf"
+    source.write_bytes(b"%PDF-1.7\n")
+    llm_fields: list[list[dict]] = []
+
+    class FakeClient:
+        def __init__(self, timeout: int):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, headers: dict, json: dict):
+            if url.endswith("/ocr"):
+                return FakeResponse(ocr_payload("合同金额：人民币100万元", "甲方：日新公司"))
+            llm_request = json["messages"][1]["content"]
+            request_payload = json_module_loads_from_prompt(llm_request)
+            llm_fields.append(request_payload["fields"])
+            return FakeResponse(llm_payload({"甲方名称": "日新公司"}))
+
+    monkeypatch.setattr("app.services.extractors.ppocrv5.httpx.Client", FakeClient)
+    monkeypatch.setattr("app.services.ppocrv5_llm_extraction.httpx.Client", FakeClient)
+
+    result = PPOCRV5LLMExtractionClient().extract_fields(
+        source,
+        [
+            ExtractionFieldDef(id="amount", name="合同金额", semantic_extraction=False),
+            ExtractionFieldDef(id="party-a-name", name="甲方名称", semantic_extraction=True),
+        ],
+    )
+
+    assert [[field["id"] for field in fields] for fields in llm_fields] == [["party-a-name"]]
+    assert [item.field_id for item in result.results] == ["amount", "party-a-name"]
+    assert [item.value for item in result.results] == ["人民币100万元", "日新公司"]
+    assert [item.extraction_method for item in result.results] == ["explicit", "semantic"]
+
+
+def json_module_loads_from_prompt(prompt: str) -> dict:
+    marker = "输入 JSON："
+    return json.loads(prompt.split(marker, 1)[1])
+
+
 def test_ppocrv5_llm_requires_llm_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     source = tmp_path / "contract.pdf"
     source.write_bytes(b"%PDF-1.7\n")

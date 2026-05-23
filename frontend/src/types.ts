@@ -102,6 +102,7 @@ export interface ExtractionFieldValue {
   confidence: number;
   source_snippet: string;
   status: ExtractionFieldStatus;
+  extraction_method?: "explicit" | "semantic" | null;
 }
 
 export interface ExtractionTaskResponse {
