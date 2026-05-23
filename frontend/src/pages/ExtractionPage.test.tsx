@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { EXTRACTION_FIELD_LIBRARY_STORAGE_KEY } from "../lib/extractionFieldLibrary";
 import { ExtractionPage } from "./ExtractionPage";
 
 const getViewport = vi.fn((options: { scale: number }) => ({
@@ -32,6 +33,8 @@ vi.mock("pdfjs-dist/build/pdf.worker.mjs?url", () => ({
 
 describe("ExtractionPage PDF preview", () => {
   beforeEach(() => {
+    window.localStorage.clear();
+    vi.unstubAllGlobals();
     getViewport.mockClear();
     Object.defineProperty(HTMLElement.prototype, "clientHeight", {
       configurable: true,
@@ -118,7 +121,9 @@ describe("ExtractionPage PDF preview", () => {
     render(<ExtractionPage />);
 
     await user.upload(screen.getByLabelText("上传合同提取文件"), new File(["pdf"], "contract.pdf", { type: "application/pdf" }));
+    expect(screen.queryByText("字段类型")).not.toBeInTheDocument();
     await user.click(screen.getAllByRole("button", { name: "编辑" })[0]);
+    expect(screen.queryByLabelText("编辑字段类型")).not.toBeInTheDocument();
     await user.clear(screen.getByLabelText("编辑字段名称"));
     await user.type(screen.getByLabelText("编辑字段名称"), "采购方名称");
     await user.clear(screen.getByLabelText("编辑字段描述"));
@@ -128,5 +133,172 @@ describe("ExtractionPage PDF preview", () => {
     expect(screen.getByText("采购方名称")).toBeInTheDocument();
     expect(screen.getByText("采购方主体名称")).toBeInTheDocument();
     expect(screen.queryByLabelText("编辑字段名称")).not.toBeInTheDocument();
+  });
+
+  it("uses the local extraction field library as default fields", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      EXTRACTION_FIELD_LIBRARY_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: "contract-amount",
+          name: "合同金额",
+          type: "金额",
+          description: "合同总金额",
+          semanticExtraction: true,
+        },
+        {
+          id: "party-a-name",
+          name: "甲方名称",
+          type: "文本",
+          description: "甲方名称",
+          semanticExtraction: false,
+        },
+      ]),
+    );
+    render(<ExtractionPage />);
+
+    await user.upload(screen.getByLabelText("上传合同提取文件"), new File(["pdf"], "contract.pdf", { type: "application/pdf" }));
+
+    expect(screen.getByLabelText("提取字段列表")).toHaveTextContent("合同金额");
+    expect(screen.getByLabelText("提取字段列表")).toHaveTextContent("甲方名称");
+    expect(screen.getByRole("button", { name: "甲方名称语义提取" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("submits disabled semantic extraction as strict matching and displays the result method", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      EXTRACTION_FIELD_LIBRARY_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: "contract-amount",
+          name: "合同金额",
+          type: "金额",
+          description: "合同总金额",
+          semanticExtraction: true,
+        },
+      ]),
+    );
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            results: [
+              {
+                field_id: "contract-amount",
+                field_name: "合同金额",
+                value: "人民币100万元",
+                confidence: 1,
+                source_snippet: "合同金额：人民币100万元",
+                status: "found",
+                extraction_method: "explicit",
+              },
+            ],
+            errors: [],
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ExtractionPage />);
+
+    await user.upload(screen.getByLabelText("上传合同提取文件"), new File(["pdf"], "contract.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "合同金额语义提取" }));
+    await user.click(screen.getByRole("button", { name: "开始提取" }));
+
+    await screen.findByText("人民币100万元");
+    expect(screen.getByText("严格匹配")).toBeInTheDocument();
+    const body = fetchMock.mock.calls[0][1]?.body as FormData;
+    const fields = JSON.parse(String(body.get("fields"))) as Array<{ semantic_extraction: boolean }>;
+    expect(fields[0].semantic_extraction).toBe(false);
+  });
+
+  it("expands and collapses long extraction values", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      EXTRACTION_FIELD_LIBRARY_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: "payment-terms",
+          name: "付款条款",
+          type: "文本",
+          description: "付款条款",
+          semanticExtraction: true,
+        },
+      ]),
+    );
+    const longValue =
+      "合同签订后十个工作日内支付合同总金额的百分之三十，设备到货并完成初验后支付百分之六十，剩余百分之十作为质保金在质保期满后一次性无息支付。若验收过程中发现质量问题，乙方应在收到通知后五个工作日内完成整改并重新提交验收。";
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            results: [
+              {
+                field_id: "payment-terms",
+                field_name: "付款条款",
+                value: longValue,
+                confidence: 0.93,
+                source_snippet: longValue,
+                status: "found",
+                extraction_method: "semantic",
+              },
+            ],
+            errors: [],
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ExtractionPage />);
+
+    await user.upload(screen.getByLabelText("上传合同提取文件"), new File(["pdf"], "contract.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "开始提取" }));
+
+    await screen.findByText(longValue);
+    const expandButton = screen.getByRole("button", { name: "展开" });
+    expect(expandButton).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(expandButton);
+    expect(screen.getByRole("button", { name: "收起" })).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(screen.getByRole("button", { name: "收起" }));
+    expect(screen.getByRole("button", { name: "展开" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("converts Word files to PDF previews", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(new Blob(["%PDF-1.4"], { type: "application/pdf" })));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ExtractionPage />);
+
+    await user.upload(
+      screen.getByLabelText("上传合同提取文件"),
+      new File(["word"], "contract.docx", {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8000/api/extract/preview", expect.any(Object)));
+    await waitFor(() => expect(getViewport).toHaveBeenCalledWith({ scale: 0.9 }));
+    expect(screen.getByLabelText("合同 PDF 预览")).toBeInTheDocument();
+  });
+
+  it("shows a Word preview conversion error", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ detail: "预览失败: 未安装 LibreOffice" }), { status: 500 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ExtractionPage />);
+
+    await user.upload(
+      screen.getByLabelText("上传合同提取文件"),
+      new File(["word"], "contract.docx", {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      }),
+    );
+
+    expect(await screen.findByText("预览失败: 未安装 LibreOffice")).toBeInTheDocument();
   });
 });

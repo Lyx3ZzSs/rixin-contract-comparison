@@ -51,6 +51,23 @@ def list_compare_tasks() -> list[CompareTask]:
     return sorted(tasks, key=lambda task: task.updated_at or task.created_at, reverse=True)
 
 
+def list_extraction_tasks() -> list[ExtractionTask]:
+    if not settings.tasks_dir.exists():
+        return []
+
+    tasks: list[ExtractionTask] = []
+    for path in settings.tasks_dir.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data.get("task_type") != "extraction":
+                continue
+            tasks.append(ExtractionTask(**data))
+        except (OSError, ValueError, TypeError):
+            continue
+
+    return sorted(tasks, key=lambda task: task.updated_at or task.created_at, reverse=True)
+
+
 def save_extraction_task(task: ExtractionTask) -> Path:
     settings.tasks_dir.mkdir(parents=True, exist_ok=True)
     path = task_json_path(task.task_id)

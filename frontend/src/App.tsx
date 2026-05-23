@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { LoginPage } from "./pages/LoginPage";
+import { ExtractionFieldsPage } from "./pages/ExtractionFieldsPage";
 import { ExtractionPage } from "./pages/ExtractionPage";
+import { ExtractionRecordsPage } from "./pages/ExtractionRecordsPage";
 import { ComparisonRecordsPage } from "./pages/ComparisonRecordsPage";
 import { ResultPage } from "./pages/ResultPage";
 import { UploadPage } from "./pages/UploadPage";
@@ -12,6 +14,8 @@ function readRoute():
   | { name: "home" }
   | { name: "records" }
   | { name: "extract" }
+  | { name: "extractRecords" }
+  | { name: "extractFields" }
   | { name: "task"; taskId: string } {
   const match = window.location.pathname.match(/^\/tasks\/([^/]+)$/);
   if (match) {
@@ -23,6 +27,12 @@ function readRoute():
   if (window.location.pathname === "/extract") {
     return { name: "extract" };
   }
+  if (window.location.pathname === "/extract/records") {
+    return { name: "extractRecords" };
+  }
+  if (window.location.pathname === "/extract/fields") {
+    return { name: "extractFields" };
+  }
   return { name: "home" };
 }
 
@@ -33,6 +43,16 @@ function navigateToTask(taskId: string): void {
 
 function navigateToExtraction(): void {
   window.history.pushState({}, "", "/extract");
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+function navigateToExtractionRecords(): void {
+  window.history.pushState({}, "", "/extract/records");
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+function navigateToExtractionFields(): void {
+  window.history.pushState({}, "", "/extract/fields");
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
@@ -98,6 +118,12 @@ export function App() {
     if (route.name === "extract") {
       return <ExtractionPage />;
     }
+    if (route.name === "extractRecords") {
+      return <ExtractionRecordsPage onCreateExtraction={navigateToExtraction} />;
+    }
+    if (route.name === "extractFields") {
+      return <ExtractionFieldsPage />;
+    }
     if (route.name === "records") {
       return <ComparisonRecordsPage onOpenTask={navigateToTask} onCreateComparison={navigateHome} />;
     }
@@ -146,6 +172,11 @@ export function App() {
           </div>
           <div className={isExtractionMenuOpen ? "oa-nav-group open" : "oa-nav-group"}>
             <button
+              className={
+                route.name === "extract" || route.name === "extractRecords" || route.name === "extractFields"
+                  ? "active"
+                  : ""
+              }
               type="button"
               onClick={handleExtractionMenuClick}
               aria-expanded={isSidebarExpanded ? isExtractionMenuOpen : undefined}
@@ -160,11 +191,21 @@ export function App() {
                   <span className="oa-subnav-dot" aria-hidden="true" />
                   <span>合同提取</span>
                 </button>
-                <button type="button">
+                <button
+                  className={route.name === "extractRecords" ? "active" : ""}
+                  type="button"
+                  onClick={navigateToExtractionRecords}
+                  aria-current={route.name === "extractRecords" ? "page" : undefined}
+                >
                   <span className="oa-history-icon" aria-hidden="true" />
                   <span>提取记录</span>
                 </button>
-                <button type="button">
+                <button
+                  className={route.name === "extractFields" ? "active" : ""}
+                  type="button"
+                  onClick={navigateToExtractionFields}
+                  aria-current={route.name === "extractFields" ? "page" : undefined}
+                >
                   <span className="oa-field-icon" aria-hidden="true" />
                   <span>提取字段管理</span>
                 </button>

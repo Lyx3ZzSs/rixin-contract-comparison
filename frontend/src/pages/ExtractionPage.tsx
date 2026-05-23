@@ -5,8 +5,9 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/pdf";
 
 import { getCurrentPageFromScroll } from "../components/pdfPageScroll";
-import { extractionFields, type ExtractionFieldDefinition } from "../data/extractionFields";
-import { extractFields } from "../lib/api";
+import type { ExtractionFieldDefinition } from "../data/extractionFields";
+import { createExtractionPreview, extractFields } from "../lib/api";
+import { readExtractionFieldLibrary } from "../lib/extractionFieldLibrary";
 import type { ExtractionFieldValue } from "../types";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -99,17 +100,60 @@ interface ExtractionFieldSetupProps {
 
 function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetupProps) {
   const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-  const [fields, setFields] = useState(extractionFields);
+  const isWord = /\.(doc|docx)$/i.test(file.name);
+  const [wordPreviewUrl, setWordPreviewUrl] = useState("");
+  const [wordPreviewState, setWordPreviewState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [wordPreviewError, setWordPreviewError] = useState("");
+  const [fields, setFields] = useState(() => readExtractionFieldLibrary());
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionError, setExtractionError] = useState("");
   const [results, setResults] = useState<ExtractionFieldValue[] | null>(null);
+  const [expandedResultIds, setExpandedResultIds] = useState<Set<string>>(() => new Set());
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(2);
   const [editingFieldId, setEditingFieldId] = useState("");
-  const [fieldDraft, setFieldDraft] = useState<Pick<ExtractionFieldDefinition, "name" | "type" | "description">>({
+  const [fieldDraft, setFieldDraft] = useState<Pick<ExtractionFieldDefinition, "name" | "description">>({
     name: "",
-    type: "",
     description: "",
   });
+
+  useEffect(() => {
+    if (!isWord) {
+      setWordPreviewUrl("");
+      setWordPreviewState("idle");
+      setWordPreviewError("");
+      return undefined;
+    }
+
+    let isCurrent = true;
+    let objectUrl = "";
+    setWordPreviewUrl("");
+    setWordPreviewState("loading");
+    setWordPreviewError("");
+
+    createExtractionPreview(file)
+      .then((blob) => {
+        if (!isCurrent) {
+          return;
+        }
+        objectUrl = URL.createObjectURL(blob);
+        setWordPreviewUrl(objectUrl);
+        setWordPreviewState("ready");
+      })
+      .catch((err) => {
+        if (!isCurrent) {
+          return;
+        }
+        setWordPreviewError(err instanceof Error ? err.message : "Word 预览失败。");
+        setWordPreviewState("error");
+      });
+
+    return () => {
+      isCurrent = false;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [file, isWord]);
 
   function toggleSemanticExtraction(fieldId: string) {
     setFields((currentFields) =>
@@ -130,7 +174,6 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
     setEditingFieldId(field.id);
     setFieldDraft({
       name: field.name,
-      type: field.type,
       description: field.description,
     });
   }
@@ -141,7 +184,7 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
 
   function cancelFieldEdit() {
     setEditingFieldId("");
-    setFieldDraft({ name: "", type: "", description: "" });
+    setFieldDraft({ name: "", description: "" });
   }
 
   function saveFieldEdit() {
@@ -149,9 +192,8 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
       return;
     }
     const nextName = fieldDraft.name.trim();
-    const nextType = fieldDraft.type.trim();
     const nextDescription = fieldDraft.description.trim();
-    if (!nextName || !nextType) {
+    if (!nextName) {
       return;
     }
     setFields((currentFields) =>
@@ -160,7 +202,7 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
           ? {
               ...field,
               name: nextName,
-              type: nextType,
+              type: field.type || "文本",
               description: nextDescription,
             }
           : field,
@@ -174,6 +216,7 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
 
     setIsExtracting(true);
     setExtractionError("");
+    setExpandedResultIds(new Set());
     setCurrentStep(3);
 
     try {
@@ -188,6 +231,24 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
     } finally {
       setIsExtracting(false);
     }
+  }
+
+  function returnToFieldSetup() {
+    setResults(null);
+    setExpandedResultIds(new Set());
+    setCurrentStep(2);
+  }
+
+  function toggleResultExpansion(fieldId: string) {
+    setExpandedResultIds((currentIds) => {
+      const nextIds = new Set(currentIds);
+      if (nextIds.has(fieldId)) {
+        nextIds.delete(fieldId);
+      } else {
+        nextIds.add(fieldId);
+      }
+      return nextIds;
+    });
   }
 
   function handleExport() {
@@ -260,6 +321,18 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
           <div className="extract-document-page">
             {isPdf ? (
               <FlatPdfPreview src={documentUrl} file={file} />
+            ) : isWord && wordPreviewState === "ready" && wordPreviewUrl ? (
+              <FlatPdfPreview src={wordPreviewUrl} file={file} />
+            ) : isWord ? (
+              <DocumentFallback
+                file={file}
+                message={
+                  wordPreviewState === "error"
+                    ? wordPreviewError || "Word 预览失败，请确认后端已安装 LibreOffice。"
+                    : "正在将 Word 转为 PDF 预览..."
+                }
+                isError={wordPreviewState === "error"}
+              />
             ) : (
               <DocumentFallback file={file} />
             )}
@@ -289,7 +362,7 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
             <div className="extract-card-view">
               <div className="extract-card-header">
                 <h2>提取字段信息</h2>
-                <button type="button" className="extract-back-link" onClick={() => { setResults(null); setCurrentStep(2); }}>
+                <button type="button" className="extract-back-link" onClick={returnToFieldSetup}>
                   返回字段设置
                 </button>
               </div>
@@ -297,14 +370,36 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
                 <div className="extract-error-banner" role="alert">{extractionError}</div>
               )}
               <div className="extract-card-list">
-                {results.map((r) => (
-                  <div className="extract-card-item" key={r.field_id}>
-                    <span className="extract-card-name">{r.field_name}</span>
-                    <span className={`extract-card-value${r.status === "not_found" ? " empty" : r.status === "error" ? " error" : ""}`}>
-                      {r.status === "found" ? (r.value || "—") : r.status === "not_found" ? "未找到" : "提取失败"}
-                    </span>
-                  </div>
-                ))}
+                {results.map((r) => {
+                  const valueText =
+                    r.status === "found" ? (r.value || "—") : r.status === "not_found" ? "未找到" : "提取失败";
+                  const isExpanded = expandedResultIds.has(r.field_id);
+                  const canExpand = r.status === "found" && isLongExtractionValue(valueText);
+                  return (
+                    <div className="extract-card-item result" key={r.field_id}>
+                      <span className="extract-card-name">
+                        {r.field_name}
+                        <small className="extract-method-badge">{extractionMethodLabel(r.extraction_method)}</small>
+                      </span>
+                      <span
+                        className={`extract-card-value${r.status === "not_found" ? " empty" : r.status === "error" ? " error" : ""}${isExpanded ? " expanded" : ""}`}
+                        title={valueText}
+                      >
+                        <span className="extract-card-value-text">{valueText}</span>
+                        {canExpand && (
+                          <button
+                            type="button"
+                            className="extract-value-toggle"
+                            aria-expanded={isExpanded}
+                            onClick={() => toggleResultExpansion(r.field_id)}
+                          >
+                            {isExpanded ? "收起" : "展开"}
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ) : (
@@ -320,7 +415,6 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
               <div className="extract-field-grid" role="table" aria-label="提取字段列表">
                 <div className="extract-field-row header" role="row">
                   <strong role="columnheader">字段名称</strong>
-                  <strong role="columnheader">字段类型</strong>
                   <strong role="columnheader">字段描述</strong>
                   <strong role="columnheader">语义提取</strong>
                   <strong role="columnheader">操作</strong>
@@ -337,14 +431,6 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
                             onChange={(event) => updateFieldDraft("name", event.target.value)}
                           />
                         </span>
-                        <span className="field-type editing" role="cell">
-                          <input
-                            className="field-edit-input"
-                            aria-label="编辑字段类型"
-                            value={fieldDraft.type}
-                            onChange={(event) => updateFieldDraft("type", event.target.value)}
-                          />
-                        </span>
                         <span className="field-description editing" role="cell">
                           <input
                             className="field-edit-input"
@@ -359,9 +445,6 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
                         <span className="field-name" role="cell" title={field.name}>
                           {field.name}
                         </span>
-                        <span className="field-type" role="cell">
-                          {field.type}
-                        </span>
                         <span className="field-description" role="cell" title={field.description}>
                           {field.description}
                         </span>
@@ -373,13 +456,15 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
                         type="button"
                         aria-label={`${field.name}语义提取`}
                         aria-pressed={field.semanticExtraction}
+                        title={field.semanticExtraction ? "语义提取" : "严格匹配"}
                         onClick={() => toggleSemanticExtraction(field.id)}
                       />
+                      <small>{field.semanticExtraction ? "语义" : "严格"}</small>
                     </span>
                     <span role="cell" className="field-actions">
                       {editingFieldId === field.id ? (
                         <>
-                          <button type="button" onClick={saveFieldEdit} disabled={!fieldDraft.name.trim() || !fieldDraft.type.trim()}>
+                          <button type="button" onClick={saveFieldEdit} disabled={!fieldDraft.name.trim()}>
                             保存
                           </button>
                           <button type="button" onClick={cancelFieldEdit}>
@@ -406,6 +491,20 @@ function ExtractionFieldSetup({ file, documentUrl, onBack }: ExtractionFieldSetu
       </div>
     </section>
   );
+}
+
+function extractionMethodLabel(method: ExtractionFieldValue["extraction_method"]): string {
+  if (method === "explicit") {
+    return "严格匹配";
+  }
+  if (method === "semantic") {
+    return "语义提取";
+  }
+  return "提取";
+}
+
+function isLongExtractionValue(value: string): boolean {
+  return value.length > 72 || value.includes("\n");
 }
 
 
@@ -633,12 +732,20 @@ const ExtractPdfPageCanvas = forwardRef<
   );
 });
 
-function DocumentFallback({ file }: { file: File }) {
+function DocumentFallback({
+  file,
+  message = "合同文件已上传，正在准备预览。",
+  isError = false,
+}: {
+  file: File;
+  message?: string;
+  isError?: boolean;
+}) {
   return (
-    <div className="extract-document-fallback">
+    <div className={isError ? "extract-document-fallback error" : "extract-document-fallback"}>
       <span aria-hidden="true" />
       <strong>{file.name}</strong>
-      <p>合同文件已上传，正在准备预览。</p>
+      <p>{message}</p>
     </div>
   );
 }

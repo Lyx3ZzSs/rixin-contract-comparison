@@ -116,3 +116,18 @@ export interface ExtractionTaskResponse {
   results: ExtractionFieldValue[];
   errors: string[];
 }
+
+export interface ExtractionRecordSummary {
+  task_id: string;
+  task_type: string;
+  status: TaskStatus;
+  created_at: string;
+  updated_at: string;
+  filename: string;
+  file_url: string;
+  extractor_used: string;
+  field_count: number;
+  found_count: number;
+  not_found_count: number;
+  error_count: number;
+}

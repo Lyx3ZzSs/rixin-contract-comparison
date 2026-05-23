@@ -10,7 +10,7 @@ from reportlab.pdfgen import canvas
 from app.config import settings
 from app.main import app
 from app.models import CompareTask
-from app.models_extraction import ExtractionTask
+from app.models_extraction import ExtractionFieldDef, ExtractionFieldValue, ExtractionTask
 from app.utils.json_utils import load_task, save_extraction_task, save_task
 
 
@@ -161,6 +161,68 @@ def test_compare_records_list_uses_compare_tasks_only(tmp_path: Path) -> None:
     assert all(record["task_id"] != "TEXT001" for record in records)
 
 
+def test_extraction_records_list_uses_extraction_tasks_only(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TCOMPARE",
+            status="COMPLETED",
+            original_filename="old-a.pdf",
+            compare_filename="old-b.pdf",
+        )
+    )
+    save_extraction_task(
+        ExtractionTask(
+            task_id="EOLDER",
+            status="COMPLETED",
+            created_at="2026-05-20T10:00:00+00:00",
+            updated_at="2026-05-20T10:30:00+00:00",
+            filename="older.pdf",
+            file_path=str(settings.uploads_dir / "EOLDER" / "source_older.pdf"),
+            extractor_used="ppocrv5_llm",
+            fields=[
+                ExtractionFieldDef(id="party-a-name", name="甲方名称"),
+                ExtractionFieldDef(id="party-b-name", name="乙方名称"),
+            ],
+            results=[
+                ExtractionFieldValue(field_id="party-a-name", field_name="甲方名称", value="日新", confidence=0.9, status="found"),
+                ExtractionFieldValue(field_id="party-b-name", field_name="乙方名称", status="not_found"),
+            ],
+        )
+    )
+    save_extraction_task(
+        ExtractionTask(
+            task_id="ENEWER",
+            status="FAILED",
+            created_at="2026-05-21T09:00:00+00:00",
+            updated_at="2026-05-21T09:05:00+00:00",
+            filename="newer.pdf",
+            extractor_used="ppocrv5_llm",
+            fields=[ExtractionFieldDef(id="amount", name="合同金额")],
+            results=[
+                ExtractionFieldValue(field_id="amount", field_name="合同金额", status="error"),
+            ],
+        )
+    )
+
+    client = TestClient(app)
+    response = client.get("/api/extract/records")
+
+    assert response.status_code == 200, response.text
+    records = response.json()["records"]
+    assert [record["task_id"] for record in records] == ["ENEWER", "EOLDER"]
+    assert records[0]["field_count"] == 1
+    assert records[0]["found_count"] == 0
+    assert records[0]["not_found_count"] == 0
+    assert records[0]["error_count"] == 1
+    assert records[1]["field_count"] == 2
+    assert records[1]["found_count"] == 1
+    assert records[1]["not_found_count"] == 1
+    assert records[1]["error_count"] == 0
+    assert records[1]["file_url"] == "/api/extract/EOLDER/file"
+    assert all(record["task_id"] != "TCOMPARE" for record in records)
+
+
 def test_cors_allows_frontend_dev_origin() -> None:
     client = TestClient(app)
     response = client.options(
@@ -250,3 +312,48 @@ def test_api_extract_rejects_unsupported_file(tmp_path: Path) -> None:
 
     assert response.status_code == 400
     assert "仅支持 PDF、Word、PNG、JPG、JPEG、BMP 文件" in response.json()["detail"]
+
+
+def test_api_extract_preview_converts_word_to_pdf(monkeypatch, tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+
+    def fake_convert_word_to_pdf(self, path: Path) -> Path:
+        output_dir = path.parent / "converted"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        converted = output_dir / f"{path.stem}.pdf"
+        converted.write_bytes(b"%PDF-1.4\npreview")
+        return converted
+
+    monkeypatch.setattr(
+        "app.services.ppocrv5_llm_extraction.ExtractionFilePreprocessor._convert_word_to_pdf",
+        fake_convert_word_to_pdf,
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/extract/preview",
+        files={
+            "file": (
+                "contract.docx",
+                b"word",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert "application/pdf" in response.headers["content-type"]
+    assert response.content.startswith(b"%PDF-1.4")
+
+
+def test_api_extract_preview_rejects_images(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/extract/preview",
+        files={"file": ("contract.png", b"\x89PNG\r\n\x1a\ncontent", "image/png")},
+    )
+
+    assert response.status_code == 400
+    assert "仅支持 PDF 或 Word 文件预览" in response.json()["detail"]

@@ -47,6 +47,25 @@ vi.mock("./pages/ComparisonRecordsPage", () => ({
   ),
 }));
 
+vi.mock("./pages/ExtractionRecordsPage", () => ({
+  ExtractionRecordsPage: ({ onCreateExtraction }: { onCreateExtraction: () => void }) => (
+    <section>
+      <h1>提取记录</h1>
+      <button type="button" onClick={onCreateExtraction}>
+        新建合同提取
+      </button>
+    </section>
+  ),
+}));
+
+vi.mock("./pages/ExtractionFieldsPage", () => ({
+  ExtractionFieldsPage: () => (
+    <section>
+      <h1>提取字段管理</h1>
+    </section>
+  ),
+}));
+
 describe("App", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -128,6 +147,47 @@ describe("App", () => {
     expect(screen.getByLabelText("上传合同提取文件")).not.toHaveAttribute("multiple");
     expect(screen.queryByText(/数量不超过5份/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "开始提取" })).not.toBeInTheDocument();
+  });
+
+  it("opens extraction records from the extraction menu", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
+    await user.click(screen.getByRole("button", { name: "提取记录" }));
+
+    expect(window.location.pathname).toBe("/extract/records");
+    expect(screen.getByRole("button", { name: "提取记录" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "提取记录" })).toBeInTheDocument();
+  });
+
+  it("opens extraction field management from the extraction menu", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
+    await user.click(screen.getByRole("button", { name: "提取字段管理" }));
+
+    expect(window.location.pathname).toBe("/extract/fields");
+    expect(screen.getByRole("button", { name: "提取字段管理" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "提取字段管理" })).toBeInTheDocument();
+  });
+
+  it("starts a new extraction from the extraction records page", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.history.replaceState({}, "", "/extract/records");
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "新建合同提取" }));
+
+    expect(window.location.pathname).toBe("/extract");
+    expect(screen.getByRole("heading", { name: "AI智能合同提取工具" })).toBeInTheDocument();
   });
 
   it("opens field setup after selecting a file", async () => {
