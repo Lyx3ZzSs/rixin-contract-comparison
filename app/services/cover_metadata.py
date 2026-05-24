@@ -284,7 +284,7 @@ class CoverMetadataComparator:
                 compare_text=right.value,
                 compare_snippet=right.value,
                 readable_change=f"新增封面字段【{label}】：{right.value}",
-                compare_evidence=self._mark(right.evidences, "ADD"),
+                compare_evidence=self._field_evidence(right, [TextRange(start=0, end=len(right.value), highlight_type="ADD")], "ADD"),
                 compare_change_ranges=[TextRange(start=0, end=len(right.value), highlight_type="ADD")],
             )
         assert left is not None
@@ -295,7 +295,7 @@ class CoverMetadataComparator:
             original_text=left.value,
             original_snippet=left.value,
             readable_change=f"删除封面字段【{label}】：{left.value}",
-            original_evidence=self._mark(left.evidences, "DELETE"),
+            original_evidence=self._field_evidence(left, [TextRange(start=0, end=len(left.value), highlight_type="DELETE")], "DELETE"),
             original_change_ranges=[TextRange(start=0, end=len(left.value), highlight_type="DELETE")],
         )
 

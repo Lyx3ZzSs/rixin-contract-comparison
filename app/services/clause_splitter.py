@@ -102,11 +102,52 @@ class ClauseSplitter:
         for page_no in pages:
             page_units = [unit for unit in units if unit.page_no == page_no]
             if self._can_trust_layout_order(page_units):
-                page_units.sort(key=lambda unit: (unit.layout_order or 0, unit.bbox.y0, unit.bbox.x0, unit.block_id))
+                snapped = self._snap_y_by_layout_group(page_units)
+                page_units.sort(key=lambda unit: (unit.layout_order or 0, snapped[unit.block_id], unit.bbox.x0, unit.block_id))
             else:
-                page_units.sort(key=lambda unit: (unit.bbox.y0, unit.bbox.x0, unit.layout_order or 0, unit.block_id))
+                snapped = self._snap_y_coordinates(page_units)
+                page_units.sort(key=lambda unit: (snapped[unit.block_id], unit.bbox.x0, unit.layout_order or 0, unit.block_id))
             ordered.extend(page_units)
         return ordered
+
+    def _snap_y_coordinates(self, units: list[ClauseUnit]) -> dict[str, float]:
+        if not units:
+            return {}
+        heights = [unit.bbox.y1 - unit.bbox.y0 for unit in units]
+        median_height = sorted(heights)[len(heights) // 2]
+        threshold = max(median_height * 0.5, 2.0)
+
+        sorted_by_y = sorted(units, key=lambda u: u.bbox.y0)
+        groups: list[list[ClauseUnit]] = []
+        current_group: list[ClauseUnit] = [sorted_by_y[0]]
+        for unit in sorted_by_y[1:]:
+            if unit.bbox.y0 - current_group[0].bbox.y0 <= threshold:
+                current_group.append(unit)
+            else:
+                groups.append(current_group)
+                current_group = [unit]
+        groups.append(current_group)
+
+        snapped: dict[str, float] = {}
+        for group in groups:
+            min_y = min(u.bbox.y0 for u in group)
+            for unit in group:
+                snapped[unit.block_id] = min_y
+        return snapped
+
+    def _snap_y_by_layout_group(self, units: list[ClauseUnit]) -> dict[str, float]:
+        groups: dict[int, list[ClauseUnit]] = {}
+        for unit in units:
+            order = unit.layout_order or 0
+            groups.setdefault(order, []).append(unit)
+
+        snapped: dict[str, float] = {}
+        for group_units in groups.values():
+            if len(group_units) == 1:
+                snapped[group_units[0].block_id] = group_units[0].bbox.y0
+            else:
+                snapped.update(self._snap_y_coordinates(group_units))
+        return snapped
 
     def _can_trust_layout_order(self, units: list[ClauseUnit]) -> bool:
         with_order = [unit for unit in units if unit.layout_order is not None]
