@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, Download, Eye, EyeOff, PanelRightOpen, ZoomIn, ZoomOut } from "lucide-react";
+import { Ban, CheckCircle2, ChevronRight, Download, Eye, EyeOff, HelpCircle, PanelRightOpen, XCircle, ZoomIn, ZoomOut } from "lucide-react";
 
 import { PdfDocumentViewer, type PdfDocumentViewerHandle } from "../components/PdfDocumentViewer";
-import { getDiffs, getTask, toApiUrl } from "../lib/api";
-import type { CompareTask, DiffItem, DiffType } from "../types";
+import { getCompareQuality, getDiffs, getTask, toApiUrl, updateDiffReview } from "../lib/api";
+import type { CompareQualitySummary, CompareTask, DiffItem, DiffType, ReviewStatus } from "../types";
 
 interface ResultPageProps {
   taskId: string;
@@ -13,6 +13,7 @@ interface ResultPageProps {
 export function ResultPage({ taskId, onBack }: ResultPageProps) {
   const [task, setTask] = useState<CompareTask | null>(null);
   const [diffs, setDiffs] = useState<DiffItem[]>([]);
+  const [quality, setQuality] = useState<CompareQualitySummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   const [isOriginalVisible, setIsOriginalVisible] = useState(true);
@@ -24,35 +25,66 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
   const [zoom, setZoom] = useState(1);
   const [activeDiffId, setActiveDiffId] = useState("");
   const [activeAuditItemId, setActiveAuditItemId] = useState("");
+  const [reviewComments, setReviewComments] = useState<Record<string, string>>({});
+  const [reviewSavingDiffId, setReviewSavingDiffId] = useState("");
+  const [reviewError, setReviewError] = useState("");
   const originalViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
   const compareViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
 
   useEffect(() => {
     let isMounted = true;
+    let timeoutId: number | undefined;
     setIsLoading(true);
     setError("");
 
-    Promise.all([getTask(taskId), getDiffs(taskId)])
-      .then(([taskPayload, diffPayload]) => {
+    async function loadTask() {
+      try {
+        const taskPayload = await getTask(taskId);
         if (!isMounted) {
           return;
         }
         setTask(taskPayload);
-        setDiffs(diffPayload);
-      })
-      .catch((err) => {
+        if (taskPayload.status === "COMPLETED") {
+          const [diffPayload, qualityPayload] = await Promise.all([getDiffs(taskId), getCompareQuality(taskId)]);
+          if (!isMounted) {
+            return;
+          }
+          setDiffs(diffPayload);
+          setQuality(qualityPayload);
+          setReviewComments((current) => {
+            const next = { ...current };
+            for (const diff of diffPayload) {
+              if (diff.review_comment && next[diff.diff_id] === undefined) {
+                next[diff.diff_id] = diff.review_comment;
+              }
+            }
+            return next;
+          });
+        } else {
+          setDiffs([]);
+          setQuality(null);
+          if (taskPayload.status === "PROCESSING") {
+            timeoutId = window.setTimeout(loadTask, TASK_POLL_INTERVAL_MS);
+          }
+        }
+      } catch (err) {
         if (isMounted) {
           setError(err instanceof Error ? err.message : "读取任务失败。");
         }
-      })
-      .finally(() => {
+      } finally {
         if (isMounted) {
           setIsLoading(false);
         }
-      });
+      }
+    }
+
+    void loadTask();
 
     return () => {
       isMounted = false;
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
     };
   }, [taskId]);
 
@@ -109,6 +141,40 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
     focusDiff(item.diffId, item.id);
   }
 
+  function updateReviewComment(diffId: string, value: string) {
+    setReviewComments((current) => ({ ...current, [diffId]: value }));
+  }
+
+  async function handleReview(diffId: string, status: ReviewStatus) {
+    setReviewSavingDiffId(diffId);
+    setReviewError("");
+    try {
+      const payload = await updateDiffReview(taskId, diffId, {
+        review_status: status,
+        review_comment: reviewComments[diffId] ?? "",
+        reviewed_by: "local_reviewer",
+      });
+      setDiffs((currentDiffs) => currentDiffs.map((diff) => (diff.diff_id === diffId ? payload.diff : diff)));
+      setTask((currentTask) =>
+        currentTask
+          ? {
+              ...currentTask,
+              reviewed_count: payload.review_stats.reviewed_count,
+              confirmed_count: payload.review_stats.confirmed_count,
+              false_positive_count: payload.review_stats.false_positive_count,
+              manual_review_count: payload.review_stats.manual_review_count,
+              ignored_count: payload.review_stats.ignored_count,
+            }
+          : currentTask,
+      );
+      setQuality(await getCompareQuality(taskId));
+    } catch (err) {
+      setReviewError(err instanceof Error ? err.message : "复核提交失败。");
+    } finally {
+      setReviewSavingDiffId("");
+    }
+  }
+
   async function downloadPdfFile(url: string, filename: string) {
     if (!url) {
       return;
@@ -150,6 +216,25 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
 
   if (error || !task) {
     return <StateScreen title="无法打开审查结果" detail={error || "任务不存在。"} onBack={onBack} />;
+  }
+
+  if (task.status === "PROCESSING") {
+    return (
+      <StateScreen
+        title="正在执行合同对比"
+        detail={`${task.stage || "处理中"} · ${Math.max(0, Math.min(100, task.progress_percent || 0))}%`}
+      />
+    );
+  }
+
+  if (task.status === "FAILED") {
+    return (
+      <StateScreen
+        title="合同对比失败"
+        detail={task.errors.length > 0 ? task.errors.join("；") : task.stage || "处理失败。"}
+        onBack={onBack}
+      />
+    );
   }
 
   return (
@@ -288,10 +373,16 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
           filter={diffFilter}
           items={filteredAuditItems}
           isOpen={isAuditPanelOpen}
+          quality={quality}
+          reviewComments={reviewComments}
+          reviewSavingDiffId={reviewSavingDiffId}
+          reviewError={reviewError}
           stats={auditStats}
           onClose={() => setIsAuditPanelOpen(false)}
           onFilterChange={setDiffFilter}
           onSelectItem={focusAuditItem}
+          onReview={handleReview}
+          onReviewCommentChange={updateReviewComment}
         />
         <button
           className="audit-panel-rail"
@@ -336,6 +427,14 @@ interface AuditChangeItem {
   summary: string;
   pageNo: number | null;
   y0: number | null;
+  confidence: number | null;
+  evidenceQuality: "LOW" | "MEDIUM" | "HIGH" | null;
+  sourceType: string;
+  matchScore: number | null;
+  matchMethod: string;
+  reviewFlags: string[];
+  reviewStatus: ReviewStatus;
+  reviewComment: string;
 }
 
 interface EvidenceLocation {
@@ -347,6 +446,7 @@ const ESTIMATED_PAGE_HEIGHT = 842;
 const AXIS_MIN_TOP = 3;
 const AXIS_MAX_TOP = 97;
 const AXIS_MIN_GAP = 2.5;
+const TASK_POLL_INTERVAL_MS = 1200;
 
 function buildAxisMarkers(items: AuditChangeItem[]): AxisMarkerItem[] {
   const candidates = items
@@ -452,6 +552,14 @@ function auditItem(
     summary: compactText(summary || diffSummary(diff)),
     pageNo: location?.pageNo ?? null,
     y0: location?.y0 ?? null,
+    confidence: evidenceConfidence(evidenceList),
+    evidenceQuality: evidenceQuality(evidenceList),
+    sourceType: diff.source_type || "clause",
+    matchScore: diff.match_score ?? null,
+    matchMethod: diff.match_method || "",
+    reviewFlags: diff.review_flags ?? [],
+    reviewStatus: diff.review_status ?? "UNREVIEWED",
+    reviewComment: diff.review_comment ?? "",
   };
 }
 
@@ -494,6 +602,22 @@ function evidenceLocation(evidenceList: NonNullable<DiffItem["compare_evidence"]
   };
 }
 
+function evidenceConfidence(evidenceList: NonNullable<DiffItem["compare_evidence"]>): number | null {
+  const values = evidenceList.map((evidence) => evidence.confidence).filter((value): value is number => typeof value === "number");
+  if (values.length === 0) {
+    return null;
+  }
+  return Math.max(...values);
+}
+
+function evidenceQuality(evidenceList: NonNullable<DiffItem["compare_evidence"]>): AuditChangeItem["evidenceQuality"] {
+  const qualityRank = { LOW: 1, MEDIUM: 2, HIGH: 3 };
+  return evidenceList
+    .map((evidence) => evidence.evidence_quality)
+    .filter((quality): quality is NonNullable<AuditChangeItem["evidenceQuality"]> => Boolean(quality))
+    .sort((left, right) => qualityRank[right] - qualityRank[left])[0] ?? null;
+}
+
 function modifySummary(originalText: string, compareText: string): string {
   if (originalText && compareText) {
     return `原文：${originalText} 修改后：${compareText}`;
@@ -506,19 +630,31 @@ function AuditPanel({
   filter,
   items,
   isOpen,
+  quality,
+  reviewComments,
+  reviewSavingDiffId,
+  reviewError,
   stats,
   onClose,
   onFilterChange,
   onSelectItem,
+  onReview,
+  onReviewCommentChange,
 }: {
   activeAuditItemId: string;
   filter: DiffFilter;
   items: AuditChangeItem[];
   isOpen: boolean;
+  quality: CompareQualitySummary | null;
+  reviewComments: Record<string, string>;
+  reviewSavingDiffId: string;
+  reviewError: string;
   stats: DiffStats;
   onClose: () => void;
   onFilterChange: (filter: DiffFilter) => void;
   onSelectItem: (item: AuditChangeItem) => void;
+  onReview: (diffId: string, status: ReviewStatus) => Promise<void>;
+  onReviewCommentChange: (diffId: string, value: string) => void;
 }) {
   const statItems: Array<{ filter: DiffFilter; label: string; value: number }> = [
     { filter: "ALL", label: "全部", value: stats.all },
@@ -562,6 +698,13 @@ function AuditPanel({
         <span>{filter === "ALL" ? "全部类型" : diffTypeLabel(filter)}</span>
       </div>
 
+      {quality && <QualitySummaryPanel quality={quality} />}
+      {reviewError && (
+        <p className="review-error" role="alert">
+          {reviewError}
+        </p>
+      )}
+
       <div className="audit-diff-list">
         {items.length === 0 ? (
           <div className="audit-empty">未发现改动点。</div>
@@ -572,7 +715,11 @@ function AuditPanel({
               active={item.id === activeAuditItemId}
               item={item}
               tabIndex={hiddenTabIndex}
+              comment={reviewComments[item.diffId] ?? item.reviewComment}
+              isSaving={reviewSavingDiffId === item.diffId}
               onSelect={onSelectItem}
+              onReview={onReview}
+              onCommentChange={onReviewCommentChange}
             />
           ))
         )}
@@ -585,26 +732,135 @@ function AuditDiffCard({
   active,
   item,
   tabIndex,
+  comment,
+  isSaving,
   onSelect,
+  onReview,
+  onCommentChange,
 }: {
   active: boolean;
   item: AuditChangeItem;
   tabIndex: number | undefined;
+  comment: string;
+  isSaving: boolean;
   onSelect: (item: AuditChangeItem) => void;
+  onReview: (diffId: string, status: ReviewStatus) => Promise<void>;
+  onCommentChange: (diffId: string, value: string) => void;
 }) {
   return (
-    <button
-      className={active ? "audit-diff-card active" : "audit-diff-card"}
-      type="button"
-      aria-label={`审计定位改动 ${item.id}`}
-      tabIndex={tabIndex}
-      onClick={() => onSelect(item)}
-    >
-      <span className={`audit-type-badge ${item.type.toLowerCase()}`}>{diffTypeLabel(item.type)}</span>
-      <strong>{item.title}</strong>
-      <span>{item.summary}</span>
-    </button>
+    <article className={active ? "audit-diff-card active" : "audit-diff-card"}>
+      <button
+        className="audit-diff-main"
+        type="button"
+        aria-label={`审计定位改动 ${item.id}`}
+        tabIndex={tabIndex}
+        onClick={() => onSelect(item)}
+      >
+        <span className={`audit-type-badge ${item.type.toLowerCase()}`}>{diffTypeLabel(item.type)}</span>
+        <strong>{item.title}</strong>
+        <span>{item.summary}</span>
+        <span className="audit-meta-line">
+          <span>{sourceTypeLabel(item.sourceType)}</span>
+          {item.matchScore !== null && <span>{`匹配 ${Math.round(item.matchScore)}%`}</span>}
+          {item.confidence !== null && <span>{`证据${evidenceQualityLabel(item.evidenceQuality)} · ${Math.round(item.confidence * 100)}%`}</span>}
+        </span>
+        <span className={`review-status-pill ${item.reviewStatus.toLowerCase()}`}>{reviewStatusLabel(item.reviewStatus)}</span>
+        {item.reviewFlags.length > 0 && <span className="review-flag-line">{item.reviewFlags.map(reviewFlagLabel).join(" / ")}</span>}
+      </button>
+      <textarea
+        className="review-comment"
+        aria-label={`复核意见 ${item.diffId}`}
+        tabIndex={tabIndex}
+        value={comment}
+        placeholder="复核意见"
+        onChange={(event) => onCommentChange(item.diffId, event.target.value)}
+      />
+      <div className="review-action-row">
+        {reviewStatusOptions.map((option) => (
+          <button
+            key={option.status}
+            className={item.reviewStatus === option.status ? "review-action active" : "review-action"}
+            type="button"
+            aria-label={`${option.label} ${item.diffId}`}
+            disabled={isSaving}
+            tabIndex={tabIndex}
+            onClick={() => void onReview(item.diffId, option.status)}
+          >
+            <option.icon aria-hidden="true" />
+            <span>{isSaving && item.reviewStatus !== option.status ? "保存" : option.label}</span>
+          </button>
+        ))}
+      </div>
+    </article>
   );
+}
+
+const reviewStatusOptions: Array<{ status: ReviewStatus; label: string; icon: typeof CheckCircle2 }> = [
+  { status: "CONFIRMED", label: "确认", icon: CheckCircle2 },
+  { status: "FALSE_POSITIVE", label: "误报", icon: XCircle },
+  { status: "NEEDS_REVIEW", label: "待确认", icon: HelpCircle },
+  { status: "IGNORED", label: "忽略", icon: Ban },
+];
+
+function QualitySummaryPanel({ quality }: { quality: CompareQualitySummary }) {
+  return (
+    <section className="quality-summary" aria-label="质量诊断摘要">
+      <div>
+        <strong>{quality.review_stats.reviewed_count}</strong>
+        <span>已复核</span>
+      </div>
+      <div>
+        <strong>{quality.low_confidence_diffs.length}</strong>
+        <span>低置信</span>
+      </div>
+      <div>
+        <strong>{quality.low_similarity_diffs.length}</strong>
+        <span>低匹配</span>
+      </div>
+      <div>
+        <strong>{quality.parse_warning_details.length}</strong>
+        <span>解析提示</span>
+      </div>
+    </section>
+  );
+}
+
+function evidenceQualityLabel(quality: AuditChangeItem["evidenceQuality"]): string {
+  if (quality === "HIGH") {
+    return "高";
+  }
+  if (quality === "LOW") {
+    return "低";
+  }
+  return "中";
+}
+
+function reviewStatusLabel(status: ReviewStatus): string {
+  return {
+    UNREVIEWED: "未复核",
+    CONFIRMED: "确认差异",
+    FALSE_POSITIVE: "误报",
+    NEEDS_REVIEW: "需确认",
+    IGNORED: "已忽略",
+  }[status];
+}
+
+function sourceTypeLabel(sourceType: string): string {
+  return {
+    metadata: "封面",
+    table: "表格",
+    clause: "条款",
+  }[sourceType] ?? sourceType;
+}
+
+function reviewFlagLabel(flag: string): string {
+  return {
+    SAME_CLAUSE_NO_LOW_SIMILARITY: "同编号低相似",
+    LOW_CONFIDENCE_MATCH: "低置信匹配",
+    POSSIBLE_RENUMBERED_CLAUSE: "疑似重编号",
+    LOW_CONFIDENCE_ORIGINAL_TABLE_EVIDENCE: "原版表格证据低置信",
+    LOW_CONFIDENCE_COMPARE_TABLE_EVIDENCE: "新版表格证据低置信",
+  }[flag] ?? flag;
 }
 
 function diffTypeLabel(type: DiffFilter): string {

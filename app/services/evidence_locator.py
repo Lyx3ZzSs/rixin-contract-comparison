@@ -35,6 +35,7 @@ class EvidenceLocator:
                 )
         self._resolve_side_conflicts(diffs, side="original")
         self._resolve_side_conflicts(diffs, side="compare")
+        self.assign_evidence_confidence(diffs)
         return diffs
 
     def _locate_clause_ranges(
@@ -234,3 +235,31 @@ class EvidenceLocator:
 
     def _mid_y(self, bbox: BBox) -> float:
         return (bbox.y0 + bbox.y1) / 2
+
+    def assign_evidence_confidence(self, diffs: list[DiffItem]) -> None:
+        for diff in diffs:
+            for evidence in [*diff.original_evidence, *diff.compare_evidence]:
+                confidence = self._confidence_for_method(evidence.method)
+                evidence.confidence = confidence
+                evidence.evidence_quality = self._quality_for_confidence(confidence)
+
+    def _confidence_for_method(self, method: str) -> float:
+        method = (method or "").lower()
+        if method in {"char_exact", "text_exact"}:
+            return 0.98
+        if method in {"table_cell", "cover_metadata"}:
+            return 0.9
+        if method == "estimated_char":
+            return 0.74
+        if method in {"exact_text", "cover_extra", "clause_fallback"}:
+            return 0.68
+        if method == "block_fallback":
+            return 0.46
+        return 0.55
+
+    def _quality_for_confidence(self, confidence: float) -> str:
+        if confidence >= 0.85:
+            return "HIGH"
+        if confidence >= 0.6:
+            return "MEDIUM"
+        return "LOW"

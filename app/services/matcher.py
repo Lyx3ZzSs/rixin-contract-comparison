@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 try:
@@ -12,6 +13,15 @@ except Exception:  # pragma: no cover - fallback for minimal environments
 from app.models import Clause, ClausePair
 from app.services.clause_splitter import ClauseSplitter
 from app.services.normalizer import TextNormalizer
+
+
+@dataclass(frozen=True)
+class MatchCandidate:
+    original: Clause
+    compare: Clause
+    score: float
+    method: str
+    details: dict[str, float]
 
 
 class ClauseMatcher:
@@ -25,49 +35,32 @@ class ClauseMatcher:
         matched_compare: set[str] = set()
         consumed_spans: dict[str, list[tuple[int, int]]] = {}
 
-        compare_by_no = {}
-        for clause in compare:
-            if clause.clause_no:
-                compare_by_no.setdefault(clause.clause_no, []).append(clause)
-
-        for left in original:
-            if not left.clause_no or left.clause_id in matched_original:
+        all_candidates = self._build_candidates(original, compare)
+        candidates_by_original = self._candidates_by_original(all_candidates)
+        for candidate in all_candidates:
+            if candidate.original.clause_id in matched_original or candidate.compare.clause_id in matched_compare:
                 continue
-            candidates = [c for c in compare_by_no.get(left.clause_no, []) if c.clause_id not in matched_compare]
-            if candidates:
-                right = max(candidates, key=lambda c: self._score(left.normalized_text, c.normalized_text))
-                pairs.append(
-                    ClausePair(
-                        original=left,
-                        compare=right,
-                        score=self._score(left.normalized_text, right.normalized_text),
-                        match_method="clause_no",
-                    )
+            if not self._candidate_acceptable(candidate):
+                continue
+            pairs.append(
+                ClausePair(
+                    original=candidate.original,
+                    compare=candidate.compare,
+                    score=candidate.score,
+                    match_method=candidate.method,
+                    score_details=candidate.details,
+                    match_candidates=self._candidate_summaries(candidates_by_original[candidate.original.clause_id]),
                 )
-                matched_original.add(left.clause_id)
-                matched_compare.add(right.clause_id)
+            )
+            matched_original.add(candidate.original.clause_id)
+            matched_compare.add(candidate.compare.clause_id)
 
-        for left in original:
-            if left.clause_id in matched_original:
-                continue
-            best_clause = None
-            best_score = 0.0
-            best_method = "body_similarity"
-            for right in compare:
-                if right.clause_id in matched_compare:
-                    continue
-                title_score = self._score(left.title, right.title) if left.title and right.title else 0
-                body_score = self._score(left.normalized_text, right.normalized_text)
-                score = max(title_score, body_score)
-                method = "title_similarity" if title_score >= body_score else "body_similarity"
-                if score > best_score:
-                    best_clause = right
-                    best_score = score
-                    best_method = method
-            if best_clause is not None and best_score >= self.threshold:
-                pairs.append(ClausePair(original=left, compare=best_clause, score=best_score, match_method=best_method))
-                matched_original.add(left.clause_id)
-                matched_compare.add(best_clause.clause_id)
+        pairs.sort(
+            key=lambda pair: (
+                original.index(pair.original) if pair.original in original else len(original),
+                compare.index(pair.compare) if pair.compare in compare else len(compare),
+            )
+        )
 
         synthetic_pairs = self._match_contained_numbered_clauses(
             original,
@@ -94,6 +87,163 @@ class ClauseMatcher:
                 pairs.append(ClausePair(original=None, compare=right, match_method="add"))
 
         return pairs
+
+    def _build_candidates(self, original: list[Clause], compare: list[Clause]) -> list[MatchCandidate]:
+        candidates: list[MatchCandidate] = []
+        original_count = max(1, len(original) - 1)
+        compare_count = max(1, len(compare) - 1)
+        for original_index, left in enumerate(original):
+            for compare_index, right in enumerate(compare):
+                details = self._score_details(left, right, original_index, compare_index, original, compare, original_count, compare_count)
+                score = self._weighted_score(details)
+                method = self._match_method(left, right, details, score)
+                candidates.append(MatchCandidate(left, right, score, method, details))
+        candidates.sort(
+            key=lambda item: (
+                item.score,
+                item.details["body_score"],
+                item.details["clause_no_score"],
+                item.details["title_score"],
+            ),
+            reverse=True,
+        )
+        return candidates
+
+    def _score_details(
+        self,
+        left: Clause,
+        right: Clause,
+        original_index: int,
+        compare_index: int,
+        original: list[Clause],
+        compare: list[Clause],
+        original_count: int,
+        compare_count: int,
+    ) -> dict[str, float]:
+        title_score = self._score(left.title, right.title) if left.title and right.title else 0.0
+        body_score = self._score(left.normalized_text, right.normalized_text)
+        clause_no_score = self._clause_no_score(left.clause_no, right.clause_no)
+        position_score = self._position_score(original_index / original_count, compare_index / compare_count)
+        neighbor_score = self._neighbor_score(original, compare, original_index, compare_index)
+        return {
+            "clause_no_score": round(clause_no_score, 2),
+            "title_score": round(title_score, 2),
+            "body_score": round(body_score, 2),
+            "position_score": round(position_score, 2),
+            "neighbor_score": round(neighbor_score, 2),
+        }
+
+    def _weighted_score(self, details: dict[str, float]) -> float:
+        weighted = (
+            details["clause_no_score"] * 0.25
+            + details["title_score"] * 0.20
+            + details["body_score"] * 0.40
+            + details["position_score"] * 0.10
+            + details["neighbor_score"] * 0.05
+        )
+        if details["body_score"] >= self.threshold:
+            weighted = max(weighted, details["body_score"])
+        return round(weighted, 2)
+
+    def _candidate_acceptable(self, candidate: MatchCandidate) -> bool:
+        details = candidate.details
+        same_clause_no = self._same_clause_no(candidate.original.clause_no, candidate.compare.clause_no)
+        if same_clause_no:
+            return candidate.score >= 35 or details["body_score"] >= 45 or details["title_score"] >= 80
+        if details["body_score"] >= self.threshold:
+            return True
+        if candidate.score >= min(self.threshold, 78) and details["body_score"] >= 55:
+            return True
+        return bool(details["title_score"] >= 92 and details["body_score"] >= 60)
+
+    def _match_method(self, left: Clause, right: Clause, details: dict[str, float], score: float) -> str:
+        same_clause_no = self._same_clause_no(left.clause_no, right.clause_no)
+        if same_clause_no and details["body_score"] < 55:
+            return "same_clause_no_low_similarity"
+        if same_clause_no:
+            return "same_clause_no_weighted"
+        if left.clause_no and right.clause_no and details["body_score"] >= 70:
+            return "renumbered_similarity"
+        if details["title_score"] > details["body_score"] and score >= min(self.threshold, 78):
+            return "title_weighted_similarity"
+        return "body_weighted_similarity"
+
+    def _candidates_by_original(self, candidates: list[MatchCandidate]) -> dict[str, list[MatchCandidate]]:
+        grouped: dict[str, list[MatchCandidate]] = {}
+        for candidate in candidates:
+            grouped.setdefault(candidate.original.clause_id, []).append(candidate)
+        return grouped
+
+    def _candidate_summaries(self, candidates: list[MatchCandidate]) -> list[dict[str, object]]:
+        result = []
+        for candidate in candidates[:5]:
+            result.append(
+                {
+                    "compare_clause_id": candidate.compare.clause_id,
+                    "compare_clause_no": candidate.compare.clause_no,
+                    "score": round(candidate.score, 2),
+                    "match_method": candidate.method,
+                    "score_details": candidate.details,
+                }
+            )
+        return result
+
+    def _clause_no_score(self, left: str, right: str) -> float:
+        left_norm = self._normalize_clause_no(left)
+        right_norm = self._normalize_clause_no(right)
+        if left_norm and right_norm and left_norm == right_norm:
+            return 100.0
+        if not left_norm or not right_norm:
+            return 0.0
+        left_parts = left_norm.split(".")
+        right_parts = right_norm.split(".")
+        if left_parts[-1:] == right_parts[-1:] and len(left_parts) == len(right_parts):
+            return 70.0
+        if len(left_parts) == len(right_parts):
+            return 40.0
+        return self._score(left_norm, right_norm) * 0.5
+
+    def _same_clause_no(self, left: str, right: str) -> bool:
+        left_norm = self._normalize_clause_no(left)
+        right_norm = self._normalize_clause_no(right)
+        return bool(left_norm and right_norm and left_norm == right_norm)
+
+    def _normalize_clause_no(self, value: str) -> str:
+        value = unicodedata.normalize("NFKC", value or "").strip()
+        value = value.strip("、. ")
+        value = value.replace("第", "").replace("条", "").replace("章", "").replace("节", "")
+        value = value.strip("（）()")
+        chinese_digits = {
+            "一": "1",
+            "二": "2",
+            "三": "3",
+            "四": "4",
+            "五": "5",
+            "六": "6",
+            "七": "7",
+            "八": "8",
+            "九": "9",
+            "十": "10",
+        }
+        return chinese_digits.get(value, value.lower())
+
+    def _position_score(self, left_ratio: float, right_ratio: float) -> float:
+        distance = abs(left_ratio - right_ratio)
+        return max(0.0, 100.0 - distance * 180.0)
+
+    def _neighbor_score(
+        self,
+        original: list[Clause],
+        compare: list[Clause],
+        original_index: int,
+        compare_index: int,
+    ) -> float:
+        scores: list[float] = []
+        if original_index > 0 and compare_index > 0:
+            scores.append(self._clause_no_score(original[original_index - 1].clause_no, compare[compare_index - 1].clause_no))
+        if original_index + 1 < len(original) and compare_index + 1 < len(compare):
+            scores.append(self._clause_no_score(original[original_index + 1].clause_no, compare[compare_index + 1].clause_no))
+        return sum(scores) / len(scores) if scores else 0.0
 
     def _score(self, left: str, right: str) -> float:
         if not left and not right:
@@ -133,6 +283,13 @@ class ClauseMatcher:
                     compare=right,
                     score=score,
                     match_method="contained_original",
+                    score_details={
+                        "clause_no_score": 0.0,
+                        "title_score": self._score(left.title, right.title) if left.title and right.title else 0.0,
+                        "body_score": round(score, 2),
+                        "position_score": 0.0,
+                        "neighbor_score": 0.0,
+                    },
                 )
             )
             consumed_spans.setdefault(parent.clause_id, []).append((start, end))

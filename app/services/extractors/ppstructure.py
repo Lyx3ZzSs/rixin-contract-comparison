@@ -113,11 +113,21 @@ class PPStructureExtractor:
             return []
         items = pruned.get("parsing_res_list") or pruned.get("parsingResList")
         if isinstance(items, list):
-            blocks = [
-                block
-                for index, item in enumerate(items)
-                if (block := self._block_from_parsing_item(page_no, width, height, remote_width, remote_height, item, index)) is not None
-            ]
+            table_res_entries = self._extract_cell_bboxes(pruned, width, height, remote_width, remote_height)
+            used_table_res: set[int] = set()
+            blocks: list[TextBlock] = []
+            for index, item in enumerate(items):
+                block = self._block_from_parsing_item(page_no, width, height, remote_width, remote_height, item, index)
+                if block is None:
+                    continue
+                block_label = str(item.get("block_label") or item.get("label") or "text")
+                if block_label == "table":
+                    raw_bbox = item.get("block_bbox") or item.get("bbox")
+                    matched = self._match_table_entry(raw_bbox, table_res_entries, used_table_res)
+                    if matched is not None:
+                        block = block.model_copy(update={"table_cell_bboxes": table_res_entries[matched]["cells"]})
+                        used_table_res.add(matched)
+                blocks.append(block)
             return sorted(blocks, key=lambda block: (block.bbox.y0, block.bbox.x0))
         return self._blocks_from_overall_ocr(page_no, width, height, remote_width, remote_height, pruned)
 
@@ -145,6 +155,62 @@ class PPStructureExtractor:
             bbox=bbox,
             block_type=block_label,
         )
+
+    def _extract_cell_bboxes(
+        self,
+        pruned: dict[str, Any],
+        width: float,
+        height: float,
+        remote_width: float,
+        remote_height: float,
+    ) -> list[dict[str, Any]]:
+        table_res_list = pruned.get("table_res_list")
+        if not isinstance(table_res_list, list):
+            return []
+        result: list[dict[str, Any]] = []
+        for table_res in table_res_list:
+            cell_box_list = table_res.get("cell_box_list")
+            if not isinstance(cell_box_list, list):
+                result.append({"raw_bbox": None, "cells": []})
+                continue
+            raw_xs: list[float] = []
+            raw_ys: list[float] = []
+            converted: list[list[float]] = []
+            for box in cell_box_list:
+                if isinstance(box, (list, tuple)) and len(box) >= 4:
+                    raw_xs.extend([float(box[0]), float(box[2])])
+                    raw_ys.extend([float(box[1]), float(box[3])])
+                    bbox = self._clamp_bbox(box[0], box[1], box[2], box[3], width, height, remote_width, remote_height)
+                    converted.append([bbox.x0, bbox.y0, bbox.x1, bbox.y1])
+            raw_bbox = [min(raw_xs), min(raw_ys), max(raw_xs), max(raw_ys)] if raw_xs else None
+            result.append({"raw_bbox": raw_bbox, "cells": converted})
+        return result
+
+    def _match_table_entry(self, raw_block_bbox: Any, entries: list[dict[str, Any]], used: set[int]) -> int | None:
+        if not isinstance(raw_block_bbox, (list, tuple)) or len(raw_block_bbox) < 4:
+            return None
+        bx0, by0, bx1, by1 = float(raw_block_bbox[0]), float(raw_block_bbox[1]), float(raw_block_bbox[2]), float(raw_block_bbox[3])
+        best_idx: int | None = None
+        best_overlap = 0.0
+        for i, entry in enumerate(entries):
+            if i in used:
+                continue
+            rb = entry.get("raw_bbox")
+            if rb is None:
+                continue
+            ox0 = max(bx0, rb[0])
+            oy0 = max(by0, rb[1])
+            ox1 = min(bx1, rb[2])
+            oy1 = min(by1, rb[3])
+            if ox1 <= ox0 or oy1 <= oy0:
+                continue
+            overlap_area = (ox1 - ox0) * (oy1 - oy0)
+            block_area = max((bx1 - bx0) * (by1 - by0), 1.0)
+            coverage = overlap_area / block_area
+            if coverage > best_overlap:
+                best_overlap = coverage
+                best_idx = i
+        return best_idx if best_overlap > 0.3 else None
 
     def _blocks_from_overall_ocr(
         self,

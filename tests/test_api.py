@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -9,7 +10,7 @@ from reportlab.pdfgen import canvas
 
 from app.config import settings
 from app.main import app
-from app.models import CompareTask
+from app.models import AIAnalysis, BBox, CompareTask, DiffItem, EvidenceBox
 from app.models_extraction import ExtractionFieldDef, ExtractionFieldValue, ExtractionTask
 from app.utils.json_utils import load_task, save_extraction_task, save_task
 
@@ -32,11 +33,23 @@ def configure_storage(tmp_path: Path) -> None:
     settings.screenshots_dir = settings.storage_dir / "screenshots"
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
+    settings.debug_dir = settings.storage_dir / "debug"
     settings.document_extractor = "auto"
     settings.ai_llm_base_url = ""
     settings.ai_llm_api_key = ""
     settings.ai_llm_model = ""
     settings.ensure_storage()
+
+
+def wait_for_compare_task(client: TestClient, task_id: str) -> dict:
+    for _ in range(100):
+        response = client.get(f"/api/compare/{task_id}")
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        if payload["status"] != "PROCESSING":
+            return payload
+        time.sleep(0.02)
+    raise AssertionError(f"Compare task did not finish: {task_id}")
 
 
 def test_api_compare_contracts(tmp_path: Path) -> None:
@@ -58,14 +71,25 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert response.status_code == 200, response.text
     payload = response.json()
     task_id = payload["task_id"]
-    assert payload["diff_count"] >= 1
-    assert payload["extractor_used"] == "pymupdf"
+    assert payload["status"] == "PROCESSING"
+    assert payload["stage"] == "排队中"
+    assert payload["progress_percent"] == 3
+    assert payload["diff_count"] == 0
     assert "preview_url" not in payload
     assert payload["original_pdf_url"] == f"/api/compare/{task_id}/original"
     assert payload["compare_pdf_url"] == f"/api/compare/{task_id}/compare"
-    assert payload["report_url"] == f"/api/compare/{task_id}/report"
+    assert payload["report_url"] == ""
     assert payload["report_filename"].endswith("差异分析报告.pdf")
-    assert payload["original_highlight_pdf_url"] == f"/api/compare/{task_id}/highlight/original"
+    assert payload["original_highlight_pdf_url"] == ""
+
+    task_payload = wait_for_compare_task(client, task_id)
+    assert task_payload["status"] == "COMPLETED"
+    assert task_payload["stage"] == "已完成"
+    assert task_payload["progress_percent"] == 100
+    assert task_payload["diff_count"] >= 1
+    assert task_payload["extractor_used"] == "pymupdf"
+    assert task_payload["document_profiles"]["original"]["recommended_strategy"] == "text"
+    assert "document_profiles" in task_payload["debug_artifact_paths"]
 
     task_response = client.get(f"/api/compare/{task_id}")
     assert task_response.status_code == 200
@@ -84,7 +108,9 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert "compare_evidence" in first_diff
     assert first_diff["original_evidence"][0]["method"] == "char_exact"
     assert first_diff["compare_evidence"][0]["method"] == "char_exact"
-    assert first_diff["ai_analysis"] is None
+    assert first_diff["original_evidence"][0]["confidence"] == 0.98
+    assert first_diff["original_evidence"][0]["evidence_quality"] == "HIGH"
+    assert first_diff["ai_analysis"]["risk_level"] in {"LOW", "MEDIUM", "HIGH"}
     report_response = client.get(f"/api/compare/{task_id}/report")
     assert report_response.status_code == 200
     assert not report_response.headers["content-disposition"].lower().startswith("inline")
@@ -97,7 +123,7 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert refreshed_task["original_page_screenshots"]
     assert refreshed_task["compare_page_screenshots"]
     refreshed_diff = client.get(f"/api/compare/{task_id}/diffs").json()["diffs"][0]
-    assert refreshed_diff["ai_analysis"] is None
+    assert refreshed_diff["ai_analysis"]["raw_response"]["source"] == "rule_based"
     original_preview_response = client.get(f"/api/compare/{task_id}/original")
     compare_preview_response = client.get(f"/api/compare/{task_id}/compare")
     assert original_preview_response.status_code == 200
@@ -159,6 +185,103 @@ def test_compare_records_list_uses_compare_tasks_only(tmp_path: Path) -> None:
     assert records[0]["report_url"] == ""
     assert records[1]["report_url"] == "/api/compare/TOLDER/report"
     assert all(record["task_id"] != "TEXT001" for record in records)
+
+
+def test_api_updates_diff_review_and_quality_summary(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    task = CompareTask(
+        task_id="TREVIEW",
+        status="COMPLETED",
+        original_filename="review-a.pdf",
+        compare_filename="review-b.pdf",
+        diffs=[
+            DiffItem(
+                diff_id="D001",
+                diff_type="MODIFY",
+                title="付款",
+                original_text="30 days",
+                compare_text="45 days",
+                source_type="clause",
+                match_score=62,
+                match_method="same_clause_no_low_similarity",
+                review_flags=["SAME_CLAUSE_NO_LOW_SIMILARITY"],
+                original_evidence=[
+                    EvidenceBox(
+                        page_no=1,
+                        bbox=BBox(x0=1, y0=2, x1=3, y1=4),
+                        method="block_fallback",
+                        text="30 days",
+                        confidence=0.46,
+                        evidence_quality="LOW",
+                    )
+                ],
+                ai_analysis=AIAnalysis(risk_level="MEDIUM"),
+            )
+        ],
+    )
+    save_task(task)
+
+    client = TestClient(app)
+    response = client.patch(
+        "/api/compare/TREVIEW/diffs/D001/review",
+        json={
+            "review_status": "CONFIRMED",
+            "review_comment": "业务确认属实",
+            "reviewed_by": "legal",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["diff"]["review_status"] == "CONFIRMED"
+    assert payload["diff"]["review_comment"] == "业务确认属实"
+    assert payload["diff"]["reviewed_by"] == "legal"
+    assert payload["review_stats"]["reviewed_count"] == 1
+    assert payload["review_stats"]["confirmed_count"] == 1
+
+    persisted = load_task("TREVIEW")
+    assert persisted.diffs[0].review_status == "CONFIRMED"
+    assert persisted.confirmed_count == 1
+
+    quality = client.get("/api/compare/TREVIEW/quality")
+    assert quality.status_code == 200
+    quality_payload = quality.json()
+    assert quality_payload["review_stats"]["confirmed_count"] == 1
+    assert quality_payload["evidence_quality_counts"]["LOW"] == 1
+    assert quality_payload["low_confidence_diffs"][0]["diff_id"] == "D001"
+    assert quality_payload["low_similarity_diffs"][0]["diff_id"] == "D001"
+
+
+def test_api_rejects_review_for_processing_task(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TPROCESSING",
+            status="PROCESSING",
+            diffs=[DiffItem(diff_id="D001", diff_type="ADD", compare_text="新增")],
+        )
+    )
+
+    client = TestClient(app)
+    response = client.patch(
+        "/api/compare/TPROCESSING/diffs/D001/review",
+        json={"review_status": "CONFIRMED"},
+    )
+
+    assert response.status_code == 409
+
+
+def test_api_review_missing_diff_returns_404(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(CompareTask(task_id="TMISSINGDIFF", status="COMPLETED"))
+
+    client = TestClient(app)
+    response = client.patch(
+        "/api/compare/TMISSINGDIFF/diffs/D404/review",
+        json={"review_status": "IGNORED"},
+    )
+
+    assert response.status_code == 404
 
 
 def test_extraction_records_list_uses_extraction_tasks_only(tmp_path: Path) -> None:

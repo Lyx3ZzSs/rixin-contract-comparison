@@ -1,20 +1,30 @@
 from __future__ import annotations
 
+import asyncio
+import functools
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
-from app.models import CompareTask
+from app.models import CompareTask, ReviewStatus
+from app.services.review_service import CompareQualityService, CompareReviewService, DiffNotFoundError, InvalidReviewStateError
 from app.services.compare_service import CompareService
-from app.services.extractors import DocumentExtractionError
-from app.services.pdf_parser import PdfParseError
 from app.services.report_generator import build_report_filename
 from app.utils.file_utils import FileValidationError, assert_path_inside_storage, save_upload_file
 from app.utils.id_utils import generate_task_id
-from app.utils.json_utils import list_compare_tasks, load_task, to_jsonable
+from app.utils.json_utils import list_compare_tasks, load_task, save_task, to_jsonable
 
 router = APIRouter(prefix="/api/compare", tags=["compare"])
+logger = logging.getLogger(__name__)
+
+
+class DiffReviewRequest(BaseModel):
+    review_status: ReviewStatus
+    review_comment: str = ""
+    reviewed_by: str = ""
 
 
 @router.post("")
@@ -26,39 +36,34 @@ async def compare_contracts(
     try:
         original_path = await save_upload_file(original_file, task_id, "original")
         compare_path = await save_upload_file(compare_file, task_id, "compare")
-        task = CompareService().compare(
-            original_path,
-            compare_path,
+        task = CompareTask(
+            task_id=task_id,
+            stage="排队中",
+            progress_percent=3,
+            original_filename=original_file.filename or original_path.name,
+            compare_filename=compare_file.filename or compare_path.name,
+            original_pdf_path=str(original_path),
+            compare_pdf_path=str(compare_path),
+        )
+        save_task(task)
+    except FileValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"合同对比任务创建失败: {exc}") from exc
+
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(
+        None,
+        functools.partial(
+            _run_compare_task,
+            original_path=original_path,
+            compare_path=compare_path,
             task_id=task_id,
             original_filename=original_file.filename,
             compare_filename=compare_file.filename,
-        )
-    except FileValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except PdfParseError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except DocumentExtractionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"合同对比失败: {exc}") from exc
-
-    return {
-        "task_id": task.task_id,
-        "status": task.status,
-        "diff_count": task.diff_count,
-        "high_risk_count": task.high_risk_count,
-        "medium_risk_count": task.medium_risk_count,
-        "low_risk_count": task.low_risk_count,
-        "extractor_used": task.extractor_used,
-        "parse_warnings": task.parse_warnings,
-        "original_pdf_url": f"/api/compare/{task.task_id}/original",
-        "compare_pdf_url": f"/api/compare/{task.task_id}/compare",
-        "report_url": f"/api/compare/{task.task_id}/report",
-        "report_filename": build_report_filename(task),
-        "original_highlight_pdf_url": f"/api/compare/{task.task_id}/highlight/original",
-        "compare_highlight_pdf_url": f"/api/compare/{task.task_id}/highlight/compare",
-        "errors": task.errors,
-    }
+        ),
+    )
+    return _task_response(task)
 
 
 @router.get("/records")
@@ -69,6 +74,8 @@ def list_records() -> dict:
             {
                 "task_id": task.task_id,
                 "status": task.status,
+                "stage": task.stage,
+                "progress_percent": task.progress_percent,
                 "created_at": task.created_at,
                 "updated_at": task.updated_at,
                 "original_filename": task.original_filename,
@@ -104,9 +111,40 @@ def get_diffs(task_id: str) -> dict:
     return {"task_id": task.task_id, "diffs": diffs}
 
 
+@router.patch("/{task_id}/diffs/{diff_id}/review")
+def update_diff_review(task_id: str, diff_id: str, payload: DiffReviewRequest) -> dict:
+    task = _load_or_404(task_id)
+    try:
+        task, diff = CompareReviewService().update_diff_review(
+            task,
+            diff_id,
+            payload.review_status,
+            payload.review_comment,
+            payload.reviewed_by,
+        )
+    except InvalidReviewStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DiffNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return {
+        "task_id": task.task_id,
+        "diff": to_jsonable(diff),
+        "review_stats": _review_stats(task),
+    }
+
+
+@router.get("/{task_id}/quality")
+def get_quality_summary(task_id: str) -> dict:
+    task = _load_or_404(task_id)
+    return CompareQualityService().build_summary(task)
+
+
 @router.get("/{task_id}/report")
 def download_report(task_id: str) -> FileResponse:
     task = _load_or_404(task_id)
+    if task.status != "COMPLETED":
+        raise HTTPException(status_code=409, detail="任务尚未完成，暂不能生成报告。")
     try:
         task = CompareService().ensure_report(task)
     except Exception as exc:
@@ -152,6 +190,61 @@ def _load_or_404(task_id: str) -> CompareTask:
         return load_task(task_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _run_compare_task(
+    original_path: Path,
+    compare_path: Path,
+    task_id: str,
+    original_filename: str | None,
+    compare_filename: str | None,
+) -> None:
+    try:
+        CompareService().compare(
+            original_path,
+            compare_path,
+            task_id=task_id,
+            original_filename=original_filename,
+            compare_filename=compare_filename,
+        )
+    except Exception:
+        logger.exception("Background compare task failed: %s", task_id)
+
+
+def _task_response(task: CompareTask) -> dict:
+    data = {
+        "task_id": task.task_id,
+        "status": task.status,
+        "stage": task.stage,
+        "progress_percent": task.progress_percent,
+        "diff_count": task.diff_count,
+        "high_risk_count": task.high_risk_count,
+        "medium_risk_count": task.medium_risk_count,
+        "low_risk_count": task.low_risk_count,
+        "reviewed_count": task.reviewed_count,
+        "confirmed_count": task.confirmed_count,
+        "false_positive_count": task.false_positive_count,
+        "manual_review_count": task.manual_review_count,
+        "ignored_count": task.ignored_count,
+        "extractor_used": task.extractor_used,
+        "parse_warnings": task.parse_warnings,
+        "parse_warning_details": to_jsonable(task).get("parse_warning_details", []),
+        "document_profiles": to_jsonable(task).get("document_profiles", {}),
+        "debug_artifact_paths": task.debug_artifact_paths,
+        "errors": task.errors,
+    }
+    data.update(_task_artifact_urls(task))
+    return data
+
+
+def _review_stats(task: CompareTask) -> dict[str, int]:
+    return {
+        "reviewed_count": task.reviewed_count,
+        "confirmed_count": task.confirmed_count,
+        "false_positive_count": task.false_positive_count,
+        "manual_review_count": task.manual_review_count,
+        "ignored_count": task.ignored_count,
+    }
 
 
 def _file_response(

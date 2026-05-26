@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from app.models import Document
+from app.models import Document, DocumentProfile
 
 
 class DocumentExtractionError(ValueError):
@@ -17,6 +17,7 @@ class ExtractionResult:
     extractor_used: str
     raw_result_path: str = ""
     warnings: list[str] = field(default_factory=list)
+    profile: DocumentProfile | None = None
 
 
 class DocumentExtractor(Protocol):

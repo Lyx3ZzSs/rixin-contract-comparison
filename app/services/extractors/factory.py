@@ -8,6 +8,7 @@ from app.services.extractors.base import DocumentExtractor
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
 from app.services.extractors.ppstructure_ocr_hybrid import PPStructureOCRHybridExtractor
 from app.services.extractors.pymupdf import PyMuPDFExtractor
+from app.services.document_profiler import DocumentProfiler
 
 
 class AutoDocumentExtractor:
@@ -22,15 +23,18 @@ class AutoDocumentExtractor:
         self.primary = primary or PyMuPDFExtractor()
         self.fallback = fallback or PPStructureOCRHybridExtractor()
         self.min_text_chars = settings.pymupdf_min_text_chars if min_text_chars is None else min_text_chars
+        self.profiler = DocumentProfiler()
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         try:
             result = self.primary.extract(path, task_id=task_id)
+            result = self._attach_profile(result)
             text_length = sum(len(block.text.strip()) for page in result.document.pages for block in page.blocks)
             if text_length >= self.min_text_chars:
                 return result
             fallback = self.fallback.extract(path, task_id=task_id)
             fallback.extractor_used = self._auto_extractor_name(fallback.extractor_used)
+            fallback = self._attach_profile(fallback)
             fallback.warnings.insert(0, f"PyMuPDF 文本量过少({text_length} 字)，已切换结构化 OCR 抽取。")
             return fallback
         except DocumentExtractionError as pymupdf_error:
@@ -41,6 +45,7 @@ class AutoDocumentExtractor:
                     f"PyMuPDF 抽取失败: {pymupdf_error}; 结构化 OCR 抽取失败: {ocr_error}"
                 ) from ocr_error
             fallback.extractor_used = self._auto_extractor_name(fallback.extractor_used)
+            fallback = self._attach_profile(fallback)
             fallback.warnings.insert(0, f"PyMuPDF 抽取失败，已切换结构化 OCR 抽取: {pymupdf_error}")
             return fallback
 
@@ -48,6 +53,12 @@ class AutoDocumentExtractor:
         if extractor_used == "ppstructure_ocr_hybrid_ocr_only":
             return "auto_ppocrv5"
         return f"auto_{extractor_used or 'ocr'}"
+
+    def _attach_profile(self, result: ExtractionResult) -> ExtractionResult:
+        profile = self.profiler.profile(result.document, result.extractor_used)
+        result.profile = profile
+        result.document.profile = profile
+        return result
 
 
 def build_document_extractor(name: str | None = None):

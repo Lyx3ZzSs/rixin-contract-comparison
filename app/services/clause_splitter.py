@@ -191,6 +191,8 @@ class ClauseSplitter:
                     "page_numbers": [unit.page_no],
                     "bboxes": [unit.evidence],
                     "source_block_ids": [unit.block_id],
+                    "segmentation_reason": f"marker:{clause_no}" if marker else "initial_unit_without_marker",
+                    "segmentation_confidence": 0.95 if marker else 0.55,
                 }
             else:
                 current["texts"].append(unit.text)
@@ -212,6 +214,8 @@ class ClauseSplitter:
                 "page_numbers": [unit.page_no],
                 "bboxes": [unit.evidence],
                 "source_block_ids": [unit.block_id],
+                "segmentation_reason": "fallback_single_unit",
+                "segmentation_confidence": 0.45,
             }
             for unit in units
         ]
@@ -232,6 +236,8 @@ class ClauseSplitter:
                     bboxes=item["bboxes"],
                     source_block_ids=list(dict.fromkeys(item["source_block_ids"])),
                     char_boxes=char_boxes,
+                    segmentation_reason=item.get("segmentation_reason", ""),
+                    segmentation_confidence=item.get("segmentation_confidence", 0.8),
                 )
             )
         return result

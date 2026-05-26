@@ -96,6 +96,16 @@ class PdfHighlighter:
         rect = fitz.Rect(evidence.bbox.x0, evidence.bbox.y0, evidence.bbox.x1, evidence.bbox.y1)
         if rect.is_empty or rect.is_infinite:
             return
+        if (evidence.method or "").startswith("table"):
+            annot = page.add_rect_annot(rect)
+            try:
+                annot.set_colors(stroke=color, fill=color)
+            except Exception:
+                annot.set_colors(stroke=color)
+            annot.set_opacity(0.28)
+            annot.set_info(content=f"{diff_id} | {risk_level} | {summary[:200]}")
+            annot.update()
+            return
         annot = page.add_highlight_annot(rect)
         annot.set_colors(stroke=color)
         annot.set_opacity(0.5)

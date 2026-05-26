@@ -27,10 +27,14 @@ export function UploadPage({ onTaskCreated }: UploadPageProps) {
 
     setIsSubmitting(true);
     setError("");
-    setMessage("正在上传并执行合同差异审查...");
+    setMessage("正在上传并创建合同对比任务...");
     try {
       const payload = await compareContracts(originalFile, compareFile);
-      setMessage(`审查完成，识别 ${payload.diff_count} 项差异。`);
+      setMessage(
+        payload.status === "PROCESSING"
+          ? "任务已创建，正在后台执行合同对比..."
+          : `审查完成，识别 ${payload.diff_count} 项差异。`,
+      );
       onTaskCreated(payload.task_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "合同对比失败。");

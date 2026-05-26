@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     screenshots_dir: Path | None = None
     reports_dir: Path | None = None
     ocr_dir: Path | None = None
+    debug_dir: Path | None = None
 
     document_extractor: str = "auto"
     pymupdf_min_text_chars: int = Field(default=1, ge=0)
@@ -148,6 +149,8 @@ class Settings(BaseSettings):
             self.reports_dir = storage_dir / "reports"
         if self.ocr_dir is None:
             self.ocr_dir = storage_dir / "ocr"
+        if self.debug_dir is None:
+            self.debug_dir = storage_dir / "debug"
         return self
 
     @property
@@ -159,6 +162,7 @@ class Settings(BaseSettings):
             self.screenshots_dir,
             self.reports_dir,
             self.ocr_dir,
+            self.debug_dir,
         ]
 
     def ensure_storage(self) -> None:

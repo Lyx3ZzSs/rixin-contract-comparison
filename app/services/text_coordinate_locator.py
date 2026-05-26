@@ -32,6 +32,8 @@ class TextCoordinateLocator:
                 snippet = diff.original_snippet if side == "original" else diff.compare_snippet
                 highlight_type = self._side_highlight_type(diff, side)
                 existing = diff.original_evidence if side == "original" else diff.compare_evidence
+                if not self._should_refine(existing):
+                    continue
                 refined = self._locate_snippet(pdf, snippet, existing, highlight_type)
                 if not refined:
                     continue
@@ -48,6 +50,12 @@ class TextCoordinateLocator:
         if side == "original":
             return "DELETE"
         return "ADD"
+
+    def _should_refine(self, existing: list[EvidenceBox]) -> bool:
+        if not existing:
+            return True
+        precise_methods = {"char_exact", "table_cell", "cover_metadata", "text_exact"}
+        return not any((evidence.method or "").lower() in precise_methods for evidence in existing)
 
     def _locate_snippet(
         self,

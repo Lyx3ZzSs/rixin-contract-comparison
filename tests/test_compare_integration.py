@@ -31,6 +31,7 @@ def configure_storage(tmp_path: Path) -> None:
     settings.screenshots_dir = settings.storage_dir / "screenshots"
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
+    settings.debug_dir = settings.storage_dir / "debug"
     settings.document_extractor = "auto"
     settings.align_structured_extraction = True
     settings.ai_llm_base_url = ""
@@ -68,7 +69,14 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
     task = service.compare(original, compare, task_id="TTEST000001")
 
     assert task.status == "COMPLETED"
+    assert task.stage == "已完成"
+    assert task.progress_percent == 100
     assert task.extractor_used == "pymupdf"
+    assert task.document_profiles["original"].recommended_strategy == "text"
+    assert task.document_profiles["compare"].total_text_chars > 0
+    assert Path(task.debug_artifact_paths["document_profiles"]).exists()
+    assert Path(task.debug_artifact_paths["clause_matches"]).exists()
+    assert Path(task.debug_artifact_paths["diff_decisions"]).exists()
     assert task.diff_count >= 1
     assert any(
         evidence.method == "char_exact"
@@ -88,7 +96,7 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
     assert build_report_filename(task).endswith("差异分析报告.pdf")
     assert task.original_page_screenshots
     assert task.compare_page_screenshots
-    assert all(diff.ai_analysis is None for diff in task.diffs)
+    assert all(diff.ai_analysis is not None for diff in task.diffs)
     with fitz.open(task.report_pdf_path) as report_pdf:
         report_text = "\n".join(page.get_text() for page in report_pdf)
     assert "差异分析报告" in report_text

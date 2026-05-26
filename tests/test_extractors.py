@@ -6,13 +6,14 @@ import fitz
 import pytest
 
 from app.config import settings
-from app.models import BBox, Document, Page, TextBlock
+from app.models import BBox, CharBox, Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.factory import AutoDocumentExtractor, build_document_extractor
 from app.services.extractors.paddleocr import PaddleOCRExtractor
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
 from app.services.extractors.ppstructure_ocr_hybrid import PPStructureOCRHybridExtractor
 from app.services.extractors.pymupdf import PyMuPDFExtractor
+from app.services.document_profiler import DocumentProfiler
 
 
 def _pdf(path: Path, width: int = 200, height: int = 100, pages: int = 1) -> Path:
@@ -71,6 +72,54 @@ def test_auto_document_extractor_defaults_to_ppocrv5_fallback() -> None:
     extractor = AutoDocumentExtractor()
 
     assert isinstance(extractor.fallback, PPStructureOCRHybridExtractor)
+
+
+def test_document_profiler_identifies_table_heavy_and_low_text_pages() -> None:
+    document = Document(
+        filename="profile.pdf",
+        path="profile.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=600,
+                height=800,
+                blocks=[
+                    TextBlock(
+                        block_id="p1_table",
+                        page_no=1,
+                        text="<table><tr><td>产品名称</td><td>金额</td></tr></table>",
+                        bbox=BBox(x0=50, y0=100, x1=550, y1=500),
+                        block_type="table",
+                        raw_html="<table><tr><td>产品名称</td><td>金额</td></tr></table>",
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=600,
+                height=800,
+                blocks=[
+                    TextBlock(
+                        block_id="p2_image",
+                        page_no=2,
+                        text="",
+                        bbox=BBox(x0=0, y0=0, x1=600, y1=800),
+                        block_type="image",
+                    )
+                ],
+            ),
+        ],
+    )
+
+    profile = DocumentProfiler().profile(document, extractor_used="pymupdf")
+
+    assert profile.recommended_strategy == "mixed"
+    assert profile.table_heavy_page_count == 1
+    assert profile.scanned_page_count == 1
+    assert profile.page_profiles[0].extraction_strategy == "structured_ocr"
+    assert profile.page_profiles[1].extraction_strategy == "ocr"
+    assert {warning.code for warning in profile.warnings} == {"TABLE_HEAVY_PAGE", "LOW_TEXT_PAGE"}
 
 
 def test_ppstructure_ocr_hybrid_tags_table_and_keeps_text_after_table() -> None:
@@ -226,6 +275,105 @@ def test_ppstructure_ocr_hybrid_trusts_structure_table_bbox() -> None:
 
     blocks = result.document.pages[0].blocks
     assert [block.block_type for block in blocks] == ["table", "table"]
+
+
+def test_ppstructure_ocr_hybrid_preserves_all_table_ocr_char_boxes() -> None:
+    html = (
+        "<table><tr><td>签订日期</td><td>2026年4月21日</td></tr></table>"
+    )
+
+    class FakeStructureExtractor:
+        def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+            return ExtractionResult(
+                document=Document(
+                    filename="scan.pdf",
+                    path="scan.pdf",
+                    page_count=1,
+                    pages=[
+                        Page(
+                            page_no=1,
+                            width=600,
+                            height=800,
+                            blocks=[
+                                TextBlock(
+                                    block_id="p1_ppstructure_b1",
+                                    page_no=1,
+                                    text=html,
+                                    bbox=BBox(x0=50, y0=100, x1=560, y1=180),
+                                    block_type="table",
+                                    table_cell_bboxes=[
+                                        [50, 100, 180, 130],
+                                        [180, 100, 560, 130],
+                                    ],
+                                ),
+                            ],
+                        )
+                    ],
+                ),
+                extractor_used="ppstructure",
+            )
+
+    class FakeOCRExtractor:
+        def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+            date_text = "2026年4月21日"
+            return ExtractionResult(
+                document=Document(
+                    filename="scan.pdf",
+                    path="scan.pdf",
+                    page_count=1,
+                    pages=[
+                        Page(
+                            page_no=1,
+                            width=600,
+                            height=800,
+                            blocks=[
+                                TextBlock(
+                                    block_id="p1_ocr_b1",
+                                    page_no=1,
+                                    text="签订日期",
+                                    bbox=BBox(x0=80, y0=112, x1=160, y1=126),
+                                    block_type="ocr_line",
+                                    char_boxes=[
+                                        CharBox(
+                                            char=char,
+                                            page_no=1,
+                                            bbox=BBox(x0=80 + index * 10, y0=112, x1=90 + index * 10, y1=126),
+                                            text_index=index,
+                                        )
+                                        for index, char in enumerate("签订日期")
+                                    ],
+                                ),
+                                TextBlock(
+                                    block_id="p1_ocr_b2",
+                                    page_no=1,
+                                    text=date_text,
+                                    bbox=BBox(x0=210, y0=112, x1=330, y1=126),
+                                    block_type="ocr_line",
+                                    char_boxes=[
+                                        CharBox(
+                                            char=char,
+                                            page_no=1,
+                                            bbox=BBox(x0=210 + index * 10, y0=112, x1=220 + index * 10, y1=126),
+                                            text_index=index,
+                                        )
+                                        for index, char in enumerate(date_text)
+                                    ],
+                                ),
+                            ],
+                        )
+                    ],
+                ),
+                extractor_used="ppocrv5",
+            )
+
+    result = PPStructureOCRHybridExtractor(FakeStructureExtractor(), FakeOCRExtractor()).extract("scan.pdf")
+
+    blocks = result.document.pages[0].blocks
+    assert len(blocks) == 1
+    assert blocks[0].raw_html == html
+    assert blocks[0].text == "签订日期\n2026年4月21日"
+    assert [box.char for box in blocks[0].char_boxes] == list("签订日期2026年4月21日")
+    assert blocks[0].char_boxes[4].text_index == len("签订日期") + 1
 
 
 def test_ppstructure_ocr_hybrid_falls_back_to_ppocrv5_when_structure_fails() -> None:

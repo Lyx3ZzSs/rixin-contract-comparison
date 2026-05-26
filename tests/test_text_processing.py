@@ -691,8 +691,8 @@ def test_cover_metadata_compares_cover_fields_without_title_false_positive() -> 
     assert any(diff.diff_type == "DELETE" and diff.original_text == "XX-C-260520" for diff in diffs)
     date_diff = next(diff for diff in diffs if diff.title == "封面字段：签订日期")
     assert date_diff.diff_type == "MODIFY"
-    assert date_diff.original_evidence[0].highlight_type == "MODIFY"
-    assert date_diff.compare_evidence[0].highlight_type == "MODIFY"
+    assert date_diff.original_evidence[0].highlight_type == "DELETE"
+    assert date_diff.compare_evidence == []
 
 
 def test_cover_metadata_joins_split_same_line_date_and_marks_deleted_day() -> None:
@@ -787,6 +787,100 @@ def test_cover_metadata_joins_split_same_line_date_and_marks_deleted_day() -> No
     assert date_diff.compare_evidence == []
 
 
+def test_cover_metadata_uses_html_table_cells_and_add_highlight_for_inserted_day() -> None:
+    buyer = "江苏东大金智信息系统有限公司"
+    seller = "国能日新科技股份有限公司"
+    original_html = (
+        "<table>"
+        f"<tr><td>甲方</td><td>{buyer}</td></tr>"
+        f"<tr><td>乙方</td><td>{seller}</td></tr>"
+        "<tr><td>签订地点</td><td>北京</td></tr>"
+        "<tr><td>签订日期</td><td>2026年4月 日</td></tr>"
+        "</table>"
+    )
+    compare_html = original_html.replace("2026年4月 日", "2026年4月21日")
+    cell_bboxes = [
+        [140, 550, 200, 575], [240, 550, 445, 575],
+        [140, 580, 200, 605], [240, 580, 420, 605],
+        [140, 610, 200, 635], [240, 610, 300, 635],
+        [140, 640, 200, 665], [240, 640, 390, 665],
+    ]
+
+    original_text = f"甲方\n{buyer}\n乙方\n{seller}\n北京\n签订地点\n2026年4月\n签订日期\n日"
+    compare_text = f"甲方\n{buyer}\n乙方\n{seller}\n北京\n签订地点\n2026年4月21日\n签订日期"
+
+    def char_boxes(text: str) -> list[CharBox]:
+        boxes: list[CharBox] = []
+        offset = 0
+        for line_no, line in enumerate(text.splitlines()):
+            y0 = 550 + line_no * 30
+            if line in {"甲方", "乙方", "签订地点", "签订日期"}:
+                x0 = 150
+            elif line == "2026年4月21日":
+                x0 = 246
+            else:
+                x0 = 240
+            for index, char in enumerate(line):
+                if line == "2026年4月21日" and char in {"2", "1"} and index in {7, 8}:
+                    char_x0 = 338 + (index - 7) * 8
+                else:
+                    char_x0 = x0 + index * 12
+                boxes.append(
+                    CharBox(
+                        char=char,
+                        page_no=1,
+                        bbox=BBox(x0=char_x0, y0=y0, x1=char_x0 + 8, y1=y0 + 18),
+                        text_index=offset + index,
+                    )
+                )
+            offset += len(line) + 1
+        return boxes
+
+    def doc(name: str, text: str, html: str) -> Document:
+        return Document(
+            filename=f"{name}.pdf",
+            path=f"{name}.pdf",
+            page_count=2,
+            pages=[
+                Page(
+                    page_no=1,
+                    width=595,
+                    height=842,
+                    blocks=[
+                        TextBlock(
+                            block_id=f"{name}_cover_table",
+                            page_no=1,
+                            text=text,
+                            bbox=BBox(x0=120, y0=530, x1=470, y1=690),
+                            block_type="table",
+                            char_boxes=char_boxes(text),
+                            raw_html=html,
+                            table_cell_bboxes=cell_bboxes,
+                        )
+                    ],
+                ),
+                Page(page_no=2, width=595, height=842, blocks=[
+                    TextBlock(block_id=f"{name}_body", page_no=2, text="正文", bbox=BBox(x0=280, y0=80, x1=340, y1=110))
+                ]),
+            ],
+        )
+
+    diffs = CoverMetadataComparator().build_diffs(
+        doc("original", original_text, original_html),
+        doc("compare", compare_text, compare_html),
+    )
+
+    assert not any(diff.title == "封面字段：甲方" for diff in diffs)
+    date_diff = next(diff for diff in diffs if diff.title == "封面字段：签订日期")
+    assert date_diff.original_text == "2026年4月 日"
+    assert date_diff.compare_text == "2026年4月21日"
+    assert date_diff.original_evidence == []
+    assert [(item.start, item.end, item.highlight_type) for item in date_diff.compare_change_ranges] == [(7, 9, "ADD")]
+    assert [(evidence.text, evidence.highlight_type) for evidence in date_diff.compare_evidence] == [("21", "ADD")]
+    assert date_diff.compare_evidence[0].bbox.x0 > 330
+    assert date_diff.compare_evidence[0].bbox.y0 >= 635
+
+
 def test_cover_metadata_reports_original_only_extra_cover_text() -> None:
     original = cover_document("XX-C-260520", "2026年4月21日")
     original.pages[0].blocks.insert(
@@ -820,6 +914,55 @@ def test_cover_metadata_reports_original_only_extra_cover_text() -> None:
     ]
     assert all(diff.original_evidence[0].method == "cover_extra" for diff in extra_diffs)
     assert all(diff.original_evidence[0].highlight_type == "DELETE" for diff in extra_diffs)
+
+
+def test_cover_metadata_matches_split_account_extra_text() -> None:
+    original = cover_document("XX-C-260520", "2026年4月21日")
+    original.pages[0].blocks.append(
+        TextBlock(
+            block_id="p1_original_account",
+            page_no=1,
+            text="账号：025900108810100",
+            bbox=BBox(x0=90, y0=710, x1=250, y1=730),
+            block_type="text",
+        )
+    )
+    compare = cover_document("XX-C-260520", "2026年4月21日")
+    compare.pages[0].blocks.extend(
+        [
+            TextBlock(
+                block_id="p1_compare_account_label",
+                page_no=1,
+                text="账号：",
+                bbox=BBox(x0=95, y0=710, x1=148, y1=730),
+                block_type="text",
+                layout_block_id="p1_account_row",
+            ),
+            TextBlock(
+                block_id="p1_compare_account_value",
+                page_no=1,
+                text="025900108810100",
+                bbox=BBox(x0=141, y0=709, x1=252, y1=731),
+                block_type="text",
+                layout_block_id="p1_account_row",
+            ),
+        ]
+    )
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    account_diffs = [
+        diff for diff in diffs
+        if diff.title == "封面额外文本" and "账号" in (diff.original_text + diff.compare_text)
+    ]
+    assert account_diffs == []
+
+
+def test_cover_metadata_extra_normalizer_preserves_long_numbers() -> None:
+    comparator = CoverMetadataComparator()
+
+    assert comparator._normalize_extra("025900108810100") == "025900108810100"
+    assert comparator._normalize_extra("账号：025900108810100") == comparator._normalize_extra("账号:025900108810100")
 
 
 def test_cover_metadata_ignores_short_edge_cover_noise() -> None:
@@ -910,8 +1053,63 @@ def test_clause_matcher_matches_by_clause_number() -> None:
     left = splitter.split(document, "O")
     right = splitter.split(document, "N")
     pairs = ClauseMatcher().match(left, right)
-    assert pairs[0].match_method == "clause_no"
+    assert pairs[0].match_method == "same_clause_no_weighted"
     assert pairs[0].score == 100
+    assert pairs[0].score_details["clause_no_score"] == 100
+
+
+def test_clause_matcher_flags_same_clause_number_low_similarity() -> None:
+    left = [
+        Clause(
+            clause_id="O001",
+            clause_no="1",
+            title="付款",
+            text="1. 付款\n买方应在30日内支付全部货款。",
+            normalized_text="付款买方应在30日内支付全部货款",
+        )
+    ]
+    right = [
+        Clause(
+            clause_id="N001",
+            clause_no="1",
+            title="保密",
+            text="1. 保密\n双方应对所有技术资料承担保密义务。",
+            normalized_text="保密双方应对所有技术资料承担保密义务",
+        )
+    ]
+
+    pairs = ClauseMatcher().match(left, right)
+    diff = DiffEngine().build_diffs(pairs)[0]
+
+    assert pairs[0].match_method == "same_clause_no_low_similarity"
+    assert "SAME_CLAUSE_NO_LOW_SIMILARITY" in diff.review_flags
+    assert diff.match_score_details["clause_no_score"] == 100
+
+
+def test_clause_matcher_detects_renumbered_clause_by_body_similarity() -> None:
+    left = [
+        Clause(
+            clause_id="O001",
+            clause_no="1",
+            title="付款",
+            text="1. 付款\n买方应在30日内支付全部货款。",
+            normalized_text="付款买方应在30日内支付全部货款",
+        )
+    ]
+    right = [
+        Clause(
+            clause_id="N001",
+            clause_no="2",
+            title="付款",
+            text="2. 付款\n买方应在45日内支付全部货款。",
+            normalized_text="付款买方应在45日内支付全部货款",
+        )
+    ]
+
+    pairs = ClauseMatcher().match(left, right)
+
+    assert pairs[0].match_method == "renumbered_similarity"
+    assert pairs[0].match_candidates[0]["compare_clause_id"] == "N001"
 
 
 def test_clause_matcher_reconciles_numbered_compare_clause_inside_original_parent() -> None:

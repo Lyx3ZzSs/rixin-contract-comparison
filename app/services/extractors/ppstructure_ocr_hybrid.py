@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from app.config import settings
-from app.models import BBox, Document, Page, TextBlock
+from app.models import BBox, CharBox, Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
 from app.services.extractors.ppstructure import PPStructureExtractor
@@ -75,7 +75,9 @@ class PPStructureOCRHybridExtractor:
         ]
         if not structure_blocks:
             return ocr_blocks
-        return [self._attach_structure(block, structure_blocks) for block in ocr_blocks]
+        html_tables = self._collect_html_tables(structure_blocks)
+        merged = [self._attach_structure(block, structure_blocks) for block in ocr_blocks]
+        return self._consolidate_table_blocks(merged, html_tables)
 
     def _attach_structure(self, ocr_block: TextBlock, structure_blocks: list[TextBlock]) -> TextBlock:
         matched = self._best_structure_match(ocr_block.bbox, structure_blocks)
@@ -136,6 +138,66 @@ class PPStructureOCRHybridExtractor:
     def _layout_order(self, block_id: str) -> int | None:
         match = re.search(r"_b(\d+)$", block_id or "")
         return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _collect_html_tables(structure_blocks: list[TextBlock]) -> dict[str, tuple[str, list[list[float]], BBox]]:
+        return {
+            b.block_id: (b.text, b.table_cell_bboxes, b.bbox)
+            for b in structure_blocks
+            if b.block_type in {"table", "table_title", "table_cell"} and "<table" in (b.text or "").lower()
+        }
+
+    @staticmethod
+    def _consolidate_table_blocks(blocks: list[TextBlock], html_tables: dict[str, tuple[str, list[list[float]], BBox]]) -> list[TextBlock]:
+        if not html_tables:
+            return blocks
+        table_children: dict[str, list[TextBlock]] = {}
+        for block in blocks:
+            if block.layout_block_id in html_tables:
+                table_children.setdefault(block.layout_block_id, []).append(block)
+
+        seen: set[str] = set()
+        result: list[TextBlock] = []
+        for block in blocks:
+            layout_id = block.layout_block_id
+            if layout_id in html_tables:
+                if layout_id in seen:
+                    continue
+                seen.add(layout_id)
+                html_text, cell_bboxes, layout_bbox = html_tables[layout_id]
+                merged_text, merged_char_boxes = PPStructureOCRHybridExtractor._merge_table_ocr_children(
+                    table_children.get(layout_id, [block])
+                )
+                update = {
+                    "bbox": layout_bbox,
+                    "raw_html": html_text,
+                    "table_cell_bboxes": cell_bboxes,
+                }
+                if merged_text:
+                    update["text"] = merged_text
+                if merged_char_boxes:
+                    update["char_boxes"] = merged_char_boxes
+                block = block.model_copy(update=update)
+            result.append(block)
+        return result
+
+    @staticmethod
+    def _merge_table_ocr_children(blocks: list[TextBlock]) -> tuple[str, list[CharBox]]:
+        parts: list[str] = []
+        char_boxes: list[CharBox] = []
+        offset = 0
+
+        for block in blocks:
+            text = block.text or ""
+            if not text:
+                continue
+            parts.append(text)
+            for local_index, char_box in enumerate(block.char_boxes):
+                source_index = char_box.text_index if char_box.text_index is not None else local_index
+                char_boxes.append(char_box.model_copy(update={"text_index": offset + source_index}))
+            offset += len(text) + 1
+
+        return "\n".join(parts), char_boxes
 
     def _normalize_block_type(self, block_type: str) -> str:
         value = (block_type or "").strip().lower()

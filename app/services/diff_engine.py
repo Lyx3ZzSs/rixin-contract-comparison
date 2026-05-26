@@ -45,6 +45,11 @@ class DiffEngine:
             compare_text=clause.text,
             compare_snippet=self._shorten(clause.text),
             readable_change=f"新增条款：{self._shorten(clause.text)}",
+            source_type="clause",
+            match_method=pair.match_method,
+            match_score=pair.score or None,
+            match_score_details=pair.score_details,
+            match_candidates=pair.match_candidates,
             compare_evidence=clause.bboxes,
             compare_change_ranges=[TextRange(start=0, end=len(clause.text), highlight_type="ADD")],
         )
@@ -61,6 +66,11 @@ class DiffEngine:
             original_text=clause.text,
             original_snippet=self._shorten(clause.text),
             readable_change=f"删除条款：{self._shorten(clause.text)}",
+            source_type="clause",
+            match_method=pair.match_method,
+            match_score=pair.score or None,
+            match_score_details=pair.score_details,
+            match_candidates=pair.match_candidates,
             original_evidence=clause.bboxes,
             original_change_ranges=[TextRange(start=0, end=len(clause.text), highlight_type="DELETE")],
         )
@@ -82,11 +92,31 @@ class DiffEngine:
             original_snippet=original_snippet,
             compare_snippet=compare_snippet,
             readable_change=f"原文：{original_snippet}\n修改后：{compare_snippet}",
+            source_type="clause",
+            match_score=pair.score,
+            match_method=pair.match_method,
+            match_score_details=pair.score_details,
+            match_candidates=pair.match_candidates,
+            review_flags=self._review_flags(pair),
             original_evidence=left.bboxes,
             compare_evidence=right.bboxes,
             original_change_ranges=original_ranges,
             compare_change_ranges=compare_ranges,
         )
+
+    def _review_flags(self, pair: ClausePair) -> list[str]:
+        flags: list[str] = []
+        body_score = pair.score_details.get("body_score", pair.score)
+        if pair.match_method == "same_clause_no_low_similarity":
+            flags.append("SAME_CLAUSE_NO_LOW_SIMILARITY")
+        if pair.match_method == "renumbered_similarity":
+            flags.append("POSSIBLE_RENUMBERED_CLAUSE")
+        if body_score < 60 and pair.score < self._low_confidence_match_threshold():
+            flags.append("LOW_CONFIDENCE_MATCH")
+        return flags
+
+    def _low_confidence_match_threshold(self) -> float:
+        return 75.0
 
     def _changed_snippets(self, left: str, right: str) -> tuple[str, str, list[TextRange], list[TextRange]]:
         left_compacted, left_segments = self._build_compacted_text(left)
