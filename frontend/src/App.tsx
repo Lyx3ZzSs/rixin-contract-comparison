@@ -91,7 +91,7 @@ export function App() {
   }
 
   function handleTaskCreated(taskId: string) {
-    navigateToTask(taskId);
+    void taskId;
   }
 
   function handleComparisonMenuClick() {
@@ -127,7 +127,7 @@ export function App() {
     if (route.name === "records") {
       return <ComparisonRecordsPage onOpenTask={navigateToTask} onCreateComparison={navigateHome} />;
     }
-    return <UploadPage onTaskCreated={handleTaskCreated} />;
+    return <UploadPage onTaskCreated={handleTaskCreated} onOpenRecords={navigateToComparisonRecords} />;
   }, [route]);
 
   if (!currentUser) {

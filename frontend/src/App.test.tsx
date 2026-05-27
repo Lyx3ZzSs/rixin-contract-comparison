@@ -9,10 +9,15 @@ vi.mock("./components/PdfDocumentViewer", () => ({
 }));
 
 vi.mock("./pages/UploadPage", () => ({
-  UploadPage: ({ onTaskCreated }: { onTaskCreated: (taskId: string) => void }) => (
-    <button type="button" onClick={() => onTaskCreated("task-2")}>
-      创建任务
-    </button>
+  UploadPage: ({ onTaskCreated, onOpenRecords }: { onTaskCreated: (taskId: string) => void; onOpenRecords: () => void }) => (
+    <section>
+      <button type="button" onClick={() => onTaskCreated("task-2")}>
+        创建任务
+      </button>
+      <button type="button" onClick={onOpenRecords}>
+        查看对比记录
+      </button>
+    </section>
   ),
 }));
 
@@ -208,7 +213,7 @@ describe("App", () => {
     expect(screen.queryByText("提取ID:")).not.toBeInTheDocument();
   });
 
-  it("opens a newly created task without writing sidebar history", async () => {
+  it("keeps a newly created task on the comparison page without writing sidebar history", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
@@ -216,8 +221,19 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "创建任务" }));
 
-    expect(screen.getByRole("heading", { name: "对比结果 task-2" })).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/tasks/task-2");
+    expect(window.location.pathname).toBe("/");
     expect(window.localStorage.getItem("rixin_contract_compare_history")).toBeNull();
+  });
+
+  it("opens comparison records from the upload success action", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "查看对比记录" }));
+
+    expect(window.location.pathname).toBe("/compare/records");
+    expect(screen.getByRole("heading", { name: "对比记录" })).toBeInTheDocument();
   });
 });

@@ -1,22 +1,38 @@
-import { ChangeEvent, FormEvent, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { compareContracts } from "../lib/api";
+import type { CompareResponse } from "../types";
 
 interface UploadPageProps {
   onTaskCreated: (taskId: string) => void;
+  onOpenRecords: () => void;
+  taskToastDurationMs?: number;
 }
 
-export function UploadPage({ onTaskCreated }: UploadPageProps) {
+export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs = 5000 }: UploadPageProps) {
   const [originalFile, setOriginalFile] = useState<File | null>(null);
   const [compareFile, setCompareFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [createdTask, setCreatedTask] = useState<CompareResponse | null>(null);
+  const [isTaskToastVisible, setIsTaskToastVisible] = useState(false);
 
   const canSubmit = useMemo(
     () => Boolean(originalFile && compareFile && !isSubmitting),
     [compareFile, isSubmitting, originalFile],
   );
+
+  useEffect(() => {
+    if (!createdTask) {
+      setIsTaskToastVisible(false);
+      return;
+    }
+
+    setIsTaskToastVisible(true);
+    const timer = window.setTimeout(() => setIsTaskToastVisible(false), taskToastDurationMs);
+    return () => window.clearTimeout(timer);
+  }, [createdTask, taskToastDurationMs]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -27,14 +43,15 @@ export function UploadPage({ onTaskCreated }: UploadPageProps) {
 
     setIsSubmitting(true);
     setError("");
+    setCreatedTask(null);
+    setIsTaskToastVisible(false);
     setMessage("正在上传并创建合同对比任务...");
     try {
       const payload = await compareContracts(originalFile, compareFile);
-      setMessage(
-        payload.status === "PROCESSING"
-          ? "任务已创建，正在后台执行合同对比..."
-          : `审查完成，识别 ${payload.diff_count} 项差异。`,
-      );
+      setOriginalFile(null);
+      setCompareFile(null);
+      setCreatedTask(payload);
+      setMessage("任务已进入后台对比，可继续新建任务。");
       onTaskCreated(payload.task_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "合同对比失败。");
@@ -112,6 +129,20 @@ export function UploadPage({ onTaskCreated }: UploadPageProps) {
           {error || ""}
         </p>
       </form>
+      {createdTask && isTaskToastVisible && (
+        <aside className="compare-task-toast" role="status" aria-label="后台对比任务通知">
+          <span className="task-toast-kicker">{createdTask.status === "PROCESSING" ? "后台比对已开始" : "合同比对已完成"}</span>
+          <strong>任务编号：{createdTask.task_id}</strong>
+          <small>
+            {createdTask.status === "PROCESSING"
+              ? `${createdTask.stage || "处理中"} · ${Math.max(0, Math.min(100, createdTask.progress_percent || 0))}%`
+              : `已识别 ${createdTask.diff_count} 项差异`}
+          </small>
+          <button type="button" onClick={onOpenRecords}>
+            查看对比记录
+          </button>
+        </aside>
+      )}
     </section>
   );
 }

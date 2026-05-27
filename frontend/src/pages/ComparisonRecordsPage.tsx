@@ -13,6 +13,7 @@ const statusLabels: Record<TaskStatus, string> = {
   COMPLETED: "已完成",
   FAILED: "失败",
 };
+const RECORDS_POLL_INTERVAL_MS = 1800;
 
 export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: ComparisonRecordsPageProps) {
   const [records, setRecords] = useState<CompareRecordSummary[]>([]);
@@ -21,14 +22,20 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
 
   useEffect(() => {
     let isCurrent = true;
+    let timeoutId: number | undefined;
 
-    async function loadRecords() {
-      setIsLoading(true);
+    async function loadRecords(showLoading = true) {
+      if (showLoading) {
+        setIsLoading(true);
+      }
       setError("");
       try {
         const payload = await getCompareRecords();
         if (isCurrent) {
           setRecords(payload);
+          if (payload.some((record) => record.status === "PROCESSING")) {
+            timeoutId = window.setTimeout(() => void loadRecords(false), RECORDS_POLL_INTERVAL_MS);
+          }
         }
       } catch (err) {
         if (isCurrent) {
@@ -44,6 +51,9 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
     void loadRecords();
     return () => {
       isCurrent = false;
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
     };
   }, []);
 
@@ -111,7 +121,7 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
                     </a>
                   )}
                   <button type="button" onClick={() => onOpenTask(record.task_id)}>
-                    查看结果
+                    {record.status === "PROCESSING" ? "查看进度" : "查看结果"}
                   </button>
                 </div>
               </article>

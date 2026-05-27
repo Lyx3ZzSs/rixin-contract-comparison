@@ -2157,6 +2157,95 @@ h2 {
   cursor: pointer;
 }
 
+.compare-task-toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 30;
+  display: grid;
+  width: min(260px, calc(100vw - 48px));
+  gap: 4px;
+  padding: 11px 12px 10px 14px;
+  border: 1px solid rgba(73, 170, 160, 0.26);
+  border-left: 4px solid var(--teal);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 30px rgba(31, 62, 64, 0.12);
+  color: #203538;
+  animation: task-toast-enter 180ms ease-out both;
+}
+
+.compare-task-toast::before {
+  position: absolute;
+  top: 14px;
+  right: 13px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--teal);
+  box-shadow: 0 0 0 4px rgba(73, 170, 160, 0.12);
+  content: "";
+}
+
+.task-toast-kicker {
+  padding-right: 22px;
+  color: var(--teal-strong);
+  font-size: 0.78rem;
+  font-weight: 900;
+  line-height: 1.3;
+}
+
+.compare-task-toast strong {
+  padding-right: 16px;
+  overflow-wrap: anywhere;
+  color: #172629;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.compare-task-toast small {
+  color: #627174;
+  font-size: 0.74rem;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.compare-task-toast button {
+  justify-self: start;
+  min-height: 28px;
+  margin-top: 4px;
+  padding: 0 10px;
+  border: 1px solid var(--teal);
+  border-radius: 5px;
+  background: #ffffff;
+  color: var(--teal-strong);
+  font-size: 0.74rem;
+  font-weight: 900;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.compare-task-toast button:hover,
+.compare-task-toast button:focus-visible {
+  background: rgba(73, 170, 160, 0.08);
+  transform: translateY(-1px);
+}
+
+@keyframes task-toast-enter {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 .records-workspace {
   min-height: 100vh;
   padding: 46px 36px 38px;
@@ -4290,6 +4379,11 @@ h2 {
     width: min(100%, 260px);
   }
 
+  .compare-task-toast {
+    inset: auto 12px 16px;
+    width: auto;
+  }
+
   .pdf-scroll-shell,
   .empty-pane {
     height: 500px;
@@ -4326,7 +4420,9 @@ h2 {
   .pdf-pane,
   .compare-axis,
   .audit-panel,
-  .audit-panel-rail {
+  .audit-panel-rail,
+  .compare-task-toast {
     transition: none;
+    animation: none;
   }
 }
