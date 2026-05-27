@@ -1,85 +1,35 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
-from app.config import settings
+from app.infrastructure.task_repository import default_task_repository, to_jsonable
 from app.models import CompareTask
 from app.models_extraction import ExtractionTask
 
 
-def to_jsonable(model: Any) -> dict[str, Any]:
-    if hasattr(model, "model_dump"):
-        return model.model_dump(mode="json")
-    return model.dict()
-
-
 def task_json_path(task_id: str) -> Path:
-    return settings.tasks_dir / f"{task_id}.json"
+    return default_task_repository.task_json_path(task_id)
 
 
 def save_task(task: CompareTask) -> Path:
-    settings.tasks_dir.mkdir(parents=True, exist_ok=True)
-    path = task_json_path(task.task_id)
-    path.write_text(json.dumps(to_jsonable(task), ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+    return default_task_repository.save_compare_task(task)
 
 
 def load_task(task_id: str) -> CompareTask:
-    path = task_json_path(task_id)
-    if not path.exists():
-        raise FileNotFoundError(f"任务不存在: {task_id}")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return CompareTask(**data)
+    return default_task_repository.load_compare_task(task_id)
 
 
 def list_compare_tasks() -> list[CompareTask]:
-    if not settings.tasks_dir.exists():
-        return []
-
-    tasks: list[CompareTask] = []
-    for path in settings.tasks_dir.glob("*.json"):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if data.get("task_type") == "extraction":
-                continue
-            tasks.append(CompareTask(**data))
-        except (OSError, ValueError, TypeError):
-            continue
-
-    return sorted(tasks, key=lambda task: task.updated_at or task.created_at, reverse=True)
-
-
-def list_extraction_tasks() -> list[ExtractionTask]:
-    if not settings.tasks_dir.exists():
-        return []
-
-    tasks: list[ExtractionTask] = []
-    for path in settings.tasks_dir.glob("*.json"):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if data.get("task_type") != "extraction":
-                continue
-            tasks.append(ExtractionTask(**data))
-        except (OSError, ValueError, TypeError):
-            continue
-
-    return sorted(tasks, key=lambda task: task.updated_at or task.created_at, reverse=True)
+    return default_task_repository.list_compare_tasks()
 
 
 def save_extraction_task(task: ExtractionTask) -> Path:
-    settings.tasks_dir.mkdir(parents=True, exist_ok=True)
-    path = task_json_path(task.task_id)
-    path.write_text(json.dumps(to_jsonable(task), ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+    return default_task_repository.save_extraction_task(task)
 
 
 def load_extraction_task(task_id: str) -> ExtractionTask:
-    path = task_json_path(task_id)
-    if not path.exists():
-        raise FileNotFoundError(f"提取任务不存在: {task_id}")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("task_type") != "extraction":
-        raise FileNotFoundError(f"任务 {task_id} 不是提取任务。")
-    return ExtractionTask(**data)
+    return default_task_repository.load_extraction_task(task_id)
+
+
+def list_extraction_tasks() -> list[ExtractionTask]:
+    return default_task_repository.list_extraction_tasks()

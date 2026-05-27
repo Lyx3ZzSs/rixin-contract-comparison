@@ -58,7 +58,9 @@ def validate_extraction_upload_bytes(content: bytes, filename: str) -> None:
 
     if extension == ".pdf" and not content.startswith(b"%PDF"):
         raise FileValidationError("文件不是有效的 PDF。")
-    if extension in IMAGE_SIGNATURES and not any(content.startswith(signature) for signature in IMAGE_SIGNATURES[extension]):
+    if extension in IMAGE_SIGNATURES and not any(
+        content.startswith(signature) for signature in IMAGE_SIGNATURES[extension]
+    ):
         raise FileValidationError("文件不是有效的图片。")
     if extension in {".doc", ".docx"} and not content:
         raise FileValidationError("文件内容为空。")
@@ -86,7 +88,6 @@ async def save_upload_file_generic(upload_file: UploadFile, task_id: str, label:
 
 
 def assert_path_inside_storage(path: Path) -> None:
-    path = path.resolve()
-    storage = settings.storage_dir.resolve()
-    if storage not in [path, *path.parents]:
-        raise FileValidationError("非法文件路径。")
+    from app.infrastructure.artifact_store import default_artifact_store
+
+    default_artifact_store.assert_inside_storage(path)

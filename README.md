@@ -84,6 +84,10 @@ VITE_API_BASE_URL=http://127.0.0.1:8001
 
 后端运行配置集中在 `.env`，模板见 `.env.example`；代码读取和校验入口在 `app/config.py`，默认提示词在 `app/config_defaults.py`。
 
+## 架构边界
+
+后端按 HTTP 适配、应用编排、基础设施适配和文档处理服务分层。`app/api*.py` 只负责请求/响应和 HTTP 错误映射；`app/application/` 负责任务创建与后台提交；`app/infrastructure/` 封装本地 JSON 任务仓储、产物路径防护和后台执行器；`app/services/` 保留合同解析、对比、证据定位、风险分析和报告生成能力。更多说明见 `docs/architecture.md`。
+
 合同字段提取功能使用远端 PP-OCRv5 先抽取 OCR 文本，再调用 OpenAI-compatible LLM 完成字段抽取。支持 `.pdf`、`.doc`、`.docx`、`.png`、`.jpg`、`.jpeg`、`.bmp`；Word 文件会先通过 LibreOffice 转为 PDF 后提交 PP-OCRv5。
 
 ```bash

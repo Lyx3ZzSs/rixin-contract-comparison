@@ -1,23 +1,21 @@
 from __future__ import annotations
 
-import asyncio
-import functools
 import json
-import logging
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from app.models_extraction import ExtractionFieldDef, ExtractionTask
+from app.application.extraction_tasks import default_extraction_task_application
+from app.api_presenters import extraction_record_summary
+from app.models_extraction import ExtractionFieldDef
 from app.services.ppocrv5_llm_extraction import ExtractionFilePreprocessor, PPOCRV5LLMExtractionError
 from app.services.extraction_service import ExtractionService
 from app.utils.file_utils import FileValidationError, assert_path_inside_storage, save_upload_file_generic
 from app.utils.id_utils import generate_task_id
-from app.utils.json_utils import list_extraction_tasks, load_extraction_task, save_extraction_task, to_jsonable
+from app.utils.json_utils import list_extraction_tasks, load_extraction_task, to_jsonable
 
 router = APIRouter(prefix="/api/extract", tags=["extraction"])
-logger = logging.getLogger(__name__)
 
 
 @router.post("")
@@ -40,25 +38,20 @@ async def extract_fields(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     service = ExtractionService()
-    task = ExtractionTask(
+    task = default_extraction_task_application.create_queued_task(
+        task_id=task_id,
+        file_path=file_path,
+        filename=file.filename or "",
+        fields=field_defs,
+        service=service,
+    )
+
+    default_extraction_task_application.submit_extraction(
+        service=service,
+        file_path=file_path,
+        field_defs=field_defs,
         task_id=task_id,
         filename=file.filename or "",
-        file_path=str(file_path),
-        fields=field_defs,
-        extractor_used=service.client.name,
-    )
-    save_extraction_task(task)
-
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(
-        None,
-        functools.partial(
-            service.extract,
-            file_path=str(file_path),
-            field_defs=field_defs,
-            task_id=task_id,
-            filename=file.filename or "",
-        ),
     )
 
     data = to_jsonable(task)
@@ -68,7 +61,7 @@ async def extract_fields(
 
 @router.get("/records")
 def list_extraction_records() -> dict:
-    records = [_record_summary(task) for task in list_extraction_tasks()]
+    records = [extraction_record_summary(task) for task in list_extraction_tasks()]
     return {"records": records}
 
 
@@ -118,26 +111,6 @@ def preview_file(task_id: str) -> FileResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail="文件不存在。")
     return FileResponse(path, filename=task.filename or "document", content_disposition_type="inline")
-
-
-def _record_summary(task: ExtractionTask) -> dict:
-    found_count = sum(1 for result in task.results if result.status == "found")
-    not_found_count = sum(1 for result in task.results if result.status == "not_found")
-    error_count = sum(1 for result in task.results if result.status == "error")
-    return {
-        "task_id": task.task_id,
-        "task_type": task.task_type,
-        "status": task.status,
-        "created_at": task.created_at,
-        "updated_at": task.updated_at,
-        "filename": task.filename,
-        "file_url": f"/api/extract/{task.task_id}/file" if task.file_path else "",
-        "extractor_used": task.extractor_used,
-        "field_count": len(task.fields),
-        "found_count": found_count,
-        "not_found_count": not_found_count,
-        "error_count": error_count,
-    }
 
 
 def _load_or_404(task_id: str):

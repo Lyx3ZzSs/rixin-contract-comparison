@@ -7,59 +7,17 @@ import { ExtractionRecordsPage } from "./pages/ExtractionRecordsPage";
 import { ComparisonRecordsPage } from "./pages/ComparisonRecordsPage";
 import { ResultPage } from "./pages/ResultPage";
 import { UploadPage } from "./pages/UploadPage";
+import {
+  navigateHome,
+  navigateToComparisonRecords,
+  navigateToExtraction,
+  navigateToExtractionFields,
+  navigateToExtractionRecords,
+  navigateToTask,
+  readRoute,
+} from "./lib/routes";
 
 const AUTH_STORAGE_KEY = "rixin_contract_auth_user";
-
-function readRoute():
-  | { name: "home" }
-  | { name: "records" }
-  | { name: "extract" }
-  | { name: "extractRecords" }
-  | { name: "extractFields" }
-  | { name: "task"; taskId: string } {
-  const match = window.location.pathname.match(/^\/tasks\/([^/]+)$/);
-  if (match) {
-    return { name: "task", taskId: decodeURIComponent(match[1]) };
-  }
-  if (window.location.pathname === "/compare/records") {
-    return { name: "records" };
-  }
-  if (window.location.pathname === "/extract") {
-    return { name: "extract" };
-  }
-  if (window.location.pathname === "/extract/records") {
-    return { name: "extractRecords" };
-  }
-  if (window.location.pathname === "/extract/fields") {
-    return { name: "extractFields" };
-  }
-  return { name: "home" };
-}
-
-function navigateToTask(taskId: string): void {
-  window.history.pushState({}, "", `/tasks/${encodeURIComponent(taskId)}`);
-  window.dispatchEvent(new PopStateEvent("popstate"));
-}
-
-function navigateToExtraction(): void {
-  window.history.pushState({}, "", "/extract");
-  window.dispatchEvent(new PopStateEvent("popstate"));
-}
-
-function navigateToExtractionRecords(): void {
-  window.history.pushState({}, "", "/extract/records");
-  window.dispatchEvent(new PopStateEvent("popstate"));
-}
-
-function navigateToExtractionFields(): void {
-  window.history.pushState({}, "", "/extract/fields");
-  window.dispatchEvent(new PopStateEvent("popstate"));
-}
-
-function navigateToComparisonRecords(): void {
-  window.history.pushState({}, "", "/compare/records");
-  window.dispatchEvent(new PopStateEvent("popstate"));
-}
 
 export function App() {
   const [route, setRoute] = useState(readRoute);
@@ -243,9 +201,4 @@ export function App() {
       </div>
     </div>
   );
-}
-
-function navigateHome(): void {
-  window.history.pushState({}, "", "/");
-  window.dispatchEvent(new PopStateEvent("popstate"));
 }
