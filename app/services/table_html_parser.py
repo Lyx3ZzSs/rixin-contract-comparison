@@ -22,7 +22,7 @@ class TableHTMLParser(HTMLParser):
 
     def parse_tables(
         self, html: str, page_no: int = 0, source: str = "", source_block_id: str = "",
-        cell_bboxes: list[BBox] | None = None,
+        cell_bboxes: list[BBox] | None = None, source_text: str = "",
     ) -> list[StructuredTable]:
         self._tables = []
         self._current = None
@@ -34,7 +34,7 @@ class TableHTMLParser(HTMLParser):
         self._cell_bbox_idx = 0
         self.feed(html)
         return [
-            builder.build(page_no, source=source, source_block_id=source_block_id)
+            builder.build(page_no, source=source, source_block_id=source_block_id, source_text=source_text)
             for builder in self._tables
         ]
 
@@ -119,10 +119,10 @@ class _TableBuilder:
         self._current_row.append({"text": text, "colspan": colspan, "rowspan": rowspan, "bbox": bbox})
 
     def build(
-        self, page_no: int = 0, source: str = "", source_block_id: str = ""
+        self, page_no: int = 0, source: str = "", source_block_id: str = "", source_text: str = ""
     ) -> StructuredTable:
         if not self._raw_rows:
-            return StructuredTable(page_no=page_no, rows=[], col_count=0, source=source, source_block_id=source_block_id)
+            return StructuredTable(page_no=page_no, rows=[], col_count=0, source=source, source_block_id=source_block_id, source_text=source_text)
 
         max_cols = self._estimate_col_count()
         grid = self._normalize_grid(max_cols)
@@ -133,6 +133,7 @@ class _TableBuilder:
             col_count=max_cols,
             source=source,
             source_block_id=source_block_id,
+            source_text=source_text,
         )
 
     def _estimate_col_count(self) -> int:
@@ -205,7 +206,7 @@ class _TableBuilder:
 
 def parse_html_tables(
     html: str, page_no: int = 0, source: str = "", source_block_id: str = "",
-    cell_bboxes: list[BBox] | None = None,
+    cell_bboxes: list[BBox] | None = None, source_text: str = "",
 ) -> list[StructuredTable]:
     parser = TableHTMLParser()
-    return parser.parse_tables(html, page_no=page_no, source=source, source_block_id=source_block_id, cell_bboxes=cell_bboxes)
+    return parser.parse_tables(html, page_no=page_no, source=source, source_block_id=source_block_id, cell_bboxes=cell_bboxes, source_text=source_text)

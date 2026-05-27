@@ -25,6 +25,7 @@ class StructuredTable(BaseModel):
     col_count: int
     source_block_id: str = ""
     source: str = ""
+    source_text: str = ""
 
     @property
     def bbox(self) -> BBox | None:

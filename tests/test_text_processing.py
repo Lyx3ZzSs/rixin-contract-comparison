@@ -1481,6 +1481,49 @@ def test_highlight_rule_modify_does_not_mark_side_without_change_ranges() -> Non
     assert located.compare_evidence == []
 
 
+def test_table_cell_short_text_confidence_stays_high_without_fragment_flag() -> None:
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=100, y0=100, x1=120, y1=120),
+                method="table_cell",
+                text="否",
+                highlight_type="MODIFY",
+            )
+        ],
+    )
+
+    EvidenceLocator().assign_evidence_confidence([diff])
+
+    assert diff.compare_evidence[0].confidence == 0.9
+    assert diff.compare_evidence[0].evidence_quality == "HIGH"
+
+
+def test_table_cell_confidence_is_low_for_possible_ocr_fragment() -> None:
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        review_flags=["possible_ocr_fragment"],
+        original_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=100, y0=100, x1=120, y1=120),
+                method="table_cell",
+                text="机。",
+                highlight_type="DELETE",
+            )
+        ],
+    )
+
+    EvidenceLocator().assign_evidence_confidence([diff])
+
+    assert diff.original_evidence[0].confidence == 0.55
+    assert diff.original_evidence[0].evidence_quality == "LOW"
+
+
 def test_compare_side_add_wins_over_overlapping_modify_evidence() -> None:
     add = DiffItem(
         diff_id="D001",

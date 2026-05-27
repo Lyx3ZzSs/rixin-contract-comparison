@@ -240,8 +240,14 @@ class EvidenceLocator:
         for diff in diffs:
             for evidence in [*diff.original_evidence, *diff.compare_evidence]:
                 confidence = self._confidence_for_method(evidence.method)
+                if evidence.method == "table_cell" and self._has_possible_ocr_fragment_flag(diff):
+                    confidence = min(confidence, 0.55)
                 evidence.confidence = confidence
                 evidence.evidence_quality = self._quality_for_confidence(confidence)
+
+    @staticmethod
+    def _has_possible_ocr_fragment_flag(diff: DiffItem) -> bool:
+        return any(flag.lower() == "possible_ocr_fragment" for flag in diff.review_flags)
 
     def _confidence_for_method(self, method: str) -> float:
         method = (method or "").lower()
