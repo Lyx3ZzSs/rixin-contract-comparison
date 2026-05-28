@@ -10,6 +10,7 @@ from app.config import settings
 from app.models import BBox, Document, Page, TextBlock
 from app.services.compare_service import CompareService
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
+from app.services.pipeline_stages import ExtractionStage
 from app.services.report_generator import build_report_filename
 
 
@@ -108,7 +109,9 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
 def test_compare_service_aligns_pymupdf_side_to_structured_extraction(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     structured_extractor = FakeStructuredExtractor()
-    service = CompareService(structured_extractor=structured_extractor)
+    stage = ExtractionStage(
+        structured_extractor=structured_extractor,
+    )
 
     original_result = ExtractionResult(
         document=make_document("original table", "table"),
@@ -120,7 +123,7 @@ def test_compare_service_aligns_pymupdf_side_to_structured_extraction(tmp_path: 
         extractor_used="pymupdf",
     )
 
-    original_aligned, compare_aligned = service._align_structured_extractions(
+    original_aligned, compare_aligned = stage._align_structured_extractions(
         tmp_path / "original.pdf",
         tmp_path / "compare.pdf",
         "TALIGN000001",
@@ -138,7 +141,9 @@ def test_compare_service_aligns_pymupdf_side_to_structured_extraction(tmp_path: 
 
 def test_compare_service_keeps_pymupdf_when_structured_alignment_fails(tmp_path: Path) -> None:
     configure_storage(tmp_path)
-    service = CompareService(structured_extractor=FailingStructuredExtractor())
+    stage = ExtractionStage(
+        structured_extractor=FailingStructuredExtractor(),
+    )
 
     original_result = ExtractionResult(
         document=make_document("original table", "table"),
@@ -149,7 +154,7 @@ def test_compare_service_keeps_pymupdf_when_structured_alignment_fails(tmp_path:
         extractor_used="pymupdf",
     )
 
-    _, compare_aligned = service._align_structured_extractions(
+    _, compare_aligned = stage._align_structured_extractions(
         tmp_path / "original.pdf",
         tmp_path / "compare.pdf",
         "TALIGN000002",
