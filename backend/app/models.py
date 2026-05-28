@@ -216,6 +216,8 @@ class DiffItem(BaseModel):
 
 class CompareTask(BaseModel):
     task_id: str
+    schema_version: int = 1
+    revision: int = 0
     status: TaskStatus = "PROCESSING"
     stage: str = "已创建"
     progress_percent: int = Field(default=0, ge=0, le=100)

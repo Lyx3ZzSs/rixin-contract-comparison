@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 from app.config import settings
+from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.models import (
     BBox,
     Clause,
@@ -21,12 +21,9 @@ from app.services.pipeline import ComparePipeline, PipelineContext
 from app.services.pipeline_stages import (
     AnalysisStage,
     ClauseDiffStage,
-    EvidenceStage,
     MatchStage,
-    PreClauseDiffStage,
     SplitStage,
     SummaryStage,
-    VisualizationStage,
 )
 
 
@@ -257,6 +254,39 @@ class TestComparePipeline:
         pipeline.run(ctx)
 
         assert progress_values == [30, 60, 90]
+
+    def test_pipeline_completion_preserves_existing_review_state(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        repository = LocalJsonTaskRepository(settings)
+        repository.save_compare_task(
+            CompareTask(
+                task_id=ctx.task.task_id,
+                status="COMPLETED",
+                diffs=[
+                    DiffItem(
+                        diff_id="D001",
+                        diff_type="MODIFY",
+                        review_status="CONFIRMED",
+                        review_comment="已确认",
+                        reviewed_by="legal",
+                        reviewed_at="2026-05-21T10:00:00+00:00",
+                    )
+                ],
+            )
+        )
+        ctx.task.diffs = [DiffItem(diff_id="D001", diff_type="MODIFY", review_status="UNREVIEWED")]
+
+        class NoOpStage:
+            name = "noop"
+            progress = 50
+
+            def execute(self, ctx: PipelineContext) -> None:
+                return None
+
+        result = ComparePipeline(stages=[NoOpStage()], repository=repository).run(ctx)
+
+        assert result.diffs[0].review_status == "CONFIRMED"
+        assert result.diffs[0].review_comment == "已确认"
 
 
 class TestPipelineStageFailure:

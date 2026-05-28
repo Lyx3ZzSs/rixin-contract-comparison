@@ -7,37 +7,42 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.application.extraction_tasks import default_extraction_task_application
-from app.api_presenters import extraction_record_summary
+from app.api_presenters import extraction_record_list_response, extraction_task_response
+from app.api_schemas import (
+    ExtractionFieldRequest,
+    ExtractionRecordListResponse,
+    ExtractionTaskResponse,
+)
 from app.models_extraction import ExtractionFieldDef
-from app.services.ppocrv5_llm_extraction import ExtractionFilePreprocessor, PPOCRV5LLMExtractionError
 from app.services.extraction_service import ExtractionService
+from app.services.ppocrv5_llm_extraction import ExtractionFilePreprocessor, PPOCRV5LLMExtractionError
 from app.utils.file_utils import FileValidationError, assert_path_inside_storage, save_upload_file_generic
 from app.utils.id_utils import generate_task_id
-from app.utils.json_utils import list_extraction_tasks, load_extraction_task, to_jsonable
 
 router = APIRouter(prefix="/api/extract", tags=["extraction"])
 
 
-@router.post("")
+@router.post("", response_model=ExtractionTaskResponse)
 async def extract_fields(
     file: UploadFile = File(...),
     fields: str = Form(...),
-) -> dict:
+) -> ExtractionTaskResponse:
     try:
-        field_defs = [ExtractionFieldDef(**f) for f in json.loads(fields)]
+        field_requests = [ExtractionFieldRequest(**f) for f in json.loads(fields)]
     except (json.JSONDecodeError, Exception) as exc:
         raise HTTPException(status_code=400, detail=f"字段定义格式错误: {exc}") from exc
 
-    if not field_defs:
+    if not field_requests:
         raise HTTPException(status_code=400, detail="至少需要一个提取字段。")
 
+    field_defs = [ExtractionFieldDef(**field.model_dump()) for field in field_requests]
     task_id = generate_task_id()
     try:
         file_path = await save_upload_file_generic(file, task_id, "source")
     except FileValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    service = ExtractionService()
+    service = ExtractionService(repository=default_extraction_task_application.repository)
     task = default_extraction_task_application.create_queued_task(
         task_id=task_id,
         file_path=file_path,
@@ -54,15 +59,12 @@ async def extract_fields(
         filename=file.filename or "",
     )
 
-    data = to_jsonable(task)
-    data["file_url"] = f"/api/extract/{task.task_id}/file"
-    return data
+    return extraction_task_response(task)
 
 
-@router.get("/records")
-def list_extraction_records() -> dict:
-    records = [extraction_record_summary(task) for task in list_extraction_tasks()]
-    return {"records": records}
+@router.get("/records", response_model=ExtractionRecordListResponse)
+def list_extraction_records() -> ExtractionRecordListResponse:
+    return extraction_record_list_response(default_extraction_task_application.list_extraction_tasks())
 
 
 @router.post("/preview")
@@ -90,12 +92,10 @@ async def preview_uploaded_file(file: UploadFile = File(...)) -> FileResponse:
     )
 
 
-@router.get("/{task_id}")
-def get_extraction_task(task_id: str) -> dict:
+@router.get("/{task_id}", response_model=ExtractionTaskResponse)
+def get_extraction_task(task_id: str) -> ExtractionTaskResponse:
     task = _load_or_404(task_id)
-    data = to_jsonable(task)
-    data["file_url"] = f"/api/extract/{task.task_id}/file"
-    return data
+    return extraction_task_response(task)
 
 
 @router.get("/{task_id}/file")
@@ -115,6 +115,6 @@ def preview_file(task_id: str) -> FileResponse:
 
 def _load_or_404(task_id: str):
     try:
-        return load_extraction_task(task_id)
+        return default_extraction_task_application.load_extraction_task(task_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

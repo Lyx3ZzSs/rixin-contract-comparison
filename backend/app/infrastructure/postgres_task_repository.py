@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ class PostgresTaskRepository:
         self.session_factory = session_factory or create_session_factory(database_url or app_settings.database_url)
 
     def save_compare_task(self, task: CompareTask) -> Path | None:
+        self._stamp_task(task, self._current_revision(task.task_id))
         self._upsert_record(self._record_values("compare", task, to_jsonable(task)))
         return None
 
@@ -40,7 +42,13 @@ class PostgresTaskRepository:
     def list_compare_tasks(self) -> list[CompareTask]:
         return [CompareTask(**payload) for payload in self._list_payloads("compare")]
 
+    def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
+        task = self._update_task_payload(task_id, "compare", CompareTask, mutate)
+        assert isinstance(task, CompareTask)
+        return task
+
     def save_extraction_task(self, task: ExtractionTask) -> Path | None:
+        self._stamp_task(task, self._current_revision(task.task_id))
         self._upsert_record(self._record_values("extraction", task, to_jsonable(task)))
         return None
 
@@ -50,6 +58,11 @@ class PostgresTaskRepository:
 
     def list_extraction_tasks(self) -> list[ExtractionTask]:
         return [ExtractionTask(**payload) for payload in self._list_payloads("extraction")]
+
+    def update_extraction_task(self, task_id: str, mutate: Callable[[ExtractionTask], None]) -> ExtractionTask:
+        task = self._update_task_payload(task_id, "extraction", ExtractionTask, mutate)
+        assert isinstance(task, ExtractionTask)
+        return task
 
     def _upsert_record(self, values: dict[str, Any]) -> None:
         with session_scope(self.session_factory) as session:
@@ -108,6 +121,45 @@ class PostgresTaskRepository:
             )
             return list(session.execute(statement).scalars().all())
 
+    def _update_task_payload(
+        self,
+        task_id: str,
+        task_type: str,
+        model_type: type[CompareTask] | type[ExtractionTask],
+        mutate: Callable[[Any], None],
+    ) -> CompareTask | ExtractionTask:
+        with session_scope(self.session_factory) as session:
+            record = session.get(TaskRecord, task_id)
+            if record is None or record.task_type != task_type:
+                task_name = "提取任务" if task_type == "extraction" else "对比任务"
+                raise FileNotFoundError(f"任务不存在或不是{task_name}: {task_id}")
+            task = model_type(**record.payload)
+            mutate(task)
+            self._stamp_task(task, int(record.payload.get("revision") or 0))
+            values = self._record_values(task_type, task, to_jsonable(task))
+            for key, value in values.items():
+                setattr(record, key, value)
+            return task
+
+    def _current_revision(self, task_id: str) -> int:
+        from sqlalchemy import select
+
+        with session_scope(self.session_factory) as session:
+            payload = session.execute(
+                select(TaskRecord.payload).where(TaskRecord.task_id == task_id)
+            ).scalar_one_or_none()
+            if not payload:
+                return 0
+            try:
+                return int(payload.get("revision") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+    def _stamp_task(self, task: CompareTask | ExtractionTask, current_revision: int) -> None:
+        task.schema_version = int(task.schema_version or 1)
+        task.revision = current_revision + 1
+        task.updated_at = datetime.now(UTC).isoformat()
+
     def _record_values(
         self,
         task_type: str,
@@ -125,7 +177,7 @@ class PostgresTaskRepository:
             "filename": getattr(task, "filename", ""),
             "original_filename": getattr(task, "original_filename", ""),
             "compare_filename": getattr(task, "compare_filename", ""),
-            "schema_version": 1,
+            "schema_version": task.schema_version,
             "payload": payload,
         }
 

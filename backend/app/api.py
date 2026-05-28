@@ -4,43 +4,41 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
 
 from app.application.compare_tasks import default_compare_task_application
 from app.api_presenters import (
-    compare_record_summary,
-    compare_task_artifact_urls,
+    compare_diff_list_response,
+    compare_record_list_response,
+    compare_task_detail_response,
     compare_task_response,
-    diff_response,
-    review_stats,
+    diff_review_response,
 )
-from app.models import CompareTask, ReviewStatus
+from app.api_schemas import (
+    CompareDiffListResponse,
+    CompareRecordListResponse,
+    CompareTaskDetailResponse,
+    CompareTaskResponse,
+    DiffReviewRequest,
+    DiffReviewResponse,
+)
+from app.models import CompareTask
 from app.services.review_service import (
     CompareQualityService,
-    CompareReviewService,
     DiffNotFoundError,
     InvalidReviewStateError,
 )
-from app.services.compare_service import CompareService
 from app.services.report_generator import build_report_filename
 from app.utils.file_utils import FileValidationError, assert_path_inside_storage, save_upload_file
 from app.utils.id_utils import generate_task_id
-from app.utils.json_utils import list_compare_tasks, load_task, to_jsonable
 
 router = APIRouter(prefix="/api/compare", tags=["compare"])
 
 
-class DiffReviewRequest(BaseModel):
-    review_status: ReviewStatus
-    review_comment: str = ""
-    reviewed_by: str = ""
-
-
-@router.post("")
+@router.post("", response_model=CompareTaskResponse)
 async def compare_contracts(
     original_file: UploadFile = File(...),
     compare_file: UploadFile = File(...),
-) -> dict:
+) -> CompareTaskResponse:
     task_id = generate_task_id()
     try:
         original_path = await save_upload_file(original_file, task_id, "original")
@@ -67,34 +65,28 @@ async def compare_contracts(
     return compare_task_response(task)
 
 
-@router.get("/records")
-def list_records() -> dict:
-    return {"records": [compare_record_summary(task) for task in list_compare_tasks()]}
+@router.get("/records", response_model=CompareRecordListResponse)
+def list_records() -> CompareRecordListResponse:
+    return compare_record_list_response(default_compare_task_application.list_compare_tasks())
 
 
-@router.get("/{task_id}")
-def get_task(task_id: str) -> dict:
+@router.get("/{task_id}", response_model=CompareTaskDetailResponse)
+def get_task(task_id: str) -> CompareTaskDetailResponse:
     task = _load_or_404(task_id)
-    data = to_jsonable(task)
-    data.pop("diffs", None)
-    data.update(compare_task_artifact_urls(task))
-    return data
+    return compare_task_detail_response(task)
 
 
-@router.get("/{task_id}/diffs")
-def get_diffs(task_id: str) -> dict:
+@router.get("/{task_id}/diffs", response_model=CompareDiffListResponse)
+def get_diffs(task_id: str) -> CompareDiffListResponse:
     task = _load_or_404(task_id)
-    diffs = []
-    for diff in task.diffs:
-        diffs.append(diff_response(task.task_id, diff))
-    return {"task_id": task.task_id, "diffs": diffs}
+    return compare_diff_list_response(task)
 
 
-@router.patch("/{task_id}/diffs/{diff_id}/review")
-def update_diff_review(task_id: str, diff_id: str, payload: DiffReviewRequest) -> dict:
+@router.patch("/{task_id}/diffs/{diff_id}/review", response_model=DiffReviewResponse)
+def update_diff_review(task_id: str, diff_id: str, payload: DiffReviewRequest) -> DiffReviewResponse:
     task = _load_or_404(task_id)
     try:
-        task, diff = CompareReviewService().update_diff_review(
+        task, diff = default_compare_task_application.update_diff_review(
             task,
             diff_id,
             payload.review_status,
@@ -106,11 +98,7 @@ def update_diff_review(task_id: str, diff_id: str, payload: DiffReviewRequest) -
     except DiffNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    return {
-        "task_id": task.task_id,
-        "diff": to_jsonable(diff),
-        "review_stats": review_stats(task),
-    }
+    return diff_review_response(task, diff)
 
 
 @router.get("/{task_id}/quality")
@@ -125,7 +113,7 @@ def download_report(task_id: str) -> FileResponse:
     if task.status != "COMPLETED":
         raise HTTPException(status_code=409, detail="任务尚未完成，暂不能生成报告。")
     try:
-        task = CompareService().ensure_report(task)
+        task = default_compare_task_application.ensure_report(task)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"审计报告生成失败: {exc}") from exc
     return _file_response(task.report_pdf_path, build_report_filename(task), "application/pdf")
@@ -166,7 +154,7 @@ def download_screenshot(task_id: str, filename: str) -> FileResponse:
 
 def _load_or_404(task_id: str) -> CompareTask:
     try:
-        return load_task(task_id)
+        return default_compare_task_application.load_compare_task(task_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

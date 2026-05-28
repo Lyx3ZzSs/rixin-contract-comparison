@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.infrastructure.task_repository import TaskRepository, default_task_repository, to_jsonable
 from app.models import CompareTask, DiffItem, EvidenceBox, ReviewStatus
-from app.utils.json_utils import save_task, to_jsonable
 
 
 class DiffNotFoundError(ValueError):
@@ -18,6 +18,9 @@ class InvalidReviewStateError(ValueError):
 
 
 class CompareReviewService:
+    def __init__(self, repository: TaskRepository = default_task_repository) -> None:
+        self.repository = repository
+
     def update_diff_review(
         self,
         task: CompareTask,
@@ -26,27 +29,34 @@ class CompareReviewService:
         review_comment: str = "",
         reviewed_by: str = "",
     ) -> tuple[CompareTask, DiffItem]:
-        if task.status != "COMPLETED":
-            raise InvalidReviewStateError("任务尚未完成，不能提交复核结果。")
+        updated_diff: DiffItem | None = None
 
-        for index, diff in enumerate(task.diffs):
-            if diff.diff_id != diff_id:
-                continue
-            updated = diff.model_copy(
-                update={
-                    "review_status": review_status,
-                    "review_comment": review_comment.strip(),
-                    "reviewed_by": reviewed_by.strip(),
-                    "reviewed_at": datetime.now(UTC).isoformat(),
-                }
-            )
-            task.diffs[index] = updated
-            self.refresh_review_stats(task)
-            task.updated_at = datetime.now(UTC).isoformat()
-            save_task(task)
-            return task, updated
+        def mutate(persisted: CompareTask) -> None:
+            nonlocal updated_diff
+            if persisted.status != "COMPLETED":
+                raise InvalidReviewStateError("任务尚未完成，不能提交复核结果。")
 
-        raise DiffNotFoundError(f"差异不存在: {diff_id}")
+            for index, diff in enumerate(persisted.diffs):
+                if diff.diff_id != diff_id:
+                    continue
+                updated = diff.model_copy(
+                    update={
+                        "review_status": review_status,
+                        "review_comment": review_comment.strip(),
+                        "reviewed_by": reviewed_by.strip(),
+                        "reviewed_at": datetime.now(UTC).isoformat(),
+                    }
+                )
+                persisted.diffs[index] = updated
+                self.refresh_review_stats(persisted)
+                updated_diff = updated
+                return
+
+            raise DiffNotFoundError(f"差异不存在: {diff_id}")
+
+        updated_task = self.repository.update_compare_task(task.task_id, mutate)
+        assert updated_diff is not None
+        return updated_task, updated_diff
 
     def refresh_review_stats(self, task: CompareTask) -> CompareTask:
         counts = Counter(diff.review_status for diff in task.diffs)

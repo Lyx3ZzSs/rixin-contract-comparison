@@ -7,9 +7,14 @@ The system is a FastAPI backend plus a Vite/React frontend. Backend code lives u
 ## Backend Boundaries
 
 - `api`: HTTP adapters. Keep route handlers thin; they should translate requests, call application services, and map exceptions to HTTP responses.
+- `api_schemas`: public request and response contracts. These schemas are stable API DTOs and should not be replaced with domain models or persistence payloads.
 - `application`: use-case orchestration. This layer owns task creation and background submission.
 - `infrastructure`: replaceable adapters for task persistence, artifact path safety, database access, and task execution.
 - `services`: domain and document-processing services. They should not depend on FastAPI request objects.
+
+## API Contract Boundary
+
+HTTP responses are built through presenter functions and API schemas. Public JSON responses should expose artifact URLs, not local filesystem paths, and should not leak persistence-only fields such as `schema_version`, `revision`, raw result paths, or converted file paths. Internal models such as `CompareTask`, `DiffItem`, and `ExtractionTask` remain service and repository payload models; API handlers should not return `model_dump()` or `to_jsonable()` for whole internal tasks.
 
 ## Migration Direction
 

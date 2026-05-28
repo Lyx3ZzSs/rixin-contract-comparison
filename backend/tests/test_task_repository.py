@@ -10,7 +10,7 @@ from app.config import settings
 from app.config import Settings
 from app.infrastructure.database import normalize_database_url, session_scope
 from app.infrastructure.task_repository import LocalJsonTaskRepository, build_task_repository, to_jsonable
-from app.models import CompareTask
+from app.models import CompareTask, DiffItem
 from app.models_extraction import ExtractionTask
 from scripts.import_tasks_to_db import import_tasks
 
@@ -38,6 +38,23 @@ def test_local_json_task_repository_uses_last_write(tmp_path: Path) -> None:
     repository.save_compare_task(CompareTask(task_id="TUPDATE", stage="second"))
 
     assert repository.load_compare_task("TUPDATE").stage == "second"
+
+
+def test_local_json_task_repository_partial_update_increments_revision(tmp_path: Path) -> None:
+    repository = configure_task_storage(tmp_path)
+    repository.save_compare_task(
+        CompareTask(task_id="TPARTIAL", stage="first", original_filename="original.pdf")
+    )
+    first = repository.load_compare_task("TPARTIAL")
+
+    updated = repository.update_compare_task(
+        "TPARTIAL",
+        lambda task: setattr(task, "stage", "second"),
+    )
+
+    assert updated.stage == "second"
+    assert updated.original_filename == "original.pdf"
+    assert updated.revision == first.revision + 1
 
 
 def test_local_json_task_repository_skips_invalid_list_entries(tmp_path: Path) -> None:
@@ -146,7 +163,9 @@ def test_postgres_task_repository_contract_with_sqlite_session_factory() -> None
     repository.save_compare_task(CompareTask(task_id="TCOMPARE", stage="first"))
     repository.save_compare_task(CompareTask(task_id="TCOMPARE", stage="second"))
     repository.save_extraction_task(ExtractionTask(task_id="TEXTRACT"))
+    repository.update_compare_task("TCOMPARE", lambda task: task.diffs.append(DiffItem(diff_id="D001", diff_type="ADD")))
 
     assert repository.load_compare_task("TCOMPARE").stage == "second"
+    assert repository.load_compare_task("TCOMPARE").diffs[0].diff_id == "D001"
     assert [task.task_id for task in repository.list_compare_tasks()] == ["TCOMPARE"]
     assert [task.task_id for task in repository.list_extraction_tasks()] == ["TEXTRACT"]

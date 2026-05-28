@@ -81,6 +81,10 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert payload["report_url"] == ""
     assert payload["report_filename"].endswith("差异分析报告.pdf")
     assert payload["original_highlight_pdf_url"] == ""
+    assert "schema_version" not in payload
+    assert "revision" not in payload
+    assert "original_pdf_path" not in payload
+    assert "compare_pdf_path" not in payload
 
     task_payload = wait_for_compare_task(client, task_id)
     assert task_payload["status"] == "COMPLETED"
@@ -99,6 +103,9 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert task_response.json()["compare_pdf_url"] == f"/api/compare/{task_id}/compare"
     assert task_response.json()["report_url"] == f"/api/compare/{task_id}/report"
     assert task_response.json()["compare_highlight_pdf_url"] == f"/api/compare/{task_id}/highlight/compare"
+    assert "diffs" not in task_response.json()
+    assert "report_pdf_path" not in task_response.json()
+    assert "ocr_raw_result_path" not in task_response.json()
 
     diffs_response = client.get(f"/api/compare/{task_id}/diffs")
     assert diffs_response.status_code == 200
@@ -111,6 +118,8 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert first_diff["original_evidence"][0]["confidence"] == 0.98
     assert first_diff["original_evidence"][0]["evidence_quality"] == "HIGH"
     assert first_diff["ai_analysis"]["risk_level"] in {"LOW", "MEDIUM", "HIGH"}
+    assert "/" not in first_diff["original_screenshot"]
+    assert "/" not in first_diff["compare_screenshot"]
     report_response = client.get(f"/api/compare/{task_id}/report")
     assert report_response.status_code == 200
     assert not report_response.headers["content-disposition"].lower().startswith("inline")
@@ -414,6 +423,11 @@ def test_api_extract_accepts_png_with_ppocrv5_llm(monkeypatch, tmp_path: Path) -
     assert response.status_code == 200, response.text
     payload = response.json()
     task_id = payload["task_id"]
+    assert "schema_version" not in payload
+    assert "revision" not in payload
+    assert "file_path" not in payload
+    assert "raw_result_path" not in payload
+    assert "converted_file_path" not in payload
 
     poll_response = client.get(f"/api/extract/{task_id}")
     assert poll_response.status_code == 200
@@ -421,6 +435,8 @@ def test_api_extract_accepts_png_with_ppocrv5_llm(monkeypatch, tmp_path: Path) -
     assert polled["status"] == "COMPLETED"
     assert polled["extractor_used"] == "ppocrv5_llm"
     assert polled["results"][0]["value"] == "日新公司"
+    assert "file_path" not in polled
+    assert "raw_result_path" not in polled
 
 
 def test_api_extract_rejects_unsupported_file(tmp_path: Path) -> None:

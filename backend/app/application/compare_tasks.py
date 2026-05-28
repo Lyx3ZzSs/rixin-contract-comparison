@@ -6,8 +6,9 @@ from pathlib import Path
 
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.infrastructure.task_runner import BackgroundTaskRunner, default_task_runner
-from app.models import CompareTask
+from app.models import CompareTask, DiffItem, ReviewStatus
 from app.services.compare_service import CompareService
+from app.services.review_service import CompareReviewService
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,31 @@ class CompareTaskApplication:
             )
         )
 
+    def load_compare_task(self, task_id: str) -> CompareTask:
+        return self.repository.load_compare_task(task_id)
+
+    def list_compare_tasks(self) -> list[CompareTask]:
+        return self.repository.list_compare_tasks()
+
+    def ensure_report(self, task: CompareTask) -> CompareTask:
+        return CompareService(repository=self.repository).ensure_report(task)
+
+    def update_diff_review(
+        self,
+        task: CompareTask,
+        diff_id: str,
+        review_status: ReviewStatus,
+        review_comment: str = "",
+        reviewed_by: str = "",
+    ) -> tuple[CompareTask, DiffItem]:
+        return CompareReviewService(repository=self.repository).update_diff_review(
+            task,
+            diff_id,
+            review_status,
+            review_comment,
+            reviewed_by,
+        )
+
     def _run_compare_task(
         self,
         *,
@@ -72,7 +98,7 @@ class CompareTaskApplication:
         compare_filename: str | None,
     ) -> None:
         try:
-            CompareService().compare(
+            CompareService(repository=self.repository).compare(
                 original_path,
                 compare_path,
                 task_id=task_id,
@@ -84,4 +110,3 @@ class CompareTaskApplication:
 
 
 default_compare_task_application = CompareTaskApplication()
-

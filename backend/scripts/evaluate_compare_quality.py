@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.models import CompareTask, DiffItem  # noqa: E402
+from app.models import CompareTask  # noqa: E402
 from app.services.compare_service import CompareService  # noqa: E402
 from app.utils.json_utils import to_jsonable  # noqa: E402
 

@@ -32,6 +32,8 @@ class ExtractionFieldValue(BaseModel):
 class ExtractionTask(BaseModel):
     task_id: str
     task_type: str = "extraction"
+    schema_version: int = 1
+    revision: int = 0
     status: TaskStatus = "PROCESSING"
     stage: str = ""
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())

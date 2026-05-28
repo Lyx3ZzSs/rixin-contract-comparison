@@ -56,5 +56,11 @@ class ExtractionTaskApplication:
             )
         )
 
+    def load_extraction_task(self, task_id: str) -> ExtractionTask:
+        return self.repository.load_extraction_task(task_id)
+
+    def list_extraction_tasks(self) -> list[ExtractionTask]:
+        return self.repository.list_extraction_tasks()
+
 
 default_extraction_task_application = ExtractionTaskApplication()

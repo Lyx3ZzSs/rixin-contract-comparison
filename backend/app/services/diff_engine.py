@@ -709,7 +709,6 @@ class DiffEngine:
         stripped = text.strip()
         match = ClauseSplitter.clause_start_pattern.match(stripped.splitlines()[0] if stripped else "")
         if match:
-            end = match.end()
             first_line = stripped.splitlines()[0]
             prefix_len = len(first_line)
             return stripped[prefix_len:].strip()
@@ -732,7 +731,7 @@ class DiffEngine:
     def _text_overlap_score(self, left: str, right: str) -> float:
         if rfuzz is not None:
             return float(rfuzz.token_set_ratio(left, right))
-        return SequenceMatcher(None, left, right).ratio() * 100
+        return difflib.SequenceMatcher(None, left, right).ratio() * 100
 
     def _text_is_contained(self, needle: str, haystack: str) -> bool:
         if rfuzz is not None:

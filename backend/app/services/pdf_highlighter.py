@@ -30,10 +30,8 @@ class PdfHighlighter:
                 risk = analysis.risk_level if analysis else "LOW"
                 summary = analysis.change_summary if analysis else diff.readable_change[:120]
                 if side == "original":
-                    snippet = diff.original_snippet
                     evidences = diff.original_evidence
                 else:
-                    snippet = diff.compare_snippet
                     evidences = diff.compare_evidence
                 if evidences:
                     for evidence in evidences:

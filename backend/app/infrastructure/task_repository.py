@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -20,6 +22,9 @@ class TaskRepository(Protocol):
     def list_compare_tasks(self) -> list[CompareTask]:
         raise NotImplementedError
 
+    def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
+        raise NotImplementedError
+
     def save_extraction_task(self, task: ExtractionTask) -> Path | None:
         raise NotImplementedError
 
@@ -27,6 +32,9 @@ class TaskRepository(Protocol):
         raise NotImplementedError
 
     def list_extraction_tasks(self) -> list[ExtractionTask]:
+        raise NotImplementedError
+
+    def update_extraction_task(self, task_id: str, mutate: Callable[[ExtractionTask], None]) -> ExtractionTask:
         raise NotImplementedError
 
 
@@ -48,7 +56,7 @@ class LocalJsonTaskRepository:
         self._lock = threading.RLock()
 
     def save_compare_task(self, task: CompareTask) -> Path:
-        return self._write_task(task.task_id, to_jsonable(task))
+        return self._write_task(task.task_id, self._stamped_payload(task.task_id, to_jsonable(task)))
 
     def load_compare_task(self, task_id: str) -> CompareTask:
         data = self._read_task_data(task_id)
@@ -67,8 +75,15 @@ class LocalJsonTaskRepository:
                 continue
         return sorted(tasks, key=lambda task: task.updated_at or task.created_at, reverse=True)
 
+    def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
+        with self._lock:
+            task = self.load_compare_task(task_id)
+            mutate(task)
+            self._write_task(task.task_id, self._stamped_payload(task.task_id, to_jsonable(task)))
+            return self.load_compare_task(task_id)
+
     def save_extraction_task(self, task: ExtractionTask) -> Path:
-        return self._write_task(task.task_id, to_jsonable(task))
+        return self._write_task(task.task_id, self._stamped_payload(task.task_id, to_jsonable(task)))
 
     def load_extraction_task(self, task_id: str) -> ExtractionTask:
         data = self._read_task_data(task_id)
@@ -87,6 +102,13 @@ class LocalJsonTaskRepository:
                 continue
         return sorted(tasks, key=lambda task: task.updated_at or task.created_at, reverse=True)
 
+    def update_extraction_task(self, task_id: str, mutate: Callable[[ExtractionTask], None]) -> ExtractionTask:
+        with self._lock:
+            task = self.load_extraction_task(task_id)
+            mutate(task)
+            self._write_task(task.task_id, self._stamped_payload(task.task_id, to_jsonable(task)))
+            return self.load_extraction_task(task_id)
+
     def task_json_path(self, task_id: str) -> Path:
         return self.settings.tasks_dir / f"{task_id}.json"
 
@@ -98,6 +120,17 @@ class LocalJsonTaskRepository:
             temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             temp_path.replace(path)
             return path
+
+    def _stamped_payload(self, task_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        current_revision = 0
+        try:
+            current_revision = int(self._read_task_data(task_id).get("revision") or 0)
+        except (FileNotFoundError, TypeError, ValueError):
+            current_revision = int(data.get("revision") or 0)
+        data["schema_version"] = int(data.get("schema_version") or 1)
+        data["revision"] = current_revision + 1
+        data["updated_at"] = datetime.now(UTC).isoformat()
+        return data
 
     def _read_task_data(self, task_id: str) -> dict[str, Any]:
         path = self.task_json_path(task_id)

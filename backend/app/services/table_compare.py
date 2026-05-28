@@ -424,8 +424,6 @@ class TableComparator:
         name_text = self._cell_text_from_row(row, 1)
         detail_text = self._cell_text_from_row(row, 2)
         brand_text = self._cell_text_from_row(row, 3)
-        unit_text = self._cell_text_from_row(row, 4)
-        quantity_text = self._cell_text_from_row(row, 5)
 
         missing_name = self._merged_name_suffix(name_text, detail_text, candidate["name"])
         if not missing_name:
