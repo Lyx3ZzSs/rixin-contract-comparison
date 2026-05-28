@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from app.errors import PipelineContractError
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.models import (
     Clause,
@@ -16,6 +17,36 @@ from app.models import (
 from app.services.extractors.base import ExtractionResult
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ExtractionPair:
+    original: ExtractionResult
+    compare: ExtractionResult
+
+
+@dataclass
+class TableDiffResult:
+    metadata_diffs: list[DiffItem] = field(default_factory=list)
+    table_diffs: list[DiffItem] = field(default_factory=list)
+    table_warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ClauseSplitResult:
+    original_clauses: list[Clause] = field(default_factory=list)
+    compare_clauses: list[Clause] = field(default_factory=list)
+
+
+@dataclass
+class ClauseMatchResult:
+    pairs: list[ClausePair] = field(default_factory=list)
+
+
+@dataclass
+class ClauseDiffResult:
+    clause_diffs: list[DiffItem] = field(default_factory=list)
+    diffs: list[DiffItem] = field(default_factory=list)
 
 
 @dataclass
@@ -36,6 +67,56 @@ class PipelineContext:
     pairs: list[ClausePair] = field(default_factory=list)
     clause_diffs: list[DiffItem] = field(default_factory=list)
     diffs: list[DiffItem] = field(default_factory=list)
+
+    def set_extractions(self, original: ExtractionResult, compare: ExtractionResult) -> ExtractionPair:
+        self.original_extraction = original
+        self.compare_extraction = compare
+        return ExtractionPair(original=original, compare=compare)
+
+    def require_extractions(self) -> ExtractionPair:
+        if self.original_extraction is None or self.compare_extraction is None:
+            raise PipelineContractError("Pipeline stage requires document extraction results.")
+        return ExtractionPair(original=self.original_extraction, compare=self.compare_extraction)
+
+    def set_table_diffs(
+        self,
+        *,
+        metadata_diffs: list[DiffItem],
+        table_diffs: list[DiffItem],
+        table_warnings: list[str],
+    ) -> TableDiffResult:
+        self.metadata_diffs = metadata_diffs
+        self.table_diffs = table_diffs
+        self.table_warnings = table_warnings
+        return TableDiffResult(metadata_diffs, table_diffs, table_warnings)
+
+    def require_table_diffs(self) -> TableDiffResult:
+        return TableDiffResult(self.metadata_diffs, self.table_diffs, self.table_warnings)
+
+    def set_clauses(self, original_clauses: list[Clause], compare_clauses: list[Clause]) -> ClauseSplitResult:
+        self.original_clauses = original_clauses
+        self.compare_clauses = compare_clauses
+        return ClauseSplitResult(original_clauses, compare_clauses)
+
+    def require_clauses(self) -> ClauseSplitResult:
+        if not self.original_clauses and not self.compare_clauses:
+            raise PipelineContractError("Pipeline stage requires split clauses.")
+        return ClauseSplitResult(self.original_clauses, self.compare_clauses)
+
+    def set_matches(self, pairs: list[ClausePair]) -> ClauseMatchResult:
+        self.pairs = pairs
+        return ClauseMatchResult(pairs)
+
+    def require_matches(self) -> ClauseMatchResult:
+        return ClauseMatchResult(self.pairs)
+
+    def set_clause_diffs(self, clause_diffs: list[DiffItem], diffs: list[DiffItem]) -> ClauseDiffResult:
+        self.clause_diffs = clause_diffs
+        self.diffs = diffs
+        return ClauseDiffResult(clause_diffs, diffs)
+
+    def require_diffs(self) -> list[DiffItem]:
+        return self.diffs
 
 
 class PipelineStage(Protocol):

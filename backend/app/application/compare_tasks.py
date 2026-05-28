@@ -4,8 +4,9 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping
 
+from app.errors import ConflictError, NotFoundError
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
-from app.infrastructure.task_runner import QueuedTaskRunner, default_task_runner
+from app.infrastructure.task_runner import QueuedTaskRunner, TaskJob, default_task_runner
 from app.models import CompareTask, DiffItem, ReviewStatus
 from app.services.compare_service import CompareService
 from app.services.review_service import CompareReviewService
@@ -71,6 +72,30 @@ class CompareTaskApplication:
     def list_compare_tasks(self) -> list[CompareTask]:
         return self.repository.list_compare_tasks()
 
+    def load_execution(self, task_id: str) -> TaskJob:
+        self.load_compare_task(task_id)
+        return self.runner.latest_job(task_id, task_type="compare")
+
+    def cancel_compare(self, task_id: str) -> TaskJob:
+        self.load_compare_task(task_id)
+        jobs = self.runner.cancel(task_id, task_type="compare")
+        if not jobs:
+            raise NotFoundError(f"任务执行记录不存在: {task_id}")
+        job = jobs[0]
+        if job.status == "CANCELLED":
+            self._mark_cancelled(task_id)
+        elif job.status == "CANCEL_REQUESTED":
+            self._mark_cancel_requested(task_id)
+        return job
+
+    def retry_compare(self, task_id: str) -> TaskJob:
+        task = self.load_compare_task(task_id)
+        if task.status != "FAILED":
+            raise ConflictError("只有失败的对比任务可以重试。")
+        job = self.runner.retry(task_id, task_type="compare")
+        self._mark_retry_queued(task)
+        return job
+
     def ensure_report(self, task: CompareTask) -> CompareTask:
         return CompareService(repository=self.repository).ensure_report(task)
 
@@ -119,6 +144,32 @@ class CompareTaskApplication:
         except Exception:
             logger.exception("Background compare task failed: %s", task_id)
             raise
+
+    def _mark_cancelled(self, task_id: str) -> None:
+        def mutate(task: CompareTask) -> None:
+            task.status = "FAILED"
+            task.stage = "已取消"
+            task.progress_percent = 100
+            if "任务已取消。" not in task.errors:
+                task.errors.append("任务已取消。")
+
+        self.repository.update_compare_task(task_id, mutate)
+
+    def _mark_cancel_requested(self, task_id: str) -> None:
+        def mutate(task: CompareTask) -> None:
+            if task.status == "PROCESSING":
+                task.stage = "取消请求已提交"
+
+        self.repository.update_compare_task(task_id, mutate)
+
+    def _mark_retry_queued(self, task: CompareTask) -> None:
+        def mutate(persisted: CompareTask) -> None:
+            persisted.status = "PROCESSING"
+            persisted.stage = "排队中"
+            persisted.progress_percent = 3
+            persisted.errors = []
+
+        self.repository.update_compare_task(task.task_id, mutate)
 
 
 default_compare_task_application = CompareTaskApplication()

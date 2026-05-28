@@ -132,8 +132,7 @@ class ExtractionStage:
             ),
         )
 
-        ctx.original_extraction = original_extraction
-        ctx.compare_extraction = compare_extraction
+        ctx.set_extractions(original_extraction, compare_extraction)
 
     def _ensure_profile(self, extraction: ExtractionResult) -> ExtractionResult:
         if extraction.profile is None:
@@ -235,16 +234,22 @@ class PreClauseDiffStage:
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
-        original_doc = ctx.original_extraction.document
-        compare_doc = ctx.compare_extraction.document
+        extractions = ctx.require_extractions()
+        original_doc = extractions.original.document
+        compare_doc = extractions.compare.document
 
-        ctx.metadata_diffs = self.cover_metadata.build_diffs(original_doc, compare_doc)
-        ctx.table_diffs, ctx.table_warnings = self.table_comparator.build_diffs(
+        metadata_diffs = self.cover_metadata.build_diffs(original_doc, compare_doc)
+        table_diffs, table_warnings = self.table_comparator.build_diffs(
             original_doc, compare_doc,
-            start_index=len(ctx.metadata_diffs) + 1,
+            start_index=len(metadata_diffs) + 1,
         )
-        task.parse_warnings.extend(ctx.table_warnings)
-        _append_text_warnings(task, ctx.table_warnings, "table_compare")
+        result = ctx.set_table_diffs(
+            metadata_diffs=metadata_diffs,
+            table_diffs=table_diffs,
+            table_warnings=table_warnings,
+        )
+        task.parse_warnings.extend(result.table_warnings)
+        _append_text_warnings(task, result.table_warnings, "table_compare")
 
 
 class SplitStage:
@@ -256,20 +261,23 @@ class SplitStage:
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
-        original_doc = ctx.original_extraction.document
-        compare_doc = ctx.compare_extraction.document
+        extractions = ctx.require_extractions()
+        original_doc = extractions.original.document
+        compare_doc = extractions.compare.document
 
-        ctx.original_clauses = self.splitter.split(original_doc, "O")
-        ctx.compare_clauses = self.splitter.split(compare_doc, "N")
+        clauses = ctx.set_clauses(
+            self.splitter.split(original_doc, "O"),
+            self.splitter.split(compare_doc, "N"),
+        )
         _write_debug_artifact(
             ctx.task,
             "original_clauses",
-            lambda: self.debug_writer.write_clauses(ctx.task.task_id, "original", ctx.original_clauses),
+            lambda: self.debug_writer.write_clauses(ctx.task.task_id, "original", clauses.original_clauses),
         )
         _write_debug_artifact(
             ctx.task,
             "compare_clauses",
-            lambda: self.debug_writer.write_clauses(ctx.task.task_id, "compare", ctx.compare_clauses),
+            lambda: self.debug_writer.write_clauses(ctx.task.task_id, "compare", clauses.compare_clauses),
         )
 
 
@@ -286,11 +294,12 @@ class MatchStage:
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
-        ctx.pairs = self.matcher.match(ctx.original_clauses, ctx.compare_clauses)
+        clauses = ctx.require_clauses()
+        matches = ctx.set_matches(self.matcher.match(clauses.original_clauses, clauses.compare_clauses))
         _write_debug_artifact(
             ctx.task,
             "clause_matches",
-            lambda: self.debug_writer.write_matches(ctx.task.task_id, ctx.pairs),
+            lambda: self.debug_writer.write_matches(ctx.task.task_id, matches.pairs),
         )
 
 
@@ -303,11 +312,16 @@ class ClauseDiffStage:
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
-        ctx.clause_diffs = self.diff_engine.build_diffs(
-            ctx.pairs,
-            start_index=len(ctx.metadata_diffs) + len(ctx.table_diffs) + 1,
+        table_diffs = ctx.require_table_diffs()
+        matches = ctx.require_matches()
+        clause_diffs = self.diff_engine.build_diffs(
+            matches.pairs,
+            start_index=len(table_diffs.metadata_diffs) + len(table_diffs.table_diffs) + 1,
         )
-        ctx.diffs = [*ctx.metadata_diffs, *ctx.table_diffs, *ctx.clause_diffs]
+        ctx.set_clause_diffs(
+            clause_diffs,
+            [*table_diffs.metadata_diffs, *table_diffs.table_diffs, *clause_diffs],
+        )
 
 
 class EvidenceStage:
@@ -319,11 +333,13 @@ class EvidenceStage:
         self.text_coordinate_locator = TextCoordinateLocator()
 
     def execute(self, ctx: PipelineContext) -> None:
+        clauses = ctx.require_clauses()
+        matches = ctx.require_matches()
         original_locate_clauses = _clauses_for_evidence(
-            ctx.original_clauses, [pair.original for pair in ctx.pairs],
+            clauses.original_clauses, [pair.original for pair in matches.pairs],
         )
         compare_locate_clauses = _clauses_for_evidence(
-            ctx.compare_clauses, [pair.compare for pair in ctx.pairs],
+            clauses.compare_clauses, [pair.compare for pair in matches.pairs],
         )
         ctx.diffs = self.evidence_locator.locate(
             ctx.diffs, original_locate_clauses, compare_locate_clauses,
@@ -344,7 +360,7 @@ class AnalysisStage:
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
-        ctx.diffs = self.risk_analyzer.analyze(ctx.diffs)
+        ctx.diffs = self.risk_analyzer.analyze(ctx.require_diffs())
         _write_debug_artifact(
             ctx.task,
             "diff_decisions",

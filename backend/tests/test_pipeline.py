@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.config import settings
+from app.errors import PipelineContractError
 from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.models import (
     BBox,
@@ -94,6 +95,12 @@ def configure_storage(tmp_path: Path) -> None:
 
 
 class TestSplitStage:
+    def test_requires_extraction_results(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+
+        with pytest.raises(PipelineContractError, match="requires document extraction"):
+            SplitStage().execute(ctx)
+
     def test_splits_documents_into_clauses(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         ctx.original_extraction = ExtractionResult(

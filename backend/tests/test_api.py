@@ -9,10 +9,11 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from app.config import settings
+from app.infrastructure.task_runner import TaskJob, default_task_runner
 from app.main import app
 from app.models import AIAnalysis, BBox, CompareTask, DiffItem, EvidenceBox
 from app.models_extraction import ExtractionFieldDef, ExtractionFieldValue, ExtractionTask
-from app.utils.json_utils import load_task, save_extraction_task, save_task
+from app.utils.json_utils import load_extraction_task, load_task, save_extraction_task, save_task
 
 
 def make_pdf(path: Path, lines: list[str]) -> None:
@@ -163,6 +164,107 @@ def test_root_is_not_a_backend_page() -> None:
     client = TestClient(app)
     response = client.get("/")
     assert response.status_code == 404
+
+
+def test_compare_execution_api_gets_and_cancels_queued_job(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    default_task_runner.stop(wait=True)
+    task_id = "TEXEC_CANCEL"
+    save_task(CompareTask(task_id=task_id, original_pdf_path="a.pdf", compare_pdf_path="b.pdf"))
+    job = default_task_runner.job_repository.enqueue(
+        TaskJob(job_id=f"compare:{task_id}", task_id=task_id, task_type="compare", payload={"task_id": task_id})
+    )
+
+    client = TestClient(app)
+    execution_response = client.get(f"/api/compare/{task_id}/execution")
+    assert execution_response.status_code == 200
+    assert execution_response.json()["job_id"] == job.job_id
+    assert execution_response.json()["status"] == "QUEUED"
+
+    cancel_response = client.post(f"/api/compare/{task_id}/cancel")
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["status"] == "CANCELLED"
+    assert load_task(task_id).stage == "已取消"
+
+
+def test_compare_execution_api_retries_failed_job(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    default_task_runner.stop(wait=True)
+    original_autostart = default_task_runner.autostart
+    default_task_runner.autostart = False
+    task_id = "TEXEC_RETRY"
+    save_task(
+        CompareTask(
+            task_id=task_id,
+            status="FAILED",
+            stage="失败",
+            progress_percent=100,
+            original_pdf_path=str(tmp_path / "a.pdf"),
+            compare_pdf_path=str(tmp_path / "b.pdf"),
+            errors=["failed"],
+        )
+    )
+    job = default_task_runner.job_repository.enqueue(
+        TaskJob(
+            job_id=f"compare:{task_id}",
+            task_id=task_id,
+            task_type="compare",
+            payload={"task_id": task_id, "original_path": "a.pdf", "compare_path": "b.pdf"},
+            attempt=1,
+            max_attempts=1,
+        )
+    )
+    default_task_runner.job_repository.mark_failed(job.job_id, worker_id="", error="failed", retry_delay_seconds=0)
+
+    try:
+        client = TestClient(app)
+        retry_response = client.post(f"/api/compare/{task_id}/retry")
+    finally:
+        default_task_runner.autostart = original_autostart
+
+    assert retry_response.status_code == 200
+    assert retry_response.json()["status"] == "QUEUED"
+    assert retry_response.json()["attempt"] == 0
+    retried_task = load_task(task_id)
+    assert retried_task.status == "PROCESSING"
+    assert retried_task.stage == "排队中"
+    assert retried_task.errors == []
+
+
+def test_compare_execution_api_rejects_retry_for_processing_task(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    default_task_runner.stop(wait=True)
+    task_id = "TEXEC_RETRY_CONFLICT"
+    save_task(CompareTask(task_id=task_id, status="PROCESSING"))
+    default_task_runner.job_repository.enqueue(
+        TaskJob(job_id=f"compare:{task_id}", task_id=task_id, task_type="compare", payload={"task_id": task_id})
+    )
+
+    client = TestClient(app)
+    response = client.post(f"/api/compare/{task_id}/retry")
+
+    assert response.status_code == 409
+
+
+def test_extraction_execution_api_gets_and_cancels_queued_job(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    default_task_runner.stop(wait=True)
+    task_id = "EEXEC_CANCEL"
+    save_extraction_task(ExtractionTask(task_id=task_id, filename="extract.pdf"))
+    job = default_task_runner.job_repository.enqueue(
+        TaskJob(job_id=f"extraction:{task_id}", task_id=task_id, task_type="extraction", payload={"task_id": task_id})
+    )
+
+    client = TestClient(app)
+    execution_response = client.get(f"/api/extract/{task_id}/execution")
+    assert execution_response.status_code == 200
+    assert execution_response.json()["job_id"] == job.job_id
+    assert execution_response.json()["status"] == "QUEUED"
+
+    cancel_response = client.post(f"/api/extract/{task_id}/cancel")
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["status"] == "CANCELLED"
+    assert load_extraction_task(task_id).stage == "已取消"
 
 
 def test_compare_records_list_uses_compare_tasks_only(tmp_path: Path) -> None:

@@ -129,3 +129,30 @@ def test_queued_task_runner_limits_concurrency(tmp_path: Path) -> None:
 
     assert max_active == 2
     assert runner.stats().succeeded == 5
+
+
+def test_queued_task_runner_retries_failed_job_from_repository(tmp_path: Path) -> None:
+    runner = build_runner(tmp_path)
+
+    def failing_handler(payload: Mapping[str, Any]) -> None:
+        raise RuntimeError("first failure")
+
+    runner.register_handler("compare", failing_handler)
+    job = runner.submit(task_type="compare", task_id="TRETRY_API", payload={"task_id": "TRETRY_API"})
+    wait_until(lambda: runner.job_repository.load(job.job_id).status == "FAILED")
+
+    seen_payload: list[Mapping[str, Any]] = []
+
+    def succeeding_handler(payload: Mapping[str, Any]) -> None:
+        seen_payload.append(payload)
+
+    runner.register_handler("compare", succeeding_handler)
+    retried = runner.retry("TRETRY_API", task_type="compare")
+    wait_until(lambda: runner.job_repository.load(retried.job_id).status == "SUCCEEDED")
+    stored = runner.job_repository.load(retried.job_id)
+    runner.stop()
+
+    assert retried.status == "QUEUED"
+    assert stored.status == "SUCCEEDED"
+    assert stored.attempt == 1
+    assert seen_payload == [{"task_id": "TRETRY_API"}]

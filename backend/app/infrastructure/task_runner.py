@@ -12,6 +12,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from app.config import Settings, settings
+from app.errors import ConflictError, NotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +300,44 @@ class QueuedTaskRunner:
         jobs = self.job_repository.request_cancel(task_id, task_type=task_type)
         self._wake_event.set()
         return jobs
+
+    def jobs_for_task(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
+        jobs = [
+            job
+            for job in self.job_repository.list_jobs()
+            if job.task_id == task_id and (task_type is None or job.task_type == task_type)
+        ]
+        return sorted(jobs, key=lambda job: job.updated_at or job.queued_at, reverse=True)
+
+    def latest_job(self, task_id: str, *, task_type: TaskJobType | None = None) -> TaskJob:
+        jobs = self.jobs_for_task(task_id, task_type=task_type)
+        if not jobs:
+            raise NotFoundError(f"任务执行记录不存在: {task_id}")
+        return jobs[0]
+
+    def retry(self, task_id: str, *, task_type: TaskJobType) -> TaskJob:
+        job = self.latest_job(task_id, task_type=task_type)
+        if job.status != "FAILED":
+            raise ConflictError("只有执行失败的任务可以重试。")
+        retried = job.model_copy(
+            update={
+                "status": "QUEUED",
+                "attempt": 0,
+                "queued_at": _utc_now(),
+                "started_at": "",
+                "finished_at": "",
+                "updated_at": _utc_now(),
+                "next_run_at": "",
+                "lease_owner": "",
+                "lease_expires_at": "",
+                "last_error": "",
+            }
+        )
+        queued = self.job_repository.enqueue(retried)
+        if self.autostart:
+            self.start()
+        self._wake_event.set()
+        return queued
 
     def stats(self) -> TaskRunnerStats:
         stats = TaskRunnerStats()

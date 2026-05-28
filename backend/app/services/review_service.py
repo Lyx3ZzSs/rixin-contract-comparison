@@ -5,15 +5,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.errors import ConflictError, NotFoundError
 from app.infrastructure.task_repository import TaskRepository, default_task_repository, to_jsonable
 from app.models import CompareTask, DiffItem, EvidenceBox, ReviewStatus
 
 
-class DiffNotFoundError(ValueError):
+class DiffNotFoundError(NotFoundError):
     pass
 
 
-class InvalidReviewStateError(ValueError):
+class InvalidReviewStateError(ConflictError):
     pass
 
 

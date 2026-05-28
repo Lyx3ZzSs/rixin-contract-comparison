@@ -22,7 +22,7 @@ HTTP responses are built through presenter functions and API schemas. Public JSO
 - Keep local JSON and PostgreSQL behind the same `TaskRepository` interface.
 - Keep uploaded PDFs, OCR raw output, screenshots, debug files, and reports behind the `ArtifactStore` interface; persist only metadata and artifact paths in the database.
 - Keep task execution behind `QueuedTaskRunner`; production can replace the local JSON job repository with a broker-backed adapter without changing API or service code.
-- Split large comparison modules incrementally, starting with table comparison normalization, matching, and diff rendering.
+- Split large comparison modules incrementally. Table comparison now keeps the public `TableComparator` entrypoint while moving constants and internal row/cell/diff support types into separate modules; future algorithm changes should continue that pattern by moving cohesive logic behind narrow helpers.
 
 ## Artifact And Client Boundaries
 
@@ -32,7 +32,26 @@ External OCR, PP-Structure, and LLM calls go through `HttpClientProvider`. Extra
 
 ## Task Execution
 
-Compare and extraction submissions are serialized into queue payloads before execution. The default runner stores job metadata under `storage/task_jobs`, enforces a configurable worker limit, records attempts and terminal state, renews leases while jobs are running, and supports retry and queued-job cancellation through the runner boundary. Task services still own domain status such as `PROCESSING`, `COMPLETED`, and `FAILED`; queue job status is infrastructure metadata and is not part of the public API DTOs.
+Compare and extraction submissions are serialized into queue payloads before execution. The default runner stores job metadata under `storage/task_jobs`, enforces a configurable worker limit, records attempts and terminal state, renews leases while jobs are running, and supports retry and queued-job cancellation through the runner boundary.
+
+Execution metadata is exposed through narrow operational endpoints:
+
+- `GET /api/compare/{task_id}/execution`
+- `POST /api/compare/{task_id}/cancel`
+- `POST /api/compare/{task_id}/retry`
+- `GET /api/extract/{task_id}/execution`
+- `POST /api/extract/{task_id}/cancel`
+- `POST /api/extract/{task_id}/retry`
+
+Task services still own domain status such as `PROCESSING`, `COMPLETED`, and `FAILED`; execution endpoints expose queue job state separately so the main task DTOs stay compatible.
+
+## Pipeline Contracts
+
+The comparison pipeline still runs the same stage order, but stage data should move through typed `PipelineContext` accessors such as `require_extractions`, `set_clauses`, and `set_clause_diffs`. Stages should raise `PipelineContractError` for missing required inputs instead of assuming previous mutable fields are populated.
+
+## Error Boundary
+
+Domain errors inherit from `AppError` and carry their HTTP status mapping at the API boundary. API handlers should prefer `http_error()` over ad hoc `HTTPException` mapping for validation, not-found, conflict, document-processing, and task-execution errors.
 
 Useful settings:
 

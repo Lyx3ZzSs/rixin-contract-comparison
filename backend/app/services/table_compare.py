@@ -7,26 +7,29 @@ from difflib import SequenceMatcher
 
 from app.models import BBox, CharBox, DiffItem, Document, EvidenceBox, TextBlock
 from app.models_table import StructuredTable
+from app.services.table_compare_constants import (
+    AMOUNT_TOKEN_PATTERN,
+    NOISE_PATTERN,
+    SUMMARY_LABEL_PATTERN,
+    TABLE_BLOCK_TYPES,
+    TABLE_HEADERS,
+    TABLE_TYPE_LABELS,
+)
+from app.services.table_compare_types import (
+    CellDiff,
+    CellDiffGroup,
+    CharSegment,
+    _FlatUnit,
+    _LogicalCell,
+    _LogicalRow,
+    _LogicalTable,
+    _SummaryPair,
+    _SummaryTransition,
+)
 from app.services.table_html_parser import parse_html_tables
 from app.utils.id_utils import generate_diff_id
 
 logger = logging.getLogger(__name__)
-
-NOISE_PATTERN = re.compile(r"^(共\d+页第\d+页|第?\d+页)$")
-SUMMARY_LABEL_PATTERN = re.compile(
-    r"(?:(?<!\d)\d{1,3}(?:套|项|台|个|批|份|件|年|月)?(?:总合计|总计|合计)|小计|总合计|总计|合计)"
-)
-AMOUNT_TOKEN_PATTERN = re.compile(r"(?:人民币|[¥￥])?[+-]?\d[\d,]*(?:\.\d+)?(?:万)?元?")
-TABLE_HEADERS = {"序号", "产品名称", "详细配置", "品牌", "单位", "数量", "单价", "金额", "备注"}
-TABLE_BLOCK_TYPES = {"table", "table_title", "table_cell"}
-TABLE_TYPE_LABELS = {
-    "cover": "封面信息",
-    "product": "标的物",
-    "payment": "付款节点",
-    "acceptance": "验收标准",
-    "contact": "联系人",
-    "generic": "通用表格",
-}
 
 
 class TableComparator:
@@ -3490,187 +3493,3 @@ class TableComparator:
     @staticmethod
     def _strip_html(text: str) -> str:
         return re.sub(r"<[^>]+>", "", text)
-
-
-class _LogicalCell:
-    __slots__ = (
-        "row_index",
-        "col_index",
-        "text",
-        "bbox",
-        "page_no",
-        "source_block_id",
-        "source_row",
-        "source_col",
-        "colspan",
-        "rowspan",
-    )
-
-    def __init__(
-        self,
-        row_index: int,
-        col_index: int,
-        text: str,
-        bbox: BBox | None,
-        page_no: int,
-        source_block_id: str,
-        source_row: int,
-        source_col: int,
-        colspan: int = 1,
-        rowspan: int = 1,
-    ):
-        self.row_index = row_index
-        self.col_index = col_index
-        self.text = text
-        self.bbox = bbox
-        self.page_no = page_no
-        self.source_block_id = source_block_id
-        self.source_row = source_row
-        self.source_col = source_col
-        self.colspan = colspan
-        self.rowspan = rowspan
-
-
-class _LogicalRow:
-    __slots__ = ("row_index", "cells", "page_no", "source_block_id", "source_row", "section_title", "source_text")
-
-    def __init__(
-        self,
-        row_index: int,
-        cells: list[_LogicalCell],
-        page_no: int,
-        source_block_id: str,
-        source_row: int,
-        section_title: str = "",
-        source_text: str = "",
-    ):
-        self.row_index = row_index
-        self.cells = cells
-        self.page_no = page_no
-        self.source_block_id = source_block_id
-        self.source_row = source_row
-        self.section_title = section_title
-        self.source_text = source_text
-
-
-class _LogicalTable:
-    __slots__ = ("rows", "col_count", "page_no", "source_block_id", "source")
-
-    def __init__(
-        self,
-        rows: list[_LogicalRow],
-        col_count: int,
-        page_no: int,
-        source_block_id: str = "",
-        source: str = "",
-    ):
-        self.rows = rows
-        self.col_count = col_count
-        self.page_no = page_no
-        self.source_block_id = source_block_id
-        self.source = source
-
-    def get_cell(self, row: int, col: int) -> _LogicalCell | None:
-        for table_row in self.rows:
-            if table_row.row_index != row:
-                continue
-            for cell in table_row.cells:
-                if cell.col_index <= col < cell.col_index + cell.colspan:
-                    return cell
-        return None
-
-    def all_cell_text(self) -> str:
-        parts: list[str] = []
-        for row in self.rows:
-            for cell in row.cells:
-                parts.append(cell.text)
-        return " ".join(parts)
-
-
-class CharSegment:
-    __slots__ = ("tag", "orig_start", "orig_end", "comp_start", "comp_end")
-
-    def __init__(self, tag: str, orig_start: int, orig_end: int, comp_start: int, comp_end: int):
-        self.tag = tag
-        self.orig_start = orig_start
-        self.orig_end = orig_end
-        self.comp_start = comp_start
-        self.comp_end = comp_end
-
-
-class _SummaryPair:
-    __slots__ = ("label", "amount", "canonical_amount", "line_index")
-
-    def __init__(self, label: str, amount: str, canonical_amount: str, line_index: int):
-        self.label = label
-        self.amount = amount
-        self.canonical_amount = canonical_amount
-        self.line_index = line_index
-
-
-class _SummaryTransition:
-    __slots__ = ("label", "amount", "canonical_amount", "line_index", "section")
-
-    def __init__(self, label: str, amount: str, canonical_amount: str, line_index: int, section: str):
-        self.label = label
-        self.amount = amount
-        self.canonical_amount = canonical_amount
-        self.line_index = line_index
-        self.section = section
-
-
-class CellDiff:
-    __slots__ = (
-        "row",
-        "col",
-        "original_col",
-        "compare_col",
-        "original_text",
-        "compare_text",
-        "diff_type",
-        "char_segments",
-        "original_row",
-        "compare_row",
-    )
-
-    def __init__(
-        self,
-        row: int,
-        col: int,
-        original_text: str,
-        compare_text: str,
-        diff_type: str,
-        char_segments: list[CharSegment] | None = None,
-        original_row: int | None = None,
-        compare_row: int | None = None,
-        original_col: int | None = None,
-        compare_col: int | None = None,
-    ):
-        self.row = row
-        self.col = col
-        self.original_col = col if original_col is None and diff_type != "ADD" else original_col
-        self.compare_col = col if compare_col is None and diff_type != "DELETE" else compare_col
-        self.original_text = original_text
-        self.compare_text = compare_text
-        self.diff_type = diff_type
-        self.char_segments = char_segments or []
-        self.original_row = row if original_row is None and diff_type != "ADD" else original_row
-        self.compare_row = row if compare_row is None and diff_type != "DELETE" else compare_row
-
-
-class CellDiffGroup:
-    __slots__ = ("row", "diffs")
-
-    def __init__(self, row: int, diffs: list[CellDiff]):
-        self.row = row
-        self.diffs = diffs
-
-
-class _FlatUnit:
-    __slots__ = ("text", "normalized", "page_no", "bbox")
-
-    def __init__(self, text: str, normalized: str, page_no: int, bbox: BBox):
-        self.text = text
-        self.normalized = normalized
-        self.page_no = page_no
-        self.bbox = bbox

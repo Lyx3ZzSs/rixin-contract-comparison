@@ -14,7 +14,9 @@ from app.api_schemas import (
     ExtractionRecordResponse,
     ExtractionTaskResponse,
     ReviewStatsResponse,
+    TaskExecutionResponse,
 )
+from app.infrastructure.task_runner import TaskJob
 from app.models import CompareTask
 from app.models_extraction import ExtractionTask
 from app.services.report_generator import build_report_filename
@@ -188,3 +190,19 @@ def extraction_record_summary(task: ExtractionTask) -> ExtractionRecordResponse:
 
 def extraction_record_list_response(tasks: list[ExtractionTask]) -> ExtractionRecordListResponse:
     return ExtractionRecordListResponse(records=[extraction_record_summary(task) for task in tasks])
+
+
+def task_execution_response(job: TaskJob) -> TaskExecutionResponse:
+    return TaskExecutionResponse(
+        job_id=job.job_id,
+        task_id=job.task_id,
+        task_type=job.task_type,
+        status=job.status,
+        attempt=job.attempt,
+        max_attempts=job.max_attempts,
+        queued_at=job.queued_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        updated_at=job.updated_at,
+        last_error=job.last_error,
+    )

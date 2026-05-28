@@ -4,10 +4,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from app.errors import DocumentProcessingError
 from app.models import Document, DocumentProfile
 
 
-class DocumentExtractionError(ValueError):
+class DocumentExtractionError(DocumentProcessingError):
     pass
 
 

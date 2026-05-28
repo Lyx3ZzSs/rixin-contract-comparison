@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+from app.api_errors import http_error
 from app.application.compare_tasks import default_compare_task_application
 from app.api_presenters import (
     compare_diff_list_response,
@@ -12,6 +13,7 @@ from app.api_presenters import (
     compare_task_detail_response,
     compare_task_response,
     diff_review_response,
+    task_execution_response,
 )
 from app.api_schemas import (
     CompareDiffListResponse,
@@ -20,6 +22,7 @@ from app.api_schemas import (
     CompareTaskResponse,
     DiffReviewRequest,
     DiffReviewResponse,
+    TaskExecutionResponse,
 )
 from app.infrastructure.artifact_store import default_artifact_store
 from app.models import CompareTask
@@ -52,9 +55,9 @@ async def compare_contracts(
             compare_filename=compare_file.filename or compare_path.name,
         )
     except FileValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise http_error(exc) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"合同对比任务创建失败: {exc}") from exc
+        raise http_error(exc, fallback_prefix="合同对比任务创建失败") from exc
 
     default_compare_task_application.submit_compare(
         original_path=original_path,
@@ -94,12 +97,34 @@ def update_diff_review(task_id: str, diff_id: str, payload: DiffReviewRequest) -
             payload.review_comment,
             payload.reviewed_by,
         )
-    except InvalidReviewStateError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except DiffNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (InvalidReviewStateError, DiffNotFoundError) as exc:
+        raise http_error(exc) from exc
 
     return diff_review_response(task, diff)
+
+
+@router.get("/{task_id}/execution", response_model=TaskExecutionResponse)
+def get_task_execution(task_id: str) -> TaskExecutionResponse:
+    try:
+        return task_execution_response(default_compare_task_application.load_execution(task_id))
+    except Exception as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/{task_id}/cancel", response_model=TaskExecutionResponse)
+def cancel_task(task_id: str) -> TaskExecutionResponse:
+    try:
+        return task_execution_response(default_compare_task_application.cancel_compare(task_id))
+    except Exception as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/{task_id}/retry", response_model=TaskExecutionResponse)
+def retry_task(task_id: str) -> TaskExecutionResponse:
+    try:
+        return task_execution_response(default_compare_task_application.retry_compare(task_id))
+    except Exception as exc:
+        raise http_error(exc) from exc
 
 
 @router.get("/{task_id}/quality")
@@ -116,7 +141,7 @@ def download_report(task_id: str) -> FileResponse:
     try:
         task = default_compare_task_application.ensure_report(task)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"审计报告生成失败: {exc}") from exc
+        raise http_error(exc, fallback_prefix="审计报告生成失败") from exc
     return _file_response(task.report_pdf_path, build_report_filename(task), "application/pdf")
 
 
@@ -170,7 +195,7 @@ def _file_response(
     try:
         assert_path_inside_storage(path)
     except FileValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise http_error(exc) from exc
     if not path.exists():
         raise HTTPException(status_code=404, detail="文件不存在。")
     return FileResponse(

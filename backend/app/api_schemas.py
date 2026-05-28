@@ -5,6 +5,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
+TaskExecutionStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED"]
+TaskExecutionType = Literal["compare", "extraction"]
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
 RiskLevel = Literal["LOW", "MEDIUM", "HIGH"]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
@@ -110,6 +112,20 @@ class CompareRecordResponse(BaseModel):
 
 class CompareRecordListResponse(BaseModel):
     records: list[CompareRecordResponse]
+
+
+class TaskExecutionResponse(BaseModel):
+    job_id: str
+    task_id: str
+    task_type: TaskExecutionType
+    status: TaskExecutionStatus
+    attempt: int
+    max_attempts: int
+    queued_at: str
+    started_at: str = ""
+    finished_at: str = ""
+    updated_at: str
+    last_error: str = ""
 
 
 class CompareDiffResponse(BaseModel):

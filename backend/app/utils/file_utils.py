@@ -7,12 +7,13 @@ from typing import TYPE_CHECKING
 from fastapi import UploadFile
 
 from app.config import settings
+from app.errors import ValidationError
 
 if TYPE_CHECKING:
     from app.infrastructure.artifact_store import ArtifactStore
 
 
-class FileValidationError(ValueError):
+class FileValidationError(ValidationError):
     pass
 
 
