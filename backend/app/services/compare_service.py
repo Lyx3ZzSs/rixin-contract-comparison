@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import settings
+from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.models import CompareTask
 from app.services.extractors.base import DocumentExtractor
@@ -23,10 +24,12 @@ class CompareService:
         extractor: DocumentExtractor | None = None,
         structured_extractor: DocumentExtractor | None = None,
         repository: TaskRepository = default_task_repository,
+        artifact_store: ArtifactStore = default_artifact_store,
     ) -> None:
         self._extractor = extractor
         self._structured_extractor = structured_extractor
         self.repository = repository
+        self.artifact_store = artifact_store
         self._report_generator = ReportGenerator()
         self._screenshot_service = ScreenshotService()
 
@@ -45,17 +48,18 @@ class CompareService:
         extraction = ExtractionStage(
             extractor=self._extractor,
             structured_extractor=self._structured_extractor,
+            artifact_store=self.artifact_store,
         )
         return ComparePipeline(
             stages=[
                 extraction,
-                PreClauseDiffStage(),
-                SplitStage(),
-                MatchStage(),
-                ClauseDiffStage(),
+                PreClauseDiffStage(artifact_store=self.artifact_store),
+                SplitStage(artifact_store=self.artifact_store),
+                MatchStage(artifact_store=self.artifact_store),
+                ClauseDiffStage(artifact_store=self.artifact_store),
                 EvidenceStage(),
-                AnalysisStage(),
-                VisualizationStage(),
+                AnalysisStage(artifact_store=self.artifact_store),
+                VisualizationStage(artifact_store=self.artifact_store),
                 SummaryStage(),
             ],
             repository=self.repository,
@@ -135,9 +139,9 @@ class CompareService:
 
     def ensure_report(self, task: CompareTask) -> CompareTask:
         settings.ensure_storage()
-        report_path = settings.reports_dir / task.task_id / "contract_compare_report.pdf"
+        report_path = self.artifact_store.report_pdf_path(task.task_id)
 
-        page_screenshot_dir = settings.screenshots_dir / task.task_id / "pages"
+        page_screenshot_dir = self.artifact_store.screenshot_dir(task.task_id, "pages")
         if not task.original_page_screenshots and task.original_highlight_pdf_path:
             task.original_page_screenshots = self._screenshot_service.create_page_screenshots(
                 task.original_highlight_pdf_path,

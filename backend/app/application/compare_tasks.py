@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import functools
 import logging
 from pathlib import Path
+from typing import Any, Mapping
 
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
-from app.infrastructure.task_runner import BackgroundTaskRunner, default_task_runner
+from app.infrastructure.task_runner import QueuedTaskRunner, default_task_runner
 from app.models import CompareTask, DiffItem, ReviewStatus
 from app.services.compare_service import CompareService
 from app.services.review_service import CompareReviewService
@@ -17,10 +17,11 @@ class CompareTaskApplication:
     def __init__(
         self,
         repository: TaskRepository = default_task_repository,
-        runner: BackgroundTaskRunner = default_task_runner,
+        runner: QueuedTaskRunner = default_task_runner,
     ) -> None:
         self.repository = repository
         self.runner = runner
+        self.runner.register_handler("compare", self._run_compare_job)
 
     def create_queued_task(
         self,
@@ -53,14 +54,15 @@ class CompareTaskApplication:
         compare_filename: str | None,
     ) -> None:
         self.runner.submit(
-            functools.partial(
-                self._run_compare_task,
-                original_path=original_path,
-                compare_path=compare_path,
-                task_id=task_id,
-                original_filename=original_filename,
-                compare_filename=compare_filename,
-            )
+            task_type="compare",
+            task_id=task_id,
+            payload={
+                "task_id": task_id,
+                "original_path": str(original_path),
+                "compare_path": str(compare_path),
+                "original_filename": original_filename or "",
+                "compare_filename": compare_filename or "",
+            },
         )
 
     def load_compare_task(self, task_id: str) -> CompareTask:
@@ -88,6 +90,15 @@ class CompareTaskApplication:
             reviewed_by,
         )
 
+    def _run_compare_job(self, payload: Mapping[str, Any]) -> None:
+        self._run_compare_task(
+            original_path=Path(str(payload["original_path"])),
+            compare_path=Path(str(payload["compare_path"])),
+            task_id=str(payload["task_id"]),
+            original_filename=str(payload.get("original_filename") or ""),
+            compare_filename=str(payload.get("compare_filename") or ""),
+        )
+
     def _run_compare_task(
         self,
         *,
@@ -107,6 +118,7 @@ class CompareTaskApplication:
             )
         except Exception:
             logger.exception("Background compare task failed: %s", task_id)
+            raise
 
 
 default_compare_task_application = CompareTaskApplication()

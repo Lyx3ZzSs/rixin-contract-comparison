@@ -34,6 +34,7 @@ def configure_storage(tmp_path: Path) -> None:
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.debug_dir = settings.storage_dir / "debug"
+    settings.task_jobs_dir = settings.storage_dir / "task_jobs"
     settings.document_extractor = "auto"
     settings.ai_llm_base_url = ""
     settings.ai_llm_api_key = ""
@@ -50,6 +51,17 @@ def wait_for_compare_task(client: TestClient, task_id: str) -> dict:
             return payload
         time.sleep(0.02)
     raise AssertionError(f"Compare task did not finish: {task_id}")
+
+
+def wait_for_extraction_task(client: TestClient, task_id: str) -> dict:
+    for _ in range(100):
+        response = client.get(f"/api/extract/{task_id}")
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        if payload["status"] != "PROCESSING":
+            return payload
+        time.sleep(0.02)
+    raise AssertionError(f"Extraction task did not finish: {task_id}")
 
 
 def test_api_compare_contracts(tmp_path: Path) -> None:
@@ -429,9 +441,7 @@ def test_api_extract_accepts_png_with_ppocrv5_llm(monkeypatch, tmp_path: Path) -
     assert "raw_result_path" not in payload
     assert "converted_file_path" not in payload
 
-    poll_response = client.get(f"/api/extract/{task_id}")
-    assert poll_response.status_code == 200
-    polled = poll_response.json()
+    polled = wait_for_extraction_task(client, task_id)
     assert polled["status"] == "COMPLETED"
     assert polled["extractor_used"] == "ppocrv5_llm"
     assert polled["results"][0]["value"] == "日新公司"

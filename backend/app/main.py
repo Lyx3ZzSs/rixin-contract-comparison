@@ -15,6 +15,7 @@ from app.api import router as compare_router
 from app.api_extraction import router as extraction_router
 from app.clients import close_clients
 from app.config import settings
+from app.infrastructure.task_runner import default_task_runner
 from app.logging_config import setup_logging
 
 setup_logging()
@@ -23,8 +24,12 @@ setup_logging()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.ensure_storage()
-    yield
-    close_clients()
+    default_task_runner.start()
+    try:
+        yield
+    finally:
+        default_task_runner.stop(wait=True)
+        close_clients()
 
 
 app = FastAPI(title="合同差异审查系统", version="0.1.0", lifespan=lifespan)

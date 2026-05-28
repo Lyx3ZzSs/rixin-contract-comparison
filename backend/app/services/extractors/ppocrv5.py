@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import re
 import time
@@ -11,8 +10,9 @@ from typing import Any
 import fitz
 import httpx
 
-from app.config import settings
-from app.clients import get_ocr_client
+from app.clients import HttpClientProvider, default_http_client_provider
+from app.config import Settings, settings
+from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.models import BBox, CharBox, Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 
@@ -27,6 +27,16 @@ class PPOCRV5Extractor:
     )
     per_mille_ocr_pattern = re.compile(r"(?P<number>\d+(?:[.,]\d+)?)%0(?=\D|$)")
 
+    def __init__(
+        self,
+        app_settings: Settings = settings,
+        client_provider: HttpClientProvider = default_http_client_provider,
+        artifact_store: ArtifactStore = default_artifact_store,
+    ) -> None:
+        self.settings = app_settings
+        self.client_provider = client_provider
+        self.artifact_store = artifact_store
+
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         path = Path(path)
         if not path.exists():
@@ -35,7 +45,7 @@ class PPOCRV5Extractor:
             raise DocumentExtractionError("仅支持 PDF 文件。")
 
         payload = self.predict(path, file_type=0)
-        raw_path = self._save_raw_result(payload, task_id, path) if settings.save_ocr_raw_result and task_id else ""
+        raw_path = self._save_raw_result(payload, task_id, path) if self.settings.save_ocr_raw_result and task_id else ""
         document = self.payload_to_document(payload, path)
         return ExtractionResult(document=document, extractor_used=self.name, raw_result_path=raw_path)
 
@@ -46,14 +56,14 @@ class PPOCRV5Extractor:
         path = Path(path)
         url = self._ocr_url()
         headers = {"Content-Type": "application/json"}
-        if settings.ppocrv5_access_token:
-            headers["Authorization"] = f"Bearer {settings.ppocrv5_access_token}"
+        if self.settings.ppocrv5_access_token:
+            headers["Authorization"] = f"Bearer {self.settings.ppocrv5_access_token}"
         t = time.perf_counter()
         body = self._request_body(path, file_type=file_type)
         logger.info("OCR请求体构建(Base64编码) 耗时 %.2fs", time.perf_counter() - t)
         try:
             t = time.perf_counter()
-            client = get_ocr_client()
+            client = self.client_provider.get_ocr_client()
             response = client.post(url, headers=headers, json=body)
             response.raise_for_status()
             payload = response.json()
@@ -72,7 +82,7 @@ class PPOCRV5Extractor:
         return self._normalize_remote_payload(payload)
 
     def _ocr_url(self) -> str:
-        base = settings.ppocrv5_url.strip().rstrip("/")
+        base = self.settings.ppocrv5_url.strip().rstrip("/")
         if not base:
             raise DocumentExtractionError("未配置 PPOCRV5_URL，无法调用远端 PP-OCRv5。")
         return base if base.endswith("/ocr") else f"{base}/ocr"
@@ -84,11 +94,11 @@ class PPOCRV5Extractor:
         return {
             "file": encoded,
             "fileType": file_type,
-            "useDocOrientationClassify": settings.ppocrv5_use_doc_orientation_classify,
-            "useDocUnwarping": settings.ppocrv5_use_doc_unwarping,
-            "useTextlineOrientation": settings.ppocrv5_use_textline_orientation,
-            "textRecScoreThresh": settings.ppocrv5_text_rec_score_thresh,
-            "returnWordBox": settings.ppocrv5_return_word_box,
+            "useDocOrientationClassify": self.settings.ppocrv5_use_doc_orientation_classify,
+            "useDocUnwarping": self.settings.ppocrv5_use_doc_unwarping,
+            "useTextlineOrientation": self.settings.ppocrv5_use_textline_orientation,
+            "textRecScoreThresh": self.settings.ppocrv5_text_rec_score_thresh,
+            "returnWordBox": self.settings.ppocrv5_return_word_box,
             "visualize": False,
         }
 
@@ -416,13 +426,13 @@ class PPOCRV5Extractor:
         height: float,
         confidence: float | None,
     ) -> bool:
-        if confidence is None or confidence >= settings.ppocrv5_edge_noise_score_thresh:
+        if confidence is None or confidence >= self.settings.ppocrv5_edge_noise_score_thresh:
             return False
         compact = self._compact_text(text)
-        if not compact or len(compact) > settings.ppocrv5_edge_noise_max_chars:
+        if not compact or len(compact) > self.settings.ppocrv5_edge_noise_max_chars:
             return False
-        margin_x = max(0.0, width * settings.ppocrv5_edge_noise_margin_ratio)
-        margin_y = max(0.0, height * settings.ppocrv5_edge_noise_margin_ratio)
+        margin_x = max(0.0, width * self.settings.ppocrv5_edge_noise_margin_ratio)
+        margin_y = max(0.0, height * self.settings.ppocrv5_edge_noise_margin_ratio)
         return (
             bbox.x0 <= margin_x
             or bbox.x1 >= width - margin_x
@@ -632,11 +642,8 @@ class PPOCRV5Extractor:
     def _save_raw_result(self, payload: Any, task_id: str | None, source_path: Path) -> str:
         if not task_id:
             return ""
-        directory = settings.ocr_dir / task_id
-        directory.mkdir(parents=True, exist_ok=True)
-        stem = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", source_path.stem)[:80] or "document"
-        path = directory / f"{stem}_ppocrv5_raw.json"
-        path.write_text(json.dumps(self._jsonable(payload), ensure_ascii=False, indent=2), encoding="utf-8")
+        path = self.artifact_store.raw_json_path(task_id, source_path, "ppocrv5_raw")
+        self.artifact_store.write_json(path, self._jsonable(payload))
         return str(path)
 
     def _jsonable(self, value: Any) -> Any:

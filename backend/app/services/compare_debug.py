@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
-from app.config import settings
+from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.models import Clause, ClausePair, DiffItem, DocumentProfile
 from app.utils.json_utils import to_jsonable
 
 
 class CompareDebugWriter:
     """Persist compact JSON diagnostics beside task JSON while accuracy is being tuned."""
+
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.artifact_store = artifact_store
 
     def write_profiles(
         self,
@@ -73,17 +75,11 @@ class CompareDebugWriter:
         return str(self._write_json(task_id, "diff_decisions.json", payload))
 
     def _write_json(self, task_id: str, filename: str, payload: Any) -> Path:
-        root = self._debug_root(task_id)
-        root.mkdir(parents=True, exist_ok=True)
-        path = root / filename
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return path
+        path = self.artifact_store.debug_json_path(task_id, filename)
+        return self.artifact_store.write_json(path, payload)
 
     def _debug_root(self, task_id: str) -> Path:
-        configured = settings.debug_dir
-        if configured is None:
-            return settings.storage_dir / "debug" / task_id
-        return configured / task_id
+        return self.artifact_store.task_dir("debug", task_id)
 
     def _dump_model(self, model: Any) -> dict[str, Any] | None:
         if model is None:

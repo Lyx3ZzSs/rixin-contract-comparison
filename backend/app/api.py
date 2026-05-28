@@ -21,6 +21,7 @@ from app.api_schemas import (
     DiffReviewRequest,
     DiffReviewResponse,
 )
+from app.infrastructure.artifact_store import default_artifact_store
 from app.models import CompareTask
 from app.services.review_service import (
     CompareQualityService,
@@ -146,9 +147,7 @@ def download_compare_highlight(task_id: str) -> FileResponse:
 @router.get("/{task_id}/screenshot/{filename}")
 def download_screenshot(task_id: str, filename: str) -> FileResponse:
     _load_or_404(task_id)
-    from app.config import settings
-
-    path = settings.screenshots_dir / task_id / Path(filename).name
+    path = default_artifact_store.screenshot_path(task_id, filename)
     return _file_response(str(path), filename, "image/png")
 
 

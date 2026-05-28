@@ -50,8 +50,14 @@ class Settings(BaseSettings):
     reports_dir: Path | None = None
     ocr_dir: Path | None = None
     debug_dir: Path | None = None
+    task_jobs_dir: Path | None = None
     task_repository_backend: Literal["local_json", "postgres"] = "local_json"
     database_url: str = ""
+    task_runner_max_workers: int = Field(default=2, ge=1, le=16)
+    task_runner_max_attempts: int = Field(default=1, ge=1, le=5)
+    task_runner_lease_seconds: int = Field(default=3600, ge=30)
+    task_runner_retry_delay_seconds: float = Field(default=2.0, ge=0)
+    task_runner_poll_interval_seconds: float = Field(default=0.25, ge=0.01)
 
     document_extractor: str = "auto"
     pymupdf_min_text_chars: int = Field(default=1, ge=0)
@@ -184,6 +190,10 @@ class Settings(BaseSettings):
             self.debug_dir = storage_dir / "debug"
         else:
             self.debug_dir = self._resolve_runtime_path(self.debug_dir)
+        if self.task_jobs_dir is None:
+            self.task_jobs_dir = storage_dir / "task_jobs"
+        else:
+            self.task_jobs_dir = self._resolve_runtime_path(self.task_jobs_dir)
         return self
 
     def _resolve_runtime_path(self, path: Path) -> Path:
@@ -199,6 +209,7 @@ class Settings(BaseSettings):
             self.reports_dir,
             self.ocr_dir,
             self.debug_dir,
+            self.task_jobs_dir,
         ]
 
     def ensure_storage(self) -> None:

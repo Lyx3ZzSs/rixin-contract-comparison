@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.clients import HttpClientProvider, default_http_client_provider
 from app.config import settings
+from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.base import DocumentExtractor
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
@@ -19,9 +21,14 @@ class AutoDocumentExtractor:
         primary: PyMuPDFExtractor | None = None,
         fallback: DocumentExtractor | None = None,
         min_text_chars: int | None = None,
+        artifact_store: ArtifactStore = default_artifact_store,
+        client_provider: HttpClientProvider = default_http_client_provider,
     ) -> None:
         self.primary = primary or PyMuPDFExtractor()
-        self.fallback = fallback or PPStructureOCRHybridExtractor()
+        self.fallback = fallback or PPStructureOCRHybridExtractor(
+            client_provider=client_provider,
+            artifact_store=artifact_store,
+        )
         self.min_text_chars = settings.pymupdf_min_text_chars if min_text_chars is None else min_text_chars
         self.profiler = DocumentProfiler()
 
@@ -61,14 +68,19 @@ class AutoDocumentExtractor:
         return result
 
 
-def build_document_extractor(name: str | None = None):
+def build_document_extractor(
+    name: str | None = None,
+    *,
+    artifact_store: ArtifactStore = default_artifact_store,
+    client_provider: HttpClientProvider = default_http_client_provider,
+):
     extractor_name = (name or settings.document_extractor or "auto").lower()
     if extractor_name in {"auto", "default"}:
-        return AutoDocumentExtractor()
+        return AutoDocumentExtractor(artifact_store=artifact_store, client_provider=client_provider)
     if extractor_name in {"pymupdf", "fitz", "pdf_text"}:
         return PyMuPDFExtractor()
     if extractor_name in {"ppocrv5", "pp_ocrv5", "paddleocr", "paddle_ocr", "paddle"}:
-        return PPOCRV5Extractor()
+        return PPOCRV5Extractor(client_provider=client_provider, artifact_store=artifact_store)
     if extractor_name in {"ppstructure_ocr_hybrid", "ppstructure_ppocrv5", "structure_ocr", "ppstructure"}:
-        return PPStructureOCRHybridExtractor()
+        return PPStructureOCRHybridExtractor(client_provider=client_provider, artifact_store=artifact_store)
     raise DocumentExtractionError(f"不支持的文档识别器: {extractor_name}")

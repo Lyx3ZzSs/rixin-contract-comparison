@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -9,13 +8,25 @@ from typing import Any
 import fitz
 import httpx
 
-from app.config import settings
+from app.clients import HttpClientProvider, default_http_client_provider
+from app.config import Settings, settings
+from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.models import BBox, Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 
 
 class PPStructureExtractor:
     name = "ppstructure"
+
+    def __init__(
+        self,
+        app_settings: Settings = settings,
+        client_provider: HttpClientProvider = default_http_client_provider,
+        artifact_store: ArtifactStore = default_artifact_store,
+    ) -> None:
+        self.settings = app_settings
+        self.client_provider = client_provider
+        self.artifact_store = artifact_store
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         path = Path(path)
@@ -25,21 +36,21 @@ class PPStructureExtractor:
             raise DocumentExtractionError("仅支持 PDF 文件。")
 
         payload = self._request_layout(path)
-        raw_path = self._save_raw_result(payload, task_id, path) if settings.save_ocr_raw_result and task_id else ""
+        raw_path = self._save_raw_result(payload, task_id, path) if self.settings.save_ocr_raw_result and task_id else ""
         document = self.payload_to_document(payload, path)
         return ExtractionResult(document=document, extractor_used=self.name, raw_result_path=raw_path)
 
     def _request_layout(self, path: Path) -> dict[str, Any]:
         url = self._layout_url()
         headers = {"Content-Type": "application/json"}
-        if settings.ppstructure_access_token:
-            headers["Authorization"] = f"Bearer {settings.ppstructure_access_token}"
+        if self.settings.ppstructure_access_token:
+            headers["Authorization"] = f"Bearer {self.settings.ppstructure_access_token}"
         body = self._request_body(path)
         try:
-            with httpx.Client(timeout=settings.ppstructure_timeout_seconds) as client:
-                response = client.post(url, headers=headers, json=body)
-                response.raise_for_status()
-                payload = response.json()
+            client = self.client_provider.get_structure_client()
+            response = client.post(url, headers=headers, json=body)
+            response.raise_for_status()
+            payload = response.json()
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text[:500] if exc.response is not None else str(exc)
             raise DocumentExtractionError(f"远端 PP-Structure 请求失败 ({url}, HTTP {exc.response.status_code}): {detail}") from exc
@@ -54,7 +65,7 @@ class PPStructureExtractor:
         return payload
 
     def _layout_url(self) -> str:
-        base = settings.ppstructure_url.strip().rstrip("/")
+        base = self.settings.ppstructure_url.strip().rstrip("/")
         if not base:
             raise DocumentExtractionError("未配置 PPSTRUCTURE_URL，无法调用远端 PP-Structure。")
         return base if base.endswith("/layout-parsing") else f"{base}/layout-parsing"
@@ -63,13 +74,13 @@ class PPStructureExtractor:
         return {
             "file": base64.b64encode(path.read_bytes()).decode("ascii"),
             "fileType": 0,
-            "useDocOrientationClassify": settings.ppstructure_use_doc_orientation_classify,
-            "useDocUnwarping": settings.ppstructure_use_doc_unwarping,
-            "useTextlineOrientation": settings.ppstructure_use_textline_orientation,
-            "useTableRecognition": settings.ppstructure_use_table_recognition,
-            "useSealRecognition": settings.ppstructure_use_seal_recognition,
-            "useRegionDetection": settings.ppstructure_use_region_detection,
-            "formatBlockContent": settings.ppstructure_format_block_content,
+            "useDocOrientationClassify": self.settings.ppstructure_use_doc_orientation_classify,
+            "useDocUnwarping": self.settings.ppstructure_use_doc_unwarping,
+            "useTextlineOrientation": self.settings.ppstructure_use_textline_orientation,
+            "useTableRecognition": self.settings.ppstructure_use_table_recognition,
+            "useSealRecognition": self.settings.ppstructure_use_seal_recognition,
+            "useRegionDetection": self.settings.ppstructure_use_region_detection,
+            "formatBlockContent": self.settings.ppstructure_format_block_content,
             "visualize": False,
         }
 
@@ -328,9 +339,6 @@ class PPStructureExtractor:
     def _save_raw_result(self, payload: Any, task_id: str | None, source_path: Path) -> str:
         if not task_id:
             return ""
-        directory = settings.ocr_dir / task_id
-        directory.mkdir(parents=True, exist_ok=True)
-        stem = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", source_path.stem)[:80] or "document"
-        path = directory / f"{stem}_ppstructure_raw.json"
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        path = self.artifact_store.raw_json_path(task_id, source_path, "ppstructure_raw")
+        self.artifact_store.write_json(path, payload)
         return str(path)

@@ -14,8 +14,9 @@ from typing import Any
 
 import httpx
 
-from app.config import settings
-from app.clients import get_llm_client
+from app.clients import HttpClientProvider, default_http_client_provider
+from app.config import Settings, settings
+from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.models_extraction import ExtractionFieldDef, ExtractionFieldValue
 from app.services.extractors.base import DocumentExtractionError
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
@@ -43,6 +44,9 @@ class PPOCRV5LLMExtractionResult:
 
 
 class ExtractionFilePreprocessor:
+    def __init__(self, app_settings: Settings = settings) -> None:
+        self.settings = app_settings
+
     def prepare(self, source_path: str | Path) -> PreparedExtractionFile:
         path = Path(source_path)
         extension = path.suffix.lower()
@@ -56,8 +60,8 @@ class ExtractionFilePreprocessor:
         raise PPOCRV5LLMExtractionError("仅支持 PDF、Word、PNG、JPG、JPEG、BMP 文件。")
 
     def _find_libreoffice_executable(self) -> str:
-        if settings.libreoffice_path and Path(settings.libreoffice_path).is_file():
-            return settings.libreoffice_path
+        if self.settings.libreoffice_path and Path(self.settings.libreoffice_path).is_file():
+            return self.settings.libreoffice_path
         executable = shutil.which("libreoffice") or shutil.which("soffice")
         if executable:
             return executable
@@ -74,7 +78,7 @@ class ExtractionFilePreprocessor:
         output_dir = path.parent / "converted"
         output_dir.mkdir(parents=True, exist_ok=True)
         executable = self._find_libreoffice_executable()
-        accept_arg = f"socket,host={settings.libreoffice_host},port={settings.libreoffice_port};urp;"
+        accept_arg = f"socket,host={self.settings.libreoffice_host},port={self.settings.libreoffice_port};urp;"
         command = [
             executable,
             "--headless",
@@ -92,7 +96,7 @@ class ExtractionFilePreprocessor:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=settings.libreoffice_timeout_seconds,
+                timeout=self.settings.libreoffice_timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
             raise PPOCRV5LLMExtractionError("Word 转 PDF 超时。") from exc
@@ -113,9 +117,19 @@ class PPOCRV5LLMExtractionClient:
         self,
         preprocessor: ExtractionFilePreprocessor | None = None,
         ocr_extractor: PPOCRV5Extractor | None = None,
+        app_settings: Settings = settings,
+        client_provider: HttpClientProvider = default_http_client_provider,
+        artifact_store: ArtifactStore = default_artifact_store,
     ) -> None:
-        self.preprocessor = preprocessor or ExtractionFilePreprocessor()
-        self.ocr_extractor = ocr_extractor or PPOCRV5Extractor()
+        self.settings = app_settings
+        self.client_provider = client_provider
+        self.artifact_store = artifact_store
+        self.preprocessor = preprocessor or ExtractionFilePreprocessor(app_settings)
+        self.ocr_extractor = ocr_extractor or PPOCRV5Extractor(
+            app_settings=app_settings,
+            client_provider=client_provider,
+            artifact_store=artifact_store,
+        )
 
     def _log_timing(self, task_id: str | None, stage: str, elapsed: float) -> None:
         tag = task_id or "—"
@@ -243,7 +257,7 @@ class PPOCRV5LLMExtractionClient:
         return parsed, llm_request, llm_payload, results
 
     def _is_llm_configured(self) -> bool:
-        return bool(settings.ai_llm_base_url and settings.ai_llm_api_key and settings.ai_llm_model)
+        return bool(self.settings.ai_llm_base_url and self.settings.ai_llm_api_key and self.settings.ai_llm_model)
 
     def _ocr_text(self, payload: Any) -> str:
         pages = payload if isinstance(payload, list) else [payload]
@@ -314,18 +328,18 @@ class PPOCRV5LLMExtractionClient:
             for field in field_defs
         ]
         instruction_parts = [
-            settings.extraction_task_description,
-            settings.extraction_rules_str,
-            settings.extraction_output_format,
+            self.settings.extraction_task_description,
+            self.settings.extraction_rules_str,
+            self.settings.extraction_output_format,
         ]
-        if settings.extraction_few_shot_demo:
-            instruction_parts.append(f"参考示例：{settings.extraction_few_shot_demo}")
+        if self.settings.extraction_few_shot_demo:
+            instruction_parts.append(f"参考示例：{self.settings.extraction_few_shot_demo}")
         user_payload = {
             "fields": field_payload,
             "ocr_text": ocr_text,
         }
         return {
-            "model": settings.ai_llm_model,
+            "model": self.settings.ai_llm_model,
             "messages": [
                 {
                     "role": "system",
@@ -347,12 +361,12 @@ class PPOCRV5LLMExtractionClient:
         }
 
     def _post_llm_json(self, body: dict[str, Any]) -> dict[str, Any]:
-        url = self._chat_completions_url(settings.ai_llm_base_url)
+        url = self._chat_completions_url(self.settings.ai_llm_base_url)
         headers = {"Content-Type": "application/json"}
-        if settings.ai_llm_api_key:
-            headers["Authorization"] = f"Bearer {settings.ai_llm_api_key}"
+        if self.settings.ai_llm_api_key:
+            headers["Authorization"] = f"Bearer {self.settings.ai_llm_api_key}"
         try:
-            client = get_llm_client()
+            client = self.client_provider.get_llm_client()
             response = client.post(url, headers=headers, json=body)
             response.raise_for_status()
             payload = response.json()
@@ -565,13 +579,10 @@ class PPOCRV5LLMExtractionClient:
         return logged
 
     def _save_raw_result(self, payload: Any, task_id: str | None, source_path: Path) -> str:
-        if not task_id or not settings.save_extraction_raw_result:
+        if not task_id or not self.settings.save_extraction_raw_result:
             return ""
-        directory = settings.ocr_dir / task_id
-        directory.mkdir(parents=True, exist_ok=True)
-        stem = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", source_path.stem)[:80] or "document"
-        path = directory / f"{stem}_ppocrv5_llm_extraction_raw.json"
-        path.write_text(json.dumps(self._jsonable(payload), ensure_ascii=False, indent=2), encoding="utf-8")
+        path = self.artifact_store.raw_json_path(task_id, source_path, "ppocrv5_llm_extraction_raw")
+        self.artifact_store.write_json(path, self._jsonable(payload))
         return str(path)
 
     def _jsonable(self, value: Any) -> Any:

@@ -6,6 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 from app.config import settings
+from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.models import (
     Clause,
     CompareTask,
@@ -88,11 +89,13 @@ class ExtractionStage:
         self,
         extractor: DocumentExtractor | None = None,
         structured_extractor: DocumentExtractor | None = None,
+        artifact_store: ArtifactStore = default_artifact_store,
     ) -> None:
-        self.extractor = extractor or build_document_extractor()
+        self.artifact_store = artifact_store
+        self.extractor = extractor or build_document_extractor(artifact_store=artifact_store)
         self.structured_extractor = structured_extractor
         self.profiler = DocumentProfiler()
-        self.debug_writer = CompareDebugWriter()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
@@ -207,9 +210,8 @@ class ExtractionStage:
             return False
         return "ppstructure" in name
 
-    @staticmethod
-    def _matching_structured_extractor(extractor_used: str) -> DocumentExtractor:
-        return build_document_extractor("ppstructure_ocr_hybrid")
+    def _matching_structured_extractor(self, extractor_used: str) -> DocumentExtractor:
+        return build_document_extractor("ppstructure_ocr_hybrid", artifact_store=self.artifact_store)
 
     @staticmethod
     def _merge_extractor_names(original: str, compare: str) -> str:
@@ -226,10 +228,10 @@ class PreClauseDiffStage:
     name = "差异识别中"
     progress = 40
 
-    def __init__(self) -> None:
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.cover_metadata = CoverMetadataComparator()
         self.table_comparator = TableComparator()
-        self.debug_writer = CompareDebugWriter()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
@@ -249,9 +251,9 @@ class SplitStage:
     name = "差异识别中"
     progress = 45
 
-    def __init__(self) -> None:
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.splitter = ClauseSplitter()
-        self.debug_writer = CompareDebugWriter()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
         original_doc = ctx.original_extraction.document
@@ -275,9 +277,13 @@ class MatchStage:
     name = "条款匹配中"
     progress = 55
 
-    def __init__(self, threshold: int | None = None) -> None:
+    def __init__(
+        self,
+        threshold: int | None = None,
+        artifact_store: ArtifactStore = default_artifact_store,
+    ) -> None:
         self.matcher = ClauseMatcher(threshold if threshold is not None else settings.match_threshold)
-        self.debug_writer = CompareDebugWriter()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
         ctx.pairs = self.matcher.match(ctx.original_clauses, ctx.compare_clauses)
@@ -292,9 +298,9 @@ class ClauseDiffStage:
     name = "差异计算中"
     progress = 60
 
-    def __init__(self) -> None:
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.diff_engine = DiffEngine()
-        self.debug_writer = CompareDebugWriter()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
         ctx.clause_diffs = self.diff_engine.build_diffs(
@@ -333,9 +339,9 @@ class AnalysisStage:
     name = "风险分析中"
     progress = 75
 
-    def __init__(self) -> None:
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.risk_analyzer = RuleBasedRiskAnalyzer()
-        self.debug_writer = CompareDebugWriter()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
         ctx.diffs = self.risk_analyzer.analyze(ctx.diffs)
@@ -351,7 +357,8 @@ class VisualizationStage:
     name = "可视化生成中"
     progress = 90
 
-    def __init__(self) -> None:
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.artifact_store = artifact_store
         self.highlighter = PdfHighlighter()
         self.screenshot_service = ScreenshotService()
 
@@ -359,8 +366,8 @@ class VisualizationStage:
         task = ctx.task
         task_id = task.task_id
 
-        original_highlight = settings.highlighted_dir / task_id / "original_highlighted.pdf"
-        compare_highlight = settings.highlighted_dir / task_id / "compare_highlighted.pdf"
+        original_highlight = self.artifact_store.highlighted_pdf_path(task_id, "original")
+        compare_highlight = self.artifact_store.highlighted_pdf_path(task_id, "compare")
         try:
             self.highlighter.highlight_original(ctx.original_pdf, task.diffs, original_highlight)
             self.highlighter.highlight_compare(ctx.compare_pdf, task.diffs, compare_highlight)
@@ -375,7 +382,7 @@ class VisualizationStage:
             task.compare_highlight_pdf_path = str(compare_highlight)
 
         try:
-            screenshot_dir = settings.screenshots_dir / task_id
+            screenshot_dir = self.artifact_store.screenshot_dir(task_id)
             task.diffs = self.screenshot_service.create_screenshots(
                 task.original_highlight_pdf_path,
                 task.compare_highlight_pdf_path,

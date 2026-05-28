@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
-from app.config import settings
+from app.clients import HttpClientProvider, default_http_client_provider
+from app.config import Settings, settings
+from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.models import BBox, CharBox, Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
@@ -19,10 +20,23 @@ class PPStructureOCRHybridExtractor:
         structure_extractor: PPStructureExtractor | None = None,
         ocr_extractor: PPOCRV5Extractor | None = None,
         overlap_threshold: float | None = None,
+        app_settings: Settings = settings,
+        client_provider: HttpClientProvider = default_http_client_provider,
+        artifact_store: ArtifactStore = default_artifact_store,
     ) -> None:
-        self.structure_extractor = structure_extractor or PPStructureExtractor()
-        self.ocr_extractor = ocr_extractor or PPOCRV5Extractor()
-        self.overlap_threshold = settings.hybrid_layout_overlap_threshold if overlap_threshold is None else overlap_threshold
+        self.settings = app_settings
+        self.artifact_store = artifact_store
+        self.structure_extractor = structure_extractor or PPStructureExtractor(
+            app_settings=app_settings,
+            client_provider=client_provider,
+            artifact_store=artifact_store,
+        )
+        self.ocr_extractor = ocr_extractor or PPOCRV5Extractor(
+            app_settings=app_settings,
+            client_provider=client_provider,
+            artifact_store=artifact_store,
+        )
+        self.overlap_threshold = self.settings.hybrid_layout_overlap_threshold if overlap_threshold is None else overlap_threshold
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         ocr_result = self.ocr_extractor.extract(path, task_id=task_id)
@@ -35,7 +49,7 @@ class PPStructureOCRHybridExtractor:
 
         document = self._merge_documents(ocr_result.document, structure_result.document)
         raw_result_path = self._merge_raw_paths(structure_result.raw_result_path, ocr_result.raw_result_path)
-        if settings.save_ocr_raw_result and settings.hybrid_save_merged_raw and task_id:
+        if self.settings.save_ocr_raw_result and self.settings.hybrid_save_merged_raw and task_id:
             merged_raw_path = self._save_merged_raw(
                 document,
                 task_id,
@@ -104,7 +118,7 @@ class PPStructureOCRHybridExtractor:
 
         if best_block is not None and best_coverage >= self.overlap_threshold:
             return best_block
-        if not settings.hybrid_layout_center_fallback:
+        if not self.settings.hybrid_layout_center_fallback:
             return None
         return self._smallest_center_containing_block(bbox, structure_blocks)
 
@@ -221,21 +235,14 @@ class PPStructureOCRHybridExtractor:
         structure_raw_path: str,
         ocr_raw_path: str,
     ) -> str:
-        directory = settings.ocr_dir / task_id
-        directory.mkdir(parents=True, exist_ok=True)
-        stem = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", source_path.stem)[:80] or "document"
-        path = directory / f"{stem}_ppstructure_ocr_hybrid_raw.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "structure_raw_path": structure_raw_path,
-                    "ocr_raw_path": ocr_raw_path,
-                    "document": document.model_dump(),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+        path = self.artifact_store.raw_json_path(task_id, source_path, "ppstructure_ocr_hybrid_raw")
+        self.artifact_store.write_json(
+            path,
+            {
+                "structure_raw_path": structure_raw_path,
+                "ocr_raw_path": ocr_raw_path,
+                "document": document.model_dump(),
+            },
         )
         return str(path)
 

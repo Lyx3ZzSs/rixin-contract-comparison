@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import UploadFile
 
 from app.config import settings
+
+if TYPE_CHECKING:
+    from app.infrastructure.artifact_store import ArtifactStore
 
 
 class FileValidationError(ValueError):
@@ -66,28 +70,41 @@ def validate_extraction_upload_bytes(content: bytes, filename: str) -> None:
         raise FileValidationError("文件内容为空。")
 
 
-async def save_upload_file(upload_file: UploadFile, task_id: str, label: str) -> Path:
+async def save_upload_file(
+    upload_file: UploadFile,
+    task_id: str,
+    label: str,
+    artifact_store: "ArtifactStore | None" = None,
+) -> Path:
     content = await upload_file.read()
     validate_pdf_bytes(content, upload_file.filename or "")
-    task_dir = settings.uploads_dir / task_id
-    task_dir.mkdir(parents=True, exist_ok=True)
-    destination = task_dir / f"{label}_{safe_filename(upload_file.filename or 'contract.pdf')}"
-    destination.write_bytes(content)
-    return destination
+    store = _artifact_store(artifact_store)
+    destination = store.upload_path(task_id, label, safe_filename(upload_file.filename or "contract.pdf"))
+    return store.write_bytes(destination, content)
 
 
-async def save_upload_file_generic(upload_file: UploadFile, task_id: str, label: str) -> Path:
+async def save_upload_file_generic(
+    upload_file: UploadFile,
+    task_id: str,
+    label: str,
+    artifact_store: "ArtifactStore | None" = None,
+) -> Path:
     content = await upload_file.read()
     validate_extraction_upload_bytes(content, upload_file.filename or "")
-    task_dir = settings.uploads_dir / task_id
-    task_dir.mkdir(parents=True, exist_ok=True)
+    store = _artifact_store(artifact_store)
     filename = safe_filename(upload_file.filename or "document")
-    destination = task_dir / f"{label}_{filename}"
-    destination.write_bytes(content)
-    return destination
+    destination = store.upload_path(task_id, label, filename)
+    return store.write_bytes(destination, content)
 
 
 def assert_path_inside_storage(path: Path) -> None:
+    _artifact_store().assert_inside_storage(path)
+
+
+def _artifact_store(artifact_store: "ArtifactStore | None" = None) -> "ArtifactStore":
+    if artifact_store is not None:
+        return artifact_store
+
     from app.infrastructure.artifact_store import default_artifact_store
 
-    default_artifact_store.assert_inside_storage(path)
+    return default_artifact_store

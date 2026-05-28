@@ -4,6 +4,9 @@ import logging
 import time
 from datetime import UTC, datetime
 
+from app.clients import HttpClientProvider, default_http_client_provider
+from app.config import Settings, settings
+from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.models_extraction import ExtractionFieldDef, ExtractionTask
 from app.services.ppocrv5_llm_extraction import PPOCRV5LLMExtractionClient
@@ -16,8 +19,15 @@ class ExtractionService:
         self,
         client: PPOCRV5LLMExtractionClient | None = None,
         repository: TaskRepository = default_task_repository,
+        app_settings: Settings = settings,
+        client_provider: HttpClientProvider = default_http_client_provider,
+        artifact_store: ArtifactStore = default_artifact_store,
     ) -> None:
-        self.client = client or PPOCRV5LLMExtractionClient()
+        self.client = client or PPOCRV5LLMExtractionClient(
+            app_settings=app_settings,
+            client_provider=client_provider,
+            artifact_store=artifact_store,
+        )
         self.repository = repository
 
     def _update_stage(self, task: ExtractionTask, stage: str) -> None:
