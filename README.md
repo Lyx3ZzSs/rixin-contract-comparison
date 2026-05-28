@@ -24,22 +24,47 @@ cp .env.example .env
 
 `.env.example` 使用安全占位值；接入扫描件 OCR、结构化版面识别或合同字段提取时，再按实际环境填写 `PPOCRV5_URL`、`PPSTRUCTURE_URL` 和 `AI_LLM_*`。
 
+任务元数据默认保存在本地 JSON。生产环境建议切换到 PostgreSQL：
+
+```bash
+TASK_REPOSITORY_BACKEND=postgres
+DATABASE_URL=postgresql+psycopg://contract:contract@127.0.0.1:5432/contract_compare
+```
+
 安装后端依赖：
 
 ```bash
+cd backend
 python -m pip install -r requirements.txt
 ```
 
-项目同时提供 `pyproject.toml`，新环境也可以使用可编辑安装：
+项目同时提供 `backend/pyproject.toml`，新环境也可以使用可编辑安装：
 
 ```bash
+cd backend
 python -m pip install -e ".[dev]"
 ```
 
 启动后端 API：
 
 ```bash
+cd backend
 python -m uvicorn app.main:app --reload --port 8000
+```
+
+首次启用 PostgreSQL 前执行数据库迁移：
+
+```bash
+cd backend
+alembic upgrade head
+```
+
+如需导入历史本地 JSON 任务：
+
+```bash
+cd backend
+python scripts/import_tasks_to_db.py --dry-run
+python scripts/import_tasks_to_db.py
 ```
 
 准备并启动前端：
@@ -65,12 +90,14 @@ npm run dev
 如果 `8000` 端口已被占用，可换一个端口：
 
 ```bash
+cd backend
 python -m uvicorn app.main:app --reload --port 8001
 ```
 
 也可以直接运行入口文件，适合 PyCharm Run 配置：
 
 ```bash
+cd backend
 python app/main.py
 ```
 
@@ -82,11 +109,11 @@ VITE_API_BASE_URL=http://127.0.0.1:8001
 
 ## 文档识别配置
 
-后端运行配置集中在 `.env`，模板见 `.env.example`；代码读取和校验入口在 `app/config.py`，默认提示词在 `app/config_defaults.py`。
+后端运行配置集中在仓库根目录 `.env`，模板见 `.env.example`；也可在 `backend/.env` 放后端本地覆盖。代码读取和校验入口在 `backend/app/config.py`，默认提示词在 `backend/app/config_defaults.py`。
 
 ## 架构边界
 
-后端按 HTTP 适配、应用编排、基础设施适配和文档处理服务分层。`app/api*.py` 只负责请求/响应和 HTTP 错误映射；`app/application/` 负责任务创建与后台提交；`app/infrastructure/` 封装本地 JSON 任务仓储、产物路径防护和后台执行器；`app/services/` 保留合同解析、对比、证据定位、风险分析和报告生成能力。更多说明见 `docs/architecture.md`。
+后端代码统一在 `backend/` 下，并按 HTTP 适配、应用编排、基础设施适配和文档处理服务分层。`backend/app/api*.py` 只负责请求/响应和 HTTP 错误映射；`backend/app/application/` 负责任务创建与后台提交；`backend/app/infrastructure/` 封装可替换任务仓储、产物路径防护和后台执行器；`backend/app/services/` 保留合同解析、对比、证据定位、风险分析和报告生成能力。更多说明见 `docs/architecture.md`。
 
 合同字段提取功能使用远端 PP-OCRv5 先抽取 OCR 文本，再调用 OpenAI-compatible LLM 完成字段抽取。支持 `.pdf`、`.doc`、`.docx`、`.png`、`.jpg`、`.jpeg`、`.bmp`；Word 文件会先通过 LibreOffice 转为 PDF 后提交 PP-OCRv5。
 
@@ -198,8 +225,10 @@ REPORT_FONT_PATH=/path/to/your/chinese-font.ttf
 ## 测试
 
 ```bash
+cd backend
 python -m compileall app tests
 python -m pytest
+cd ..
 cd frontend && npm test && npm run build
 ```
 
@@ -207,7 +236,7 @@ cd frontend && npm test && npm run build
 
 - 扫描件默认抽取需要配置可用的 `PPOCRV5_URL`；如需结构化表格边界，还需要配置 `PPSTRUCTURE_URL`。
 - 合同字段提取的 Word 支持依赖 LibreOffice；合同对比仍暂不支持 Word、Excel 和复杂表格深度 diff。
-- MVP 使用同步任务、本地 JSON 和本地文件存储。
+- MVP 使用同步任务；任务元数据支持本地 JSON 或 PostgreSQL，文件产物仍使用本地文件存储。
 - 报告导出不会在导出时重新调用大模型；风险统计基于任务已有的差异分析结果。
 
 ## 后续扩展

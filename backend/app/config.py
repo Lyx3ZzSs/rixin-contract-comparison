@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,7 +13,8 @@ from app.config_defaults import (
     DEFAULT_EXTRACTION_TASK_DESCRIPTION,
 )
 
-BASE_DIR = Path(__file__).resolve().parents[1]
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+BASE_DIR = BACKEND_DIR.parent
 SUPPORTED_DOCUMENT_EXTRACTORS = {
     "auto",
     "default",
@@ -34,7 +35,7 @@ SUPPORTED_DOCUMENT_EXTRACTORS = {
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env",
+        env_file=(BASE_DIR / ".env", BACKEND_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -49,6 +50,8 @@ class Settings(BaseSettings):
     reports_dir: Path | None = None
     ocr_dir: Path | None = None
     debug_dir: Path | None = None
+    task_repository_backend: Literal["local_json", "postgres"] = "local_json"
+    database_url: str = ""
 
     document_extractor: str = "auto"
     pymupdf_min_text_chars: int = Field(default=1, ge=0)
@@ -118,6 +121,21 @@ class Settings(BaseSettings):
             raise ValueError("URL values must start with http:// or https://")
         return url
 
+    @field_validator("database_url")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        url = value.strip()
+        if url.startswith("postgresql://"):
+            return "postgresql+psycopg://" + url.removeprefix("postgresql://")
+        if url.startswith("postgres://"):
+            return "postgresql+psycopg://" + url.removeprefix("postgres://")
+        return url
+
+    @field_validator("task_repository_backend", mode="before")
+    @classmethod
+    def normalize_task_repository_backend(cls, value: Any) -> str:
+        return str(value or "local_json").strip().lower()
+
     @field_validator(
         "extraction_task_description",
         "extraction_output_format",
@@ -136,22 +154,40 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def populate_storage_subdirs(self) -> Settings:
-        storage_dir = self.storage_dir
+        storage_dir = self._resolve_runtime_path(self.storage_dir)
+        self.storage_dir = storage_dir
         if self.uploads_dir is None:
             self.uploads_dir = storage_dir / "uploads"
+        else:
+            self.uploads_dir = self._resolve_runtime_path(self.uploads_dir)
         if self.tasks_dir is None:
             self.tasks_dir = storage_dir / "tasks"
+        else:
+            self.tasks_dir = self._resolve_runtime_path(self.tasks_dir)
         if self.highlighted_dir is None:
             self.highlighted_dir = storage_dir / "highlighted"
+        else:
+            self.highlighted_dir = self._resolve_runtime_path(self.highlighted_dir)
         if self.screenshots_dir is None:
             self.screenshots_dir = storage_dir / "screenshots"
+        else:
+            self.screenshots_dir = self._resolve_runtime_path(self.screenshots_dir)
         if self.reports_dir is None:
             self.reports_dir = storage_dir / "reports"
+        else:
+            self.reports_dir = self._resolve_runtime_path(self.reports_dir)
         if self.ocr_dir is None:
             self.ocr_dir = storage_dir / "ocr"
+        else:
+            self.ocr_dir = self._resolve_runtime_path(self.ocr_dir)
         if self.debug_dir is None:
             self.debug_dir = storage_dir / "debug"
+        else:
+            self.debug_dir = self._resolve_runtime_path(self.debug_dir)
         return self
+
+    def _resolve_runtime_path(self, path: Path) -> Path:
+        return path if path.is_absolute() else BASE_DIR / path
 
     @property
     def storage_subdirs(self) -> list[Path]:

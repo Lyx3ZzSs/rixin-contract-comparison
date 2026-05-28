@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "rixin-contract-comparison"
 version = "0.1.0"
 description = "Contract comparison and extraction service."
-readme = "README.md"
+readme = "../README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",
@@ -19,6 +19,9 @@ dependencies = [
     "pydantic-settings>=2",
     "python-dotenv",
     "httpx",
+    "SQLAlchemy>=2",
+    "alembic",
+    "psycopg[binary]",
 ]
 
 [project.optional-dependencies]

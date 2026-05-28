@@ -11,7 +11,7 @@ from app.models_extraction import ExtractionTask
 
 
 class TaskRepository(Protocol):
-    def save_compare_task(self, task: CompareTask) -> Path:
+    def save_compare_task(self, task: CompareTask) -> Path | None:
         raise NotImplementedError
 
     def load_compare_task(self, task_id: str) -> CompareTask:
@@ -20,7 +20,7 @@ class TaskRepository(Protocol):
     def list_compare_tasks(self) -> list[CompareTask]:
         raise NotImplementedError
 
-    def save_extraction_task(self, task: ExtractionTask) -> Path:
+    def save_extraction_task(self, task: ExtractionTask) -> Path | None:
         raise NotImplementedError
 
     def load_extraction_task(self, task_id: str) -> ExtractionTask:
@@ -120,5 +120,22 @@ class LocalJsonTaskRepository:
         return items
 
 
-default_task_repository = LocalJsonTaskRepository()
+def build_task_repository(app_settings: Settings = settings) -> TaskRepository:
+    if app_settings.task_repository_backend == "local_json":
+        return LocalJsonTaskRepository(app_settings)
+    if app_settings.task_repository_backend == "postgres":
+        try:
+            from app.infrastructure.postgres_task_repository import PostgresTaskRepository
+        except ModuleNotFoundError as exc:
+            if exc.name == "sqlalchemy":
+                raise RuntimeError(
+                    "TASK_REPOSITORY_BACKEND=postgres requires SQLAlchemy. "
+                    "Install backend dependencies with `python -m pip install -r requirements.txt`."
+                ) from exc
+            raise
 
+        return PostgresTaskRepository(app_settings)
+    raise ValueError(f"Unsupported task repository backend: {app_settings.task_repository_backend}")
+
+
+default_task_repository = build_task_repository()

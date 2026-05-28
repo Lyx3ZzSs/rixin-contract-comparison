@@ -169,10 +169,17 @@ class ClauseSplitter:
             block_type = unit.block_type
             if not entered_body and self._is_pre_body_noise(unit, marker):
                 continue
+            starts_unnumbered_title = (
+                self._is_unnumbered_section_title(unit, marker)
+                and not self._current_is_bare_marker(current)
+            )
             starts_clause = (
-                marker is not None
-                and block_type not in self.table_block_types
-                and not self._is_quantity_or_amount_marker(unit.text, marker)
+                (
+                    marker is not None
+                    and block_type not in self.table_block_types
+                    and not self._is_quantity_or_amount_marker(unit.text, marker)
+                )
+                or starts_unnumbered_title
             )
             if starts_clause:
                 saw_marker = True
@@ -182,7 +189,7 @@ class ClauseSplitter:
             if starts_clause or current is None:
                 if current is not None:
                     clauses.append(current)
-                clause_no, title = marker if marker else ("", "")
+                clause_no, title = marker if marker else ("", self._title_from_text(unit.text))
                 current = {
                     "clause_no": clause_no,
                     "title": title,
@@ -307,6 +314,29 @@ class ClauseSplitter:
     def _is_standalone_body_title(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", text or "")
         return compact == "正文"
+
+    def _is_unnumbered_section_title(self, unit: ClauseUnit, marker: tuple[str, str] | None) -> bool:
+        if marker is not None or unit.block_type != "paragraph_title":
+            return False
+        compact = re.sub(r"\s+", "", unit.text or "")
+        if not compact or len(compact) < 4:
+            return False
+        if self._is_cover_noise_text(compact) or self._is_attachment_title(compact):
+            return False
+        return not bool(re.search(r"[:：。；;，,]$", compact))
+
+    def _current_is_bare_marker(self, current: dict | None) -> bool:
+        if current is None or len(current.get("texts", [])) != 1:
+            return False
+        text = str(current["texts"][0]).strip()
+        marker = self._parse_marker(text)
+        if marker is None:
+            return False
+        _, title = marker
+        return not title
+
+    def _is_attachment_title(self, compact: str) -> bool:
+        return bool(re.fullmatch(r"附件[一二三四五六七八九十0-9]+.*", compact))
 
     def _is_cover_noise_text(self, compact: str) -> bool:
         return bool(

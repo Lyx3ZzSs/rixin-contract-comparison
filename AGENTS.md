@@ -6,24 +6,28 @@ This repository is a contract comparison and field extraction MVP with a FastAPI
 
 Current structure:
 
-- `app/api*.py` for HTTP adapters only: request parsing, HTTP errors, and response wiring.
-- `app/application/` for use-case orchestration such as task creation and background submission.
-- `app/infrastructure/` for replaceable adapters such as task persistence, artifact storage, and task execution.
-- `app/services/` for document extraction, comparison, risk analysis, PDF artifacts, and report generation.
+- `backend/app/api*.py` for HTTP adapters only: request parsing, HTTP errors, and response wiring.
+- `backend/app/application/` for use-case orchestration such as task creation and background submission.
+- `backend/app/infrastructure/` for replaceable adapters such as task persistence, artifact storage, and task execution.
+- `backend/app/services/` for document extraction, comparison, risk analysis, PDF artifacts, and report generation.
+- `backend/tests/` for backend tests.
+- `backend/scripts/` for repeatable utilities such as quality evaluation.
+- `backend/migrations/` for Alembic database migrations.
 - `frontend/src/` for React pages, components, API client, and shared types.
-- `tests/` for backend tests; `frontend/src/**/*.test.*` for frontend tests.
+- `frontend/src/**/*.test.*` for frontend tests.
 - `docs/` for architecture notes, user-facing documentation, and examples.
-- `scripts/` for repeatable utilities such as quality evaluation.
 
 Keep generated files, virtual environments, caches, build output, and local secrets out of version control.
 
 ## Build, Test, and Development Commands
 
 - `git status --short` shows pending changes.
-- `python -m compileall app tests` checks backend Python syntax.
-- `python -m pytest` runs the test suite.
-- `python -m ruff check .` runs lint checks.
-- `python -m ruff format .` formats Python files.
+- `cd backend && python -m compileall app tests` checks backend Python syntax.
+- `cd backend && python -m pytest` runs the backend test suite.
+- `cd backend && python -m ruff check .` runs backend lint checks.
+- `cd backend && python -m ruff format .` formats Python files.
+- `cd backend && alembic upgrade head` applies database migrations when `TASK_REPOSITORY_BACKEND=postgres`.
+- `cd backend && python scripts/import_tasks_to_db.py --dry-run` validates local JSON task import before PostgreSQL migration.
 - `cd frontend && npm test` runs frontend tests.
 - `cd frontend && npm run build` runs TypeScript and production build checks.
 
@@ -35,9 +39,11 @@ Prefer type hints for public functions and cross-module data structures. Use sho
 
 ## Testing Guidelines
 
-Place tests under `tests/`. Name test files `test_<module>.py` and test functions `test_<behavior>()`. Keep tests deterministic and avoid relying on local files outside the repository.
+Place backend tests under `backend/tests/`. Name test files `test_<module>.py` and test functions `test_<behavior>()`. Keep tests deterministic and avoid relying on local files outside the repository.
 
 Prioritize contract comparison parsing, normalization, diff logic, task repository behavior, API compatibility, and edge cases around missing or malformed input.
+
+PostgreSQL-specific tests should be written so the default local JSON workflow still runs without a live database. Prefer repository-level tests with isolated session factories where possible.
 
 ## Commit & Pull Request Guidelines
 

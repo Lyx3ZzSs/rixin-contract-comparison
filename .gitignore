@@ -211,8 +211,8 @@ frontend/vite.config.js
 frontend/vite.config.d.ts
 
 # 本地运行产物
-storage/
-app/storage/
+#storage/
+backend/app/storage/
 
 # PyPI 配置文件
 .pypirc

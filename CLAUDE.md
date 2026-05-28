@@ -12,6 +12,7 @@ Contract comparison MVP (合同差异审查系统) — uploads two PDF contracts
 
 ```bash
 # Install dependencies
+cd backend
 python -m pip install -r requirements.txt
 
 # Run dev server (with auto-reload)
@@ -42,12 +43,13 @@ npm run build      # Production build
 ### Full test suite
 
 ```bash
-python -m pytest && cd frontend && npm test && npm run build
+cd backend && python -m pytest
+cd ../frontend && npm test && npm run build
 ```
 
 ## Architecture
 
-### Backend Pipeline (`app/services/`)
+### Backend Pipeline (`backend/app/services/`)
 
 The comparison runs as a synchronous pipeline orchestrated by `CompareService`:
 
@@ -69,23 +71,25 @@ The comparison runs as a synchronous pipeline orchestrated by `CompareService`:
 PDF → ExtractionResult → Document → Clause[] → ClausePair[] → DiffItem[] → artifacts
 ```
 
-### Data Models (`app/models.py`)
+### Data Models (`backend/app/models.py`)
 
 - `Document` / `Page` / `TextBlock` / `BBox` — structured PDF content with coordinates
 - `Clause` — split clause with normalized text and evidence boxes
 - `ClausePair` — matched pair with score and method
 - `DiffItem` — identified difference with evidence, screenshots, and AI analysis
-- `CompareTask` — full task state persisted as JSON in `storage/tasks/`
+- `CompareTask` — full task state persisted through `TaskRepository` as local JSON or PostgreSQL payload
 
 ### Storage
 
-All artifacts stored locally under `storage/` (configurable via `STORAGE_DIR`):
+Artifacts are stored locally under `storage/` (configurable via `STORAGE_DIR`), while task metadata is stored by `TaskRepository`:
 - `uploads/` — uploaded PDFs
-- `tasks/` — task JSON files (`{task_id}.json`)
+- `tasks/` — task JSON files when `TASK_REPOSITORY_BACKEND=local_json`
 - `highlighted/` — highlighted PDFs
 - `screenshots/` — diff screenshots
 - `reports/` — generated PDF reports
 - `ocr/` — raw OCR results for debugging
+
+PostgreSQL task metadata is enabled with `TASK_REPOSITORY_BACKEND=postgres` and `DATABASE_URL`, then migrated with `cd backend && alembic upgrade head`.
 
 ### Frontend (`frontend/src/`)
 
@@ -111,6 +115,8 @@ Key env vars (set in `.env`):
 - `MAX_UPLOAD_SIZE_MB` — upload size limit (default 30)
 - `FRONTEND_CORS_ORIGINS` — comma-separated allowed origins
 - `STORAGE_DIR` — base storage directory (default `./storage`)
+- `TASK_REPOSITORY_BACKEND` — `local_json` by default, or `postgres`
+- `DATABASE_URL` — SQLAlchemy URL used by the PostgreSQL task repository
 
 ## Important Notes
 

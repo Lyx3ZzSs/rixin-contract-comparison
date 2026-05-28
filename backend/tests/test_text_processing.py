@@ -96,6 +96,75 @@ def test_clause_splitter_keeps_amount_numbered_clause_separate() -> None:
     assert "合同金额" not in clauses[2].text
 
 
+def test_clause_splitter_promotes_unnumbered_paragraph_title_after_attachment_heading() -> None:
+    document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1_b1",
+                        page_no=1,
+                        text="14.2甲方在合同履行过程中，要求乙方提供合同约定范围之外的硬件设备。",
+                        bbox=BBox(x0=80, y0=40, x1=520, y1=56),
+                        block_type="text",
+                    ),
+                    TextBlock(
+                        block_id="p1_b2",
+                        page_no=1,
+                        text="附件一技术服务条款",
+                        bbox=BBox(x0=230, y0=70, x1=410, y1=90),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="p1_b3",
+                        page_no=1,
+                        text="系统开放性与可配置性要求",
+                        bbox=BBox(x0=110, y0=114, x1=236, y1=126),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="p1_b4",
+                        page_no=1,
+                        text="1.",
+                        bbox=BBox(x0=110, y0=138, x1=120, y1=148),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="p1_b5",
+                        page_no=1,
+                        text="预测文件上报接口开放",
+                        bbox=BBox(x0=130, y0=137, x1=236, y1=149),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="p1_b6",
+                        page_no=1,
+                        text="乙方须提供功率预测系统完整的文件上报接口。",
+                        bbox=BBox(x0=88, y0=158, x1=532, y1=173),
+                        block_type="text",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert [(clause.clause_no, clause.title) for clause in clauses] == [
+        ("14.2", "甲方在合同履行过程中,要求乙方提供合同约定范围之外的硬件设备。"),
+        ("", "系统开放性与可配置性要求"),
+        ("1", "1."),
+    ]
+    assert clauses[1].text == "系统开放性与可配置性要求"
+    assert clauses[2].text.startswith("1.\n预测文件上报接口开放")
+
+
 def test_clause_splitter_preserves_char_boxes_for_split_clauses() -> None:
     text = "1. Payment\nBuyer shall pay.\n2. Delivery\nSeller shall deliver."
     char_boxes = [
@@ -1169,6 +1238,31 @@ def test_clause_matcher_reconciles_numbered_compare_clause_inside_original_paren
     assert [r.highlight_type for r in body_diff.compare_change_ranges] == ["ADD", "MODIFY"]
     for unchanged in ["上报路径、", "文件命名规则、", "字段结构、", "文件格式", "规范", "编码标准", "无缝交互。"]:
         assert unchanged not in "".join(compare_fragments)
+
+
+def test_diff_engine_reports_missing_heading_number_only() -> None:
+    original = [
+        clause_with_boxes("O061", "一、系统开放性与可配置性要求").model_copy(
+            update={"clause_no": "一", "title": "系统开放性与可配置性要求"}
+        )
+    ]
+    compare = [
+        clause_with_boxes("N061", "系统开放性与可配置性要求").model_copy(
+            update={"clause_no": "", "title": "系统开放性与可配置性要求"}
+        )
+    ]
+
+    pairs = ClauseMatcher().match(original, compare)
+    diffs = DiffEngine().build_diffs(pairs)
+
+    assert len(diffs) == 1
+    diff = diffs[0]
+    assert diff.diff_type == "MODIFY"
+    assert diff.original_text == "一、系统开放性与可配置性要求"
+    assert diff.compare_text == "系统开放性与可配置性要求"
+    assert [diff.original_text[item.start:item.end] for item in diff.original_change_ranges] == ["一、"]
+    assert [item.highlight_type for item in diff.original_change_ranges] == ["DELETE"]
+    assert diff.compare_change_ranges == []
 
 
 def test_diff_engine_reports_character_level_ranges() -> None:

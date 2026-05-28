@@ -70,15 +70,6 @@ class PdfHighlighter:
             annot.set_opacity(0.5)
             annot.set_info(content=f"{diff_id} | {risk_level} | {summary[:200]}")
             annot.update()
-            if risk_level == "HIGH":
-                union = results[0]
-                for r in results[1:]:
-                    union |= r
-                box = page.add_rect_annot(union)
-                box.set_colors(stroke=(1, 0, 0))
-                box.set_border(width=1.2)
-                box.set_opacity(0.9)
-                box.update()
         return found_any
 
     def _highlight_by_bbox(
@@ -111,9 +102,3 @@ class PdfHighlighter:
         annot.set_opacity(0.5)
         annot.set_info(content=f"{diff_id} | {risk_level} | {summary[:200]}")
         annot.update()
-        if risk_level == "HIGH":
-            box = page.add_rect_annot(rect)
-            box.set_colors(stroke=(1, 0, 0))
-            box.set_border(width=1.2)
-            box.set_opacity(0.9)
-            box.update()
