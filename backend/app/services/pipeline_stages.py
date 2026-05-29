@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from collections import Counter
 from pathlib import Path
 
@@ -27,7 +26,6 @@ from app.services.extractors.base import (
     ExtractionResult,
 )
 from app.services.matcher import ClauseMatcher
-from app.services.pdf_highlighter import PdfHighlighter
 from app.services.pipeline import PipelineContext
 from app.services.risk_analyzer import RuleBasedRiskAnalyzer
 from app.services.table_compare import TableComparator
@@ -369,31 +367,15 @@ class AnalysisStage:
 
 
 class VisualizationStage:
-    name = "可视化生成中"
+    name = "高亮信息准备中"
     progress = 90
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.artifact_store = artifact_store
-        self.highlighter = PdfHighlighter()
 
     def execute(self, ctx: PipelineContext) -> None:
-        task = ctx.task
-        task_id = task.task_id
-
-        original_highlight = self.artifact_store.highlighted_pdf_path(task_id, "original")
-        compare_highlight = self.artifact_store.highlighted_pdf_path(task_id, "compare")
-        try:
-            self.highlighter.highlight_original(ctx.original_pdf, task.diffs, original_highlight)
-            self.highlighter.highlight_compare(ctx.compare_pdf, task.diffs, compare_highlight)
-            task.original_highlight_pdf_path = str(original_highlight)
-            task.compare_highlight_pdf_path = str(compare_highlight)
-        except Exception as exc:
-            logger.exception("PDF highlight failed")
-            task.errors.append(f"PDF 高亮生成失败: {exc}")
-            original_highlight = _copy_fallback_pdf(ctx.original_pdf, original_highlight)
-            compare_highlight = _copy_fallback_pdf(ctx.compare_pdf, compare_highlight)
-            task.original_highlight_pdf_path = str(original_highlight)
-            task.compare_highlight_pdf_path = str(compare_highlight)
+        ctx.task.original_highlight_pdf_path = ""
+        ctx.task.compare_highlight_pdf_path = ""
 
 
 class SummaryStage:
@@ -415,13 +397,6 @@ def _clauses_for_evidence(
         if clause is not None:
             by_id[clause.clause_id] = clause
     return list(by_id.values())
-
-
-def _copy_fallback_pdf(source: str | Path, destination: str | Path) -> Path:
-    destination = Path(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
-    return destination
 
 
 def _program_summary(diffs: list[DiffItem]) -> str:

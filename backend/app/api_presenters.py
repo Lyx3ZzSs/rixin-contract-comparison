@@ -65,16 +65,19 @@ def compare_task_detail_response(task: CompareTask) -> CompareTaskDetailResponse
 
 
 def compare_task_artifact_urls(task: CompareTask) -> dict[str, str]:
+    can_export_highlights = task.status == "COMPLETED" and bool(
+        task.original_pdf_path and task.compare_pdf_path and task.diffs
+    )
     return {
         "original_pdf_url": f"/api/compare/{task.task_id}/original" if task.original_pdf_path else "",
         "compare_pdf_url": f"/api/compare/{task.task_id}/compare" if task.compare_pdf_path else "",
         "report_url": f"/api/compare/{task.task_id}/report" if task.status == "COMPLETED" else "",
         "report_filename": build_report_filename(task),
         "original_highlight_pdf_url": (
-            f"/api/compare/{task.task_id}/highlight/original" if task.original_highlight_pdf_path else ""
+            f"/api/compare/{task.task_id}/highlight/original" if can_export_highlights else ""
         ),
         "compare_highlight_pdf_url": (
-            f"/api/compare/{task.task_id}/highlight/compare" if task.compare_highlight_pdf_path else ""
+            f"/api/compare/{task.task_id}/highlight/compare" if can_export_highlights else ""
         ),
     }
 

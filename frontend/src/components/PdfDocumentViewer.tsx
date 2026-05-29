@@ -6,11 +6,12 @@ import {
   useRef,
   useState,
 } from "react";
-import type { CSSProperties } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/pdf";
 
+import { bboxToViewportRect } from "../lib/pdfCoordinates";
+import type { ViewportRect } from "../lib/pdfCoordinates";
 import type { DiffItem, EvidenceBox } from "../types";
 import { getCurrentPageFromScroll } from "./pdfPageScroll";
 
@@ -280,6 +281,7 @@ const PdfPageCanvas = forwardRef<
       <PdfHighlightLayer
         activeDiffId={activeDiffId}
         highlights={highlights}
+        pageSize={pageSize}
         zoom={zoom}
         onActivateDiff={onActivateDiff}
       />
@@ -348,60 +350,74 @@ function mergeEvidence(left: EvidenceBox, right: EvidenceBox): EvidenceBox {
   };
 }
 
-export function highlightStyle(highlight: PageHighlight, zoom: number): CSSProperties {
-  const { bbox } = highlight.evidence;
-  if (highlight.fallback) {
-    return {
-      left: `${Math.max(0, bbox.x0 * zoom - 8)}px`,
-      top: `${bbox.y0 * zoom}px`,
-      width: "5px",
-      height: `${Math.max(1, (bbox.y1 - bbox.y0) * zoom)}px`,
-    };
-  }
-
-  const height = Math.max(2.5, 2.5 * zoom);
-  return {
-    left: `${bbox.x0 * zoom}px`,
-    top: `${bbox.y1 * zoom - height}px`,
-    width: `${Math.max(1, (bbox.x1 - bbox.x0) * zoom)}px`,
-    height: `${height}px`,
-  };
+export function highlightRect(highlight: PageHighlight, zoom: number): ViewportRect {
+  return bboxToViewportRect(highlight.evidence.bbox, zoom);
 }
 
 export function PdfHighlightLayer({
   activeDiffId,
   highlights,
+  pageSize,
   zoom,
   onActivateDiff,
 }: {
   activeDiffId: string;
   highlights: PageHighlight[];
+  pageSize: { width: number; height: number };
   zoom: number;
   onActivateDiff: (diffId: string) => void;
 }) {
-  if (!activeDiffId) {
+  if (pageSize.width <= 0 || pageSize.height <= 0) {
     return null;
   }
 
   return (
-    <div className="pdf-highlight-layer" aria-hidden={false}>
-      {highlights
-        .filter((highlight) => highlight.diffId === activeDiffId)
-        .map((highlight, index) => (
-          <button
-            type="button"
+    <svg
+      className="pdf-highlight-layer"
+      aria-hidden={false}
+      width={pageSize.width}
+      height={pageSize.height}
+      viewBox={`0 0 ${pageSize.width} ${pageSize.height}`}
+    >
+      {highlights.map((highlight, index) => {
+        const rect = highlightRect(highlight, zoom);
+        const markKind = highlight.fallback
+          ? "fallback"
+          : (highlight.evidence.method || "").startsWith("table")
+            ? "table"
+            : "text";
+        const isActive = activeDiffId === highlight.diffId;
+        return (
+          <g
             key={`${highlight.diffId}-${index}`}
+            role="button"
+            tabIndex={0}
             className={[
-              "pdf-highlight-box",
+              "pdf-highlight-mark",
               highlight.type.toLowerCase(),
-              highlight.fallback ? "fallback" : "underline",
-              "active",
+              markKind,
+              isActive ? "active" : "muted",
             ].join(" ")}
-            style={highlightStyle(highlight, zoom)}
             aria-label={`定位差异 ${highlight.diffId}`}
             onClick={() => onActivateDiff(highlight.diffId)}
-          />
-        ))}
-    </div>
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onActivateDiff(highlight.diffId);
+              }
+            }}
+          >
+            <rect
+              x={rect.x}
+              y={rect.y}
+              width={rect.width}
+              height={rect.height}
+              rx={2.5}
+              ry={2.5}
+            />
+          </g>
+        );
+      })}
+    </svg>
   );
 }

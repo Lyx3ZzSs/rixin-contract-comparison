@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { DiffItem } from "../types";
-import { getPageHighlights, highlightStyle, PdfHighlightLayer } from "./PdfDocumentViewer";
+import { getPageHighlights, highlightRect, PdfHighlightLayer } from "./PdfDocumentViewer";
 import { getCurrentPageFromScroll } from "./pdfPageScroll";
 
 const pages = [
@@ -106,54 +106,95 @@ describe("PDF diff highlights", () => {
 
   it("scales highlight coordinates with zoom", () => {
     const highlight = getPageHighlights([diff], "original", 1)[0];
-    expect(highlightStyle(highlight, 1.5)).toEqual({
-      left: "15px",
-      top: "56.25px",
-      width: "90px",
-      height: "3.75px",
+    expect(highlightRect(highlight, 1.5)).toEqual({
+      x: 15,
+      y: 30,
+      width: 90,
+      height: 30,
     });
   });
 
-  it("renders typed underline highlights and activates the owning diff", async () => {
+  it("renders typed highlighter marks and activates the owning diff", async () => {
     const user = userEvent.setup();
     const onActivateDiff = vi.fn();
     const highlights = getPageHighlights([diff], "compare", 2);
 
-    render(<PdfHighlightLayer activeDiffId="diff-1" highlights={highlights} zoom={1} onActivateDiff={onActivateDiff} />);
+    render(
+      <PdfHighlightLayer
+        activeDiffId="diff-1"
+        highlights={highlights}
+        pageSize={{ width: 595, height: 842 }}
+        zoom={1}
+        onActivateDiff={onActivateDiff}
+      />,
+    );
 
     const box = screen.getByRole("button", { name: "定位差异 diff-1" });
-    expect(box).toHaveClass("pdf-highlight-box", "add", "underline", "active");
-    expect(box).toHaveStyle({ left: "80px", top: "148.5px", width: "140px", height: "2.5px" });
+    expect(box).toHaveClass("pdf-highlight-mark", "add", "text", "active");
+    const rect = box.querySelector("rect");
+    expect(rect).toHaveAttribute("x", "80");
+    expect(rect).toHaveAttribute("y", "120");
+    expect(rect).toHaveAttribute("width", "140");
+    expect(rect).toHaveAttribute("height", "31");
 
     await user.click(box);
 
     expect(onActivateDiff).toHaveBeenCalledWith("diff-1");
   });
 
-  it("does not render page highlights before a diff is active", () => {
+  it("renders muted page highlights before a diff is active", () => {
     const highlights = getPageHighlights([diff], "compare", 2);
 
-    const { container } = render(<PdfHighlightLayer activeDiffId="" highlights={highlights} zoom={1} onActivateDiff={vi.fn()} />);
+    render(
+      <PdfHighlightLayer
+        activeDiffId=""
+        highlights={highlights}
+        pageSize={{ width: 595, height: 842 }}
+        zoom={1}
+        onActivateDiff={vi.fn()}
+      />,
+    );
 
-    expect(container.querySelector(".pdf-highlight-box")).not.toBeInTheDocument();
+    const box = screen.getByRole("button", { name: "定位差异 diff-1" });
+    expect(box).toHaveClass("pdf-highlight-mark", "add", "text", "muted");
   });
 
-  it("renders only active diff highlights", () => {
+  it("renders all page highlights while strengthening only the active diff", () => {
     const highlights = getPageHighlights([diff, fallbackDiff], "original", 1);
 
-    render(<PdfHighlightLayer activeDiffId="diff-2" highlights={highlights} zoom={1} onActivateDiff={vi.fn()} />);
+    render(
+      <PdfHighlightLayer
+        activeDiffId="diff-2"
+        highlights={highlights}
+        pageSize={{ width: 595, height: 842 }}
+        zoom={1}
+        onActivateDiff={vi.fn()}
+      />,
+    );
 
-    expect(screen.getByRole("button", { name: "定位差异 diff-2" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "定位差异 diff-1" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "定位差异 diff-2" })).toHaveClass("active");
+    expect(screen.getByRole("button", { name: "定位差异 diff-1" })).toHaveClass("muted");
   });
 
-  it("renders fallback evidence as a locator rail instead of a filled block", () => {
+  it("renders fallback evidence as a filled highlighter block", () => {
     const highlight = getPageHighlights([fallbackDiff], "original", 1)[0];
 
-    render(<PdfHighlightLayer activeDiffId="diff-2" highlights={[highlight]} zoom={1} onActivateDiff={vi.fn()} />);
+    render(
+      <PdfHighlightLayer
+        activeDiffId="diff-2"
+        highlights={[highlight]}
+        pageSize={{ width: 595, height: 842 }}
+        zoom={1}
+        onActivateDiff={vi.fn()}
+      />,
+    );
 
     const box = screen.getByRole("button", { name: "定位差异 diff-2" });
-    expect(box).toHaveClass("pdf-highlight-box", "delete", "fallback", "active");
-    expect(box).toHaveStyle({ left: "22px", top: "100px", width: "5px", height: "80px" });
+    expect(box).toHaveClass("pdf-highlight-mark", "delete", "fallback", "active");
+    const rect = box.querySelector("rect");
+    expect(rect).toHaveAttribute("x", "30");
+    expect(rect).toHaveAttribute("y", "100");
+    expect(rect).toHaveAttribute("width", "470");
+    expect(rect).toHaveAttribute("height", "80");
   });
 });

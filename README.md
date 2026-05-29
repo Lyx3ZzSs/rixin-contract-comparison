@@ -1,6 +1,6 @@
 # 合同差异审查系统
 
-这是一个前后端分离的合同差异审查 MVP。后端 FastAPI 负责上传两份 PDF 合同、通过可插拔文档识别器提取结构化文本和坐标、按条款识别差异、生成高亮 PDF 和 PDF 报告；前端 React 工作台负责上传、任务结果预览和产物下载。它面向合同审查流程，不是普通逐字 Diff 工具。
+这是一个前后端分离的合同差异审查 MVP。后端 FastAPI 负责上传两份 PDF 合同、通过可插拔文档识别器提取结构化文本和坐标、按条款识别差异、生成 PDF 报告；前端 React 工作台负责上传、原始 PDF 在线预览、差异高亮渲染和产物下载。它面向合同审查流程，不是普通逐字 Diff 工具。
 
 ## 功能
 
@@ -10,9 +10,8 @@
 - 条款切分和坐标证据绑定。
 - 条款编号、标题、正文相似度匹配。
 - 新增、删除、修改差异识别。
-- 原合同和对比合同高亮 PDF。
-- 高亮 PDF 和 `合同差异分析报告` PDF。
-- React 预览页：左右 PDF 预览、同步滚动、差异点定位和页码标识。
+- React 预览页：左右原始 PDF 预览、前端差异高亮、同步滚动、差异点定位和页码标识。
+- `合同差异分析报告` PDF，以及按需导出的高亮 PDF。
 
 ## 安装与启动
 
@@ -24,7 +23,7 @@ cp .env.example .env
 
 `.env.example` 使用安全占位值；接入扫描件 OCR、结构化版面识别或合同字段提取时，再按实际环境填写 `PPOCRV5_URL`、`PPSTRUCTURE_URL` 和 `AI_LLM_*`。
 
-任务元数据默认保存在本地 JSON。生产环境建议切换到 PostgreSQL：
+任务元数据和执行元数据默认保存在 PostgreSQL：
 
 ```bash
 TASK_REPOSITORY_BACKEND=postgres
@@ -190,8 +189,8 @@ curl -X POST "http://127.0.0.1:8000/api/compare" \
 - `high_risk_count`
 - `report_url`
 - `report_filename`
-- `original_highlight_pdf_url`
-- `compare_highlight_pdf_url`
+- `original_highlight_pdf_url`：按需导出原合同高亮 PDF。
+- `compare_highlight_pdf_url`：按需导出对比合同高亮 PDF。
 
 查询任务：
 
