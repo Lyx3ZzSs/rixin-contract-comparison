@@ -16,9 +16,6 @@ def test_local_artifact_store_resolves_task_artifact_paths(tmp_path: Path) -> No
     assert store.upload_path("T/001", "original", "a.pdf") == (
         app_settings.uploads_dir / "T_001" / "original_a.pdf"
     )
-    assert store.highlighted_pdf_path("T001", "compare") == (
-        app_settings.highlighted_dir / "T001" / "compare_highlighted.pdf"
-    )
     assert store.report_pdf_path("T001") == (
         app_settings.reports_dir / "T001" / "contract_compare_report.pdf"
     )

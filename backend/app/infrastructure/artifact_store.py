@@ -11,7 +11,6 @@ from app.utils.file_utils import FileValidationError
 ArtifactArea = Literal[
     "uploads",
     "tasks",
-    "highlighted",
     "reports",
     "ocr",
     "debug",
@@ -29,9 +28,6 @@ class ArtifactStore(Protocol):
     def upload_path(self, task_id: str, label: str, filename: str) -> Path:
         raise NotImplementedError
 
-    def highlighted_pdf_path(self, task_id: str, side: Literal["original", "compare"]) -> Path:
-        raise NotImplementedError
-
     def report_pdf_path(self, task_id: str) -> Path:
         raise NotImplementedError
 
@@ -45,16 +41,6 @@ class ArtifactStore(Protocol):
         raise NotImplementedError
 
     def write_json(self, path: Path, payload: Any) -> Path:
-        raise NotImplementedError
-
-    def compare_artifact_urls(
-        self,
-        task_id: str,
-        *,
-        completed: bool,
-        has_report: bool,
-        has_highlights: bool,
-    ) -> dict[str, str]:
         raise NotImplementedError
 
 
@@ -80,9 +66,6 @@ class LocalArtifactStore:
     def upload_path(self, task_id: str, label: str, filename: str) -> Path:
         return self.task_dir("uploads", task_id) / f"{self._safe_path_part(label)}_{Path(filename).name}"
 
-    def highlighted_pdf_path(self, task_id: str, side: Literal["original", "compare"]) -> Path:
-        return self.task_dir("highlighted", task_id) / f"{side}_highlighted.pdf"
-
     def report_pdf_path(self, task_id: str) -> Path:
         return self.task_dir("reports", task_id) / "contract_compare_report.pdf"
 
@@ -106,25 +89,10 @@ class LocalArtifactStore:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
-    def compare_artifact_urls(
-        self,
-        task_id: str,
-        *,
-        completed: bool,
-        has_report: bool,
-        has_highlights: bool,
-    ) -> dict[str, str]:
-        return {
-            "report_url": f"/api/compare/{task_id}/report" if completed and has_report else "",
-            "original_highlight_pdf_url": f"/api/compare/{task_id}/highlight/original" if has_highlights else "",
-            "compare_highlight_pdf_url": f"/api/compare/{task_id}/highlight/compare" if has_highlights else "",
-        }
-
     def _area_root(self, area: ArtifactArea) -> Path:
         roots: dict[ArtifactArea, Path] = {
             "uploads": self.settings.uploads_dir,
             "tasks": self.settings.tasks_dir,
-            "highlighted": self.settings.highlighted_dir,
             "reports": self.settings.reports_dir,
             "ocr": self.settings.ocr_dir,
             "debug": self.settings.debug_dir,

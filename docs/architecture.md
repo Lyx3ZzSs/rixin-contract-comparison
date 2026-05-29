@@ -20,13 +20,13 @@ HTTP responses are built through presenter functions and API schemas. Public JSO
 
 - Keep public API paths compatible while moving storage and execution behind interfaces.
 - Keep PostgreSQL behind repository interfaces for task metadata and task execution metadata. Local JSON adapters remain available only for isolated tests and manual tooling.
-- Keep uploaded PDFs, OCR raw output, debug files, on-demand highlighted PDFs, and reports behind the `ArtifactStore` interface; persist only metadata and artifact paths in the database.
+- Keep uploaded PDFs, OCR raw output, debug files, and reports behind the `ArtifactStore` interface; persist only metadata and artifact paths in the database.
 - Keep task execution behind `QueuedTaskRunner`; production can replace the local JSON job repository with a broker-backed adapter without changing API or service code.
 - Split large comparison modules incrementally. Table comparison now keeps the public `TableComparator` entrypoint while moving constants and internal row/cell/diff support types into separate modules; future algorithm changes should continue that pattern by moving cohesive logic behind narrow helpers.
 
 ## Artifact And Client Boundaries
 
-Runtime file locations are resolved through `ArtifactStore`. Uploads, on-demand highlighted PDFs, OCR/LLM raw JSON, compare debug files, and reports should not be built by direct `settings.*_dir` path concatenation outside infrastructure adapters. The default implementation is local filesystem storage under `storage/`, but service code receives the store as a dependency so an object-store implementation can be added later. Online comparison highlights are rendered by the frontend from diff evidence coordinates; highlighted PDFs are compatibility/export artifacts generated only when downloaded.
+Runtime file locations are resolved through `ArtifactStore`. Uploads, OCR/LLM raw JSON, compare debug files, and reports should not be built by direct `settings.*_dir` path concatenation outside infrastructure adapters. The default implementation is local filesystem storage under `storage/`, but service code receives the store as a dependency so an object-store implementation can be added later. Online comparison highlights are rendered by the frontend from diff evidence coordinates; the backend no longer renders or exports highlighted PDFs.
 
 External OCR, PP-Structure, and LLM calls go through `HttpClientProvider`. Extractors and extraction services accept the provider and app settings through constructors, which keeps tests injectable and avoids hard-wiring module-level clients into domain flow.
 

@@ -30,7 +30,6 @@ def configure_storage(tmp_path: Path) -> None:
     settings.storage_dir = tmp_path / "storage"
     settings.uploads_dir = settings.storage_dir / "uploads"
     settings.tasks_dir = settings.storage_dir / "tasks"
-    settings.highlighted_dir = settings.storage_dir / "highlighted"
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.debug_dir = settings.storage_dir / "debug"
@@ -115,7 +114,8 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert task_response.json()["original_pdf_url"] == f"/api/compare/{task_id}/original"
     assert task_response.json()["compare_pdf_url"] == f"/api/compare/{task_id}/compare"
     assert task_response.json()["report_url"] == f"/api/compare/{task_id}/report"
-    assert task_response.json()["compare_highlight_pdf_url"] == f"/api/compare/{task_id}/highlight/compare"
+    assert task_response.json()["original_highlight_pdf_url"] == ""
+    assert task_response.json()["compare_highlight_pdf_url"] == ""
     assert "diffs" not in task_response.json()
     assert "report_pdf_path" not in task_response.json()
     assert "ocr_raw_result_path" not in task_response.json()
@@ -155,8 +155,8 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert "application/pdf" in compare_preview_response.headers["content-type"]
     assert original_preview_response.headers["content-disposition"].lower().startswith("inline")
     assert compare_preview_response.headers["content-disposition"].lower().startswith("inline")
-    assert client.get(f"/api/compare/{task_id}/highlight/original").status_code == 200
-    assert client.get(f"/api/compare/{task_id}/highlight/compare").status_code == 200
+    assert client.get(f"/api/compare/{task_id}/highlight/original").status_code == 404
+    assert client.get(f"/api/compare/{task_id}/highlight/compare").status_code == 404
     assert client.get(f"/api/compare/{task_id}/screenshot/example.png").status_code == 404
     assert client.get("/api/compare/missing-task/original").status_code == 404
     assert client.get(f"/api/compare/{task_id}/preview").status_code == 404

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -25,9 +24,7 @@ from app.api_schemas import (
     DiffReviewResponse,
     TaskExecutionResponse,
 )
-from app.infrastructure.artifact_store import default_artifact_store
 from app.models import CompareTask
-from app.services.pdf_highlighter import PdfHighlighter
 from app.services.review_service import (
     CompareQualityService,
     DiffNotFoundError,
@@ -157,51 +154,6 @@ def preview_original_pdf(task_id: str) -> FileResponse:
 def preview_compare_pdf(task_id: str) -> FileResponse:
     task = _load_or_404(task_id)
     return _file_response(task.compare_pdf_path, task.compare_filename or "compare.pdf", "application/pdf", "inline")
-
-
-@router.get("/{task_id}/highlight/original")
-def download_original_highlight(task_id: str) -> FileResponse:
-    task = _load_or_404(task_id)
-    return _file_response(
-        str(_ensure_highlight_pdf(task, "original")),
-        "original_highlighted.pdf",
-        "application/pdf",
-    )
-
-
-@router.get("/{task_id}/highlight/compare")
-def download_compare_highlight(task_id: str) -> FileResponse:
-    task = _load_or_404(task_id)
-    return _file_response(
-        str(_ensure_highlight_pdf(task, "compare")),
-        "compare_highlighted.pdf",
-        "application/pdf",
-    )
-
-
-def _ensure_highlight_pdf(task: CompareTask, side: Literal["original", "compare"]) -> Path:
-    if task.status != "COMPLETED":
-        raise HTTPException(status_code=409, detail="任务尚未完成，暂不能导出高亮 PDF。")
-    source_path_value = task.original_pdf_path if side == "original" else task.compare_pdf_path
-    if not source_path_value:
-        raise HTTPException(status_code=404, detail="源 PDF 尚未生成。")
-    source_path = Path(source_path_value)
-    try:
-        assert_path_inside_storage(source_path)
-    except FileValidationError as exc:
-        raise http_error(exc) from exc
-    if not source_path.exists():
-        raise HTTPException(status_code=404, detail="源 PDF 文件不存在。")
-
-    output_path = default_artifact_store.highlighted_pdf_path(task.task_id, side)
-    if output_path.exists():
-        return output_path
-    try:
-        if side == "original":
-            return PdfHighlighter().highlight_original(source_path, task.diffs, output_path)
-        return PdfHighlighter().highlight_compare(source_path, task.diffs, output_path)
-    except Exception as exc:
-        raise http_error(exc, fallback_prefix="高亮 PDF 导出失败") from exc
 
 
 def _load_or_404(task_id: str) -> CompareTask:

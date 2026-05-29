@@ -11,7 +11,7 @@
 - 条款编号、标题、正文相似度匹配。
 - 新增、删除、修改差异识别。
 - React 预览页：左右原始 PDF 预览、前端差异高亮、同步滚动、差异点定位和页码标识。
-- `合同差异分析报告` PDF，以及按需导出的高亮 PDF。
+- `合同差异分析报告` PDF。
 
 ## 安装与启动
 
@@ -189,8 +189,8 @@ curl -X POST "http://127.0.0.1:8000/api/compare" \
 - `high_risk_count`
 - `report_url`
 - `report_filename`
-- `original_highlight_pdf_url`：按需导出原合同高亮 PDF。
-- `compare_highlight_pdf_url`：按需导出对比合同高亮 PDF。
+- `original_highlight_pdf_url`：兼容字段，当前固定为空字符串；在线高亮由前端渲染。
+- `compare_highlight_pdf_url`：兼容字段，当前固定为空字符串；在线高亮由前端渲染。
 
 查询任务：
 
@@ -203,8 +203,6 @@ curl "http://127.0.0.1:8000/api/compare/{task_id}/diffs"
 
 ```bash
 curl -O -J "http://127.0.0.1:8000/api/compare/{task_id}/report"
-curl -O -J "http://127.0.0.1:8000/api/compare/{task_id}/highlight/original"
-curl -O -J "http://127.0.0.1:8000/api/compare/{task_id}/highlight/compare"
 ```
 
 前端结果页：

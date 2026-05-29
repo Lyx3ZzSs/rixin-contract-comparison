@@ -83,8 +83,8 @@ const mockTask: CompareTask = {
   report_filename: "销售合同差异分析报告.pdf",
   original_pdf_url: "/api/compare/task-1/original",
   compare_pdf_url: "/api/compare/task-1/compare",
-  original_highlight_pdf_url: "/api/compare/task-1/highlight/original",
-  compare_highlight_pdf_url: "/api/compare/task-1/highlight/compare",
+  original_highlight_pdf_url: "",
+  compare_highlight_pdf_url: "",
   errors: [],
 };
 

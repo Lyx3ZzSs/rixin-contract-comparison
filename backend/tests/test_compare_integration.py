@@ -28,7 +28,6 @@ def configure_storage(tmp_path: Path) -> None:
     settings.storage_dir = tmp_path / "storage"
     settings.uploads_dir = settings.storage_dir / "uploads"
     settings.tasks_dir = settings.storage_dir / "tasks"
-    settings.highlighted_dir = settings.storage_dir / "highlighted"
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.debug_dir = settings.storage_dir / "debug"

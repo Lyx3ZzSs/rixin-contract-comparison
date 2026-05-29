@@ -45,7 +45,6 @@ class Settings(BaseSettings):
     storage_dir: Path = Field(default_factory=lambda: BASE_DIR / "storage")
     uploads_dir: Path | None = None
     tasks_dir: Path | None = None
-    highlighted_dir: Path | None = None
     reports_dir: Path | None = None
     ocr_dir: Path | None = None
     debug_dir: Path | None = None
@@ -168,10 +167,6 @@ class Settings(BaseSettings):
             self.tasks_dir = storage_dir / "tasks"
         else:
             self.tasks_dir = self._resolve_runtime_path(self.tasks_dir)
-        if self.highlighted_dir is None:
-            self.highlighted_dir = storage_dir / "highlighted"
-        else:
-            self.highlighted_dir = self._resolve_runtime_path(self.highlighted_dir)
         if self.reports_dir is None:
             self.reports_dir = storage_dir / "reports"
         else:
@@ -197,7 +192,6 @@ class Settings(BaseSettings):
     def storage_subdirs(self) -> list[Path]:
         return [
             self.uploads_dir,
-            self.highlighted_dir,
             self.reports_dir,
             self.ocr_dir,
             self.debug_dir,
