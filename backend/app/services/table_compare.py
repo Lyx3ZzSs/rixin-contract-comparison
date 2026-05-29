@@ -5,7 +5,7 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
-from app.models import BBox, CharBox, DiffItem, Document, EvidenceBox, TextBlock
+from app.models import BBox, CharBox, DiffItem, DiffType, Document, EvidenceBox, TextBlock
 from app.models_table import StructuredTable
 from app.services.table_compare_constants import (
     AMOUNT_TOKEN_PATTERN,
@@ -2750,9 +2750,10 @@ class TableComparator:
         if needs_comp_evidence and not comp_evidences:
             review_flags.append("LOW_CONFIDENCE_COMPARE_TABLE_EVIDENCE")
 
+        diff_type = self._group_diff_type(group)
         return DiffItem(
             diff_id=generate_diff_id(index),
-            diff_type="MODIFY",
+            diff_type=diff_type,
             title=f"表格字段：{self._table_type_label(table_type)}",
             original_text=" | ".join(orig_texts),
             compare_text=" | ".join(comp_texts),
@@ -2764,6 +2765,14 @@ class TableComparator:
             original_evidence=orig_evidences,
             compare_evidence=comp_evidences,
         )
+
+    def _group_diff_type(self, group: CellDiffGroup) -> DiffType:
+        diff_types = {cd.diff_type for cd in group.diffs}
+        if diff_types == {"ADD"}:
+            return "ADD"
+        if diff_types == {"DELETE"}:
+            return "DELETE"
+        return "MODIFY"
 
     def _whole_table_diff(
         self, table: StructuredTable, diff_type: str, index: int, block: tuple[TextBlock, str] | None, other_block: tuple[TextBlock, str] | None

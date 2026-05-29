@@ -4002,39 +4002,6 @@ h2 {
   font-weight: 800;
 }
 
-.quality-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  padding: 0 18px 10px;
-}
-
-.quality-summary div {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-  padding: 10px 8px;
-  border: 1px solid #dfeaea;
-  border-radius: 8px;
-  background: #fbfdfd;
-}
-
-.quality-summary strong {
-  color: #132528;
-  font-size: 1.08rem;
-  font-weight: 900;
-  line-height: 1;
-}
-
-.quality-summary span {
-  overflow: hidden;
-  color: #607174;
-  font-size: 0.74rem;
-  font-weight: 800;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .review-error {
   margin: 0 18px 10px;
   padding: 9px 10px;

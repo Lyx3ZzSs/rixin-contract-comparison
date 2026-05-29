@@ -373,14 +373,14 @@ describe("ResultPage", () => {
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
   });
 
-  it("shows quality diagnostics and submits a review decision", async () => {
+  it("submits a review decision from the audit panel", async () => {
     const user = userEvent.setup();
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
 
-    expect(screen.getByLabelText("质量诊断摘要")).toHaveTextContent("低置信");
+    expect(screen.queryByLabelText("质量诊断摘要")).not.toBeInTheDocument();
     expect(screen.getAllByText("同编号低相似").length).toBeGreaterThan(0);
 
     await user.type(screen.getAllByLabelText("复核意见 diff-1")[0], "确认属实");

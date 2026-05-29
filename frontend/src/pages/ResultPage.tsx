@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Ban, CheckCircle2, ChevronRight, Download, Eye, EyeOff, HelpCircle, PanelRightOpen, XCircle, ZoomIn, ZoomOut } from "lucide-react";
 
 import { PdfDocumentViewer, type PdfDocumentViewerHandle } from "../components/PdfDocumentViewer";
-import { getCompareQuality, getDiffs, getTask, toApiUrl, updateDiffReview } from "../lib/api";
+import { getDiffs, getTask, toApiUrl, updateDiffReview } from "../lib/api";
 import { navigateToComparisonRecords } from "../lib/routes";
-import type { CompareQualitySummary, CompareTask, DiffItem, DiffType, ReviewStatus } from "../types";
+import type { CompareTask, DiffItem, DiffType, ReviewStatus } from "../types";
 
 interface ResultPageProps {
   taskId: string;
@@ -14,7 +14,6 @@ interface ResultPageProps {
 export function ResultPage({ taskId, onBack }: ResultPageProps) {
   const [task, setTask] = useState<CompareTask | null>(null);
   const [diffs, setDiffs] = useState<DiffItem[]>([]);
-  const [quality, setQuality] = useState<CompareQualitySummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   const [isOriginalVisible, setIsOriginalVisible] = useState(true);
@@ -46,12 +45,11 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
         }
         setTask(taskPayload);
         if (taskPayload.status === "COMPLETED") {
-          const [diffPayload, qualityPayload] = await Promise.all([getDiffs(taskId), getCompareQuality(taskId)]);
+          const diffPayload = await getDiffs(taskId);
           if (!isMounted) {
             return;
           }
           setDiffs(diffPayload);
-          setQuality(qualityPayload);
           setReviewComments((current) => {
             const next = { ...current };
             for (const diff of diffPayload) {
@@ -63,7 +61,6 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
           });
         } else {
           setDiffs([]);
-          setQuality(null);
           if (taskPayload.status === "PROCESSING") {
             timeoutId = window.setTimeout(loadTask, TASK_POLL_INTERVAL_MS);
           }
@@ -174,7 +171,6 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
             }
           : currentTask,
       );
-      setQuality(await getCompareQuality(taskId));
     } catch (err) {
       setReviewError(err instanceof Error ? err.message : "复核提交失败。");
     } finally {
@@ -375,7 +371,6 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
           filter={diffFilter}
           items={filteredAuditItems}
           isOpen={isAuditPanelOpen}
-          quality={quality}
           reviewComments={reviewComments}
           reviewSavingDiffId={reviewSavingDiffId}
           reviewError={reviewError}
@@ -632,7 +627,6 @@ function AuditPanel({
   filter,
   items,
   isOpen,
-  quality,
   reviewComments,
   reviewSavingDiffId,
   reviewError,
@@ -647,7 +641,6 @@ function AuditPanel({
   filter: DiffFilter;
   items: AuditChangeItem[];
   isOpen: boolean;
-  quality: CompareQualitySummary | null;
   reviewComments: Record<string, string>;
   reviewSavingDiffId: string;
   reviewError: string;
@@ -700,7 +693,6 @@ function AuditPanel({
         <span>{filter === "ALL" ? "全部类型" : diffTypeLabel(filter)}</span>
       </div>
 
-      {quality && <QualitySummaryPanel quality={quality} />}
       {reviewError && (
         <p className="review-error" role="alert">
           {reviewError}
@@ -803,29 +795,6 @@ const reviewStatusOptions: Array<{ status: ReviewStatus; label: string; icon: ty
   { status: "NEEDS_REVIEW", label: "待确认", icon: HelpCircle },
   { status: "IGNORED", label: "忽略", icon: Ban },
 ];
-
-function QualitySummaryPanel({ quality }: { quality: CompareQualitySummary }) {
-  return (
-    <section className="quality-summary" aria-label="质量诊断摘要">
-      <div>
-        <strong>{quality.review_stats.reviewed_count}</strong>
-        <span>已复核</span>
-      </div>
-      <div>
-        <strong>{quality.low_confidence_diffs.length}</strong>
-        <span>低置信</span>
-      </div>
-      <div>
-        <strong>{quality.low_similarity_diffs.length}</strong>
-        <span>低匹配</span>
-      </div>
-      <div>
-        <strong>{quality.parse_warning_details.length}</strong>
-        <span>解析提示</span>
-      </div>
-    </section>
-  );
-}
 
 function evidenceQualityLabel(quality: AuditChangeItem["evidenceQuality"]): string {
   if (quality === "HIGH") {

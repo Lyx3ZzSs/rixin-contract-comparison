@@ -167,8 +167,18 @@ class TestStructuredTableComparison:
         comp = _make_doc([_make_table_block("c1", 1, comp_html)])
         diffs, warnings = TableComparator().build_diffs(orig, comp)
         assert len(diffs) >= 1
-        has_add = any("C" in d.compare_text for d in diffs if d.diff_type == "MODIFY")
+        has_add = any("C" in d.compare_text for d in diffs if d.diff_type == "ADD")
         assert has_add
+
+    def test_row_deleted_detected(self):
+        orig_html = '<table><tr><td>A</td></tr><tr><td>B</td></tr><tr><td>C</td></tr></table>'
+        comp_html = '<table><tr><td>A</td></tr><tr><td>B</td></tr></table>'
+        orig = _make_doc([_make_table_block("o1", 1, orig_html)])
+        comp = _make_doc([_make_table_block("c1", 1, comp_html)])
+        diffs, warnings = TableComparator().build_diffs(orig, comp)
+        assert len(diffs) >= 1
+        has_delete = any("C" in d.original_text for d in diffs if d.diff_type == "DELETE")
+        assert has_delete
 
     def test_noise_rows_filtered(self):
         orig_html = '<table><tr><td>小计</td><td>12000</td></tr></table>'
