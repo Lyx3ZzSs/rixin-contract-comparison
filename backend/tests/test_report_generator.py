@@ -26,7 +26,27 @@ def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path)
                 compare_evidence=[
                     EvidenceBox(page_no=2, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="45 days", highlight_type="MODIFY"),
                 ],
-            )
+            ),
+            DiffItem(
+                diff_id="D002",
+                diff_type="ADD",
+                clause_no="2",
+                title="发票",
+                compare_snippet="新增发票条款",
+                compare_evidence=[
+                    EvidenceBox(page_no=3, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="新增发票条款", highlight_type="ADD"),
+                ],
+            ),
+            DiffItem(
+                diff_id="D003",
+                diff_type="DELETE",
+                clause_no="3",
+                title="旧质保",
+                original_snippet="旧质保条款",
+                original_evidence=[
+                    EvidenceBox(page_no=4, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="旧质保条款", highlight_type="DELETE"),
+                ],
+            ),
         ],
     )
     output_path = tmp_path / "report.pdf"
@@ -35,9 +55,17 @@ def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path)
 
     with fitz.open(output_path) as report_pdf:
         report_text = "\n".join(page.get_text() for page in report_pdf)
+    assert "审计统计与差异概览" in report_text
+    assert "差异明细" in report_text
     assert "来源段落" in report_text
     assert "原文" in report_text
     assert "修改后" in report_text
     assert "1 付款" in report_text
     assert "30 days" in report_text
     assert "45 days" in report_text
+    assert "2 发票" in report_text
+    assert "原文无对应内容" in report_text
+    assert "新增发票条款" in report_text
+    assert "3 旧质保" in report_text
+    assert "旧质保条款" in report_text
+    assert "新版已删除" in report_text

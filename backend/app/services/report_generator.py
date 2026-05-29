@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from datetime import datetime
 from html import escape
 from pathlib import Path
 
 import fitz
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.config import settings
 from app.models import CompareTask, DiffItem
@@ -52,14 +53,14 @@ class ReportGenerator:
         report_title = build_report_title(task)
         story = [
             Paragraph(escape(report_title), styles["Title"]),
-            Spacer(1, 0.7 * cm),
-            Paragraph(f"任务编号：{escape(task.task_id)}", styles["Normal"]),
-            Paragraph(f"原合同：{escape(task.original_filename)}", styles["Normal"]),
-            Paragraph(f"对比合同：{escape(task.compare_filename)}", styles["Normal"]),
-            Paragraph(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]),
+            Spacer(1, 0.45 * cm),
+            self._metadata_table(task, styles),
             Spacer(1, 0.5 * cm),
-            Paragraph("审计统计", styles["Heading2"]),
-            self._audit_items_table(task, styles),
+            Paragraph("审计统计与差异概览", styles["Heading2"]),
+            self._summary_table(task, styles),
+            Spacer(1, 0.35 * cm),
+            Paragraph("差异明细", styles["Heading2"]),
+            *self._diff_cards(task, styles),
         ]
 
         doc.build(story)
@@ -97,18 +98,20 @@ class ReportGenerator:
                 "ContractTitle",
                 parent=base["Title"],
                 fontName=font_name,
-                fontSize=24,
-                leading=32,
+                fontSize=21,
+                leading=29,
                 alignment=TA_CENTER,
+                textColor=colors.HexColor("#111827"),
             ),
             "Heading2": ParagraphStyle(
                 "ContractHeading2",
                 parent=base["Heading2"],
                 fontName=font_name,
-                fontSize=14,
+                fontSize=13,
                 leading=20,
                 spaceBefore=8,
-                spaceAfter=6,
+                spaceAfter=8,
+                textColor=colors.HexColor("#111827"),
             ),
             "Normal": ParagraphStyle(
                 "ContractNormal",
@@ -116,6 +119,7 @@ class ReportGenerator:
                 fontName=font_name,
                 fontSize=9.5,
                 leading=15,
+                textColor=colors.HexColor("#263238"),
             ),
             "Small": ParagraphStyle(
                 "ContractSmall",
@@ -123,40 +127,196 @@ class ReportGenerator:
                 fontName=font_name,
                 fontSize=8,
                 leading=11,
+                textColor=colors.HexColor("#374151"),
+            ),
+            "MetaLabel": ParagraphStyle(
+                "ContractMetaLabel",
+                parent=base["Normal"],
+                fontName=font_name,
+                fontSize=8,
+                leading=12,
+                textColor=colors.HexColor("#6B7280"),
+            ),
+            "CardTitle": ParagraphStyle(
+                "ContractCardTitle",
+                parent=base["Normal"],
+                fontName=font_name,
+                fontSize=10,
+                leading=14,
+                textColor=colors.HexColor("#111827"),
+                spaceAfter=2,
+            ),
+            "CardMeta": ParagraphStyle(
+                "ContractCardMeta",
+                parent=base["Normal"],
+                fontName=font_name,
+                fontSize=8,
+                leading=12,
+                textColor=colors.HexColor("#4B5563"),
+            ),
+            "FieldLabel": ParagraphStyle(
+                "ContractFieldLabel",
+                parent=base["Normal"],
+                fontName=font_name,
+                fontSize=8,
+                leading=11,
+                textColor=colors.HexColor("#6B7280"),
+            ),
+            "DiffText": ParagraphStyle(
+                "ContractDiffText",
+                parent=base["Normal"],
+                fontName=font_name,
+                fontSize=8.5,
+                leading=13,
+                textColor=colors.HexColor("#111827"),
+                alignment=TA_LEFT,
             ),
         }
         return styles
 
-    def _audit_items_table(self, task: CompareTask, styles: dict[str, ParagraphStyle]) -> Table:
-        data = [["序号", "类型", "来源段落", "原文", "修改后"]]
-        if not task.diffs:
-            data.append(["-", "-", "-", "未发现改动点。", "未发现改动点。"])
-        for index, diff in enumerate(task.diffs, start=1):
-            data.append(
-                [
-                    str(index),
-                    self._diff_type_label(diff.diff_type),
-                    Paragraph(escape(_clean_report_text(self._source_label(diff), 120)), styles["Small"]),
-                    Paragraph(escape(_clean_report_text(self._side_text(diff, "original"), 260)), styles["Small"]),
-                    Paragraph(escape(_clean_report_text(self._side_text(diff, "compare"), 260)), styles["Small"]),
-                ]
-            )
-        table = Table(data, colWidths=[1.0 * cm, 1.4 * cm, 4.1 * cm, 5.5 * cm, 5.5 * cm], repeatRows=1)
+    def _metadata_table(self, task: CompareTask, styles: dict[str, ParagraphStyle]) -> Table:
+        rows = [
+            [Paragraph("任务编号", styles["MetaLabel"]), Paragraph(escape(task.task_id), styles["Normal"])],
+            [Paragraph("原合同", styles["MetaLabel"]), Paragraph(escape(task.original_filename), styles["Normal"])],
+            [Paragraph("对比合同", styles["MetaLabel"]), Paragraph(escape(task.compare_filename), styles["Normal"])],
+            [Paragraph("生成时间", styles["MetaLabel"]), Paragraph(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), styles["Normal"])],
+        ]
+        table = Table(rows, colWidths=[2.0 * cm, 15.0 * cm])
         table.setStyle(
             TableStyle(
                 [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F3F4F6")),
-                    ("FONTNAME", (0, 0), (-1, -1), getattr(self, "_font_name", "Helvetica")),
-                    ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D1D5DB")),
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
+                    ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#E5E7EB")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#EEF2F7")),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
                 ]
             )
         )
         return table
+
+    def _summary_table(self, task: CompareTask, styles: dict[str, ParagraphStyle]) -> Table:
+        counts = Counter(diff.diff_type for diff in task.diffs)
+        items = [
+            ("全部差异", len(task.diffs), "#111827"),
+            ("新增", counts["ADD"], "#15804F"),
+            ("删除", counts["DELETE"], "#C9362C"),
+            ("修改", counts["MODIFY"], "#A96300"),
+        ]
+        row = []
+        for label, value, color in items:
+            cell = [
+                Paragraph(escape(label), styles["MetaLabel"]),
+                Paragraph(f'<font color="{color}" size="16"><b>{value}</b></font>', styles["Normal"]),
+            ]
+            row.append(cell)
+        table = Table([row], colWidths=[4.05 * cm, 4.05 * cm, 4.05 * cm, 4.05 * cm])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFFFFF")),
+                    ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#E5E7EB")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.6, colors.HexColor("#E5E7EB")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                    ("TOPPADDING", (0, 0), (-1, -1), 8),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ]
+            )
+        )
+        return table
+
+    def _diff_cards(self, task: CompareTask, styles: dict[str, ParagraphStyle]) -> list[Flowable]:
+        if not task.diffs:
+            return [Paragraph("未发现改动点。", styles["Normal"])]
+        flowables: list[Flowable] = []
+        for index, diff in enumerate(task.diffs, start=1):
+            flowables.append(self._diff_card(index, diff, styles))
+            flowables.append(Spacer(1, 0.22 * cm))
+        return flowables
+
+    def _diff_card(self, index: int, diff: DiffItem, styles: dict[str, ParagraphStyle]) -> Table:
+        type_label = self._diff_type_label(diff.diff_type)
+        palette = self._diff_palette(diff.diff_type)
+        header = Paragraph(
+            escape(f"{index:02d} · {diff.diff_id} · {type_label}"),
+            styles["CardTitle"],
+        )
+        source = Paragraph(f"<b>来源段落：</b>{escape(self._source_label(diff))}", styles["CardMeta"])
+        original = self._text_panel("原文", self._side_text(diff, "original"), styles, "#F8FAFC")
+        compare = self._text_panel("修改后", self._side_text(diff, "compare"), styles, "#F8FAFC")
+        body = Table([[original, compare]], colWidths=[7.82 * cm, 7.82 * cm])
+        body.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            )
+        )
+        card = Table(
+            [
+                [[header, source]],
+                [body],
+            ],
+            colWidths=[16.2 * cm],
+        )
+        card.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(palette["background"])),
+                    ("LINEABOVE", (0, 0), (-1, 0), 1.8, colors.HexColor(palette["accent"])),
+                    ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor("#D9E1E7")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, 0), 9),
+                    ("RIGHTPADDING", (0, 0), (-1, 0), 9),
+                    ("TOPPADDING", (0, 0), (-1, 0), 7),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 7),
+                    ("LEFTPADDING", (0, 1), (-1, -1), 9),
+                    ("RIGHTPADDING", (0, 1), (-1, -1), 9),
+                    ("TOPPADDING", (0, 1), (-1, -1), 9),
+                    ("BOTTOMPADDING", (0, 1), (-1, -1), 9),
+                ]
+            )
+        )
+        return card
+
+    def _text_panel(self, label: str, value: str, styles: dict[str, ParagraphStyle], background: str) -> Table:
+        table = Table(
+            [
+                [Paragraph(escape(label), styles["FieldLabel"])],
+                [Paragraph(escape(_clean_report_text(value, 700)), styles["DiffText"])],
+            ],
+            colWidths=[7.55 * cm],
+        )
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(background)),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        return table
+
+    def _diff_palette(self, diff_type: str) -> dict[str, str]:
+        return {
+            "ADD": {"accent": "#15804F", "background": "#EEF8F2"},
+            "DELETE": {"accent": "#C9362C", "background": "#FFF1EF"},
+            "MODIFY": {"accent": "#A96300", "background": "#FFF7E6"},
+        }.get(diff_type, {"accent": "#4B5563", "background": "#F8FAFC"})
 
     def _source_label(self, diff: DiffItem) -> str:
         paragraph = self._paragraph_label(diff)
@@ -194,6 +354,13 @@ class ReportGenerator:
         if diff.diff_type == "DELETE" and side == "compare":
             return "（新版已删除）"
 
+        snippet = diff.original_snippet if side == "original" else diff.compare_snippet
+        if diff.diff_type == "MODIFY" and (not diff.original_snippet or not diff.compare_snippet):
+            side_text = diff.original_text if side == "original" else diff.compare_text
+            if side_text:
+                return side_text
+        if snippet:
+            return snippet
         evidence_text = self._evidence_text(diff, side)
         if evidence_text:
             return evidence_text
