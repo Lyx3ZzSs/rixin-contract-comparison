@@ -3941,7 +3941,7 @@ h2 {
   white-space: nowrap;
 }
 
-.audit-diff-main > span:not(.audit-type-badge):not(.review-status-pill) {
+.audit-diff-main > span:not(.audit-type-badge) {
   display: -webkit-box;
   overflow: hidden;
   color: #5c6a6d;
@@ -3949,22 +3949,6 @@ h2 {
   line-height: 1.56;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
-}
-
-.audit-meta-line {
-  display: flex !important;
-  flex-wrap: wrap;
-  gap: 6px;
-  -webkit-line-clamp: unset !important;
-}
-
-.audit-meta-line span {
-  padding: 3px 7px;
-  border-radius: 999px;
-  background: #edf5f4;
-  color: #476164;
-  font-size: 0.76rem;
-  font-weight: 800;
 }
 
 .audit-type-badge {
@@ -4013,73 +3997,9 @@ h2 {
   font-weight: 800;
 }
 
-.review-status-pill,
-.review-flag-line {
-  justify-self: start;
-}
-
-.review-status-pill {
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: #eef4f4;
-  color: #4a5c5f;
-  font-size: 0.76rem;
-  font-weight: 900;
-}
-
-.review-status-pill.confirmed {
-  background: #e3f5ec;
-  color: var(--green);
-}
-
-.review-status-pill.false_positive {
-  background: #fae9e7;
-  color: var(--red);
-}
-
-.review-status-pill.needs_review {
-  background: #fff2cf;
-  color: var(--amber);
-}
-
-.review-status-pill.ignored {
-  background: #edf1f2;
-  color: #657274;
-}
-
-.review-flag-line {
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: #fff8e8;
-  color: #8d6512 !important;
-  font-size: 0.78rem !important;
-  font-weight: 850;
-  -webkit-line-clamp: 2 !important;
-}
-
-.review-comment {
-  width: 100%;
-  min-height: 58px;
-  resize: vertical;
-  padding: 9px 10px;
-  border: 1px solid #dbe7e7;
-  border-radius: 8px;
-  background: #fbfdfd;
-  color: #263537;
-  font: inherit;
-  font-size: 0.84rem;
-  line-height: 1.45;
-}
-
-.review-comment:focus {
-  outline: 2px solid rgba(73, 170, 160, 0.28);
-  border-color: var(--teal);
-}
-
 .review-action-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .review-action {
@@ -4088,6 +4008,7 @@ h2 {
   justify-content: center;
   min-width: 0;
   height: 32px;
+  padding: 0 12px;
   gap: 4px;
   border: 1px solid #dbe7e7;
   border-radius: 7px;

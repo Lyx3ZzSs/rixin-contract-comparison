@@ -155,7 +155,7 @@ const mockDiffs: DiffItem[] = [
     original_snippet: "",
     compare_snippet: "新增发票条款",
     readable_change: "新增发票条款。",
-    source_type: "clause",
+    source_type: "metadata",
     review_status: "UNREVIEWED",
     original_evidence: [],
     compare_evidence: [
@@ -373,7 +373,7 @@ describe("ResultPage", () => {
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
   });
 
-  it("submits a review decision from the audit panel", async () => {
+  it("submits an ignored review decision from the audit panel", async () => {
     const user = userEvent.setup();
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
@@ -381,15 +381,21 @@ describe("ResultPage", () => {
     await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
 
     expect(screen.queryByLabelText("质量诊断摘要")).not.toBeInTheDocument();
-    expect(screen.getAllByText("同编号低相似").length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText("复核意见 diff-1")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "确认 diff-1" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "误报 diff-1" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "待确认 diff-1" })).not.toBeInTheDocument();
+    expect(screen.queryByText("封面")).not.toBeInTheDocument();
+    expect(screen.queryByText(/证据高/)).not.toBeInTheDocument();
+    expect(screen.queryByText("未复核")).not.toBeInTheDocument();
+    expect(screen.queryByText("同编号低相似")).not.toBeInTheDocument();
 
-    await user.type(screen.getAllByLabelText("复核意见 diff-1")[0], "确认属实");
-    await user.click(screen.getAllByRole("button", { name: "确认 diff-1" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "忽略 diff-1" })[0]);
 
     await waitFor(() => expect(updateDiffReview).toHaveBeenCalled());
     expect(updateDiffReview).toHaveBeenCalledWith("task-1", "diff-1", {
-      review_status: "CONFIRMED",
-      review_comment: "确认属实",
+      review_status: "IGNORED",
+      review_comment: "",
       reviewed_by: "local_reviewer",
     });
   });
