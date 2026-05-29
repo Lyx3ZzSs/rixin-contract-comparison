@@ -14,7 +14,7 @@ from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.config import settings
 from app.models import CompareTask
@@ -62,10 +62,6 @@ class ReportGenerator:
             Paragraph("审计统计", styles["Heading2"]),
             self._audit_items_table(task, styles),
         ]
-
-        story.append(PageBreak())
-        story.append(Paragraph("合同差异", styles["Heading2"]))
-        story.extend(self._page_screenshot_detail(task, styles))
 
         doc.build(story)
         return output_path
@@ -176,24 +172,6 @@ class ReportGenerator:
 
     def _diff_type_label(self, diff_type: str) -> str:
         return {"ADD": "新增", "DELETE": "删除", "MODIFY": "修改"}.get(diff_type, diff_type)
-
-    def _page_screenshot_detail(self, task: CompareTask, styles: dict[str, ParagraphStyle]) -> list:
-        story: list = []
-        max_pages = max(len(task.original_page_screenshots), len(task.compare_page_screenshots))
-        if max_pages == 0:
-            return [Paragraph("暂无页面截图。", styles["Normal"])]
-        for index in range(max_pages):
-            story.append(Paragraph(f"第 {index + 1} 页", styles["Heading2"]))
-            if index < len(task.original_page_screenshots) and Path(task.original_page_screenshots[index]).exists():
-                story.append(Paragraph("原版合同高亮截图", styles["Normal"]))
-                story.append(Image(task.original_page_screenshots[index], width=15 * cm, height=20 * cm, kind="proportional"))
-                story.append(Spacer(1, 0.2 * cm))
-            if index < len(task.compare_page_screenshots) and Path(task.compare_page_screenshots[index]).exists():
-                story.append(Paragraph("新版合同高亮截图", styles["Normal"]))
-                story.append(Image(task.compare_page_screenshots[index], width=15 * cm, height=20 * cm, kind="proportional"))
-                story.append(Spacer(1, 0.3 * cm))
-        return story
-
 
 def _extract_pdf_heading(path_value: str) -> str:
     if not path_value:

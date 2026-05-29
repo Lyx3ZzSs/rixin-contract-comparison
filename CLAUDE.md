@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Contract comparison MVP (合同差异审查系统) — uploads two PDF contracts, extracts structured text with coordinates via GLM-OCR, splits into clauses, matches and diffs them, then produces highlighted PDFs, screenshots, and a PDF report. Backend is Python/FastAPI, frontend is React/TypeScript with Vite.
+Contract comparison MVP (合同差异审查系统) — uploads two PDF contracts, extracts structured text with coordinates via GLM-OCR, splits into clauses, matches and diffs them, then produces highlighted PDFs and a PDF report. Backend is Python/FastAPI, frontend is React/TypeScript with Vite.
 
 ## Commands
 
@@ -63,7 +63,7 @@ The comparison runs as a synchronous pipeline orchestrated by `CompareService`:
 
 5. **Locate** — `EvidenceLocator` binds coordinate evidence to diffs (exact text match → block fallback → clause fallback).
 
-6. **Output** — `PdfHighlighter` (PyMuPDF), `ScreenshotService` (PyMuPDF pixmap rendering), `ReportGenerator` (ReportLab PDF with Chinese font auto-detection).
+6. **Output** — `PdfHighlighter` (PyMuPDF), `ReportGenerator` (ReportLab PDF with Chinese font auto-detection).
 
 ### Key Data Flow
 
@@ -76,7 +76,7 @@ PDF → ExtractionResult → Document → Clause[] → ClausePair[] → DiffItem
 - `Document` / `Page` / `TextBlock` / `BBox` — structured PDF content with coordinates
 - `Clause` — split clause with normalized text and evidence boxes
 - `ClausePair` — matched pair with score and method
-- `DiffItem` — identified difference with evidence, screenshots, and AI analysis
+- `DiffItem` — identified difference with evidence and AI analysis
 - `CompareTask` — full task state persisted through `TaskRepository` as local JSON or PostgreSQL payload
 
 ### Storage
@@ -85,7 +85,6 @@ Artifacts are stored locally under `storage/` (configurable via `STORAGE_DIR`), 
 - `uploads/` — uploaded PDFs
 - `tasks/` — task JSON files when `TASK_REPOSITORY_BACKEND=local_json`
 - `highlighted/` — highlighted PDFs
-- `screenshots/` — diff screenshots
 - `reports/` — generated PDF reports
 - `ocr/` — raw OCR results for debugging
 

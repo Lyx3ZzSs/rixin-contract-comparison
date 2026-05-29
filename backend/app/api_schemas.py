@@ -90,8 +90,6 @@ class CompareTaskDetailResponse(CompareTaskResponse):
     compare_filename: str
     ai_summary: str = ""
     report_ai_analysis: ReportAIAnalysisResponse | None = None
-    original_page_screenshots: list[str] = Field(default_factory=list)
-    compare_page_screenshots: list[str] = Field(default_factory=list)
 
 
 class CompareRecordResponse(BaseModel):
@@ -155,10 +153,6 @@ class CompareDiffResponse(BaseModel):
     original_change_ranges: list[TextRangeResponse] = Field(default_factory=list)
     compare_change_ranges: list[TextRangeResponse] = Field(default_factory=list)
     ai_analysis: AIAnalysisResponse | None = None
-    original_screenshot: str = ""
-    compare_screenshot: str = ""
-    original_screenshot_url: str = ""
-    compare_screenshot_url: str = ""
 
 
 class CompareDiffListResponse(BaseModel):

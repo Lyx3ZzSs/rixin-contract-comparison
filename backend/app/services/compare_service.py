@@ -12,7 +12,6 @@ from app.services.extractors.base import DocumentExtractor
 from app.services.pipeline import ComparePipeline, PipelineContext
 from app.services.pipeline_stages import ExtractionStage
 from app.services.report_generator import ReportGenerator
-from app.services.screenshot_service import ScreenshotService
 from app.utils.id_utils import generate_task_id
 
 logger = logging.getLogger(__name__)
@@ -31,7 +30,6 @@ class CompareService:
         self.repository = repository
         self.artifact_store = artifact_store
         self._report_generator = ReportGenerator()
-        self._screenshot_service = ScreenshotService()
 
     def _build_pipeline(self) -> ComparePipeline:
         from app.services.pipeline_stages import (
@@ -141,22 +139,6 @@ class CompareService:
         settings.ensure_storage()
         report_path = self.artifact_store.report_pdf_path(task.task_id)
 
-        page_screenshot_dir = self.artifact_store.screenshot_dir(task.task_id, "pages")
-        if not task.original_page_screenshots and task.original_highlight_pdf_path:
-            task.original_page_screenshots = self._screenshot_service.create_page_screenshots(
-                task.original_highlight_pdf_path,
-                page_screenshot_dir,
-                "original",
-                settings.report_max_screenshot_pages,
-            )
-        if not task.compare_page_screenshots and task.compare_highlight_pdf_path:
-            task.compare_page_screenshots = self._screenshot_service.create_page_screenshots(
-                task.compare_highlight_pdf_path,
-                page_screenshot_dir,
-                "compare",
-                settings.report_max_screenshot_pages,
-            )
-
         self._report_generator.generate(task, report_path)
         return self.repository.update_compare_task(
             task.task_id,
@@ -165,7 +147,5 @@ class CompareService:
 
     def _copy_report_artifacts(self, target: CompareTask, source: CompareTask, report_path: Path) -> None:
         target.report_pdf_path = str(report_path)
-        target.original_page_screenshots = source.original_page_screenshots
-        target.compare_page_screenshots = source.compare_page_screenshots
         target.stage = "已完成"
         target.progress_percent = 100

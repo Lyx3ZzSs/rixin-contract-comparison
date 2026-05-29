@@ -28,7 +28,9 @@ class PostgresTaskRepository:
         session_factory: Any | None = None,
     ) -> None:
         self.settings = app_settings
-        self.session_factory = session_factory or create_session_factory(database_url or app_settings.database_url)
+        self.session_factory = session_factory or create_session_factory(
+            app_settings.database_url if database_url is None else database_url
+        )
 
     def save_compare_task(self, task: CompareTask) -> Path | None:
         self._stamp_task(task, self._current_revision(task.task_id))

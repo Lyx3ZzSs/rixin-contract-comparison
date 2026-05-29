@@ -59,8 +59,6 @@ def compare_task_detail_response(task: CompareTask) -> CompareTaskDetailResponse
             "compare_filename": task.compare_filename,
             "ai_summary": task.ai_summary,
             "report_ai_analysis": to_jsonable(task.report_ai_analysis) if task.report_ai_analysis else None,
-            "original_page_screenshots": screenshot_urls(task.task_id, task.original_page_screenshots),
-            "compare_page_screenshots": screenshot_urls(task.task_id, task.compare_page_screenshots),
         }
     )
     return CompareTaskDetailResponse(**data)
@@ -103,30 +101,16 @@ def compare_record_list_response(tasks: list[CompareTask]) -> CompareRecordListR
     return CompareRecordListResponse(records=[compare_record_summary(task) for task in tasks])
 
 
-def diff_response(task_id: str, diff) -> CompareDiffResponse:
+def diff_response(diff) -> CompareDiffResponse:
     data = to_jsonable(diff)
-    data["original_screenshot"] = Path(diff.original_screenshot).name if diff.original_screenshot else ""
-    data["compare_screenshot"] = Path(diff.compare_screenshot).name if diff.compare_screenshot else ""
-    data["original_screenshot_url"] = screenshot_url(task_id, diff.original_screenshot)
-    data["compare_screenshot_url"] = screenshot_url(task_id, diff.compare_screenshot)
     return CompareDiffResponse(**data)
 
 
 def compare_diff_list_response(task: CompareTask) -> CompareDiffListResponse:
     return CompareDiffListResponse(
         task_id=task.task_id,
-        diffs=[diff_response(task.task_id, diff) for diff in task.diffs],
+        diffs=[diff_response(diff) for diff in task.diffs],
     )
-
-
-def screenshot_url(task_id: str, screenshot_path: str) -> str:
-    if not screenshot_path:
-        return ""
-    return f"/api/compare/{task_id}/screenshot/{Path(screenshot_path).name}"
-
-
-def screenshot_urls(task_id: str, paths: list[str]) -> list[str]:
-    return [url for path in paths if (url := screenshot_url(task_id, path))]
 
 
 def artifact_filenames(paths: dict[str, str]) -> dict[str, str]:
@@ -146,7 +130,7 @@ def review_stats(task: CompareTask) -> ReviewStatsResponse:
 def diff_review_response(task: CompareTask, diff) -> DiffReviewResponse:
     return DiffReviewResponse(
         task_id=task.task_id,
-        diff=diff_response(task.task_id, diff),
+        diff=diff_response(diff),
         review_stats=review_stats(task),
     )
 

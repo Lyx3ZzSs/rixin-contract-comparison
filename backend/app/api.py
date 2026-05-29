@@ -24,7 +24,6 @@ from app.api_schemas import (
     DiffReviewResponse,
     TaskExecutionResponse,
 )
-from app.infrastructure.artifact_store import default_artifact_store
 from app.models import CompareTask
 from app.services.review_service import (
     CompareQualityService,
@@ -167,13 +166,6 @@ def download_original_highlight(task_id: str) -> FileResponse:
 def download_compare_highlight(task_id: str) -> FileResponse:
     task = _load_or_404(task_id)
     return _file_response(task.compare_highlight_pdf_path, "compare_highlighted.pdf", "application/pdf")
-
-
-@router.get("/{task_id}/screenshot/{filename}")
-def download_screenshot(task_id: str, filename: str) -> FileResponse:
-    _load_or_404(task_id)
-    path = default_artifact_store.screenshot_path(task_id, filename)
-    return _file_response(str(path), filename, "image/png")
 
 
 def _load_or_404(task_id: str) -> CompareTask:

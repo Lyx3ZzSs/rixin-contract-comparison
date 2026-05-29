@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings, settings
 from app.errors import ConflictError, NotFoundError
+from app.infrastructure.database import create_session_factory, session_scope
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,270 @@ class LocalJsonTaskJobRepository:
         temp_path.replace(path)
 
 
+class PostgresTaskJobRepository:
+    """PostgreSQL-backed task execution metadata store."""
+
+    def __init__(
+        self,
+        app_settings: Settings = settings,
+        *,
+        database_url: str | None = None,
+        session_factory: Any | None = None,
+    ) -> None:
+        self.settings = app_settings
+        self.session_factory = session_factory or create_session_factory(
+            app_settings.database_url if database_url is None else database_url
+        )
+
+    def enqueue(self, job: TaskJob) -> TaskJob:
+        from app.infrastructure.db_models import TaskJobRecord
+
+        with session_scope(self.session_factory) as session:
+            record = session.get(TaskJobRecord, job.job_id)
+            if record is not None and record.status not in TERMINAL_JOB_STATUSES:
+                return self._job_from_record(record)
+
+            job.status = "QUEUED"
+            job.queued_at = _utc_now()
+            job.updated_at = job.queued_at
+            values = self._record_values(job)
+            if record is None:
+                record = TaskJobRecord(**values)
+                session.add(record)
+            else:
+                for key, value in values.items():
+                    setattr(record, key, value)
+            return self._job_from_record(record)
+
+    def load(self, job_id: str) -> TaskJob:
+        from app.infrastructure.db_models import TaskJobRecord
+
+        with session_scope(self.session_factory) as session:
+            record = session.get(TaskJobRecord, job_id)
+            if record is None:
+                raise FileNotFoundError(f"任务执行记录不存在: {job_id}")
+            return self._job_from_record(record)
+
+    def list_jobs(self) -> list[TaskJob]:
+        from sqlalchemy import func, select
+        from app.infrastructure.db_models import TaskJobRecord
+
+        with session_scope(self.session_factory) as session:
+            statement = select(TaskJobRecord).order_by(
+                func.coalesce(TaskJobRecord.next_run_at, TaskJobRecord.queued_at),
+                TaskJobRecord.queued_at,
+            )
+            return [self._job_from_record(record) for record in session.execute(statement).scalars().all()]
+
+    def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
+        from sqlalchemy import and_, func, or_, select
+        from app.infrastructure.db_models import TaskJobRecord
+
+        now = datetime.now(UTC)
+        with session_scope(self.session_factory) as session:
+            statement = (
+                select(TaskJobRecord)
+                .where(
+                    or_(
+                        and_(
+                            TaskJobRecord.status == "QUEUED",
+                            or_(TaskJobRecord.next_run_at.is_(None), TaskJobRecord.next_run_at <= now),
+                        ),
+                        and_(
+                            TaskJobRecord.status == "RUNNING",
+                            TaskJobRecord.lease_expires_at.is_not(None),
+                            TaskJobRecord.lease_expires_at <= now,
+                        ),
+                    )
+                )
+                .order_by(
+                    func.coalesce(TaskJobRecord.next_run_at, TaskJobRecord.queued_at),
+                    TaskJobRecord.queued_at,
+                )
+            )
+            if session.bind.dialect.name == "postgresql":
+                statement = statement.with_for_update(skip_locked=True)
+            record = session.execute(statement).scalars().first()
+            if record is None:
+                return None
+
+            record.status = "RUNNING"
+            record.attempt += 1
+            record.started_at = now
+            record.updated_at = now
+            record.lease_owner = worker_id
+            record.lease_expires_at = now + timedelta(seconds=lease_seconds)
+            record.last_error = ""
+            return self._job_from_record(record)
+
+    def extend_lease(self, job_id: str, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
+        from app.infrastructure.db_models import TaskJobRecord
+
+        with session_scope(self.session_factory) as session:
+            record = session.get(TaskJobRecord, job_id)
+            if record is None or record.status != "RUNNING" or record.lease_owner != worker_id:
+                return None
+            now = datetime.now(UTC)
+            record.lease_expires_at = now + timedelta(seconds=lease_seconds)
+            record.updated_at = now
+            return self._job_from_record(record)
+
+    def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
+        with session_scope(self.session_factory) as session:
+            record = self._load_record(session, job_id)
+            if record.lease_owner != worker_id and record.status == "RUNNING":
+                raise RuntimeError(f"执行记录 {job_id} 不属于当前 worker。")
+            finished_at = datetime.now(UTC)
+            record.status = "SUCCEEDED"
+            record.finished_at = finished_at
+            record.updated_at = finished_at
+            record.lease_owner = ""
+            record.lease_expires_at = None
+            return self._job_from_record(record)
+
+    def mark_failed(self, job_id: str, *, worker_id: str, error: str, retry_delay_seconds: float) -> TaskJob:
+        with session_scope(self.session_factory) as session:
+            record = self._load_record(session, job_id)
+            if record.lease_owner != worker_id and record.status == "RUNNING":
+                raise RuntimeError(f"执行记录 {job_id} 不属于当前 worker。")
+            now = datetime.now(UTC)
+            record.last_error = error
+            record.updated_at = now
+            record.lease_owner = ""
+            record.lease_expires_at = None
+            if record.attempt < record.max_attempts:
+                record.status = "QUEUED"
+                record.next_run_at = now + timedelta(seconds=retry_delay_seconds)
+            else:
+                record.status = "FAILED"
+                record.finished_at = now
+            return self._job_from_record(record)
+
+    def request_cancel(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
+        from sqlalchemy import select
+        from app.infrastructure.db_models import TaskJobRecord
+
+        with session_scope(self.session_factory) as session:
+            statement = select(TaskJobRecord).where(TaskJobRecord.task_id == task_id)
+            if task_type:
+                statement = statement.where(TaskJobRecord.task_type == task_type)
+            records = list(session.execute(statement).scalars().all())
+            updated: list[TaskJob] = []
+            for record in records:
+                if record.status in TERMINAL_JOB_STATUSES:
+                    updated.append(self._job_from_record(record))
+                    continue
+                now = datetime.now(UTC)
+                if record.status == "QUEUED":
+                    record.status = "CANCELLED"
+                    record.finished_at = now
+                    record.lease_owner = ""
+                    record.lease_expires_at = None
+                else:
+                    record.status = "CANCEL_REQUESTED"
+                record.updated_at = now
+                updated.append(self._job_from_record(record))
+            return updated
+
+    def _load_record(self, session: Any, job_id: str) -> Any:
+        from app.infrastructure.db_models import TaskJobRecord
+
+        record = session.get(TaskJobRecord, job_id)
+        if record is None:
+            raise FileNotFoundError(f"任务执行记录不存在: {job_id}")
+        return record
+
+    def _record_values(self, job: TaskJob) -> dict[str, Any]:
+        return {
+            "job_id": job.job_id,
+            "task_id": job.task_id,
+            "task_type": job.task_type,
+            "status": job.status,
+            "payload": job.payload,
+            "attempt": job.attempt,
+            "max_attempts": job.max_attempts,
+            "queued_at": _parse_required_datetime(job.queued_at),
+            "started_at": _parse_optional_datetime(job.started_at),
+            "finished_at": _parse_optional_datetime(job.finished_at),
+            "updated_at": _parse_required_datetime(job.updated_at),
+            "next_run_at": _parse_optional_datetime(job.next_run_at),
+            "lease_owner": job.lease_owner,
+            "lease_expires_at": _parse_optional_datetime(job.lease_expires_at),
+            "last_error": job.last_error,
+        }
+
+    def _job_from_record(self, record: Any) -> TaskJob:
+        return TaskJob(
+            job_id=record.job_id,
+            task_id=record.task_id,
+            task_type=record.task_type,
+            status=record.status,
+            payload=record.payload,
+            attempt=record.attempt,
+            max_attempts=record.max_attempts,
+            queued_at=_format_datetime(record.queued_at),
+            started_at=_format_optional_datetime(record.started_at),
+            finished_at=_format_optional_datetime(record.finished_at),
+            updated_at=_format_datetime(record.updated_at),
+            next_run_at=_format_optional_datetime(record.next_run_at),
+            lease_owner=record.lease_owner,
+            lease_expires_at=_format_optional_datetime(record.lease_expires_at),
+            last_error=record.last_error,
+        )
+
+
+class LazyDefaultTaskJobRepository:
+    """Defers task job repository initialization until runtime."""
+
+    def __init__(self, app_settings: Settings = settings) -> None:
+        self.settings = app_settings
+        self._lock = threading.RLock()
+        self._repository: TaskJobRepository | None = None
+
+    def resolve(self) -> TaskJobRepository:
+        with self._lock:
+            if self._repository is None:
+                self._repository = build_task_job_repository(self.settings)
+            return self._repository
+
+    def enqueue(self, job: TaskJob) -> TaskJob:
+        return self.resolve().enqueue(job)
+
+    def load(self, job_id: str) -> TaskJob:
+        return self.resolve().load(job_id)
+
+    def list_jobs(self) -> list[TaskJob]:
+        return self.resolve().list_jobs()
+
+    def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
+        return self.resolve().claim_next(worker_id=worker_id, lease_seconds=lease_seconds)
+
+    def extend_lease(self, job_id: str, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
+        return self.resolve().extend_lease(job_id, worker_id=worker_id, lease_seconds=lease_seconds)
+
+    def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
+        return self.resolve().mark_succeeded(job_id, worker_id=worker_id)
+
+    def mark_failed(self, job_id: str, *, worker_id: str, error: str, retry_delay_seconds: float) -> TaskJob:
+        return self.resolve().mark_failed(
+            job_id,
+            worker_id=worker_id,
+            error=error,
+            retry_delay_seconds=retry_delay_seconds,
+        )
+
+    def request_cancel(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
+        return self.resolve().request_cancel(task_id, task_type=task_type)
+
+
+def build_task_job_repository(app_settings: Settings = settings) -> TaskJobRepository:
+    if app_settings.task_repository_backend == "local_json":
+        return LocalJsonTaskJobRepository(app_settings)
+    if app_settings.task_repository_backend == "postgres":
+        return PostgresTaskJobRepository(app_settings)
+    raise ValueError(f"Unsupported task repository backend: {app_settings.task_repository_backend}")
+
+
 class QueuedTaskRunner:
     """Local durable queue runner with bounded worker threads."""
 
@@ -249,7 +514,7 @@ class QueuedTaskRunner:
         autostart: bool = True,
     ) -> None:
         self.settings = app_settings
-        self.job_repository = job_repository or LocalJsonTaskJobRepository(app_settings)
+        self.job_repository = job_repository or LazyDefaultTaskJobRepository(app_settings)
         self.max_workers = max_workers or app_settings.task_runner_max_workers
         self.max_attempts = max_attempts or app_settings.task_runner_max_attempts
         self.lease_seconds = lease_seconds or app_settings.task_runner_lease_seconds
@@ -358,6 +623,9 @@ class QueuedTaskRunner:
 
     def start(self) -> None:
         with self._state_lock:
+            resolve = getattr(self.job_repository, "resolve", None)
+            if callable(resolve):
+                resolve()
             self._threads = [thread for thread in self._threads if thread.is_alive()]
             if self._threads:
                 return
@@ -441,6 +709,27 @@ def _utc_now() -> str:
 
 def _plus_seconds(seconds: float) -> str:
     return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
+
+
+def _parse_required_datetime(value: str) -> datetime:
+    parsed = _parse_optional_datetime(value)
+    return parsed or datetime.now(UTC)
+
+
+def _parse_optional_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _format_datetime(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.isoformat()
+
+
+def _format_optional_datetime(value: datetime | None) -> str:
+    return _format_datetime(value) if value else ""
 
 
 default_task_runner = QueuedTaskRunner()

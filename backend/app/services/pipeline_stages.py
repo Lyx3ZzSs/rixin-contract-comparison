@@ -30,7 +30,6 @@ from app.services.matcher import ClauseMatcher
 from app.services.pdf_highlighter import PdfHighlighter
 from app.services.pipeline import PipelineContext
 from app.services.risk_analyzer import RuleBasedRiskAnalyzer
-from app.services.screenshot_service import ScreenshotService
 from app.services.table_compare import TableComparator
 from app.services.text_coordinate_locator import TextCoordinateLocator
 
@@ -376,7 +375,6 @@ class VisualizationStage:
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.artifact_store = artifact_store
         self.highlighter = PdfHighlighter()
-        self.screenshot_service = ScreenshotService()
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
@@ -396,18 +394,6 @@ class VisualizationStage:
             compare_highlight = _copy_fallback_pdf(ctx.compare_pdf, compare_highlight)
             task.original_highlight_pdf_path = str(original_highlight)
             task.compare_highlight_pdf_path = str(compare_highlight)
-
-        try:
-            screenshot_dir = self.artifact_store.screenshot_dir(task_id)
-            task.diffs = self.screenshot_service.create_screenshots(
-                task.original_highlight_pdf_path,
-                task.compare_highlight_pdf_path,
-                task.diffs,
-                screenshot_dir,
-            )
-        except Exception as exc:
-            logger.exception("Screenshot generation failed")
-            task.errors.append(f"差异截图生成失败: {exc}")
 
 
 class SummaryStage:

@@ -105,10 +105,6 @@ const mockDiffs: DiffItem[] = [
     review_flags: ["SAME_CLAUSE_NO_LOW_SIMILARITY"],
     review_status: "UNREVIEWED",
     review_comment: "",
-    original_screenshot: "",
-    compare_screenshot: "",
-    original_screenshot_url: "/api/compare/task-1/screenshot/original.png",
-    compare_screenshot_url: "/api/compare/task-1/screenshot/compare.png",
     original_evidence: [
       {
         page_no: 1,
@@ -161,8 +157,6 @@ const mockDiffs: DiffItem[] = [
     readable_change: "新增发票条款。",
     source_type: "clause",
     review_status: "UNREVIEWED",
-    original_screenshot: "",
-    compare_screenshot: "",
     original_evidence: [],
     compare_evidence: [
       {
@@ -187,8 +181,6 @@ const mockDiffs: DiffItem[] = [
     readable_change: "删除旧质保约定。",
     source_type: "clause",
     review_status: "UNREVIEWED",
-    original_screenshot: "",
-    compare_screenshot: "",
     original_evidence: [
       {
         page_no: 1,

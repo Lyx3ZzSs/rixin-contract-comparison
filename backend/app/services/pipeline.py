@@ -198,8 +198,6 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.low_risk_count = source.low_risk_count
     target.ai_summary = source.ai_summary
     target.report_ai_analysis = source.report_ai_analysis
-    target.original_page_screenshots = source.original_page_screenshots
-    target.compare_page_screenshots = source.compare_page_screenshots
     target.diffs = _merge_review_state(target.diffs, source.diffs)
     target.errors = source.errors
 

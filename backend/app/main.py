@@ -15,6 +15,7 @@ from app.api import router as compare_router
 from app.api_extraction import router as extraction_router
 from app.clients import close_clients
 from app.config import settings
+from app.infrastructure.task_repository import default_task_repository
 from app.infrastructure.task_runner import default_task_runner
 from app.logging_config import setup_logging
 
@@ -24,6 +25,7 @@ setup_logging()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.ensure_storage()
+    default_task_repository.resolve()
     default_task_runner.start()
     try:
         yield

@@ -18,6 +18,7 @@ from scripts.import_tasks_to_db import import_tasks
 def configure_task_storage(tmp_path: Path) -> LocalJsonTaskRepository:
     settings.storage_dir = tmp_path / "storage"
     settings.tasks_dir = settings.storage_dir / "tasks"
+    settings.task_repository_backend = "local_json"
     return LocalJsonTaskRepository(settings)
 
 
@@ -65,13 +66,37 @@ def test_local_json_task_repository_skips_invalid_list_entries(tmp_path: Path) -
     assert [task.task_id for task in repository.list_compare_tasks()] == ["TVALID"]
 
 
-def test_task_repository_factory_uses_local_json_backend(tmp_path: Path) -> None:
+def test_task_repository_factory_uses_postgres_backend(tmp_path: Path) -> None:
+    pytest.importorskip("sqlalchemy")
+    app_settings = Settings(
+        storage_dir=tmp_path / "storage",
+        task_repository_backend="postgres",
+        database_url="sqlite:///:memory:",
+    )
+
+    repository = build_task_repository(app_settings)
+
+    from app.infrastructure.postgres_task_repository import PostgresTaskRepository
+
+    assert app_settings.task_repository_backend == "postgres"
+    assert isinstance(repository, PostgresTaskRepository)
+
+
+def test_task_repository_factory_uses_local_json_backend_when_explicit(tmp_path: Path) -> None:
     app_settings = Settings(storage_dir=tmp_path / "storage", task_repository_backend=" LOCAL_JSON ")
 
     repository = build_task_repository(app_settings)
 
     assert app_settings.task_repository_backend == "local_json"
     assert isinstance(repository, LocalJsonTaskRepository)
+
+
+def test_task_repository_factory_requires_database_url_for_default_postgres(tmp_path: Path) -> None:
+    pytest.importorskip("sqlalchemy")
+    app_settings = Settings(storage_dir=tmp_path / "storage", task_repository_backend="postgres", database_url="")
+
+    with pytest.raises(RuntimeError, match="DATABASE_URL must be configured"):
+        build_task_repository(app_settings)
 
 
 def test_task_repository_factory_reports_missing_sqlalchemy_for_postgres(tmp_path: Path) -> None:

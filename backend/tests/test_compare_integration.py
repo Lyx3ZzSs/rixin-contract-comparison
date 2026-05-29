@@ -29,11 +29,11 @@ def configure_storage(tmp_path: Path) -> None:
     settings.uploads_dir = settings.storage_dir / "uploads"
     settings.tasks_dir = settings.storage_dir / "tasks"
     settings.highlighted_dir = settings.storage_dir / "highlighted"
-    settings.screenshots_dir = settings.storage_dir / "screenshots"
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.debug_dir = settings.storage_dir / "debug"
     settings.task_jobs_dir = settings.storage_dir / "task_jobs"
+    settings.task_repository_backend = "local_json"
     settings.document_extractor = "auto"
     settings.align_structured_extraction = True
     settings.ai_llm_base_url = ""
@@ -89,21 +89,17 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
     assert Path(task.compare_highlight_pdf_path).exists()
     assert task.report_pdf_path == ""
     assert (settings.tasks_dir / "TTEST000001.json").exists()
-    assert any(diff.original_screenshot or diff.compare_screenshot for diff in task.diffs)
 
     task = service.ensure_report(task)
 
     assert Path(task.report_pdf_path).exists()
     assert task.report_ai_analysis is None
     assert build_report_filename(task).endswith("差异分析报告.pdf")
-    assert task.original_page_screenshots
-    assert task.compare_page_screenshots
     assert all(diff.ai_analysis is not None for diff in task.diffs)
     with fitz.open(task.report_pdf_path) as report_pdf:
         report_text = "\n".join(page.get_text() for page in report_pdf)
     assert "差异分析报告" in report_text
     assert "审计统计" in report_text
-    assert "合同差异" in report_text
     assert "修改" in report_text
 
 

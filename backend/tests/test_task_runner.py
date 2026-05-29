@@ -5,13 +5,16 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
+import pytest
+
 from app.config import Settings
-from app.infrastructure.task_runner import LocalJsonTaskJobRepository, QueuedTaskRunner
+from app.infrastructure.task_runner import LocalJsonTaskJobRepository, PostgresTaskJobRepository, QueuedTaskRunner
 
 
 def build_runner(tmp_path: Path, *, max_workers: int = 1, autostart: bool = True) -> QueuedTaskRunner:
     app_settings = Settings(
         storage_dir=tmp_path / "storage",
+        task_repository_backend="local_json",
         task_runner_max_workers=max_workers,
         task_runner_max_attempts=1,
         task_runner_lease_seconds=30,
@@ -156,3 +159,31 @@ def test_queued_task_runner_retries_failed_job_from_repository(tmp_path: Path) -
     assert stored.status == "SUCCEEDED"
     assert stored.attempt == 1
     assert seen_payload == [{"task_id": "TRETRY_API"}]
+
+
+def test_postgres_task_job_repository_contract_with_sqlite_session_factory() -> None:
+    sqlalchemy = pytest.importorskip("sqlalchemy")
+    orm = pytest.importorskip("sqlalchemy.orm")
+    from app.infrastructure.db_models import Base
+    from app.infrastructure.task_runner import TaskJob
+
+    engine = sqlalchemy.create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    session_factory = orm.sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+    repository = PostgresTaskJobRepository(session_factory=session_factory)
+
+    job = repository.enqueue(
+        TaskJob(job_id="compare:T001", task_id="T001", task_type="compare", payload={"x": 1}, max_attempts=2)
+    )
+    claimed = repository.claim_next(worker_id="worker-1", lease_seconds=30)
+    assert claimed is not None
+    repository.mark_failed(claimed.job_id, worker_id="worker-1", error="temporary", retry_delay_seconds=0)
+    claimed_again = repository.claim_next(worker_id="worker-2", lease_seconds=30)
+    assert claimed_again is not None
+    stored = repository.mark_succeeded(claimed_again.job_id, worker_id="worker-2")
+
+    assert job.status == "QUEUED"
+    assert stored.status == "SUCCEEDED"
+    assert stored.attempt == 2
+    assert repository.load("compare:T001").payload == {"x": 1}
+    assert [item.job_id for item in repository.list_jobs()] == ["compare:T001"]

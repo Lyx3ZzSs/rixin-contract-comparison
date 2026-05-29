@@ -35,7 +35,8 @@ def require_sqlalchemy_orm() -> Any:
 
 def create_engine(database_url: str | None = None) -> Any:
     sqlalchemy = require_sqlalchemy()
-    url = normalize_database_url(database_url or settings.database_url)
+    configured_url = settings.database_url if database_url is None else database_url
+    url = normalize_database_url(configured_url)
     if not url:
         raise RuntimeError("DATABASE_URL must be configured when TASK_REPOSITORY_BACKEND=postgres.")
     return sqlalchemy.create_engine(url, pool_pre_ping=True, future=True)

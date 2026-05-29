@@ -120,9 +120,13 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
                       报告
                     </a>
                   )}
-                  <button type="button" onClick={() => onOpenTask(record.task_id)}>
-                    {record.status === "PROCESSING" ? "查看进度" : "查看结果"}
-                  </button>
+                  {record.status === "PROCESSING" ? (
+                    <RecordProgress record={record} />
+                  ) : (
+                    <button type="button" onClick={() => onOpenTask(record.task_id)}>
+                      查看结果
+                    </button>
+                  )}
                 </div>
               </article>
             ))}
@@ -130,6 +134,29 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
         )}
       </div>
     </section>
+  );
+}
+
+function RecordProgress({ record }: { record: CompareRecordSummary }) {
+  const progressPercent = Math.max(0, Math.min(100, record.progress_percent || 0));
+
+  return (
+    <div className="record-progress">
+      <div className="record-progress-label">
+        <span>{record.stage || "处理中"}</span>
+        <strong>{progressPercent}%</strong>
+      </div>
+      <div
+        className="record-progress-track"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={progressPercent}
+        aria-label={`${record.stage || "处理中"} ${progressPercent}%`}
+      >
+        <span style={{ width: `${progressPercent}%` }} />
+      </div>
+    </div>
   );
 }
 

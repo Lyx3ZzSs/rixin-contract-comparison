@@ -46,12 +46,11 @@ class Settings(BaseSettings):
     uploads_dir: Path | None = None
     tasks_dir: Path | None = None
     highlighted_dir: Path | None = None
-    screenshots_dir: Path | None = None
     reports_dir: Path | None = None
     ocr_dir: Path | None = None
     debug_dir: Path | None = None
     task_jobs_dir: Path | None = None
-    task_repository_backend: Literal["local_json", "postgres"] = "local_json"
+    task_repository_backend: Literal["local_json", "postgres"] = "postgres"
     database_url: str = ""
     task_runner_max_workers: int = Field(default=2, ge=1, le=16)
     task_runner_max_attempts: int = Field(default=1, ge=1, le=5)
@@ -99,7 +98,6 @@ class Settings(BaseSettings):
     ai_llm_api_key: str = ""
     ai_llm_model: str = ""
     ai_extraction_timeout_seconds: int = Field(default=120, ge=1)
-    report_max_screenshot_pages: int = Field(default=10, ge=0)
 
     max_upload_size_mb: int = Field(default=30, ge=1)
     extraction_max_document_size_mb: int = Field(default=60, ge=1)
@@ -140,7 +138,7 @@ class Settings(BaseSettings):
     @field_validator("task_repository_backend", mode="before")
     @classmethod
     def normalize_task_repository_backend(cls, value: Any) -> str:
-        return str(value or "local_json").strip().lower()
+        return str(value or "postgres").strip().lower()
 
     @field_validator(
         "extraction_task_description",
@@ -174,10 +172,6 @@ class Settings(BaseSettings):
             self.highlighted_dir = storage_dir / "highlighted"
         else:
             self.highlighted_dir = self._resolve_runtime_path(self.highlighted_dir)
-        if self.screenshots_dir is None:
-            self.screenshots_dir = storage_dir / "screenshots"
-        else:
-            self.screenshots_dir = self._resolve_runtime_path(self.screenshots_dir)
         if self.reports_dir is None:
             self.reports_dir = storage_dir / "reports"
         else:
@@ -203,13 +197,10 @@ class Settings(BaseSettings):
     def storage_subdirs(self) -> list[Path]:
         return [
             self.uploads_dir,
-            self.tasks_dir,
             self.highlighted_dir,
-            self.screenshots_dir,
             self.reports_dir,
             self.ocr_dir,
             self.debug_dir,
-            self.task_jobs_dir,
         ]
 
     def ensure_storage(self) -> None:

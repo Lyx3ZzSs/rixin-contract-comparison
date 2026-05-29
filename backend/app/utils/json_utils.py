@@ -14,9 +14,10 @@ from app.models_extraction import ExtractionTask
 
 
 def task_json_path(task_id: str) -> Path:
-    if not isinstance(default_task_repository, LocalJsonTaskRepository):
+    repository = default_task_repository.resolve()
+    if not isinstance(repository, LocalJsonTaskRepository):
         raise RuntimeError("task_json_path is only available when TASK_REPOSITORY_BACKEND=local_json.")
-    return default_task_repository.task_json_path(task_id)
+    return repository.task_json_path(task_id)
 
 
 def to_jsonable(model: Any) -> dict[str, Any]:

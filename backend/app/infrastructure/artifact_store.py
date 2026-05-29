@@ -12,7 +12,6 @@ ArtifactArea = Literal[
     "uploads",
     "tasks",
     "highlighted",
-    "screenshots",
     "reports",
     "ocr",
     "debug",
@@ -31,12 +30,6 @@ class ArtifactStore(Protocol):
         raise NotImplementedError
 
     def highlighted_pdf_path(self, task_id: str, side: Literal["original", "compare"]) -> Path:
-        raise NotImplementedError
-
-    def screenshot_dir(self, task_id: str, *parts: str) -> Path:
-        raise NotImplementedError
-
-    def screenshot_path(self, task_id: str, filename: str) -> Path:
         raise NotImplementedError
 
     def report_pdf_path(self, task_id: str) -> Path:
@@ -90,12 +83,6 @@ class LocalArtifactStore:
     def highlighted_pdf_path(self, task_id: str, side: Literal["original", "compare"]) -> Path:
         return self.task_dir("highlighted", task_id) / f"{side}_highlighted.pdf"
 
-    def screenshot_dir(self, task_id: str, *parts: str) -> Path:
-        return self.task_dir("screenshots", task_id, *parts)
-
-    def screenshot_path(self, task_id: str, filename: str) -> Path:
-        return self.screenshot_dir(task_id) / Path(filename).name
-
     def report_pdf_path(self, task_id: str) -> Path:
         return self.task_dir("reports", task_id) / "contract_compare_report.pdf"
 
@@ -138,7 +125,6 @@ class LocalArtifactStore:
             "uploads": self.settings.uploads_dir,
             "tasks": self.settings.tasks_dir,
             "highlighted": self.settings.highlighted_dir,
-            "screenshots": self.settings.screenshots_dir,
             "reports": self.settings.reports_dir,
             "ocr": self.settings.ocr_dir,
             "debug": self.settings.debug_dir,

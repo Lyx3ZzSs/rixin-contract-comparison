@@ -210,8 +210,6 @@ class DiffItem(BaseModel):
     original_change_ranges: list[TextRange] = Field(default_factory=list)
     compare_change_ranges: list[TextRange] = Field(default_factory=list)
     ai_analysis: AIAnalysis | None = None
-    original_screenshot: str = ""
-    compare_screenshot: str = ""
 
 
 class CompareTask(BaseModel):
@@ -247,7 +245,5 @@ class CompareTask(BaseModel):
     ignored_count: int = 0
     ai_summary: str = ""
     report_ai_analysis: ReportAIAnalysis | None = None
-    original_page_screenshots: list[str] = Field(default_factory=list)
-    compare_page_screenshots: list[str] = Field(default_factory=list)
     diffs: list[DiffItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

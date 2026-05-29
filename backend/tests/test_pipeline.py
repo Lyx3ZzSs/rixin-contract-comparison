@@ -86,11 +86,11 @@ def configure_storage(tmp_path: Path) -> None:
     settings.uploads_dir = settings.storage_dir / "uploads"
     settings.tasks_dir = settings.storage_dir / "tasks"
     settings.highlighted_dir = settings.storage_dir / "highlighted"
-    settings.screenshots_dir = settings.storage_dir / "screenshots"
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.debug_dir = settings.storage_dir / "debug"
     settings.task_jobs_dir = settings.storage_dir / "task_jobs"
+    settings.task_repository_backend = "local_json"
     settings.ensure_storage()
 
 

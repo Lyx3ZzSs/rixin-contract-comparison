@@ -31,11 +31,11 @@ def configure_storage(tmp_path: Path) -> None:
     settings.uploads_dir = settings.storage_dir / "uploads"
     settings.tasks_dir = settings.storage_dir / "tasks"
     settings.highlighted_dir = settings.storage_dir / "highlighted"
-    settings.screenshots_dir = settings.storage_dir / "screenshots"
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.debug_dir = settings.storage_dir / "debug"
     settings.task_jobs_dir = settings.storage_dir / "task_jobs"
+    settings.task_repository_backend = "local_json"
     settings.document_extractor = "auto"
     settings.ai_llm_base_url = ""
     settings.ai_llm_api_key = ""
@@ -123,7 +123,10 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     diffs_response = client.get(f"/api/compare/{task_id}/diffs")
     assert diffs_response.status_code == 200
     first_diff = diffs_response.json()["diffs"][0]
-    assert "original_screenshot_url" in first_diff
+    assert "original_screenshot_url" not in first_diff
+    assert "compare_screenshot_url" not in first_diff
+    assert "original_screenshot" not in first_diff
+    assert "compare_screenshot" not in first_diff
     assert "original_evidence" in first_diff
     assert "compare_evidence" in first_diff
     assert first_diff["original_evidence"][0]["method"] == "char_exact"
@@ -131,8 +134,6 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert first_diff["original_evidence"][0]["confidence"] == 0.98
     assert first_diff["original_evidence"][0]["evidence_quality"] == "HIGH"
     assert first_diff["ai_analysis"]["risk_level"] in {"LOW", "MEDIUM", "HIGH"}
-    assert "/" not in first_diff["original_screenshot"]
-    assert "/" not in first_diff["compare_screenshot"]
     report_response = client.get(f"/api/compare/{task_id}/report")
     assert report_response.status_code == 200
     assert not report_response.headers["content-disposition"].lower().startswith("inline")
@@ -142,8 +143,8 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     task = load_task(task_id)
     assert task.report_ai_analysis is None
     assert refreshed_task["report_ai_analysis"] is None
-    assert refreshed_task["original_page_screenshots"]
-    assert refreshed_task["compare_page_screenshots"]
+    assert "original_page_screenshots" not in refreshed_task
+    assert "compare_page_screenshots" not in refreshed_task
     refreshed_diff = client.get(f"/api/compare/{task_id}/diffs").json()["diffs"][0]
     assert refreshed_diff["ai_analysis"]["raw_response"]["source"] == "rule_based"
     original_preview_response = client.get(f"/api/compare/{task_id}/original")
@@ -156,6 +157,7 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert compare_preview_response.headers["content-disposition"].lower().startswith("inline")
     assert client.get(f"/api/compare/{task_id}/highlight/original").status_code == 200
     assert client.get(f"/api/compare/{task_id}/highlight/compare").status_code == 200
+    assert client.get(f"/api/compare/{task_id}/screenshot/example.png").status_code == 404
     assert client.get("/api/compare/missing-task/original").status_code == 404
     assert client.get(f"/api/compare/{task_id}/preview").status_code == 404
 

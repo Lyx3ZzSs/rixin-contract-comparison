@@ -3,6 +3,7 @@ import { Ban, CheckCircle2, ChevronRight, Download, Eye, EyeOff, HelpCircle, Pan
 
 import { PdfDocumentViewer, type PdfDocumentViewerHandle } from "../components/PdfDocumentViewer";
 import { getCompareQuality, getDiffs, getTask, toApiUrl, updateDiffReview } from "../lib/api";
+import { navigateToComparisonRecords } from "../lib/routes";
 import type { CompareQualitySummary, CompareTask, DiffItem, DiffType, ReviewStatus } from "../types";
 
 interface ResultPageProps {
@@ -87,6 +88,12 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
       }
     };
   }, [taskId]);
+
+  useEffect(() => {
+    if (task?.status === "PROCESSING") {
+      navigateToComparisonRecords();
+    }
+  }, [task?.status]);
 
   const auditItems = useMemo(() => buildAuditItems(diffs), [diffs]);
   const axisMarkers = useMemo(() => buildAxisMarkers(auditItems), [auditItems]);
@@ -219,12 +226,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
   }
 
   if (task.status === "PROCESSING") {
-    return (
-      <StateScreen
-        title="正在执行合同对比"
-        detail={`${task.stage || "处理中"} · ${Math.max(0, Math.min(100, task.progress_percent || 0))}%`}
-      />
-    );
+    return null;
   }
 
   if (task.status === "FAILED") {

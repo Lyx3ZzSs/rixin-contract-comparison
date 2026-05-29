@@ -78,13 +78,13 @@ export interface CompareTask extends CompareResponse {
   compare_filename: string;
   ai_summary: string;
   report_ai_analysis?: ReportAIAnalysis | null;
-  original_page_screenshots?: string[];
-  compare_page_screenshots?: string[];
 }
 
 export interface CompareRecordSummary {
   task_id: string;
   status: TaskStatus;
+  stage: string;
+  progress_percent: number;
   created_at: string;
   updated_at: string;
   original_filename: string;
@@ -150,10 +150,6 @@ export interface DiffItem {
   reviewed_by?: string;
   reviewed_at?: string;
   ai_analysis: AIAnalysis | null;
-  original_screenshot: string;
-  compare_screenshot: string;
-  original_screenshot_url?: string;
-  compare_screenshot_url?: string;
   original_evidence?: EvidenceBox[];
   compare_evidence?: EvidenceBox[];
 }

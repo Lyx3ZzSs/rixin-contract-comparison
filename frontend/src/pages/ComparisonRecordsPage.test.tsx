@@ -1,5 +1,4 @@
 import { act, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getCompareRecords } from "../lib/api";
@@ -14,6 +13,8 @@ vi.mock("../lib/api", () => ({
 const processingRecord: CompareRecordSummary = {
   task_id: "task-processing",
   status: "PROCESSING",
+  stage: "文档解析中",
+  progress_percent: 35,
   created_at: "2026-05-12T00:00:00Z",
   updated_at: "2026-05-12T00:00:00Z",
   original_filename: "original.pdf",
@@ -41,19 +42,18 @@ describe("ComparisonRecordsPage", () => {
   });
 
   it("opens processing records as progress and completed records as results", async () => {
-    const user = userEvent.setup();
     const onOpenTask = vi.fn();
     vi.mocked(getCompareRecords).mockResolvedValueOnce([processingRecord, completedRecord]);
 
     render(<ComparisonRecordsPage onOpenTask={onOpenTask} onCreateComparison={vi.fn()} />);
 
     await screen.findByText("task-processing");
-    expect(screen.getByRole("button", { name: "查看进度" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看进度" })).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "35");
+    expect(screen.getByText("文档解析中")).toBeInTheDocument();
+    expect(screen.getByText("35%")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "查看结果" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "查看进度" }));
-
-    expect(onOpenTask).toHaveBeenCalledWith("task-processing");
+    expect(onOpenTask).not.toHaveBeenCalled();
   });
 
   it("polls records while any comparison is processing", async () => {

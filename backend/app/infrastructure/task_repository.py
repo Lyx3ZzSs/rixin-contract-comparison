@@ -171,4 +171,43 @@ def build_task_repository(app_settings: Settings = settings) -> TaskRepository:
     raise ValueError(f"Unsupported task repository backend: {app_settings.task_repository_backend}")
 
 
-default_task_repository = build_task_repository()
+class LazyDefaultTaskRepository:
+    """Defers repository initialization until runtime configuration is available."""
+
+    def __init__(self, app_settings: Settings = settings) -> None:
+        self.settings = app_settings
+        self._lock = threading.RLock()
+        self._repository: TaskRepository | None = None
+
+    def resolve(self) -> TaskRepository:
+        with self._lock:
+            if self._repository is None:
+                self._repository = build_task_repository(self.settings)
+            return self._repository
+
+    def save_compare_task(self, task: CompareTask) -> Path | None:
+        return self.resolve().save_compare_task(task)
+
+    def load_compare_task(self, task_id: str) -> CompareTask:
+        return self.resolve().load_compare_task(task_id)
+
+    def list_compare_tasks(self) -> list[CompareTask]:
+        return self.resolve().list_compare_tasks()
+
+    def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
+        return self.resolve().update_compare_task(task_id, mutate)
+
+    def save_extraction_task(self, task: ExtractionTask) -> Path | None:
+        return self.resolve().save_extraction_task(task)
+
+    def load_extraction_task(self, task_id: str) -> ExtractionTask:
+        return self.resolve().load_extraction_task(task_id)
+
+    def list_extraction_tasks(self) -> list[ExtractionTask]:
+        return self.resolve().list_extraction_tasks()
+
+    def update_extraction_task(self, task_id: str, mutate: Callable[[ExtractionTask], None]) -> ExtractionTask:
+        return self.resolve().update_extraction_task(task_id, mutate)
+
+
+default_task_repository = LazyDefaultTaskRepository()

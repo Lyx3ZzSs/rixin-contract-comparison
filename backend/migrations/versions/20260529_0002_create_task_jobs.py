@@ -1,8 +1,8 @@
-"""create task records
+"""create task jobs
 
-Revision ID: 20260527_0001
-Revises:
-Create Date: 2026-05-27
+Revision ID: 20260529_0002
+Revises: 20260527_0001
+Create Date: 2026-05-29
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from pathlib import Path
 
 from alembic import op
 
-revision = "20260527_0001"
-down_revision = None
+revision = "20260529_0002"
+down_revision = "20260527_0001"
 branch_labels = None
 depends_on = None
 
