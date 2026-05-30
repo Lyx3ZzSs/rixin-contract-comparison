@@ -3,11 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
-RiskLevel = Literal["LOW", "MEDIUM", "HIGH"]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
@@ -149,40 +148,6 @@ class ClausePair(BaseModel):
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class AIAnalysis(BaseModel):
-    risk_level: RiskLevel = "LOW"
-    risk_score: int = Field(default=20, ge=0, le=100)
-    contract_element: str = "一般条款"
-    change_summary: str = "未发现重大风险。"
-    risk_explanation: str = "该差异需要结合业务背景复核。"
-    review_suggestion: str = "建议由合同经办人与法务共同确认。"
-    raw_response: dict[str, Any] | None = None
-
-    @field_validator("risk_level", mode="before")
-    @classmethod
-    def normalize_risk_level(cls, value: str) -> str:
-        value = str(value).upper()
-        if value not in {"LOW", "MEDIUM", "HIGH"}:
-            raise ValueError("risk_level must be LOW, MEDIUM, or HIGH")
-        return value
-
-
-class ReportAIAnalysis(BaseModel):
-    risk_level: RiskLevel = "LOW"
-    summary: str = "未发现重大风险。"
-    major_risks: list[str] = Field(default_factory=list)
-    review_suggestions: list[str] = Field(default_factory=list)
-    raw_response: dict[str, Any] | None = None
-
-    @field_validator("risk_level", mode="before")
-    @classmethod
-    def normalize_risk_level(cls, value: str) -> str:
-        value = str(value).upper()
-        if value not in {"LOW", "MEDIUM", "HIGH"}:
-            raise ValueError("risk_level must be LOW, MEDIUM, or HIGH")
-        return value
-
-
 class DiffItem(BaseModel):
     diff_id: str
     diff_type: DiffType
@@ -209,7 +174,6 @@ class DiffItem(BaseModel):
     compare_evidence: list[EvidenceBox] = Field(default_factory=list)
     original_change_ranges: list[TextRange] = Field(default_factory=list)
     compare_change_ranges: list[TextRange] = Field(default_factory=list)
-    ai_analysis: AIAnalysis | None = None
 
 
 class CompareTask(BaseModel):
@@ -235,15 +199,10 @@ class CompareTask(BaseModel):
     document_profiles: dict[str, DocumentProfile] = Field(default_factory=dict)
     debug_artifact_paths: dict[str, str] = Field(default_factory=dict)
     diff_count: int = 0
-    high_risk_count: int = 0
-    medium_risk_count: int = 0
-    low_risk_count: int = 0
     reviewed_count: int = 0
     confirmed_count: int = 0
     false_positive_count: int = 0
     manual_review_count: int = 0
     ignored_count: int = 0
-    ai_summary: str = ""
-    report_ai_analysis: ReportAIAnalysis | None = None
     diffs: list[DiffItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

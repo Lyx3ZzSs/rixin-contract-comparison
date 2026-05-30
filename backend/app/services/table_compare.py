@@ -161,6 +161,7 @@ class TableComparator:
         rows = self._repair_shifted_product_field_rows(rows, col_count)
         rows = self._repair_embedded_summary_transitions(rows, col_count)
         rows = self._normalize_summary_rows(rows, col_count, tables)
+        rows = self._remove_orphan_overflow_sequence_cells(rows, col_count)
         first = tables[0] if tables else None
         return _LogicalTable(
             rows=rows,
@@ -424,6 +425,10 @@ class TableComparator:
         if candidate is None:
             return None
 
+        detail_split = self._split_adjacent_sequence_detail_merged_row(row, missing_seq, col_count, candidate)
+        if detail_split is not None:
+            return detail_split
+
         name_text = self._cell_text_from_row(row, 1)
         detail_text = self._cell_text_from_row(row, 2)
         brand_text = self._cell_text_from_row(row, 3)
@@ -503,6 +508,104 @@ class TableComparator:
                 source_text=row.source_text,
             ),
         ]
+
+    def _split_adjacent_sequence_detail_merged_row(
+        self,
+        row: _LogicalRow,
+        missing_seq: int,
+        col_count: int,
+        candidate: dict[str, str],
+    ) -> list[_LogicalRow] | None:
+        name_text = self._cell_text_from_row(row, 1)
+        detail_text = self._cell_text_from_row(row, 2)
+        brand_text = self._cell_text_from_row(row, 3)
+        missing_detail = candidate["detail"]
+        missing_detail_norm = self._normalize(missing_detail)
+        detail_norm = self._normalize(detail_text)
+        if not missing_detail_norm or missing_detail_norm not in detail_norm:
+            return None
+
+        source_norm = self._normalize(row.source_text)
+        if not self._source_contains_token(source_norm, missing_detail_norm, allow_loose_cjk=True):
+            return None
+
+        current_detail = self._remove_merged_detail_text(detail_text, missing_detail)
+        current_detail_norm = self._normalize(current_detail)
+        if not current_detail_norm or current_detail_norm == detail_norm:
+            return None
+        if current_detail_norm == missing_detail_norm:
+            return None
+
+        current_name_norm = self._normalize(name_text)
+        if current_name_norm and current_name_norm not in current_detail_norm and current_detail_norm not in current_name_norm:
+            if SequenceMatcher(None, current_name_norm, current_detail_norm).ratio() < 0.72:
+                return None
+
+        current_brand = self._dedupe_repeated_cell_text(brand_text)
+        kept_cells: list[_LogicalCell] = []
+        missing_cells: list[_LogicalCell] = []
+        for col in range(col_count):
+            source_cell = self._cell_at_col(row, col) or row.cells[0]
+            kept_text = self._cell_text_from_row(row, col)
+            missing_text = ""
+            if col == 0:
+                kept_text = str(self._row_sequence_int(row) or kept_text)
+                missing_text = str(missing_seq)
+            elif col == 2:
+                kept_text = current_detail
+                missing_text = missing_detail
+            elif col == 1:
+                missing_text = candidate["name"] or missing_detail
+            elif col == 3:
+                kept_text = current_brand
+                missing_text = candidate["brand"]
+            elif col == 4:
+                missing_text = candidate["unit"]
+            elif col == 5:
+                missing_text = candidate["quantity"]
+
+            if kept_text or self._cell_at_col(row, col) is not None:
+                kept_cells.append(self._clone_logical_cell(source_cell, row_index=0, col_index=col, text=kept_text))
+            if missing_text:
+                missing_cells.append(self._clone_logical_cell(source_cell, row_index=1, col_index=col, text=missing_text))
+
+        if len([cell for cell in missing_cells if self._normalize(cell.text)]) < 5:
+            return None
+
+        return [
+            _LogicalRow(
+                row_index=0,
+                cells=kept_cells,
+                page_no=row.page_no,
+                source_block_id=row.source_block_id,
+                source_row=row.source_row,
+                section_title=row.section_title,
+                source_text=row.source_text,
+            ),
+            _LogicalRow(
+                row_index=1,
+                cells=missing_cells,
+                page_no=row.page_no,
+                source_block_id=row.source_block_id,
+                source_row=row.source_row,
+                section_title=row.section_title,
+                source_text=row.source_text,
+            ),
+        ]
+
+    def _remove_merged_detail_text(self, detail_text: str, missing_detail: str) -> str:
+        raw = unicodedata.normalize("NFKC", detail_text or "").strip()
+        missing_raw = unicodedata.normalize("NFKC", missing_detail or "").strip()
+        if not raw or not missing_raw:
+            return raw
+        if missing_raw in raw:
+            return raw.replace(missing_raw, "", 1).strip()
+
+        detail_norm = self._normalize(raw)
+        missing_norm = self._normalize(missing_raw)
+        if missing_norm and missing_norm in detail_norm:
+            return detail_norm.replace(missing_norm, "", 1).strip()
+        return raw
 
     def _missing_sequence_candidate_from_source(self, source_text: str, missing_seq: int) -> dict[str, str] | None:
         tokens = self._source_line_tokens(source_text)
@@ -1279,6 +1382,8 @@ class TableComparator:
         normalized: list[_LogicalRow] = []
         used_source_pairs: set[tuple[str, int]] = set()
         for row in rows:
+            row_labels, row_amounts = self._summary_labels_and_amounts_from_row(row)
+            prefer_source_amounts = len(row_labels) > 1 and len(row_amounts) < len(row_labels)
             split_rows = self._split_merged_summary_row(row, col_count)
             if split_rows is None:
                 normalized.append(row)
@@ -1288,9 +1393,38 @@ class TableComparator:
                 label = self._summary_label_from_row(split_row)
                 if not label:
                     continue
+                pairs = source_pairs.get(split_row.source_block_id, [])
+                current_amount = self._summary_amount_from_row(split_row)
+                if prefer_source_amounts:
+                    if not (
+                        current_amount
+                        and self._mark_matching_summary_pair_used(
+                            pairs,
+                            split_row.source_block_id,
+                            label,
+                            current_amount,
+                            used_source_pairs,
+                        )
+                    ):
+                        source_amount = self._next_summary_amount_from_source(
+                            pairs,
+                            split_row.source_block_id,
+                            label,
+                            used_source_pairs,
+                        )
+                        if source_amount:
+                            self._set_summary_row_amount(split_row, source_amount)
+                elif current_amount:
+                    self._mark_matching_summary_pair_used(
+                        pairs,
+                        split_row.source_block_id,
+                        label,
+                        current_amount,
+                        used_source_pairs,
+                    )
                 if not self._summary_amount_from_row(split_row):
                     fallback = self._next_summary_amount_from_source(
-                        source_pairs.get(split_row.source_block_id, []),
+                        pairs,
                         split_row.source_block_id,
                         label,
                         used_source_pairs,
@@ -1301,6 +1435,124 @@ class TableComparator:
                     normalized.append(split_row)
 
         return self._reindex_logical_rows(normalized)
+
+    def _summary_labels_and_amounts_from_row(self, row: _LogicalRow) -> tuple[list[str], list[str]]:
+        labels: list[str] = []
+        amounts: list[str] = []
+        for cell in row.cells:
+            cell_labels = self._summary_labels_from_summary_text(cell.text)
+            if cell_labels:
+                labels.extend(cell_labels)
+                amounts.extend(self._summary_amounts(cell.text, labels=cell_labels))
+                continue
+            amounts.extend(self._summary_amounts(cell.text))
+        return labels, amounts
+
+    def _mark_matching_summary_pair_used(
+        self,
+        pairs: list[_SummaryPair],
+        source_block_id: str,
+        label: str,
+        amount: str,
+        used: set[tuple[str, int]],
+    ) -> bool:
+        canonical_amount = self._canonical_amount(amount)
+        if not canonical_amount:
+            return False
+        for index, pair in enumerate(pairs):
+            key = (source_block_id, index)
+            if key in used:
+                continue
+            if pair.label != label or pair.canonical_amount != canonical_amount:
+                continue
+            used.add(key)
+            return True
+        return False
+
+    def _remove_orphan_overflow_sequence_cells(self, rows: list[_LogicalRow], col_count: int) -> list[_LogicalRow]:
+        if col_count < 10:
+            return rows
+
+        repaired: list[_LogicalRow] = []
+        changed = False
+        for index, row in enumerate(rows):
+            current_seq = self._row_sequence_int(row)
+            if current_seq is None or not self._is_dense_product_row_for_overflow_sequence_repair(row, col_count):
+                repaired.append(row)
+                continue
+
+            next_seq = self._next_sequence_int(rows, index + 1)
+            kept_cells: list[_LogicalCell] = []
+            removed = False
+            for cell in row.cells:
+                if self._is_orphan_overflow_sequence_cell(row, cell, current_seq, next_seq):
+                    removed = True
+                    continue
+                kept_cells.append(cell)
+
+            if not removed:
+                repaired.append(row)
+                continue
+
+            changed = True
+            repaired.append(_LogicalRow(
+                row_index=row.row_index,
+                cells=kept_cells,
+                page_no=row.page_no,
+                source_block_id=row.source_block_id,
+                source_row=row.source_row,
+                section_title=row.section_title,
+                source_text=row.source_text,
+            ))
+
+        return self._reindex_logical_rows(repaired) if changed else rows
+
+    def _is_dense_product_row_for_overflow_sequence_repair(self, row: _LogicalRow, col_count: int) -> bool:
+        if self._summary_label_from_row(row):
+            return False
+        main_cells = [
+            cell
+            for cell in row.cells
+            if cell.col_index < min(col_count, 8)
+            and self._normalize(cell.text)
+            and not self._is_noise(self._normalize(cell.text))
+        ]
+        if len(main_cells) < 6:
+            return False
+        if not self._normalize(self._cell_text_from_row(row, 1)):
+            return False
+        unit = self._cell_text_from_row(row, 4)
+        if not self._first_unit_token([unit]):
+            return False
+        return any(
+            self._canonical_amount(self._cell_text_from_row(row, col))
+            for col in (6, 7)
+        )
+
+    def _is_orphan_overflow_sequence_cell(
+        self,
+        row: _LogicalRow,
+        cell: _LogicalCell,
+        current_seq: int,
+        next_seq: int | None,
+    ) -> bool:
+        if cell.col_index < 9:
+            return False
+        text = self._normalize(cell.text)
+        if not re.fullmatch(r"\d{1,3}", text):
+            return False
+        candidate = int(text)
+        if candidate != current_seq + 1:
+            return False
+        if next_seq != candidate + 1:
+            return False
+
+        main_data_cols = [
+            other.col_index
+            for other in row.cells
+            if other.col_index < 9 and self._normalize(other.text)
+        ]
+        return bool(main_data_cols and cell.col_index > max(main_data_cols))
 
     def _split_merged_summary_row(self, row: _LogicalRow, col_count: int) -> list[_LogicalRow] | None:
         if not self._is_summary_candidate_row(row, col_count):

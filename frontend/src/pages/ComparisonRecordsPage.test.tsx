@@ -20,9 +20,6 @@ const processingRecord: CompareRecordSummary = {
   original_filename: "original.pdf",
   compare_filename: "compare.pdf",
   diff_count: 0,
-  high_risk_count: 0,
-  medium_risk_count: 0,
-  low_risk_count: 0,
   report_url: "",
 };
 

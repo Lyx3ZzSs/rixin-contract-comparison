@@ -428,6 +428,71 @@ class TestStructuredTableComparison:
         assert warnings == []
         assert any("5" in diff.original_text for diff in diffs)
 
+    def test_overflow_orphan_sequence_cell_is_filtered(self):
+        original_html = _product_table([
+            "<tr><td>5</td><td>显示器</td><td>X20H 19寸放机柜带背板安装螺丝</td><td>方大极视</td>"
+            "<td>台</td><td>1</td><td>500</td><td>500</td><td></td><td>6</td></tr>",
+            "<tr><td>7</td><td>防火墙</td><td>SG-8000 S8330 8口/接网监/双电源</td><td>安博通</td>"
+            "<td>台</td><td>2</td><td>3000</td><td>6000</td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>5</td><td>显示器</td><td>X20H 19寸放机柜带背板安装螺丝</td><td>方大极视</td>"
+            "<td>台</td><td>1</td><td>500</td><td>500</td><td></td></tr>",
+            "<tr><td>7</td><td>防火墙</td><td>SG-8000 S8330 8口/接网监/双电源</td><td>安博通</td>"
+            "<td>台</td><td>2</td><td>3000</td><td>6000</td><td></td></tr>",
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings == []
+        assert not any(diff.diff_type == "DELETE" and diff.original_text == "6" for diff in diffs)
+
+    def test_d006_style_sequence_text_change_still_reports_modify(self):
+        original_html = (
+            "<table><tr><td>序号</td><td>场站名称</td><td>类型</td></tr>"
+            "<tr><td>1</td><td>广核淮阴风电</td><td>风电</td></tr></table>"
+        )
+        compare_html = (
+            "<table><tr><td>序号</td><td>场站名称</td><td>类型</td></tr>"
+            "<tr><td>一</td><td>广核淮阴风电</td><td>风电</td></tr></table>"
+        )
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings == []
+        assert len(diffs) == 1
+        assert diffs[0].diff_type == "MODIFY"
+        assert diffs[0].original_text == "1"
+        assert diffs[0].compare_text == "一"
+
+    def test_product_quantity_delete_is_not_filtered_as_overflow_sequence(self):
+        original_html = _product_table([
+            "<tr><td>5</td><td>显示器</td><td>X20H</td><td>方大极视</td>"
+            "<td>台</td><td>1</td><td>500</td><td>500</td><td></td></tr>",
+            "<tr><td>6</td><td>防火墙</td><td>SG-8000</td><td>安博通</td>"
+            "<td>台</td><td>2</td><td>3000</td><td>6000</td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>5</td><td>显示器</td><td>X20H</td><td>方大极视</td>"
+            "<td>台</td><td></td><td>500</td><td>500</td><td></td></tr>",
+            "<tr><td>6</td><td>防火墙</td><td>SG-8000</td><td>安博通</td>"
+            "<td>台</td><td>2</td><td>3000</td><td>6000</td><td></td></tr>",
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings == []
+        assert any(diff.diff_type == "DELETE" and diff.original_text == "1" for diff in diffs)
+
     def test_d006_style_shifted_row_uses_plain_ocr_text_to_avoid_false_diff(self):
         original_html = (
             "<table>"
@@ -699,6 +764,76 @@ class TestStructuredTableComparison:
 
         assert warnings == []
         assert diffs == []
+
+    def test_d012_style_split_summary_amounts_use_plain_ocr_pairs(self):
+        original_html = _product_table([
+            _product_row("1", "国产操作系统", "12000"),
+            "<tr><td colspan='7'>小计 1套总计</td><td>12000</td><td></td></tr>",
+            "<tr><td colspan='7'>99000 198000</td><td></td><td></td></tr>",
+            "<tr><td colspan='7'>2套合计 6套总合计</td><td>594000</td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            _product_row("1", "国产操作系统", "12000"),
+            "<tr><td>小计</td><td>12000</td><td></td></tr>",
+            "<tr><td>1套总计</td><td>99000</td><td></td></tr>",
+            "<tr><td>2套合计</td><td>198000</td><td></td></tr>",
+            "<tr><td>6套总合计</td><td>594000</td><td></td></tr>",
+        ])
+        source_text = "小计\n12000\n1套总计\n99000\n2套合计\n198000\n6套总合计\n594000"
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_raw_table_block("o1", 1, original_html, source_text)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings == []
+        combined = " ".join(diff.readable_change for diff in diffs)
+        assert "594000' -> '198000" not in combined
+
+    def test_split_summary_amount_repair_still_reports_real_change(self):
+        original_html = _product_table([
+            _product_row("1", "国产操作系统", "12000"),
+            "<tr><td colspan='7'>小计 1套总计</td><td>12000</td><td></td></tr>",
+            "<tr><td colspan='7'>99000 198000</td><td></td><td></td></tr>",
+            "<tr><td colspan='7'>2套合计 6套总合计</td><td>594000</td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            _product_row("1", "国产操作系统", "12000"),
+            "<tr><td>小计</td><td>12000</td><td></td></tr>",
+            "<tr><td>1套总计</td><td>99000</td><td></td></tr>",
+            "<tr><td>2套合计</td><td>199000</td><td></td></tr>",
+            "<tr><td>6套总合计</td><td>594000</td><td></td></tr>",
+        ])
+        source_text = "小计\n12000\n1套总计\n99000\n2套合计\n198000\n6套总合计\n594000"
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_raw_table_block("o1", 1, original_html, source_text)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings == []
+        combined = " ".join(diff.readable_change for diff in diffs)
+        assert "'198000' -> '199000'" in combined
+
+    def test_split_summary_without_plain_ocr_pairs_keeps_structured_amounts(self):
+        original_html = _product_table([
+            _product_row("1", "国产操作系统", "12000"),
+            "<tr><td colspan='7'>2套合计 6套总合计</td><td>594000</td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            _product_row("1", "国产操作系统", "12000"),
+            "<tr><td>2套合计</td><td>198000</td><td></td></tr>",
+            "<tr><td>6套总合计</td><td>594000</td><td></td></tr>",
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings == []
+        combined = " ".join(diff.readable_change for diff in diffs)
+        assert "'594000' -> '198000'" in combined
 
     def test_label_only_summary_row_uses_plain_ocr_amount_before_comparison(self):
         original_html = _product_table([
@@ -1272,6 +1407,37 @@ class TestStructuredTableComparison:
         compare_text = (
             "理论可用功\n6\n理论可用功率计算\n国能日新\n率计算\n套\n1\n"
             "接口开放及\n7\n接口开放及系统开发\n国能日新\n年\n系统开发\n1\n"
+            "技术维护服\n8\n数值天气预报、系统维护、备份等服务。\n国能日新\n年\n1\n务费"
+        )
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_raw_table_block("c1", 1, compare_html, compare_text)]),
+        )
+
+        assert warnings == []
+        combined = " ".join(diff.readable_change for diff in diffs)
+        assert "理论可用功" not in combined
+        assert "接口开放" not in combined
+
+    def test_adjacent_sequence_detail_cell_merged_by_structure_is_repaired_from_plain_ocr(self):
+        original_html = _product_table([
+            "<tr><td>6</td><td>理论可用功 率计算</td><td>理论可用功率计算</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>7</td><td>接口开放及 系统开发</td><td>接口开放及系统开发</td><td>国能日新</td>"
+            "<td>年</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>8</td><td>技术维护服 务费</td><td>数值天气预报、系统维护、备份等服务。</td><td>国能日新</td>"
+            "<td>年</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>6</td><td>理论可用功 率计算</td><td>理论可用功率计算 接口开放及系统开发</td>"
+            "<td>国能日新</td><td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>8</td><td>技术维护服 务费</td><td>数值天气预报、系统维护、备份等服务。</td><td>国能日新</td>"
+            "<td>年</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+        compare_text = (
+            "理论可用功\n6\n理论可用功率计算\n国能日新\n套\n1\n率计算\n"
+            "接口开放及\n7\n接口开放及系统开发\n国能日新\n年\n1\n系统开发\n"
             "技术维护服\n8\n数值天气预报、系统维护、备份等服务。\n国能日新\n年\n1\n务费"
         )
 

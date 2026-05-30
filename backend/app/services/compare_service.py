@@ -33,7 +33,6 @@ class CompareService:
 
     def _build_pipeline(self) -> ComparePipeline:
         from app.services.pipeline_stages import (
-            AnalysisStage,
             ClauseDiffStage,
             EvidenceStage,
             MatchStage,
@@ -56,7 +55,6 @@ class CompareService:
                 MatchStage(artifact_store=self.artifact_store),
                 ClauseDiffStage(artifact_store=self.artifact_store),
                 EvidenceStage(),
-                AnalysisStage(artifact_store=self.artifact_store),
                 VisualizationStage(artifact_store=self.artifact_store),
                 SummaryStage(),
             ],

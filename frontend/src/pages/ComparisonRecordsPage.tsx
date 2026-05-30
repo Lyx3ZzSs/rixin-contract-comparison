@@ -105,14 +105,6 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
                     <b>{record.diff_count}</b>
                     差异
                   </span>
-                  <span>
-                    <b>{record.high_risk_count}</b>
-                    高风险
-                  </span>
-                  <span>
-                    <b>{record.medium_risk_count}</b>
-                    中风险
-                  </span>
                 </div>
                 <div className="record-actions">
                   {record.report_url && (

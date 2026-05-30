@@ -8,7 +8,6 @@ TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 TaskExecutionStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED"]
 TaskExecutionType = Literal["compare", "extraction"]
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
-RiskLevel = Literal["LOW", "MEDIUM", "HIGH"]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
 ExtractionFieldStatus = Literal["found", "not_found", "error"]
@@ -38,32 +37,12 @@ class TextRangeResponse(BaseModel):
     highlight_type: DiffType = "MODIFY"
 
 
-class AIAnalysisResponse(BaseModel):
-    risk_level: RiskLevel = "LOW"
-    risk_score: int = Field(default=20, ge=0, le=100)
-    contract_element: str = "一般条款"
-    change_summary: str = "未发现重大风险。"
-    risk_explanation: str = "该差异需要结合业务背景复核。"
-    review_suggestion: str = "建议由合同经办人与法务共同确认。"
-    raw_response: dict[str, Any] | None = None
-
-
-class ReportAIAnalysisResponse(BaseModel):
-    risk_level: RiskLevel = "LOW"
-    summary: str = "未发现重大风险。"
-    major_risks: list[str] = Field(default_factory=list)
-    review_suggestions: list[str] = Field(default_factory=list)
-
-
 class CompareTaskResponse(BaseModel):
     task_id: str
     status: TaskStatus
     stage: str
     progress_percent: int
     diff_count: int
-    high_risk_count: int
-    medium_risk_count: int
-    low_risk_count: int
     reviewed_count: int = 0
     confirmed_count: int = 0
     false_positive_count: int = 0
@@ -88,8 +67,6 @@ class CompareTaskDetailResponse(CompareTaskResponse):
     updated_at: str
     original_filename: str
     compare_filename: str
-    ai_summary: str = ""
-    report_ai_analysis: ReportAIAnalysisResponse | None = None
 
 
 class CompareRecordResponse(BaseModel):
@@ -102,9 +79,6 @@ class CompareRecordResponse(BaseModel):
     original_filename: str
     compare_filename: str
     diff_count: int
-    high_risk_count: int
-    medium_risk_count: int
-    low_risk_count: int
     report_url: str
 
 
@@ -152,7 +126,6 @@ class CompareDiffResponse(BaseModel):
     compare_evidence: list[EvidenceBoxResponse] = Field(default_factory=list)
     original_change_ranges: list[TextRangeResponse] = Field(default_factory=list)
     compare_change_ranges: list[TextRangeResponse] = Field(default_factory=list)
-    ai_analysis: AIAnalysisResponse | None = None
 
 
 class CompareDiffListResponse(BaseModel):

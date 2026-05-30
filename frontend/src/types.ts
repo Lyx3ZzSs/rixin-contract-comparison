@@ -1,6 +1,5 @@
 export type TaskStatus = "PROCESSING" | "COMPLETED" | "FAILED";
 export type DiffType = "ADD" | "DELETE" | "MODIFY";
-export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
 export type EvidenceQuality = "LOW" | "MEDIUM" | "HIGH";
 export type ReviewStatus = "UNREVIEWED" | "CONFIRMED" | "FALSE_POSITIVE" | "NEEDS_REVIEW" | "IGNORED";
 
@@ -49,9 +48,6 @@ export interface CompareResponse {
   stage: string;
   progress_percent: number;
   diff_count: number;
-  high_risk_count: number;
-  medium_risk_count: number;
-  low_risk_count: number;
   reviewed_count?: number;
   confirmed_count?: number;
   false_positive_count?: number;
@@ -76,8 +72,6 @@ export interface CompareTask extends CompareResponse {
   updated_at: string;
   original_filename: string;
   compare_filename: string;
-  ai_summary: string;
-  report_ai_analysis?: ReportAIAnalysis | null;
 }
 
 export interface CompareRecordSummary {
@@ -90,26 +84,7 @@ export interface CompareRecordSummary {
   original_filename: string;
   compare_filename: string;
   diff_count: number;
-  high_risk_count: number;
-  medium_risk_count: number;
-  low_risk_count: number;
   report_url: string;
-}
-
-export interface AIAnalysis {
-  risk_level: RiskLevel;
-  risk_score: number;
-  contract_element: string;
-  change_summary: string;
-  risk_explanation: string;
-  review_suggestion: string;
-}
-
-export interface ReportAIAnalysis {
-  risk_level: RiskLevel;
-  summary: string;
-  major_risks: string[];
-  review_suggestions: string[];
 }
 
 export interface BBox {
@@ -149,7 +124,6 @@ export interface DiffItem {
   review_comment?: string;
   reviewed_by?: string;
   reviewed_at?: string;
-  ai_analysis: AIAnalysis | null;
   original_evidence?: EvidenceBox[];
   compare_evidence?: EvidenceBox[];
 }
@@ -228,7 +202,6 @@ export interface CompareQualitySummary {
   status: TaskStatus;
   diff_count: number;
   review_stats: DiffReviewResponse["review_stats"];
-  risk_counts: Record<RiskLevel, number>;
   source_counts: Record<string, number>;
   evidence_quality_counts: Record<EvidenceQuality, number>;
   document_profile_summary: Record<string, {

@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     ppstructure_use_doc_unwarping: bool = False
     ppstructure_use_textline_orientation: bool = False
     ppstructure_use_table_recognition: bool = True
-    ppstructure_use_seal_recognition: bool = False
+    ppstructure_use_seal_recognition: bool = True
     ppstructure_use_region_detection: bool = True
     ppstructure_format_block_content: bool = True
     hybrid_layout_overlap_threshold: float = Field(default=0.5, ge=0.0, le=1.0)

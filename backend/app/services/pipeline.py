@@ -193,11 +193,6 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.document_profiles = source.document_profiles
     target.debug_artifact_paths = source.debug_artifact_paths
     target.diff_count = source.diff_count
-    target.high_risk_count = source.high_risk_count
-    target.medium_risk_count = source.medium_risk_count
-    target.low_risk_count = source.low_risk_count
-    target.ai_summary = source.ai_summary
-    target.report_ai_analysis = source.report_ai_analysis
     target.diffs = _merge_review_state(target.diffs, source.diffs)
     target.errors = source.errors
 
@@ -234,7 +229,6 @@ def _has_review_state(diff: DiffItem) -> bool:
 
 def _default_stages() -> list[PipelineStage]:
     from app.services.pipeline_stages import (
-        AnalysisStage,
         ClauseDiffStage,
         EvidenceStage,
         ExtractionStage,
@@ -252,7 +246,6 @@ def _default_stages() -> list[PipelineStage]:
         MatchStage(),
         ClauseDiffStage(),
         EvidenceStage(),
-        AnalysisStage(),
         VisualizationStage(),
         SummaryStage(),
     ]

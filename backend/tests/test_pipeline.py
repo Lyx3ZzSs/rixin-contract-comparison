@@ -20,11 +20,12 @@ from app.models import (
 from app.services.extractors.base import ExtractionResult
 from app.services.pipeline import ComparePipeline, PipelineContext
 from app.services.pipeline_stages import (
-    AnalysisStage,
     ClauseDiffStage,
     MatchStage,
+    PreClauseDiffStage,
     SplitStage,
     SummaryStage,
+    _deduplicate_cover_table_diffs,
 )
 
 
@@ -44,6 +45,31 @@ def make_document(text: str = "test clause text") -> Document:
                         page_no=1,
                         text=text,
                         bbox=BBox(x0=10, y0=10, x1=100, y1=30),
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def make_table_document(html: str, text: str = "") -> Document:
+    return Document(
+        filename="test.pdf",
+        path="test.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1_t1",
+                        page_no=1,
+                        text=text or html,
+                        raw_html=html,
+                        bbox=BBox(x0=50, y0=100, x1=540, y1=500),
+                        block_type="table",
                     )
                 ],
             )
@@ -176,28 +202,68 @@ class TestClauseDiffStageMerge:
         assert ctx.diffs == [meta_diff, table_diff]
 
 
-class TestAnalysisStage:
-    def test_assigns_risk_levels(self, tmp_path: Path) -> None:
+class TestPreClauseDiffStage:
+    def test_deduplicates_cover_field_table_duplicate(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        ctx.diffs = [
-            DiffItem(
-                diff_id="D001",
-                diff_type="MODIFY",
-                title="付款条款变更",
-                original_text="付款30天",
-                compare_text="付款45天",
-            ),
-        ]
+        original_html = (
+            "<table><tr><td>甲方</td><td>江苏东大</td></tr>"
+            "<tr><td>签订日期</td><td>2026年4月 日</td></tr></table>"
+        )
+        compare_html = (
+            "<table><tr><td>甲方</td><td>江苏东大</td></tr>"
+            "<tr><td>签订日期</td><td>2026年4月21日</td></tr></table>"
+        )
+        ctx.original_extraction = ExtractionResult(document=make_table_document(original_html), extractor_used="test")
+        ctx.compare_extraction = ExtractionResult(document=make_table_document(compare_html), extractor_used="test")
 
-        stage = AnalysisStage()
-        stage.execute(ctx)
+        PreClauseDiffStage().execute(ctx)
 
-        assert ctx.diffs[0].ai_analysis is not None
-        assert ctx.task.diffs == ctx.diffs
+        assert [diff.title for diff in ctx.metadata_diffs] == ["封面字段：签订日期"]
+        assert all(diff.title != "表格字段：封面信息" for diff in ctx.table_diffs)
+
+    def test_keeps_non_duplicate_cover_table_diff(self) -> None:
+        metadata_diff = DiffItem(
+            diff_id="D001",
+            diff_type="MODIFY",
+            title="封面字段：签订日期",
+            source_type="metadata",
+            original_text="2026年4月 日",
+            compare_text="2026年4月21日",
+        )
+        table_diff = DiffItem(
+            diff_id="D002",
+            diff_type="MODIFY",
+            title="表格字段：封面信息",
+            source_type="table",
+            original_text="北京",
+            compare_text="南京",
+        )
+
+        assert _deduplicate_cover_table_diffs([metadata_diff], [table_diff]) == [table_diff]
+
+    def test_keeps_same_text_in_non_cover_table(self) -> None:
+        metadata_diff = DiffItem(
+            diff_id="D001",
+            diff_type="MODIFY",
+            title="封面字段：签订日期",
+            source_type="metadata",
+            original_text="2026年4月 日",
+            compare_text="2026年4月21日",
+        )
+        table_diff = DiffItem(
+            diff_id="D002",
+            diff_type="MODIFY",
+            title="表格字段：标的物",
+            source_type="table",
+            original_text="2026年4月 日",
+            compare_text="2026年4月21日",
+        )
+
+        assert _deduplicate_cover_table_diffs([metadata_diff], [table_diff]) == [table_diff]
 
 
 class TestSummaryStage:
-    def test_generates_summary_text(self, tmp_path: Path) -> None:
+    def test_refreshes_diff_count_and_writes_debug_artifact(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         ctx.diffs = [
             DiffItem(
@@ -213,8 +279,9 @@ class TestSummaryStage:
         stage = SummaryStage()
         stage.execute(ctx)
 
-        assert "1 处差异" in ctx.task.ai_summary
+        assert ctx.task.diffs == ctx.diffs
         assert ctx.task.diff_count == 1
+        assert "diff_decisions" in ctx.task.debug_artifact_paths
 
 
 class TestComparePipeline:

@@ -92,9 +92,7 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
     task = service.ensure_report(task)
 
     assert Path(task.report_pdf_path).exists()
-    assert task.report_ai_analysis is None
     assert build_report_filename(task).endswith("差异分析报告.pdf")
-    assert all(diff.ai_analysis is not None for diff in task.diffs)
     with fitz.open(task.report_pdf_path) as report_pdf:
         report_text = "\n".join(page.get_text() for page in report_pdf)
     assert "差异分析报告" in report_text

@@ -76,7 +76,6 @@ class CompareQualityService:
     def build_summary(self, task: CompareTask) -> dict[str, Any]:
         review_service = CompareReviewService()
         review_service.refresh_review_stats(task)
-        risk_counts = Counter(diff.ai_analysis.risk_level if diff.ai_analysis else "LOW" for diff in task.diffs)
         source_counts = Counter(diff.source_type or "clause" for diff in task.diffs)
         evidence_counts = Counter()
         low_confidence_diffs: list[dict[str, Any]] = []
@@ -101,11 +100,6 @@ class CompareQualityService:
                 "false_positive_count": task.false_positive_count,
                 "manual_review_count": task.manual_review_count,
                 "ignored_count": task.ignored_count,
-            },
-            "risk_counts": {
-                "HIGH": risk_counts["HIGH"],
-                "MEDIUM": risk_counts["MEDIUM"],
-                "LOW": risk_counts["LOW"],
             },
             "source_counts": dict(source_counts),
             "evidence_quality_counts": {

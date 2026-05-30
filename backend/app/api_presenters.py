@@ -30,9 +30,6 @@ def compare_task_response(task: CompareTask) -> CompareTaskResponse:
         "stage": task.stage,
         "progress_percent": task.progress_percent,
         "diff_count": task.diff_count,
-        "high_risk_count": task.high_risk_count,
-        "medium_risk_count": task.medium_risk_count,
-        "low_risk_count": task.low_risk_count,
         "reviewed_count": task.reviewed_count,
         "confirmed_count": task.confirmed_count,
         "false_positive_count": task.false_positive_count,
@@ -57,8 +54,6 @@ def compare_task_detail_response(task: CompareTask) -> CompareTaskDetailResponse
             "updated_at": task.updated_at,
             "original_filename": task.original_filename,
             "compare_filename": task.compare_filename,
-            "ai_summary": task.ai_summary,
-            "report_ai_analysis": to_jsonable(task.report_ai_analysis) if task.report_ai_analysis else None,
         }
     )
     return CompareTaskDetailResponse(**data)
@@ -86,9 +81,6 @@ def compare_record_summary(task: CompareTask) -> CompareRecordResponse:
         original_filename=task.original_filename,
         compare_filename=task.compare_filename,
         diff_count=task.diff_count,
-        high_risk_count=task.high_risk_count,
-        medium_risk_count=task.medium_risk_count,
-        low_risk_count=task.low_risk_count,
         report_url=f"/api/compare/{task.task_id}/report" if task.status == "COMPLETED" else "",
     )
 

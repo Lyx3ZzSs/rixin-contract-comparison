@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from collections import Counter
+import re
+import unicodedata
 from pathlib import Path
 
 from app.config import settings
@@ -27,7 +28,6 @@ from app.services.extractors.base import (
 )
 from app.services.matcher import ClauseMatcher
 from app.services.pipeline import PipelineContext
-from app.services.risk_analyzer import RuleBasedRiskAnalyzer
 from app.services.table_compare import TableComparator
 from app.services.text_coordinate_locator import TextCoordinateLocator
 
@@ -240,6 +240,7 @@ class PreClauseDiffStage:
             original_doc, compare_doc,
             start_index=len(metadata_diffs) + 1,
         )
+        table_diffs = _deduplicate_cover_table_diffs(metadata_diffs, table_diffs)
         result = ctx.set_table_diffs(
             metadata_diffs=metadata_diffs,
             table_diffs=table_diffs,
@@ -348,24 +349,6 @@ class EvidenceStage:
         ctx.diffs = DiffEngine().deduplicate_overlaps(ctx.diffs)
 
 
-class AnalysisStage:
-    name = "风险分析中"
-    progress = 75
-
-    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
-        self.risk_analyzer = RuleBasedRiskAnalyzer()
-        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
-
-    def execute(self, ctx: PipelineContext) -> None:
-        ctx.diffs = self.risk_analyzer.analyze(ctx.require_diffs())
-        _write_debug_artifact(
-            ctx.task,
-            "diff_decisions",
-            lambda: self.debug_writer.write_diffs(ctx.task.task_id, ctx.diffs),
-        )
-        ctx.task.diffs = ctx.diffs
-
-
 class VisualizationStage:
     name = "高亮信息准备中"
     progress = 90
@@ -382,9 +365,17 @@ class SummaryStage:
     name = "汇总统计中"
     progress = 95
 
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
-        task.ai_summary = _program_summary(task.diffs)
+        task.diffs = ctx.require_diffs()
+        _write_debug_artifact(
+            task,
+            "diff_decisions",
+            lambda: self.debug_writer.write_diffs(task.task_id, task.diffs),
+        )
         _refresh_stats(task)
 
 
@@ -399,25 +390,5 @@ def _clauses_for_evidence(
     return list(by_id.values())
 
 
-def _program_summary(diffs: list[DiffItem]) -> str:
-    if not diffs:
-        return "未发现合同条款差异。"
-    types = Counter(diff.diff_type for diff in diffs)
-    risks = Counter(diff.ai_analysis.risk_level if diff.ai_analysis else "LOW" for diff in diffs)
-    key_elements = Counter(
-        diff.ai_analysis.contract_element for diff in diffs if diff.ai_analysis
-    ).most_common(3)
-    element_text = "、".join(element for element, _ in key_elements) or "一般条款"
-    return (
-        f"本次共识别 {len(diffs)} 处差异，其中新增 {types['ADD']} 处、删除 {types['DELETE']} 处、"
-        f"修改 {types['MODIFY']} 处。风险分布为高风险 {risks['HIGH']} 处、中风险 {risks['MEDIUM']} 处、"
-        f"低风险 {risks['LOW']} 处，重点关注 {element_text}。请结合业务背景逐条复核。"
-    )
-
-
 def _refresh_stats(task: CompareTask) -> None:
     task.diff_count = len(task.diffs)
-    risks = Counter(diff.ai_analysis.risk_level if diff.ai_analysis else "LOW" for diff in task.diffs)
-    task.high_risk_count = risks["HIGH"]
-    task.medium_risk_count = risks["MEDIUM"]
-    task.low_risk_count = risks["LOW"]

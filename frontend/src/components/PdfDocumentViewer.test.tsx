@@ -38,7 +38,6 @@ const diff: DiffItem = {
   original_snippet: "30",
   compare_snippet: "45，新增说明",
   readable_change: "原文：30\n修改后：45，新增说明",
-  ai_analysis: null,
   original_evidence: [
     {
       page_no: 1,

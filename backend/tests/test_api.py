@@ -11,7 +11,7 @@ from reportlab.pdfgen import canvas
 from app.config import settings
 from app.infrastructure.task_runner import TaskJob, default_task_runner
 from app.main import app
-from app.models import AIAnalysis, BBox, CompareTask, DiffItem, EvidenceBox
+from app.models import BBox, CompareTask, DiffItem, EvidenceBox
 from app.models_extraction import ExtractionFieldDef, ExtractionFieldValue, ExtractionTask
 from app.utils.json_utils import load_extraction_task, load_task, save_extraction_task, save_task
 
@@ -133,20 +133,17 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert first_diff["compare_evidence"][0]["method"] == "char_exact"
     assert first_diff["original_evidence"][0]["confidence"] == 0.98
     assert first_diff["original_evidence"][0]["evidence_quality"] == "HIGH"
-    assert first_diff["ai_analysis"]["risk_level"] in {"LOW", "MEDIUM", "HIGH"}
+    assert "ai_analysis" not in first_diff
     report_response = client.get(f"/api/compare/{task_id}/report")
     assert report_response.status_code == 200
     assert not report_response.headers["content-disposition"].lower().startswith("inline")
     assert "差异分析报告.pdf" in unquote(report_response.headers["content-disposition"])
     refreshed_task = client.get(f"/api/compare/{task_id}").json()
     assert refreshed_task["report_filename"].endswith("差异分析报告.pdf")
-    task = load_task(task_id)
-    assert task.report_ai_analysis is None
-    assert refreshed_task["report_ai_analysis"] is None
     assert "original_page_screenshots" not in refreshed_task
     assert "compare_page_screenshots" not in refreshed_task
     refreshed_diff = client.get(f"/api/compare/{task_id}/diffs").json()["diffs"][0]
-    assert refreshed_diff["ai_analysis"]["raw_response"]["source"] == "rule_based"
+    assert "ai_analysis" not in refreshed_diff
     original_preview_response = client.get(f"/api/compare/{task_id}/original")
     compare_preview_response = client.get(f"/api/compare/{task_id}/compare")
     assert original_preview_response.status_code == 200
@@ -280,9 +277,6 @@ def test_compare_records_list_uses_compare_tasks_only(tmp_path: Path) -> None:
             original_filename="old-a.pdf",
             compare_filename="old-b.pdf",
             diff_count=1,
-            high_risk_count=0,
-            medium_risk_count=1,
-            low_risk_count=0,
         )
     )
     save_task(
@@ -294,9 +288,6 @@ def test_compare_records_list_uses_compare_tasks_only(tmp_path: Path) -> None:
             original_filename="new-a.pdf",
             compare_filename="new-b.pdf",
             diff_count=3,
-            high_risk_count=1,
-            medium_risk_count=1,
-            low_risk_count=1,
         )
     )
     save_extraction_task(ExtractionTask(task_id="TEXT001", filename="extract.pdf"))
@@ -340,7 +331,6 @@ def test_api_updates_diff_review_and_quality_summary(tmp_path: Path) -> None:
                         evidence_quality="LOW",
                     )
                 ],
-                ai_analysis=AIAnalysis(risk_level="MEDIUM"),
             )
         ],
     )

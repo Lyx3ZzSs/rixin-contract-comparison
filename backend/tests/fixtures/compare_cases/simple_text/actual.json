@@ -6,9 +6,6 @@
   "original_filename": "original.pdf",
   "compare_filename": "compare.pdf",
   "diff_count": 1,
-  "high_risk_count": 0,
-  "medium_risk_count": 1,
-  "low_risk_count": 0,
   "diffs": [
     {
       "diff_id": "D001",

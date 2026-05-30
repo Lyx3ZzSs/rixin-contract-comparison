@@ -75,10 +75,8 @@ def _evidence_types(evidence_list: list[EvidenceBox]) -> set[DiffType]:
 
 
 def _diff_summary(diff: DiffItem) -> str:
-    analysis = diff.ai_analysis
     return _compact_text(
-        (analysis.change_summary if analysis else "")
-        or diff.readable_change
+        diff.readable_change
         or diff.compare_snippet
         or diff.original_snippet
         or "暂无摘要"
