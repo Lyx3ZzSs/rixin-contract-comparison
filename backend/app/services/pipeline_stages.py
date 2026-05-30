@@ -240,7 +240,6 @@ class PreClauseDiffStage:
             original_doc, compare_doc,
             start_index=len(metadata_diffs) + 1,
         )
-        table_diffs = _deduplicate_cover_table_diffs(metadata_diffs, table_diffs)
         result = ctx.set_table_diffs(
             metadata_diffs=metadata_diffs,
             table_diffs=table_diffs,
