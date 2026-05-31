@@ -25,7 +25,6 @@ from app.services.pipeline_stages import (
     PreClauseDiffStage,
     SplitStage,
     SummaryStage,
-    _deduplicate_cover_table_diffs,
 )
 
 
@@ -203,7 +202,7 @@ class TestClauseDiffStageMerge:
 
 
 class TestPreClauseDiffStage:
-    def test_deduplicates_cover_field_table_duplicate(self, tmp_path: Path) -> None:
+    def test_extracts_metadata_and_table_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         original_html = (
             "<table><tr><td>甲方</td><td>江苏东大</td></tr>"
@@ -219,47 +218,6 @@ class TestPreClauseDiffStage:
         PreClauseDiffStage().execute(ctx)
 
         assert [diff.title for diff in ctx.metadata_diffs] == ["封面字段：签订日期"]
-        assert all(diff.title != "表格字段：封面信息" for diff in ctx.table_diffs)
-
-    def test_keeps_non_duplicate_cover_table_diff(self) -> None:
-        metadata_diff = DiffItem(
-            diff_id="D001",
-            diff_type="MODIFY",
-            title="封面字段：签订日期",
-            source_type="metadata",
-            original_text="2026年4月 日",
-            compare_text="2026年4月21日",
-        )
-        table_diff = DiffItem(
-            diff_id="D002",
-            diff_type="MODIFY",
-            title="表格字段：封面信息",
-            source_type="table",
-            original_text="北京",
-            compare_text="南京",
-        )
-
-        assert _deduplicate_cover_table_diffs([metadata_diff], [table_diff]) == [table_diff]
-
-    def test_keeps_same_text_in_non_cover_table(self) -> None:
-        metadata_diff = DiffItem(
-            diff_id="D001",
-            diff_type="MODIFY",
-            title="封面字段：签订日期",
-            source_type="metadata",
-            original_text="2026年4月 日",
-            compare_text="2026年4月21日",
-        )
-        table_diff = DiffItem(
-            diff_id="D002",
-            diff_type="MODIFY",
-            title="表格字段：标的物",
-            source_type="table",
-            original_text="2026年4月 日",
-            compare_text="2026年4月21日",
-        )
-
-        assert _deduplicate_cover_table_diffs([metadata_diff], [table_diff]) == [table_diff]
 
 
 class TestSummaryStage:

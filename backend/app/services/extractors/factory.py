@@ -74,13 +74,67 @@ def build_document_extractor(
     artifact_store: ArtifactStore = default_artifact_store,
     client_provider: HttpClientProvider = default_http_client_provider,
 ):
+    """Build a document extractor by name.
+
+    Delegates to ``ExtractorRegistry`` for named extractors.
+    ``auto`` and ``default`` use the ``AutoDocumentExtractor`` wrapper.
+
+    When ``extraction_cache_enabled`` is set, wraps the extractor with
+    ``CachedExtractor`` for file-based caching of extraction results.
+    """
+    from app.services.extractors.registry import default_extractor_registry
+
     extractor_name = (name or settings.document_extractor or "auto").lower()
+
     if extractor_name in {"auto", "default"}:
-        return AutoDocumentExtractor(artifact_store=artifact_store, client_provider=client_provider)
-    if extractor_name in {"pymupdf", "fitz", "pdf_text"}:
-        return PyMuPDFExtractor()
-    if extractor_name in {"ppocrv5", "pp_ocrv5", "paddleocr", "paddle_ocr", "paddle"}:
-        return PPOCRV5Extractor(client_provider=client_provider, artifact_store=artifact_store)
-    if extractor_name in {"ppstructure_ocr_hybrid", "ppstructure_ppocrv5", "structure_ocr", "ppstructure"}:
-        return PPStructureOCRHybridExtractor(client_provider=client_provider, artifact_store=artifact_store)
-    raise DocumentExtractionError(f"不支持的文档识别器: {extractor_name}")
+        extractor = AutoDocumentExtractor(artifact_store=artifact_store, client_provider=client_provider)
+    else:
+        try:
+            extractor = default_extractor_registry.build(
+                extractor_name,
+                artifact_store=artifact_store,
+                client_provider=client_provider,
+            )
+        except ValueError:
+            raise DocumentExtractionError(f"不支持的文档识别器: {extractor_name}")
+
+    if settings.extraction_cache_enabled:
+        from app.infrastructure.extraction_cache import CachedExtractor, FileExtractionCache
+        cache = FileExtractionCache(
+            cache_dir=settings.cache_dir,
+            default_ttl_hours=settings.extraction_cache_ttl_hours,
+        )
+        fingerprint = _extractor_config_fingerprint(extractor_name)
+        extractor = CachedExtractor(extractor, cache, fingerprint)
+
+    if settings.extraction.window_size > 0:
+        from app.services.extractors.windowed import WindowedExtractionWrapper
+        extractor = WindowedExtractionWrapper(
+            extractor,
+            window_size=settings.extraction.window_size,
+            overlap=settings.extraction.window_overlap,
+        )
+
+    return extractor
+
+
+def _extractor_config_fingerprint(extractor_name: str) -> str:
+    """Deterministic hash of the config fields that affect extraction output."""
+    import hashlib
+    import json
+
+    parts: dict[str, str] = {"name": extractor_name}
+    ext = settings.extraction
+    if extractor_name in {"ppocrv5", "paddleocr", "paddle_ocr", "paddle", "pp_ocrv5"}:
+        parts["ppocrv5"] = ext.ppocrv5.model_dump_json()
+    elif extractor_name in {"ppstructure_ocr_hybrid", "ppstructure", "structure_ocr", "ppstructure_ppocrv5"}:
+        parts["ppstructure"] = ext.ppstructure.model_dump_json()
+        parts["ppocrv5"] = ext.ppocrv5.model_dump_json()
+        parts["hybrid"] = ext.hybrid.model_dump_json()
+    elif extractor_name in {"auto", "default"}:
+        parts["pymupdf_min"] = str(ext.pymupdf_min_text_chars)
+        parts["ppstructure"] = ext.ppstructure.model_dump_json()
+        parts["ppocrv5"] = ext.ppocrv5.model_dump_json()
+
+    payload = json.dumps(parts, sort_keys=True)
+    return hashlib.md5(payload.encode()).hexdigest()[:12]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import os
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from app.config import settings
 from app.infrastructure.task_repository import default_task_repository
 from app.infrastructure.task_runner import default_task_runner
 from app.logging_config import setup_logging
+from app.services.models.setup import register_default_models, teardown_models
 
 setup_logging()
 
@@ -27,9 +29,15 @@ async def lifespan(app: FastAPI):
     settings.ensure_storage()
     default_task_repository.resolve()
     default_task_runner.start()
+    register_default_models()
+
+    from app.services.progress_bus import ProgressBus
+    ProgressBus.get_instance().bind_loop(asyncio.get_running_loop())
+
     try:
         yield
     finally:
+        teardown_models()
         default_task_runner.stop(wait=True)
         close_clients()
 

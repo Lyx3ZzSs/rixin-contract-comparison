@@ -126,6 +126,15 @@ class CompareService:
             if error not in persisted.errors:
                 persisted.errors.append(error)
 
+        from app.services.progress_bus import ProgressBus, ProgressEvent
+        ProgressBus.get_instance().publish(ProgressEvent(
+            task_id=task.task_id,
+            stage="失败",
+            progress_percent=100,
+            status="FAILED",
+            detail={"error": error},
+        ))
+
         try:
             return self.repository.update_compare_task(task.task_id, mutate)
         except FileNotFoundError:

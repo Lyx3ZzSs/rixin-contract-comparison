@@ -1,4 +1,4 @@
-from app.services.table_html_parser import parse_html_tables
+from app.services.table_compare.html_parser import parse_html_tables
 
 
 class TestSimpleTable:

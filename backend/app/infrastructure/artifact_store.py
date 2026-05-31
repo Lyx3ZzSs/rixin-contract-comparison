@@ -15,6 +15,7 @@ ArtifactArea = Literal[
     "ocr",
     "debug",
     "task_jobs",
+    "cache",
 ]
 
 
@@ -97,6 +98,7 @@ class LocalArtifactStore:
             "ocr": self.settings.ocr_dir,
             "debug": self.settings.debug_dir,
             "task_jobs": self.settings.task_jobs_dir,
+            "cache": self.settings.cache_dir,
         }
         return roots[area]
 

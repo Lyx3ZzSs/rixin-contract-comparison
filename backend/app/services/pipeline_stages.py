@@ -97,7 +97,11 @@ class ExtractionStage:
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
         original_extraction = self.extractor.extract(ctx.original_pdf, task_id=task.task_id)
+        if ctx.progress_callback:
+            ctx.progress_callback(25, "文档解析中", {"sub_stage": "original_extraction_done"})
         compare_extraction = self.extractor.extract(ctx.compare_pdf, task_id=task.task_id)
+        if ctx.progress_callback:
+            ctx.progress_callback(30, "文档解析中", {"sub_stage": "compare_extraction_done"})
 
         original_extraction, compare_extraction = self._align_structured_extractions(
             ctx.original_pdf, ctx.compare_pdf, task.task_id,
@@ -235,6 +239,8 @@ class PreClauseDiffStage:
         original_doc = extractions.original.document
         compare_doc = extractions.compare.document
 
+        self._recognize_seals(ctx, original_doc, compare_doc)
+
         metadata_diffs = self.cover_metadata.build_diffs(original_doc, compare_doc)
         table_diffs, table_warnings = self.table_comparator.build_diffs(
             original_doc, compare_doc,
@@ -247,6 +253,43 @@ class PreClauseDiffStage:
         )
         task.parse_warnings.extend(result.table_warnings)
         _append_text_warnings(task, result.table_warnings, "table_compare")
+
+    @staticmethod
+    def _recognize_seals(ctx: PipelineContext, original_doc: Document, compare_doc: Document) -> None:
+        """Run dedicated OCR on seal regions (inspired by MinerU's seal OCR pipeline)."""
+        from app.services.seal_ocr import SealOCRService
+        from app.services.models.seal_detector import SealDetector
+
+        seal_detector = SealDetector()
+        service = SealOCRService()
+
+        for label, doc, pdf_path in [
+            ("original", original_doc, ctx.original_pdf),
+            ("compare", compare_doc, ctx.compare_pdf),
+        ]:
+            seal_blocks = [b for p in doc.pages for b in p.blocks if b.block_type == "seal"]
+            if not seal_blocks:
+                continue
+            from app.services.models.layout_detector import LayoutRegion, LayoutResult
+            from app.models import BBox
+            regions = LayoutResult(regions=[
+                LayoutRegion(
+                    region_type="seal",
+                    bbox=b.bbox,
+                    page_number=b.page_no,
+                    text=b.text,
+                )
+                for b in seal_blocks
+            ])
+            seal_list = seal_detector.predict(regions)
+            try:
+                seal_list = service.recognize_seals(pdf_path, seal_list, ctx.task.task_id)
+            except Exception:
+                logger.debug("Seal OCR failed for %s document", label, exc_info=True)
+                continue
+            for seal, block in zip(seal_list, seal_blocks):
+                if seal.text and not block.text.strip():
+                    block.text = seal.text
 
 
 class SplitStage:
@@ -287,7 +330,10 @@ class MatchStage:
         threshold: int | None = None,
         artifact_store: ArtifactStore = default_artifact_store,
     ) -> None:
-        self.matcher = ClauseMatcher(threshold if threshold is not None else settings.match_threshold)
+        self.matcher = ClauseMatcher(
+            threshold if threshold is not None else settings.match_threshold,
+            use_prefilter=settings.matching.use_prefilter,
+        )
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:

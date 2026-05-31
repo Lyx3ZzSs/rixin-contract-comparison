@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { getCompareRecords, toApiUrl } from "../lib/api";
+import { useRecordProgressSSE } from "../lib/hooks";
 import type { CompareRecordSummary, TaskStatus } from "../types";
 
 interface ComparisonRecordsPageProps {
@@ -13,49 +14,43 @@ const statusLabels: Record<TaskStatus, string> = {
   COMPLETED: "已完成",
   FAILED: "失败",
 };
-const RECORDS_POLL_INTERVAL_MS = 1800;
 
 export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: ComparisonRecordsPageProps) {
   const [records, setRecords] = useState<CompareRecordSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
 
+  // 初始加载
   useEffect(() => {
     let isCurrent = true;
-    let timeoutId: number | undefined;
-
-    async function loadRecords(showLoading = true) {
-      if (showLoading) {
-        setIsLoading(true);
-      }
-      setError("");
-      try {
-        const payload = await getCompareRecords();
-        if (isCurrent) {
-          setRecords(payload);
-          if (payload.some((record) => record.status === "PROCESSING")) {
-            timeoutId = window.setTimeout(() => void loadRecords(false), RECORDS_POLL_INTERVAL_MS);
-          }
-        }
-      } catch (err) {
-        if (isCurrent) {
-          setError(err instanceof Error ? err.message : "对比记录加载失败。");
-        }
-      } finally {
-        if (isCurrent) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    void loadRecords();
+    void getCompareRecords()
+      .then((payload) => {
+        if (isCurrent) setRecords(payload);
+      })
+      .catch((err) => {
+        if (isCurrent) setError(err instanceof Error ? err.message : "对比记录加载失败。");
+      })
+      .finally(() => {
+        if (isCurrent) setIsLoading(false);
+      });
     return () => {
       isCurrent = false;
-      if (timeoutId !== undefined) {
-        window.clearTimeout(timeoutId);
-      }
     };
   }, []);
+
+  // SSE 实时更新 PROCESSING 记录进度
+  useRecordProgressSSE(
+    records,
+    (taskId, progress, stage, status) => {
+      setRecords((prev) =>
+        prev.map((r) => (r.task_id === taskId ? { ...r, progress_percent: progress, stage, status } : r)),
+      );
+    },
+    () => {
+      // 记录完成时刷新完整列表（获取 diff_count、report_url 等最终字段）
+      void getCompareRecords().then((payload) => setRecords(payload));
+    },
+  );
 
   return (
     <section className="records-workspace" aria-labelledby="records-title">

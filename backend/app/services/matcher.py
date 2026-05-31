@@ -25,9 +25,10 @@ class MatchCandidate:
 
 
 class ClauseMatcher:
-    def __init__(self, threshold: int = 85) -> None:
+    def __init__(self, threshold: int = 85, use_prefilter: bool = True) -> None:
         self.threshold = threshold
         self.normalizer = TextNormalizer()
+        self._use_prefilter = use_prefilter
 
     def match(self, original: list[Clause], compare: list[Clause]) -> list[ClausePair]:
         pairs: list[ClausePair] = []
@@ -89,6 +90,12 @@ class ClauseMatcher:
         return pairs
 
     def _build_candidates(self, original: list[Clause], compare: list[Clause]) -> list[MatchCandidate]:
+        n, m = len(original), len(compare)
+        if not self._use_prefilter or n * m < 100:
+            return self._build_candidates_exhaustive(original, compare)
+        return self._build_candidates_prefiltered(original, compare)
+
+    def _build_candidates_exhaustive(self, original: list[Clause], compare: list[Clause]) -> list[MatchCandidate]:
         candidates: list[MatchCandidate] = []
         original_count = max(1, len(original) - 1)
         compare_count = max(1, len(compare) - 1)
@@ -108,6 +115,60 @@ class ClauseMatcher:
             reverse=True,
         )
         return candidates
+
+    def _build_candidates_prefiltered(self, original: list[Clause], compare: list[Clause]) -> list[MatchCandidate]:
+        compare_no_index = self._build_clause_no_index(compare)
+        original_count = max(1, len(original) - 1)
+        compare_count = max(1, len(compare) - 1)
+        compare_indices_by_id = {id(c): i for i, c in enumerate(compare)}
+        position_window = 0.15
+        index_window = 3
+
+        candidates: list[MatchCandidate] = []
+        for original_index, left in enumerate(original):
+            candidate_compare_indices: set[int] = set()
+
+            left_norm = self._normalize_clause_no(left.clause_no)
+            if left_norm and left_norm in compare_no_index:
+                candidate_compare_indices.update(compare_no_index[left_norm])
+
+            orig_ratio = original_index / original_count
+            for ci, right in enumerate(compare):
+                if abs(ci / compare_count - orig_ratio) <= position_window:
+                    candidate_compare_indices.add(ci)
+
+            approx_ci = round(orig_ratio * compare_count)
+            for ci in range(max(0, approx_ci - index_window), min(len(compare), approx_ci + index_window + 1)):
+                candidate_compare_indices.add(ci)
+
+            if not candidate_compare_indices:
+                candidate_compare_indices = set(range(len(compare)))
+
+            for compare_index in candidate_compare_indices:
+                right = compare[compare_index]
+                details = self._score_details(left, right, original_index, compare_index, original, compare, original_count, compare_count)
+                score = self._weighted_score(details)
+                method = self._match_method(left, right, details, score)
+                candidates.append(MatchCandidate(left, right, score, method, details))
+
+        candidates.sort(
+            key=lambda item: (
+                item.score,
+                item.details["body_score"],
+                item.details["clause_no_score"],
+                item.details["title_score"],
+            ),
+            reverse=True,
+        )
+        return candidates
+
+    def _build_clause_no_index(self, clauses: list[Clause]) -> dict[str, list[int]]:
+        index: dict[str, list[int]] = {}
+        for i, clause in enumerate(clauses):
+            norm = self._normalize_clause_no(clause.clause_no)
+            if norm:
+                index.setdefault(norm, []).append(i)
+        return index
 
     def _score_details(
         self,

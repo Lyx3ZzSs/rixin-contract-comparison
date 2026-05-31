@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+import { AppProvider } from "./lib/state";
 
 vi.mock("./components/PdfDocumentViewer", () => ({
   PdfDocumentViewer: () => null,
@@ -81,7 +82,7 @@ describe("App", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
-    render(<App />);
+    render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
 
@@ -96,7 +97,7 @@ describe("App", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
-    render(<App />);
+    render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
     await user.click(screen.getByRole("button", { name: "对比记录" }));
@@ -115,7 +116,7 @@ describe("App", () => {
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
     window.history.replaceState({}, "", "/compare/records");
 
-    render(<App />);
+    render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "查看结果" }));
 
@@ -127,7 +128,7 @@ describe("App", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
-    render(<App />);
+    render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
 
@@ -142,7 +143,7 @@ describe("App", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
-    render(<App />);
+    render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
     await user.click(screen.getByRole("button", { name: "合同提取" }));
@@ -158,7 +159,7 @@ describe("App", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
-    render(<App />);
+    render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
     await user.click(screen.getByRole("button", { name: "提取记录" }));
@@ -172,7 +173,7 @@ describe("App", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
-    render(<App />);
+    render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
     await user.click(screen.getByRole("button", { name: "提取字段管理" }));
@@ -187,7 +188,7 @@ describe("App", () => {
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
     window.history.replaceState({}, "", "/extract/records");
 
-    render(<App />);
+    render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "新建合同提取" }));
 
@@ -199,7 +200,7 @@ describe("App", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
-    render(<App />);
+    render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
     await user.click(screen.getByRole("button", { name: "合同提取" }));
@@ -217,7 +218,7 @@ describe("App", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
-    render(<App />);
+    render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "创建任务" }));
 
@@ -229,7 +230,7 @@ describe("App", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("rixin_contract_auth_user", "admin");
 
-    render(<App />);
+    render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "查看对比记录" }));
 

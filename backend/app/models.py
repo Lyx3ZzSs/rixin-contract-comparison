@@ -12,11 +12,21 @@ TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
 
 
+class NormalizedBBox(BaseModel):
+    """Bounding box in 0-1000 normalized coordinates (MinerU convention)."""
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
 class BBox(BaseModel):
     x0: float
     y0: float
     x1: float
     y1: float
+    normalized: NormalizedBBox | None = None
 
     def expanded(self, amount: float, width: float, height: float) -> "BBox":
         return BBox(
@@ -206,3 +216,4 @@ class CompareTask(BaseModel):
     ignored_count: int = 0
     diffs: list[DiffItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Ban, ChevronRight, Download, Eye, EyeOff, PanelRightOpen, ZoomIn, ZoomOut } from "lucide-react";
 
 import { PdfDocumentViewer, type PdfDocumentViewerHandle } from "../components/PdfDocumentViewer";
-import { getDiffs, getTask, toApiUrl, updateDiffReview } from "../lib/api";
+import { toApiUrl, updateDiffReview } from "../lib/api";
+import { useTaskProgress } from "../lib/hooks";
 import { navigateToComparisonRecords } from "../lib/routes";
 import type { CompareTask, DiffItem, DiffType, ReviewStatus } from "../types";
 
@@ -12,10 +13,7 @@ interface ResultPageProps {
 }
 
 export function ResultPage({ taskId, onBack }: ResultPageProps) {
-  const [task, setTask] = useState<CompareTask | null>(null);
-  const [diffs, setDiffs] = useState<DiffItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { task, diffs, isLoading, error, setTask, setDiffs } = useTaskProgress(taskId);
   const [isOriginalVisible, setIsOriginalVisible] = useState(true);
   const [isSyncScroll, setIsSyncScroll] = useState(true);
   const [isAuditPanelOpen, setIsAuditPanelOpen] = useState(false);
@@ -29,58 +27,6 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
   const [reviewError, setReviewError] = useState("");
   const originalViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
   const compareViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
-
-  useEffect(() => {
-    let isMounted = true;
-    let timeoutId: number | undefined;
-    setIsLoading(true);
-    setError("");
-
-    async function loadTask() {
-      try {
-        const taskPayload = await getTask(taskId);
-        if (!isMounted) {
-          return;
-        }
-        setTask(taskPayload);
-        if (taskPayload.status === "COMPLETED") {
-          const diffPayload = await getDiffs(taskId);
-          if (!isMounted) {
-            return;
-          }
-          setDiffs(diffPayload);
-        } else {
-          setDiffs([]);
-          if (taskPayload.status === "PROCESSING") {
-            timeoutId = window.setTimeout(loadTask, TASK_POLL_INTERVAL_MS);
-          }
-        }
-      } catch (err) {
-        if (isMounted) {
-          setError(err instanceof Error ? err.message : "读取任务失败。");
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    void loadTask();
-
-    return () => {
-      isMounted = false;
-      if (timeoutId !== undefined) {
-        window.clearTimeout(timeoutId);
-      }
-    };
-  }, [taskId]);
-
-  useEffect(() => {
-    if (task?.status === "PROCESSING") {
-      navigateToComparisonRecords();
-    }
-  }, [task?.status]);
 
   const auditItems = useMemo(() => buildAuditItems(diffs), [diffs]);
   const axisMarkers = useMemo(() => buildAxisMarkers(auditItems), [auditItems]);
@@ -209,7 +155,19 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
   }
 
   if (task.status === "PROCESSING") {
-    return null;
+    return (
+      <section className="state-screen">
+        <p className="eyebrow">合同审查系统</p>
+        <h1>{task.stage || "处理中"}</h1>
+        <div className="progress-bar-container">
+          <div className="progress-bar-track">
+            <span style={{ width: `${Math.max(0, Math.min(100, task.progress_percent || 0))}%` }} />
+          </div>
+          <strong>{Math.max(0, Math.min(100, task.progress_percent || 0))}%</strong>
+        </div>
+        <p>{`任务 ${taskId}`}</p>
+      </section>
+    );
   }
 
   if (task.status === "FAILED") {
@@ -421,7 +379,6 @@ const ESTIMATED_PAGE_HEIGHT = 842;
 const AXIS_MIN_TOP = 3;
 const AXIS_MAX_TOP = 97;
 const AXIS_MIN_GAP = 2.5;
-const TASK_POLL_INTERVAL_MS = 1200;
 
 function buildAxisMarkers(items: AuditChangeItem[]): AxisMarkerItem[] {
   const candidates = items

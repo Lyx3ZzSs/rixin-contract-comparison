@@ -10,6 +10,15 @@ vi.mock("../lib/api", () => ({
   toApiUrl: (path: string) => `http://api.test${path}`,
 }));
 
+const mockEventSource = {
+  onmessage: null as ((e: MessageEvent) => void) | null,
+  onerror: null as (() => void) | null,
+  close: vi.fn(),
+};
+vi.mock("../lib/api_sse", () => ({
+  createProgressEventSource: vi.fn(() => mockEventSource),
+}));
+
 const processingRecord: CompareRecordSummary = {
   task_id: "task-processing",
   status: "PROCESSING",
@@ -36,6 +45,9 @@ describe("ComparisonRecordsPage", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    mockEventSource.onmessage = null;
+    mockEventSource.onerror = null;
+    mockEventSource.close.mockClear();
   });
 
   it("opens processing records as progress and completed records as results", async () => {
@@ -53,32 +65,55 @@ describe("ComparisonRecordsPage", () => {
     expect(onOpenTask).not.toHaveBeenCalled();
   });
 
-  it("polls records while any comparison is processing", async () => {
-    let scheduledCallback: (() => void) | undefined;
-    vi.spyOn(window, "setTimeout").mockImplementation((handler) => {
-      scheduledCallback = typeof handler === "function" ? () => handler() : undefined;
-      return 1 as unknown as ReturnType<typeof window.setTimeout>;
+  it("updates progress via SSE for processing records", async () => {
+    vi.mocked(getCompareRecords).mockResolvedValueOnce([processingRecord]);
+
+    render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
+
+    await screen.findByText("task-processing");
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "35");
+
+    // Simulate SSE progress event
+    await act(async () => {
+      mockEventSource.onmessage?.({
+        data: JSON.stringify({
+          task_id: "task-processing",
+          stage: "条款匹配中",
+          progress_percent: 55,
+          status: "PROCESSING",
+        }),
+      } as MessageEvent);
     });
+
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "55");
+    expect(screen.getByText("条款匹配中")).toBeInTheDocument();
+    expect(screen.getByText("55%")).toBeInTheDocument();
+  });
+
+  it("refreshes full list when SSE reports completion", async () => {
     vi.mocked(getCompareRecords)
       .mockResolvedValueOnce([processingRecord])
       .mockResolvedValueOnce([completedRecord]);
 
     render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
 
+    await screen.findByText("task-processing");
+
+    // Simulate SSE completion event
     await act(async () => {
-      await Promise.resolve();
+      mockEventSource.onmessage?.({
+        data: JSON.stringify({
+          task_id: "task-processing",
+          stage: "已完成",
+          progress_percent: 100,
+          status: "COMPLETED",
+        }),
+      } as MessageEvent);
     });
 
-    expect(screen.getByText("task-processing")).toBeInTheDocument();
-    expect(getCompareRecords).toHaveBeenCalledTimes(1);
-    expect(scheduledCallback).toBeDefined();
-
-    await act(async () => {
-      scheduledCallback?.();
-      await Promise.resolve();
-    });
-
+    // Should have called getCompareRecords again for full refresh
     expect(getCompareRecords).toHaveBeenCalledTimes(2);
-    expect(screen.getByText("task-completed")).toBeInTheDocument();
+    // After refresh, the completed record should show "查看结果"
+    expect(screen.getByRole("button", { name: "查看结果" })).toBeInTheDocument();
   });
 });

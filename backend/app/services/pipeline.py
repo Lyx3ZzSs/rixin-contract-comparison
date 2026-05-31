@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Callable, Protocol
 
 from app.errors import PipelineContractError
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
@@ -15,6 +17,8 @@ from app.models import (
     DiffItem,
 )
 from app.services.extractors.base import ExtractionResult
+from app.services.pipeline_metrics import PipelineMetrics, StageMetrics, get_process_memory_mb
+from app.services.progress_bus import ProgressBus, ProgressEvent
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +71,7 @@ class PipelineContext:
     pairs: list[ClausePair] = field(default_factory=list)
     clause_diffs: list[DiffItem] = field(default_factory=list)
     diffs: list[DiffItem] = field(default_factory=list)
+    progress_callback: Callable[[int, str, dict[str, Any] | None], None] | None = None
 
     def set_extractions(self, original: ExtractionResult, compare: ExtractionResult) -> ExtractionPair:
         self.original_extraction = original
@@ -146,6 +151,13 @@ def _update_progress(ctx: PipelineContext, stage: str, progress: int, repository
     ctx.task.updated_at = persisted.updated_at
     ctx.task.revision = persisted.revision
 
+    ProgressBus.get_instance().publish(ProgressEvent(
+        task_id=ctx.task.task_id,
+        stage=stage,
+        progress_percent=progress,
+        status="PROCESSING",
+    ))
+
 
 class ComparePipeline:
     """Orchestrates comparison stages sequentially."""
@@ -159,13 +171,48 @@ class ComparePipeline:
         self.repository = repository
 
     def run(self, ctx: PipelineContext) -> CompareTask:
+        pipeline_t0 = time.perf_counter()
+        metrics = PipelineMetrics(
+            task_id=ctx.task.task_id,
+            started_at=datetime.now(UTC).isoformat(),
+        )
+        peak_memory = 0.0
         for stage in self.stages:
             _update_progress(ctx, stage.name, stage.progress, self.repository)
-            stage.execute(ctx)
+            stage_t0 = time.perf_counter()
+            mem_start = get_process_memory_mb()
+            sm = StageMetrics(name=stage.name, memory_mb_start=mem_start)
+            try:
+                stage.execute(ctx)
+            except Exception as exc:
+                sm.error = str(exc)
+                sm.duration_seconds = time.perf_counter() - stage_t0
+                sm.memory_mb_end = get_process_memory_mb()
+                metrics.stages.append(sm)
+                metrics.finished_at = datetime.now(UTC).isoformat()
+                metrics.total_duration_seconds = time.perf_counter() - pipeline_t0
+                metrics.peak_memory_mb = peak_memory
+                ctx.task.metrics = dataclasses.asdict(metrics)
+                raise
+            sm.duration_seconds = time.perf_counter() - stage_t0
+            sm.memory_mb_end = get_process_memory_mb()
+            metrics.stages.append(sm)
+            peak_memory = max(peak_memory, sm.memory_mb_end)
+        metrics.finished_at = datetime.now(UTC).isoformat()
+        metrics.total_duration_seconds = time.perf_counter() - pipeline_t0
+        metrics.peak_memory_mb = peak_memory
+        ctx.task.metrics = dataclasses.asdict(metrics)
+
         ctx.task.status = "COMPLETED"
         ctx.task.stage = "已完成"
         ctx.task.progress_percent = 100
         ctx.task.updated_at = datetime.now(UTC).isoformat()
+        ProgressBus.get_instance().publish(ProgressEvent(
+            task_id=ctx.task.task_id,
+            stage="已完成",
+            progress_percent=100,
+            status="COMPLETED",
+        ))
         try:
             ctx.task = self.repository.update_compare_task(
                 ctx.task.task_id,
@@ -195,6 +242,7 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.diff_count = source.diff_count
     target.diffs = _merge_review_state(target.diffs, source.diffs)
     target.errors = source.errors
+    target.metrics = source.metrics
 
 
 def _merge_review_state(existing: list[DiffItem], incoming: list[DiffItem]) -> list[DiffItem]:

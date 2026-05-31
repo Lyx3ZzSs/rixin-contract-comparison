@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.api_errors import http_error
 from app.application.compare_tasks import default_compare_task_application
@@ -77,6 +79,51 @@ def list_records() -> CompareRecordListResponse:
 def get_task(task_id: str) -> CompareTaskDetailResponse:
     task = _load_or_404(task_id)
     return compare_task_detail_response(task)
+
+
+@router.get("/{task_id}/progress")
+async def stream_progress(task_id: str):
+    try:
+        default_compare_task_application.load_compare_task(task_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    from app.services.progress_bus import ProgressBus
+
+    bus = ProgressBus.get_instance()
+    queue = await bus.subscribe(task_id)
+
+    async def event_stream():
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                payload = {
+                    "task_id": event.task_id,
+                    "stage": event.stage,
+                    "progress_percent": event.progress_percent,
+                    "status": event.status,
+                }
+                if event.detail:
+                    payload["detail"] = event.detail
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                if event.status in ("COMPLETED", "FAILED"):
+                    break
+        finally:
+            bus.unsubscribe(task_id, queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/{task_id}/diffs", response_model=CompareDiffListResponse)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import { LoginPage } from "./pages/LoginPage";
 import { ExtractionFieldsPage } from "./pages/ExtractionFieldsPage";
@@ -14,37 +14,23 @@ import {
   navigateToExtractionFields,
   navigateToExtractionRecords,
   navigateToTask,
-  readRoute,
 } from "./lib/routes";
-
-const AUTH_STORAGE_KEY = "rixin_contract_auth_user";
+import { useApp } from "./lib/state";
 
 export function App() {
-  const [route, setRoute] = useState(readRoute);
-  const [currentUser, setCurrentUser] = useState(() => window.localStorage.getItem(AUTH_STORAGE_KEY));
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
-  const [isComparisonMenuOpen, setIsComparisonMenuOpen] = useState(true);
-  const [isExtractionMenuOpen, setIsExtractionMenuOpen] = useState(true);
-
-  useEffect(() => {
-    const onPopState = () => setRoute(readRoute());
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  const { state, dispatch } = useApp();
+  const { currentUser, route, isSidebarExpanded, isComparisonMenuOpen, isExtractionMenuOpen } = state;
 
   function handleLogin(username: string, password: string): boolean {
     if (username === "admin" && password === "123456") {
-      window.localStorage.setItem(AUTH_STORAGE_KEY, username);
-      setCurrentUser(username);
+      dispatch({ type: "LOGIN", username });
       return true;
     }
     return false;
   }
 
   function handleLogout() {
-    window.localStorage.removeItem(AUTH_STORAGE_KEY);
-    setCurrentUser(null);
-    setIsSidebarExpanded(false);
+    dispatch({ type: "LOGOUT" });
     navigateHome();
   }
 
@@ -57,16 +43,17 @@ export function App() {
       navigateHome();
       return;
     }
-    setIsComparisonMenuOpen((value) => !value);
+    dispatch({ type: "TOGGLE_COMPARISON_MENU" });
   }
 
   function handleExtractionMenuClick() {
     if (!isSidebarExpanded) {
-      setIsSidebarExpanded(true);
-      setIsExtractionMenuOpen(true);
+      dispatch({ type: "TOGGLE_SIDEBAR" });
+      // Also ensure extraction menu opens
+      if (!isExtractionMenuOpen) dispatch({ type: "TOGGLE_EXTRACTION_MENU" });
       return;
     }
-    setIsExtractionMenuOpen((value) => !value);
+    dispatch({ type: "TOGGLE_EXTRACTION_MENU" });
   }
 
   const content = useMemo(() => {
@@ -188,7 +175,7 @@ export function App() {
         <button
           className="oa-sidebar-footer"
           type="button"
-          onClick={() => setIsSidebarExpanded((value) => !value)}
+          onClick={() => dispatch({ type: "TOGGLE_SIDEBAR" })}
           aria-label={isSidebarExpanded ? "收起侧边栏" : "展开侧边栏"}
           aria-pressed={isSidebarExpanded}
         >
