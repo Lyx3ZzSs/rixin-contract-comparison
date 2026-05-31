@@ -70,6 +70,7 @@ class PipelineContext:
     compare_clauses: list[Clause] = field(default_factory=list)
     pairs: list[ClausePair] = field(default_factory=list)
     clause_diffs: list[DiffItem] = field(default_factory=list)
+    seal_diffs: list[DiffItem] = field(default_factory=list)
     diffs: list[DiffItem] = field(default_factory=list)
     progress_callback: Callable[[int, str, dict[str, Any] | None], None] | None = None
 

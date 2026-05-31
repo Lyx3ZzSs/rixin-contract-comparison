@@ -29,6 +29,7 @@ from app.services.extractors.base import (
 from app.services.matcher import ClauseMatcher
 from app.services.pipeline import PipelineContext
 from app.services.table_compare import TableComparator
+from app.services.seal_comparator import build_seal_diffs
 from app.services.text_coordinate_locator import TextCoordinateLocator
 
 logger = logging.getLogger(__name__)
@@ -248,6 +249,10 @@ class PreClauseDiffStage:
             original_doc, compare_doc,
             start_index=len(metadata_diffs) + 1,
         )
+        seal_diffs = build_seal_diffs(
+            original_doc, compare_doc,
+            start_index=len(metadata_diffs) + len(table_diffs) + 1,
+        )
         result = ctx.set_table_diffs(
             metadata_diffs=metadata_diffs,
             table_diffs=table_diffs,
@@ -255,6 +260,7 @@ class PreClauseDiffStage:
         )
         task.parse_warnings.extend(result.table_warnings)
         _append_text_warnings(task, result.table_warnings, "table_compare")
+        ctx.seal_diffs = seal_diffs
 
     @staticmethod
     def _recognize_seals(ctx: PipelineContext, original_doc: Document, compare_doc: Document) -> None:
@@ -362,13 +368,14 @@ class ClauseDiffStage:
     def execute(self, ctx: PipelineContext) -> None:
         table_diffs = ctx.require_table_diffs()
         matches = ctx.require_matches()
+        pre_clause_count = len(table_diffs.metadata_diffs) + len(table_diffs.table_diffs) + len(ctx.seal_diffs)
         clause_diffs = self.diff_engine.build_diffs(
             matches.pairs,
-            start_index=len(table_diffs.metadata_diffs) + len(table_diffs.table_diffs) + 1,
+            start_index=pre_clause_count + 1,
         )
         ctx.set_clause_diffs(
             clause_diffs,
-            [*table_diffs.metadata_diffs, *table_diffs.table_diffs, *clause_diffs],
+            [*table_diffs.metadata_diffs, *table_diffs.table_diffs, *ctx.seal_diffs, *clause_diffs],
         )
 
 
