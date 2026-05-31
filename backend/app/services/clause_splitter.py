@@ -4,7 +4,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-from app.models import BBox, CharBox, Clause, Document, EvidenceBox
+from app.models import BBox, CharBox, Clause, Document, EvidenceBox, TextBlock
 from app.services.table_compare import TableComparator
 from app.services.normalizer import TextNormalizer
 
@@ -36,7 +36,13 @@ class ClauseSplitter:
         "seal",
         "chart",
         "formula",
+        "vertical_text",
     }
+    min_ocr_confidence = 0.5
+    vertical_height_width_ratio = 2.3
+    mask_block_types = {"formula", "chart", "image", "figure"}
+    mask_overlap_threshold = 0.5
+    min_content_density = 0.15
     table_block_types = {"table", "table_title"}
     cover_block_types = {"doc_title", "title"}
 
@@ -60,13 +66,23 @@ class ClauseSplitter:
         return self._build_clauses(clauses, prefix)
 
     def _collect_units(self, document: Document) -> list[ClauseUnit]:
+        mask_index = self._build_mask_index(document)
         units: list[ClauseUnit] = []
         for page in document.pages:
+            page_masks = mask_index.get(page.page_no, [])
             for block in page.blocks:
                 block_type = (block.block_type or "").lower()
                 if block_type in self.skip_block_types:
                     continue
                 if self.table_detector.is_table_block(block):
+                    continue
+                if self._is_low_confidence(block):
+                    continue
+                if self._is_vertical_block(block):
+                    continue
+                if self._is_masked_by_non_text(block, page_masks):
+                    continue
+                if self._is_low_content_density(block):
                     continue
                 normalized_block = self.normalizer.normalize(block.text)
                 if not normalized_block:
@@ -95,6 +111,52 @@ class ClauseSplitter:
                         )
                     )
         return units
+
+    def _is_low_confidence(self, block: TextBlock) -> bool:
+        if block.confidence is None:
+            return False
+        return block.confidence < self.min_ocr_confidence
+
+    def _is_vertical_block(self, block: TextBlock) -> bool:
+        bbox = block.bbox
+        width = bbox.x1 - bbox.x0
+        height = bbox.y1 - bbox.y0
+        if width <= 0 or height <= 0:
+            return False
+        return height / width > self.vertical_height_width_ratio
+
+    def _build_mask_index(self, document: Document) -> dict[int, list[BBox]]:
+        index: dict[int, list[BBox]] = {}
+        for page in document.pages:
+            masks = [
+                block.bbox
+                for block in page.blocks
+                if (block.block_type or "").lower() in self.mask_block_types
+            ]
+            if masks:
+                index[page.page_no] = masks
+        return index
+
+    def _is_masked_by_non_text(self, block: TextBlock, masks: list[BBox]) -> bool:
+        if not masks:
+            return False
+        block_area = _bbox_area(block.bbox)
+        if block_area <= 0:
+            return False
+        for mask_bbox in masks:
+            overlap = _bbox_overlap_area(block.bbox, mask_bbox)
+            if overlap / block_area > self.mask_overlap_threshold:
+                return True
+        return False
+
+    def _is_low_content_density(self, block: TextBlock) -> bool:
+        bbox = block.bbox
+        width = bbox.x1 - bbox.x0
+        height = bbox.y1 - bbox.y0
+        if width <= 0 or height <= 0:
+            return True
+        text_len = len(block.text.strip())
+        return text_len * height < width * self.min_content_density
 
     def _order_units(self, units: list[ClauseUnit]) -> list[ClauseUnit]:
         ordered: list[ClauseUnit] = []
@@ -494,3 +556,17 @@ class ClauseSplitter:
                     )
                 text_index += 1
         return char_boxes
+
+
+def _bbox_area(bbox: BBox) -> float:
+    return max(0.0, bbox.x1 - bbox.x0) * max(0.0, bbox.y1 - bbox.y0)
+
+
+def _bbox_overlap_area(left: BBox, right: BBox) -> float:
+    x0 = max(left.x0, right.x0)
+    y0 = max(left.y0, right.y0)
+    x1 = min(left.x1, right.x1)
+    y1 = min(left.y1, right.y1)
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    return (x1 - x0) * (y1 - y0)

@@ -106,7 +106,7 @@ class EvidenceLocator:
             gap = bbox.x0 - current_bbox.x1
             same_run = gap <= max(2.0, current_height * 0.35)
             if same_page and same_line and same_run:
-                current_bbox = self._union(current_bbox, bbox)
+                current_bbox = self._union_rectified(current_bbox, bbox, current_height)
                 current_text += char_box.char
                 current_mid_y = self._mid_y(current_bbox)
                 current_height = max(current_height, current_bbox.y1 - current_bbox.y0)
@@ -229,6 +229,13 @@ class EvidenceLocator:
             x1=max(left.x1, right.x1),
             y1=max(left.y1, right.y1),
         )
+
+    def _union_rectified(self, left: BBox, right: BBox, reference_height: float) -> BBox:
+        merged_x0 = min(left.x0, right.x0)
+        merged_x1 = max(left.x1, right.x1)
+        mid_y = (self._mid_y(left) + self._mid_y(right)) / 2
+        max_height = max(reference_height, left.y1 - left.y0, right.y1 - right.y0)
+        return BBox(x0=merged_x0, y0=mid_y - max_height / 2, x1=merged_x1, y1=mid_y + max_height / 2)
 
     def _pad(self, bbox: BBox) -> BBox:
         return BBox(x0=max(0.0, bbox.x0 - 0.8), y0=max(0.0, bbox.y0 - 0.8), x1=bbox.x1 + 0.8, y1=bbox.y1 + 0.8)
