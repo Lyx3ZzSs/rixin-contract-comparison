@@ -3,6 +3,47 @@ from __future__ import annotations
 from app.models import BBox
 
 
+class RowSignature:
+    """Fingerprint of a table row for structure comparison.
+
+    Inspired by MinerU's RowSignature in table_merge.py: captures column
+    count, colspan/rowspan layout, and normalized cell texts so rows can
+    be compared across pages to detect repeated headers or compatible
+    continuation tables.
+    """
+
+    __slots__ = ("col_count", "colspans", "rowspans", "texts")
+
+    def __init__(
+        self,
+        col_count: int,
+        colspans: tuple[int, ...],
+        rowspans: tuple[int, ...],
+        texts: tuple[str, ...],
+    ):
+        self.col_count = col_count
+        self.colspans = colspans
+        self.rowspans = rowspans
+        self.texts = texts
+
+    def matches_structure(self, other: RowSignature) -> bool:
+        """Check whether two rows share the same column layout."""
+        return (
+            self.col_count == other.col_count
+            and self.colspans == other.colspans
+            and self.rowspans == other.rowspans
+        )
+
+    def matches_with_text(self, other: RowSignature, threshold: float = 0.6) -> bool:
+        """Check structural match *and* sufficient text overlap."""
+        if not self.matches_structure(other):
+            return False
+        if not self.texts or not other.texts:
+            return False
+        matches = sum(1 for a, b in zip(self.texts, other.texts) if a == b)
+        return matches / len(self.texts) >= threshold
+
+
 class LogicalCell:
     __slots__ = (
         "row_index",
@@ -65,7 +106,7 @@ class LogicalRow:
 
 
 class LogicalTable:
-    __slots__ = ("rows", "col_count", "page_no", "source_block_id", "source")
+    __slots__ = ("rows", "col_count", "page_no", "source_block_id", "source", "caption", "footnote")
 
     def __init__(
         self,
@@ -74,12 +115,16 @@ class LogicalTable:
         page_no: int,
         source_block_id: str = "",
         source: str = "",
+        caption: str = "",
+        footnote: str = "",
     ):
         self.rows = rows
         self.col_count = col_count
         self.page_no = page_no
         self.source_block_id = source_block_id
         self.source = source
+        self.caption = caption
+        self.footnote = footnote
 
     def get_cell(self, row: int, col: int) -> LogicalCell | None:
         for table_row in self.rows:

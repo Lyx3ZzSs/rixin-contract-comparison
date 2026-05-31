@@ -197,6 +197,65 @@ def anchor_cell(table, row: int, col: int):
     return cell
 
 
+# ---------------------------------------------------------------------------
+# Continuation marker detection (inspired by MinerU table_continuation.py)
+# ---------------------------------------------------------------------------
+
+_CONTINUATION_END_MARKERS: tuple[str, ...] = (
+    "(续)", "（续）", "(续表)", "（续表）", "(续上表)", "（续上表）",
+    "(continued)", "(cont.)", "(cont'd)", "(…continued)", "continued",
+    "续表",
+)
+_CONTINUATION_INLINE_MARKERS: tuple[str, ...] = ("(continued)",)
+
+
+def _full_to_half(text: str) -> str:
+    result: list[str] = []
+    for ch in text:
+        code = ord(ch)
+        if 0xFF01 <= code <= 0xFF5E:
+            result.append(chr(code - 0xFEE0))
+        elif code == 0x3000:
+            result.append(" ")
+        else:
+            result.append(ch)
+    return "".join(result)
+
+
+def is_continuation_text(text: str) -> bool:
+    """Detect continuation markers like '(续)', '(续表)', '(continued)'."""
+    normalized = _full_to_half((text or "").strip()).lower()
+    if not normalized:
+        return False
+
+    for marker in _CONTINUATION_END_MARKERS:
+        marker_lower = marker.lower()
+        if not normalized.endswith(marker_lower):
+            continue
+        if marker_lower == "continued":
+            start = len(normalized) - len(marker_lower)
+            if start > 0 and normalized[start - 1].isalpha():
+                continue
+        return True
+
+    for marker in _CONTINUATION_INLINE_MARKERS:
+        if marker.lower() in normalized:
+            return True
+
+    return False
+
+
+def build_row_signature(cells: list):
+    """Build a RowSignature from a list of _LogicalCell or TableCell."""
+    from app.services.table_compare.types import RowSignature
+
+    col_count = sum(getattr(c, "colspan", 1) for c in cells)
+    colspans = tuple(getattr(c, "colspan", 1) for c in cells)
+    rowspans = tuple(getattr(c, "rowspan", 1) for c in cells)
+    texts = tuple(normalize(getattr(c, "text", "")) for c in cells)
+    return RowSignature(col_count=col_count, colspans=colspans, rowspans=rowspans, texts=texts)
+
+
 def first_unit_token(tokens: list[str]) -> str:
     units = {"套", "台", "个", "项", "批", "份", "件", "年", "月", "天", "人天"}
     for token in tokens:

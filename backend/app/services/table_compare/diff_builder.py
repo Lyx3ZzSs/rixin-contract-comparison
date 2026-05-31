@@ -222,11 +222,14 @@ class TableDiffBuilder:
         if needs_comp_evidence and not comp_evidences:
             review_flags.append("LOW_CONFIDENCE_COMPARE_TABLE_EVIDENCE")
 
+        caption = self._resolve_caption(orig_table, comp_table)
+        caption_prefix = f"「{caption}」" if caption else ""
+
         diff_type = self._group_diff_type(group)
         return DiffItem(
             diff_id=generate_diff_id(index),
             diff_type=diff_type,
-            title=f"表格字段：{utils.table_type_label(table_type)}",
+            title=f"表格字段{caption_prefix}：{utils.table_type_label(table_type)}",
             original_text=" | ".join(orig_texts),
             compare_text=" | ".join(comp_texts),
             original_snippet=" | ".join(orig_texts)[:300],
@@ -252,10 +255,12 @@ class TableDiffBuilder:
         all_text = table.all_cell_text()[:300]
         orig_block = block if diff_type == "DELETE" else None
         comp_block = block if diff_type == "ADD" else None
+        caption = getattr(table, "caption", "") or ""
+        caption_prefix = f"「{caption}」" if caption else ""
         return DiffItem(
             diff_id=generate_diff_id(index),
             diff_type=diff_type,
-            title=f"表格：{utils.table_type_label(utils.table_type(table))}",
+            title=f"表格{caption_prefix}：{utils.table_type_label(utils.table_type(table))}",
             original_text=all_text if diff_type == "DELETE" else "",
             compare_text=all_text if diff_type == "ADD" else "",
             original_snippet=all_text if diff_type == "DELETE" else "",
@@ -277,6 +282,15 @@ class TableDiffBuilder:
                 if table_clean and block_clean and SequenceMatcher(None, block_clean[:200], table_clean[:200]).ratio() > 0.5:
                     return (block, text)
         return None
+
+    @staticmethod
+    def _resolve_caption(orig_table, comp_table) -> str:
+        """Pick the best caption from either side of the comparison."""
+        orig_caption = getattr(orig_table, "caption", "") or ""
+        comp_caption = getattr(comp_table, "caption", "") or ""
+        if orig_caption and comp_caption:
+            return orig_caption if len(orig_caption) <= len(comp_caption) else comp_caption
+        return orig_caption or comp_caption
 
     # --- Layout shift detection ---
 

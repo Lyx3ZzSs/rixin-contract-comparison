@@ -26,6 +26,8 @@ class StructuredTable(BaseModel):
     source_block_id: str = ""
     source: str = ""
     source_text: str = ""
+    caption: str = ""
+    footnote: str = ""
 
     @property
     def bbox(self) -> BBox | None:

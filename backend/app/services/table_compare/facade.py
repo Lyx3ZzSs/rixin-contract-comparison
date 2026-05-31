@@ -13,6 +13,7 @@ from app.services.table_compare.summary import SummaryComparator
 from app.services.table_compare.flat import FlatTextComparator
 from app.services.table_compare.constants import TABLE_BLOCK_TYPES
 from app.services.table_compare.types import _LogicalTable
+from app.services.table_compare import utils
 
 logger = logging.getLogger(__name__)
 
@@ -58,40 +59,82 @@ class TableComparator:
         )
 
         if original_tables or compare_tables:
-            # Quality verification: degrade to flat text if tables are too sparse.
-            # Only check the side that has tables — empty side is valid (means ADD/DELETE).
-            orig_ok = self._tables_quality_ok(original_tables) if original_tables else True
-            comp_ok = self._tables_quality_ok(compare_tables) if compare_tables else True
-            if not orig_ok or not comp_ok:
-                logger.info("表格结构质量不足，降级到纯文本对比")
-                return self._flat.flat_compare(original_blocks, compare_blocks, start_index, warnings)
+            # Three-tier degradation based on multi-signal quality score.
+            orig_score = self._compute_table_quality(original_tables) if original_tables else 1.0
+            comp_score = self._compute_table_quality(compare_tables) if compare_tables else 1.0
+            min_score = min(orig_score, comp_score)
 
-            return self._compare_tables(
-                original_tables, compare_tables, original_blocks, compare_blocks, start_index, warnings
-            )
+            if min_score >= 0.5:
+                # Tier 1: full cell-level comparison
+                return self._compare_tables(
+                    original_tables, compare_tables, original_blocks, compare_blocks, start_index, warnings
+                )
+            elif min_score >= 0.2:
+                # Tier 2: row-level summary comparison
+                logger.info("表格结构质量中等(%.2f)，降级到行级对比", min_score)
+                return self._flat.row_level_compare(
+                    original_tables, compare_tables, start_index, warnings
+                )
+            else:
+                # Tier 3: flat text fallback
+                logger.info("表格结构质量不足(%.2f)，降级到纯文本对比", min_score)
+                return self._flat.flat_compare(original_blocks, compare_blocks, start_index, warnings)
 
         # Fallback: flat-text comparison for blocks without HTML
         return self._flat.flat_compare(original_blocks, compare_blocks, start_index, warnings)
 
     @staticmethod
-    def _tables_quality_ok(tables: list[_LogicalTable], min_fill_rate: float = 0.1) -> bool:
-        """Check whether parsed tables have sufficient content.
+    def _tables_quality_ok(tables: list[_LogicalTable], min_score: float = 0.1) -> bool:
+        """Backward-compatible boolean quality gate — delegates to _compute_table_quality."""
+        return TableComparator._compute_table_quality(tables) >= min_score
 
-        Inspired by MinerU's table quality verification in
-        ``unet_table/main.py`` which checks fill rate, cell count, and
-        text content before accepting a recognition result.
+    @staticmethod
+    def _compute_table_quality(tables: list[_LogicalTable]) -> float:
+        """Multi-signal quality score for a group of logical tables.
+
+        Returns a value in [0, 1] where:
+          >= 0.5  → full cell-level comparison
+          >= 0.2  → row-level summary comparison
+          <  0.2  → flat-text fallback
+
+        Signals (inspired by MinerU's per-stage confidence scoring):
+          1. Fill rate  — fraction of non-empty cells (weight 0.4)
+          2. Column consistency — uniform col_count across tables (weight 0.3)
+          3. Content density — average normalised text length per filled cell (weight 0.3)
         """
+        if not tables:
+            return 0.0
+
         total_cells = 0
         filled_cells = 0
+        total_text_len = 0
+
         for table in tables:
+            # Use table.col_count * row count for expected total — avoids
+            # penalising rows where anchor_cell skips empty columns.
+            total_cells += table.col_count * len(table.rows)
             for row in table.rows:
                 for cell in row.cells:
-                    total_cells += 1
-                    if cell.text.strip():
+                    text = cell.text.strip()
+                    if text:
                         filled_cells += 1
+                        total_text_len += len(utils.normalize(text))
+
         if total_cells == 0:
-            return False
-        return (filled_cells / total_cells) >= min_fill_rate
+            return 0.0
+
+        # Signal 1: fill rate (0..1)
+        fill_rate = filled_cells / total_cells
+
+        # Signal 2: column consistency — uniform col_count (0..1)
+        col_counts = {table.col_count for table in tables}
+        col_consistency = 1.0 if len(col_counts) <= 1 else 0.8
+
+        # Signal 3: content density — gentler baseline for CJK text
+        avg_text_len = total_text_len / max(filled_cells, 1)
+        content_density = min(avg_text_len / 8.0, 1.0)
+
+        return fill_rate * 0.4 + col_consistency * 0.3 + content_density * 0.3
 
     def is_table_block(self, block) -> bool:
         return self._parser.is_table_block(block)

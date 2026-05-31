@@ -7,12 +7,13 @@ import re
 import unicodedata
 
 from app.models import BBox, TextBlock
-from app.models_table import StructuredTable
+from app.models_table import StructuredTable, TableRow
 from app.services.table_compare.constants import (
     TABLE_BLOCK_TYPES,
     TABLE_HEADERS,
 )
 from app.services.table_compare.types import (
+    RowSignature,
     _LogicalCell,
     _LogicalRow,
     _LogicalTable,
@@ -40,10 +41,24 @@ class LogicalTableParser:
         return result
 
     def parse_tables(self, blocks: list[tuple[TextBlock, str]]) -> list[StructuredTable]:
-        tables = []
+        tables: list[StructuredTable] = []
+        pending_caption = ""
+        last_page_no = -1
+
         for block, text in blocks:
-            if "<table" not in text.lower():
+            # Reset caption when moving to a new page
+            if block.page_no != last_page_no:
+                pending_caption = ""
+                last_page_no = block.page_no
+
+            has_html_table = "<table" in text.lower()
+
+            if not has_html_table:
+                # Non-HTML table_title block — remember as potential caption
+                if block.block_type == "table_title" and block.text.strip():
+                    pending_caption = block.text.strip()
                 continue
+
             try:
                 cell_bboxes = [BBox(x0=b[0], y0=b[1], x1=b[2], y1=b[3]) for b in block.table_cell_bboxes] if block.table_cell_bboxes else None
                 parsed = parse_html_tables(
@@ -56,37 +71,177 @@ class LogicalTableParser:
                 )
                 for t in parsed:
                     if t.rows and any(cell.text.strip() for row in t.rows for cell in row.cells):
+                        if pending_caption:
+                            t.caption = pending_caption
+                            pending_caption = ""
                         tables.append(t)
             except Exception:
                 logger.debug("HTML table parsing failed for block %s", block.block_id, exc_info=True)
         return tables
 
+    # ------------------------------------------------------------------
+    # Cross-page table merge (enhanced with MinerU-inspired techniques)
+    # ------------------------------------------------------------------
+
+    _MAX_HEADER_SCAN = 5
+
     def stitch_logical_tables(self, tables: list[StructuredTable], repair_service) -> list[_LogicalTable]:
-        """Merge consecutive product-list table fragments into logical tables."""
+        """Merge consecutive table fragments into logical tables.
+
+        Enhanced with MinerU-inspired cross-page merge logic:
+        - Continuation marker detection (续表, continued, etc.)
+        - Row-signature-based header caching and deduplication
+        - Structure-compatible stitching across consecutive pages
+        """
         logical: list[_LogicalTable] = []
         pending: list[StructuredTable] = []
+        header_sigs: list[RowSignature] = []
 
         def flush_pending() -> None:
-            nonlocal pending
+            nonlocal pending, header_sigs
             if pending:
                 table = self._build_logical_table(pending, repair_service)
                 if table.rows:
                     logical.append(table)
                 pending = []
+                header_sigs = []
 
         for table in tables:
-            if pending and self._is_summary_only_table(table) and self._should_stitch_summary_table(pending[-1], table):
-                pending.append(table)
-                continue
-            if self._is_product_like_table(table):
-                pending.append(table)
-                continue
+            if pending:
+                # Case 1: summary-only table following product-like pending group
+                if self._is_summary_only_table(table) and self._should_stitch_summary_table(pending[-1], table):
+                    pending.append(table)
+                    continue
+
+                # Case 2: cross-page continuation detection
+                if self._should_stitch_continuation(pending, table, header_sigs):
+                    table = self._strip_matching_headers(table, header_sigs)
+                    pending.append(table)
+                    continue
+
+            # Start a new group
             flush_pending()
+
+            if self._is_product_like_table(table):
+                header_sigs = self._extract_header_signatures(table)
+                pending.append(table)
+                continue
+
             logical_table = self._build_logical_table([table], repair_service)
             if logical_table.rows:
                 logical.append(logical_table)
+
         flush_pending()
         return logical
+
+    def _should_stitch_continuation(
+        self, pending: list[StructuredTable], candidate: StructuredTable,
+        header_sigs: list[RowSignature],
+    ) -> bool:
+        """Decide whether *candidate* should be stitched onto *pending*.
+
+        Three signals, any one suffices:
+        1. Explicit continuation marker detected on or near the candidate.
+        2. Candidate header rows match cached header signatures (duplicate header).
+        3. Product-like candidate on a consecutive page with compatible columns.
+
+        col_count difference is a soft signal, not a hard gate: strong signals
+        (continuation marker, header match) tolerate up to 3 columns difference;
+        product-like signal tolerates up to 2; no signal keeps the original limit.
+        """
+        last = pending[-1]
+        if candidate.page_no not in {last.page_no, last.page_no + 1}:
+            return False
+
+        col_diff = abs(candidate.col_count - last.col_count)
+
+        # Signal 1: explicit continuation marker in table text or source text
+        if self._has_continuation_marker(candidate):
+            return col_diff <= 3
+
+        # Signal 2: matching header rows (strong indicator of continuation)
+        if header_sigs and self._candidate_matches_cached_headers(candidate, header_sigs):
+            return col_diff <= 3
+
+        # Signal 3: product-like on consecutive page with compatible structure
+        if candidate.page_no == last.page_no + 1 and self._is_product_like_table(candidate):
+            return col_diff <= 2
+
+        # No supporting signal — keep strict col_count gate
+        return col_diff <= 1
+
+    def _has_continuation_marker(self, table: StructuredTable) -> bool:
+        """Check whether the table or its surrounding text carries a continuation marker."""
+        # Check source text first (may contain caption or preceding text)
+        if table.source_text and utils.is_continuation_text(table.source_text):
+            return True
+        # Check first row text (sometimes "(续)" appears as a row)
+        for row in table.rows[:2]:
+            for cell in row.cells:
+                if utils.is_continuation_text(cell.text):
+                    return True
+        return False
+
+    def _candidate_matches_cached_headers(
+        self, candidate: StructuredTable, header_sigs: list[RowSignature],
+    ) -> bool:
+        """Return True if the candidate's first rows match cached header signatures."""
+        for row in candidate.rows[:len(header_sigs)]:
+            sig = utils.build_row_signature(row.cells)
+            for cached in header_sigs:
+                if sig.matches_with_text(cached, threshold=0.5):
+                    return True
+        return False
+
+    def _extract_header_signatures(self, table: StructuredTable) -> list[RowSignature]:
+        """Extract RowSignatures for the header rows of *table*."""
+        sigs: list[RowSignature] = []
+        for row in table.rows[:self._MAX_HEADER_SCAN]:
+            cells = row.cells
+            if not cells:
+                continue
+            sig = utils.build_row_signature(cells)
+            if self._is_table_header_cells_from_struct(cells):
+                sigs.append(sig)
+            elif sigs:
+                # Past the header region
+                break
+        return sigs
+
+    def _strip_matching_headers(
+        self, table: StructuredTable, header_sigs: list[RowSignature],
+    ) -> StructuredTable:
+        """Return a copy of *table* with rows matching *header_sigs* removed."""
+        if not header_sigs:
+            return table
+        kept_rows: list[TableRow] = []
+        skip_count = 0
+        for row in table.rows:
+            if skip_count < len(header_sigs):
+                sig = utils.build_row_signature(row.cells)
+                if sig.matches_with_text(header_sigs[skip_count], threshold=0.5):
+                    skip_count += 1
+                    continue
+            kept_rows.append(row)
+        if not kept_rows:
+            return table
+        return StructuredTable(
+            page_no=table.page_no,
+            rows=kept_rows,
+            col_count=table.col_count,
+            source_block_id=table.source_block_id,
+            source=table.source,
+            source_text=table.source_text,
+        )
+
+    @staticmethod
+    def _is_table_header_cells_from_struct(cells) -> bool:
+        """Check whether cells constitute a table header row (StructuredTable cells)."""
+        texts = [utils.normalize(cell.text) for cell in cells if utils.normalize(cell.text)]
+        if not texts:
+            return False
+        header_count = sum(1 for text in texts if text in TABLE_HEADERS)
+        return header_count >= 3 and header_count / len(texts) >= 0.5
 
     def _build_logical_table(self, tables: list[StructuredTable], repair_service) -> _LogicalTable:
         rows: list[_LogicalRow] = []
@@ -136,6 +291,8 @@ class LogicalTableParser:
             page_no=first.page_no if first else 0,
             source_block_id=first.source_block_id if first else "",
             source="logical_table",
+            caption=first.caption if first else "",
+            footnote=first.footnote if first else "",
         )
 
     def _logical_cells(self, table: StructuredTable, row: int, logical_row: int) -> list[_LogicalCell]:
