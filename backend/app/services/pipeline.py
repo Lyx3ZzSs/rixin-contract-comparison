@@ -128,6 +128,7 @@ class PipelineStage(Protocol):
     """Single processing step in the comparison pipeline."""
 
     name: str
+    start_progress: int
     progress: int
 
     def execute(self, ctx: PipelineContext) -> None: ...
@@ -178,7 +179,7 @@ class ComparePipeline:
         )
         peak_memory = 0.0
         for stage in self.stages:
-            _update_progress(ctx, stage.name, stage.progress, self.repository)
+            _update_progress(ctx, stage.name, stage.start_progress, self.repository)
             stage_t0 = time.perf_counter()
             mem_start = get_process_memory_mb()
             sm = StageMetrics(name=stage.name, memory_mb_start=mem_start)
@@ -198,6 +199,7 @@ class ComparePipeline:
             sm.memory_mb_end = get_process_memory_mb()
             metrics.stages.append(sm)
             peak_memory = max(peak_memory, sm.memory_mb_end)
+            _update_progress(ctx, stage.name, stage.progress, self.repository)
         metrics.finished_at = datetime.now(UTC).isoformat()
         metrics.total_duration_seconds = time.perf_counter() - pipeline_t0
         metrics.peak_memory_mb = peak_memory

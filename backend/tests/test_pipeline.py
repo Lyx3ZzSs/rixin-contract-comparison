@@ -250,6 +250,7 @@ class TestComparePipeline:
         class FakeStage:
             def __init__(self, name: str, progress: int) -> None:
                 self.name = name
+                self.start_progress = progress
                 self.progress = progress
 
             def execute(self, ctx: PipelineContext) -> None:
@@ -273,6 +274,7 @@ class TestComparePipeline:
         class TrackingStage:
             def __init__(self, name: str, progress: int) -> None:
                 self.name = name
+                self.start_progress = progress
                 self.progress = progress
 
             def execute(self, ctx: PipelineContext) -> None:
@@ -310,6 +312,7 @@ class TestComparePipeline:
 
         class NoOpStage:
             name = "noop"
+            start_progress = 50
             progress = 50
 
             def execute(self, ctx: PipelineContext) -> None:
@@ -327,6 +330,7 @@ class TestPipelineStageFailure:
 
         class FailingStage:
             name = "failing"
+            start_progress = 50
             progress = 50
 
             def execute(self, ctx: PipelineContext) -> None:

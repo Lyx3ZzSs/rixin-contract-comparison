@@ -9,7 +9,7 @@ from app.infrastructure.artifact_store import ArtifactStore, default_artifact_st
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.models import CompareTask
 from app.services.extractors.base import DocumentExtractor
-from app.services.pipeline import ComparePipeline, PipelineContext
+from app.services.pipeline import ComparePipeline, PipelineContext, _update_progress
 from app.services.pipeline_stages import ExtractionStage
 from app.services.report_generator import ReportGenerator
 from app.utils.id_utils import generate_task_id
@@ -83,6 +83,7 @@ class CompareService:
             task=task,
             original_pdf=Path(original_pdf),
             compare_pdf=Path(compare_pdf),
+            progress_callback=self._make_progress_callback(task.task_id),
         )
         pipeline = self._build_pipeline()
         try:
@@ -92,6 +93,18 @@ class CompareService:
             ctx.task = self._mark_failed(ctx.task, str(exc))
             raise
         return ctx.task
+
+    def _make_progress_callback(self, task_id: str):
+        def callback(percent: int, stage: str, detail: dict | None = None) -> None:
+            from app.services.progress_bus import ProgressBus, ProgressEvent
+            ProgressBus.get_instance().publish(ProgressEvent(
+                task_id=task_id,
+                stage=stage,
+                progress_percent=percent,
+                status="PROCESSING",
+                detail=detail,
+            ))
+        return callback
 
     def _load_or_create_task(
         self,

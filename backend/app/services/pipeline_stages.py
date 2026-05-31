@@ -80,6 +80,7 @@ def _write_debug_artifact(
 
 class ExtractionStage:
     name = "文档解析中"
+    start_progress = 10
     progress = 35
 
     def __init__(
@@ -226,6 +227,7 @@ class ExtractionStage:
 
 class PreClauseDiffStage:
     name = "差异识别中"
+    start_progress = 36
     progress = 40
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
@@ -294,6 +296,7 @@ class PreClauseDiffStage:
 
 class SplitStage:
     name = "差异识别中"
+    start_progress = 41
     progress = 45
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
@@ -323,6 +326,7 @@ class SplitStage:
 
 class MatchStage:
     name = "条款匹配中"
+    start_progress = 46
     progress = 55
 
     def __init__(
@@ -348,6 +352,7 @@ class MatchStage:
 
 class ClauseDiffStage:
     name = "差异计算中"
+    start_progress = 56
     progress = 60
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
@@ -369,6 +374,7 @@ class ClauseDiffStage:
 
 class EvidenceStage:
     name = "证据定位中"
+    start_progress = 61
     progress = 70
 
     def __init__(self) -> None:
@@ -396,6 +402,7 @@ class EvidenceStage:
 
 class VisualizationStage:
     name = "高亮信息准备中"
+    start_progress = 71
     progress = 90
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
@@ -408,6 +415,7 @@ class VisualizationStage:
 
 class SummaryStage:
     name = "汇总统计中"
+    start_progress = 91
     progress = 95
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
