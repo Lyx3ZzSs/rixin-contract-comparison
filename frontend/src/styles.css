@@ -2140,23 +2140,6 @@ h2 {
   opacity: 0.62;
 }
 
-.compare-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 18px;
-  margin-top: 14px;
-}
-
-.compare-actions button {
-  border: 0;
-  background: transparent;
-  color: var(--teal-strong);
-  font-size: 0.84rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-
 .compare-task-toast {
   position: fixed;
   right: 24px;
@@ -3920,6 +3903,29 @@ h2 {
   box-shadow: 0 0 0 1px rgba(230, 180, 63, 0.34);
 }
 
+.audit-diff-card.ignored,
+.audit-diff-card.ignored.active {
+  border-color: #d5dddd;
+  background: #f3f6f6;
+  color: #6a7779;
+  box-shadow: none;
+}
+
+.audit-diff-card.ignored:hover {
+  border-color: #c9d3d3;
+  box-shadow: 0 6px 18px rgba(56, 70, 73, 0.08);
+}
+
+.audit-diff-card.ignored .audit-type-badge {
+  background: #e6ecec;
+  color: #7b888a;
+}
+
+.audit-diff-card.ignored .audit-diff-main strong,
+.audit-diff-card.ignored .audit-diff-main > span:not(.audit-type-badge) {
+  color: #778385;
+}
+
 .audit-diff-main {
   display: grid;
   gap: 9px;
@@ -4036,6 +4042,18 @@ h2 {
   border-color: var(--teal);
   background: #eef8f7;
   color: var(--teal-strong);
+}
+
+.review-action.restore {
+  border-color: #cfdada;
+  background: #f8fbfb;
+  color: #5b6a6d;
+}
+
+.review-action.restore:hover {
+  border-color: #9fb0b2;
+  background: #eef2f2;
+  color: #334044;
 }
 
 .review-action:disabled {

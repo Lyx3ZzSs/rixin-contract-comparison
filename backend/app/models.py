@@ -186,6 +186,13 @@ class DiffItem(BaseModel):
     compare_change_ranges: list[TextRange] = Field(default_factory=list)
 
 
+class AuditItemReview(BaseModel):
+    review_status: ReviewStatus = "UNREVIEWED"
+    review_comment: str = ""
+    reviewed_by: str = ""
+    reviewed_at: str = ""
+
+
 class CompareTask(BaseModel):
     task_id: str
     schema_version: int = 1
@@ -214,6 +221,7 @@ class CompareTask(BaseModel):
     false_positive_count: int = 0
     manual_review_count: int = 0
     ignored_count: int = 0
+    audit_item_reviews: dict[str, AuditItemReview] = Field(default_factory=dict)
     diffs: list[DiffItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)

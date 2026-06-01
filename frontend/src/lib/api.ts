@@ -1,4 +1,5 @@
 import type {
+  AuditItemReviewResponse,
   CompareRecordSummary,
   CompareResponse,
   CompareQualitySummary,
@@ -87,6 +88,22 @@ export async function updateDiffReview(taskId: string, diffId: string, payload: 
     body: JSON.stringify(payload),
   });
   return parseJsonResponse<DiffReviewResponse>(response);
+}
+
+export async function updateAuditItemReview(
+  taskId: string,
+  auditItemId: string,
+  payload: DiffReviewPayload,
+): Promise<AuditItemReviewResponse> {
+  const response = await fetch(
+    toApiUrl(`/api/compare/${taskId}/audit-items/${encodeURIComponent(auditItemId)}/review`),
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  return parseJsonResponse<AuditItemReviewResponse>(response);
 }
 
 export async function getCompareQuality(taskId: string): Promise<CompareQualitySummary> {

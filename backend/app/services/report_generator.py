@@ -44,6 +44,15 @@ def build_report_filename(task: CompareTask) -> str:
     return f"{safe_title}.pdf"
 
 
+def _visible_audit_items(task: CompareTask) -> list[AuditItem]:
+    visible_items: list[AuditItem] = []
+    for item in build_audit_items(task.diffs):
+        review = task.audit_item_reviews.get(item.item_id)
+        if review is None or review.review_status != "IGNORED":
+            visible_items.append(item)
+    return visible_items
+
+
 class ReportGenerator:
     def generate(self, task: CompareTask, output_path: str | Path) -> Path:
         output_path = Path(output_path)
@@ -61,7 +70,7 @@ class ReportGenerator:
         )
 
         report_title = build_report_title(task)
-        audit_items = build_audit_items(task.diffs)
+        audit_items = _visible_audit_items(task)
         indexed_items = self._indexed_items(audit_items)
         self._current_original_pdf_path = task.original_pdf_path
         self._current_compare_pdf_path = task.compare_pdf_path

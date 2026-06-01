@@ -53,6 +53,7 @@ export interface CompareResponse {
   false_positive_count?: number;
   manual_review_count?: number;
   ignored_count?: number;
+  audit_item_reviews?: Record<string, AuditItemReview>;
   extractor_used?: string;
   parse_warnings?: string[];
   parse_warning_details?: ParseWarningDetail[];
@@ -174,6 +175,14 @@ export interface DiffReviewPayload {
   reviewed_by?: string;
 }
 
+export interface AuditItemReview {
+  audit_item_id?: string;
+  review_status: ReviewStatus;
+  review_comment?: string;
+  reviewed_by?: string;
+  reviewed_at?: string;
+}
+
 export interface DiffReviewResponse {
   task_id: string;
   diff: DiffItem;
@@ -184,6 +193,13 @@ export interface DiffReviewResponse {
     manual_review_count: number;
     ignored_count: number;
   };
+}
+
+export interface AuditItemReviewResponse {
+  task_id: string;
+  audit_item_id: string;
+  audit_item_review: AuditItemReview;
+  review_stats: DiffReviewResponse["review_stats"];
 }
 
 export interface QualityDiffItem {

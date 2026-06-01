@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from urllib.parse import unquote
 
+import fitz
 from fastapi.testclient import TestClient
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -363,6 +364,94 @@ def test_api_updates_diff_review_and_quality_summary(tmp_path: Path) -> None:
     assert quality_payload["evidence_quality_counts"]["LOW"] == 1
     assert quality_payload["low_confidence_diffs"][0]["diff_id"] == "D001"
     assert quality_payload["low_similarity_diffs"][0]["diff_id"] == "D001"
+
+
+def test_api_report_excludes_ignored_audit_item_after_review(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    original = tmp_path / "original.pdf"
+    compare = tmp_path / "compare.pdf"
+    make_pdf(original, ["1. Payment", "Buyer shall pay within 30 days.", "2. Delivery"])
+    make_pdf(compare, ["1. Payment", "Buyer shall pay within 45 days.", "2. Delivery"])
+    save_task(
+        CompareTask(
+            task_id="TIGNOREREPORT",
+            status="COMPLETED",
+            original_filename="original.pdf",
+            compare_filename="compare.pdf",
+            original_pdf_path=str(original),
+            compare_pdf_path=str(compare),
+            diffs=[
+                DiffItem(
+                    diff_id="D001",
+                    diff_type="MODIFY",
+                    title="混合付款",
+                    original_evidence=[
+                        EvidenceBox(
+                            page_no=1,
+                            bbox=BBox(x0=72, y0=88, x1=180, y1=105),
+                            text="30 days",
+                            highlight_type="MODIFY",
+                        ),
+                        EvidenceBox(
+                            page_no=1,
+                            bbox=BBox(x0=72, y0=120, x1=180, y1=140),
+                            text="旧签署说明",
+                            highlight_type="DELETE",
+                        ),
+                    ],
+                    compare_evidence=[
+                        EvidenceBox(
+                            page_no=1,
+                            bbox=BBox(x0=72, y0=88, x1=180, y1=105),
+                            text="45 days",
+                            highlight_type="MODIFY",
+                        ),
+                        EvidenceBox(
+                            page_no=1,
+                            bbox=BBox(x0=72, y0=140, x1=180, y1=160),
+                            text="新增发票说明",
+                            highlight_type="ADD",
+                        ),
+                    ],
+                ),
+                DiffItem(
+                    diff_id="D002",
+                    diff_type="ADD",
+                    title="交付条款",
+                    compare_evidence=[
+                        EvidenceBox(
+                            page_no=1,
+                            bbox=BBox(x0=72, y0=110, x1=180, y1=130),
+                            text="2. Delivery",
+                            highlight_type="ADD",
+                        ),
+                    ],
+                ),
+            ],
+        )
+    )
+
+    client = TestClient(app)
+    review_response = client.patch(
+        "/api/compare/TIGNOREREPORT/audit-items/D001:DELETE/review",
+        json={"review_status": "IGNORED", "reviewed_by": "legal"},
+    )
+    assert review_response.status_code == 200, review_response.text
+
+    report_response = client.get("/api/compare/TIGNOREREPORT/report")
+
+    assert report_response.status_code == 200, report_response.text
+    with fitz.open(stream=report_response.content, filetype="pdf") as report_pdf:
+        report_text = "\n".join(page.get_text() for page in report_pdf)
+    assert "D001:DELETE" not in report_text
+    assert "旧签署说明" not in report_text
+    assert "D001:ADD" in report_text
+    assert "新增发票说明" in report_text
+    assert "D001:MODIFY" in report_text
+    assert "30 days" in report_text
+    assert "45 days" in report_text
+    assert "D002:ADD" in report_text
+    assert "交付条款" in report_text
 
 
 def test_api_rejects_review_for_processing_task(tmp_path: Path) -> None:

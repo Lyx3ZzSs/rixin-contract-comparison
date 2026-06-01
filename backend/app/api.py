@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from app.api_errors import http_error
 from app.application.compare_tasks import default_compare_task_application
 from app.api_presenters import (
+    audit_item_review_response,
     compare_diff_list_response,
     compare_record_list_response,
     compare_task_detail_response,
@@ -18,6 +19,7 @@ from app.api_presenters import (
     task_execution_response,
 )
 from app.api_schemas import (
+    AuditItemReviewUpdateResponse,
     CompareDiffListResponse,
     CompareRecordListResponse,
     CompareTaskDetailResponse,
@@ -28,6 +30,7 @@ from app.api_schemas import (
 )
 from app.models import CompareTask
 from app.services.review_service import (
+    AuditItemNotFoundError,
     CompareQualityService,
     DiffNotFoundError,
     InvalidReviewStateError,
@@ -147,6 +150,30 @@ def update_diff_review(task_id: str, diff_id: str, payload: DiffReviewRequest) -
         raise http_error(exc) from exc
 
     return diff_review_response(task, diff)
+
+
+@router.patch(
+    "/{task_id}/audit-items/{audit_item_id}/review",
+    response_model=AuditItemReviewUpdateResponse,
+)
+def update_audit_item_review(
+    task_id: str,
+    audit_item_id: str,
+    payload: DiffReviewRequest,
+) -> AuditItemReviewUpdateResponse:
+    task = _load_or_404(task_id)
+    try:
+        task, review = default_compare_task_application.update_audit_item_review(
+            task,
+            audit_item_id,
+            payload.review_status,
+            payload.review_comment,
+            payload.reviewed_by,
+        )
+    except (InvalidReviewStateError, AuditItemNotFoundError) as exc:
+        raise http_error(exc) from exc
+
+    return audit_item_review_response(task, audit_item_id, review)
 
 
 @router.get("/{task_id}/execution", response_model=TaskExecutionResponse)

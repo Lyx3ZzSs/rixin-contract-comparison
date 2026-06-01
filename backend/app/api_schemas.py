@@ -48,6 +48,7 @@ class CompareTaskResponse(BaseModel):
     false_positive_count: int = 0
     manual_review_count: int = 0
     ignored_count: int = 0
+    audit_item_reviews: dict[str, dict[str, Any]] = Field(default_factory=dict)
     extractor_used: str = ""
     parse_warnings: list[str] = Field(default_factory=list)
     parse_warning_details: list[dict[str, Any]] = Field(default_factory=list)
@@ -139,6 +140,14 @@ class DiffReviewRequest(BaseModel):
     reviewed_by: str = ""
 
 
+class AuditItemReviewResponse(BaseModel):
+    audit_item_id: str
+    review_status: ReviewStatus = "UNREVIEWED"
+    review_comment: str = ""
+    reviewed_by: str = ""
+    reviewed_at: str = ""
+
+
 class ReviewStatsResponse(BaseModel):
     reviewed_count: int
     confirmed_count: int
@@ -150,6 +159,13 @@ class ReviewStatsResponse(BaseModel):
 class DiffReviewResponse(BaseModel):
     task_id: str
     diff: CompareDiffResponse
+    review_stats: ReviewStatsResponse
+
+
+class AuditItemReviewUpdateResponse(BaseModel):
+    task_id: str
+    audit_item_id: str
+    audit_item_review: AuditItemReviewResponse
     review_stats: ReviewStatsResponse
 
 

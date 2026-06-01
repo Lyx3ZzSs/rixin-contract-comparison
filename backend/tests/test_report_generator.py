@@ -4,7 +4,7 @@ import fitz
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-from app.models import BBox, CompareTask, DiffItem, EvidenceBox
+from app.models import AuditItemReview, BBox, CompareTask, DiffItem, EvidenceBox
 from app.services.report_generator import ReportGenerator
 
 
@@ -89,7 +89,25 @@ def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path)
                     EvidenceBox(page_no=6, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="45 days", highlight_type="MODIFY"),
                 ],
             ),
+            DiffItem(
+                diff_id="D006",
+                diff_type="MODIFY",
+                clause_no="6",
+                title="忽略混合改动",
+                original_evidence=[
+                    EvidenceBox(page_no=5, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="忽略旧说明", highlight_type="DELETE"),
+                    EvidenceBox(page_no=5, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="10 days", highlight_type="MODIFY"),
+                ],
+                compare_evidence=[
+                    EvidenceBox(page_no=6, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="忽略新增说明", highlight_type="ADD"),
+                    EvidenceBox(page_no=6, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="20 days", highlight_type="MODIFY"),
+                ],
+            ),
         ],
+        audit_item_reviews={
+            "D002:ADD": AuditItemReview(review_status="IGNORED"),
+            "D006:DELETE": AuditItemReview(review_status="IGNORED"),
+        },
     )
     output_path = tmp_path / "report.pdf"
 
@@ -106,9 +124,9 @@ def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path)
     assert "1 付款" in report_text
     assert "30 days" in report_text
     assert "45 days" in report_text
-    assert "2 发票" in report_text
+    assert "2 发票" not in report_text
     assert "原文无对应内容" in report_text
-    assert "新增发票条款" in report_text
+    assert "新增发票条款" not in report_text
     assert "3 旧质保" in report_text
     assert "旧质保条款" in report_text
     assert "新版已删除" in report_text
@@ -119,6 +137,12 @@ def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path)
     assert "需复核" not in report_text
     assert "D004" not in report_text
     assert "无定位表格项" not in report_text
+    assert "D006:DELETE" not in report_text
+    assert "D006:ADD" in report_text
+    assert "D006:MODIFY" in report_text
+    assert "忽略混合改动" in report_text
+    assert "忽略旧说明" not in report_text
+    assert "忽略新增说明" in report_text
     assert "D005:ADD" in report_text
     assert "D005:DELETE" in report_text
     assert "D005:MODIFY" in report_text

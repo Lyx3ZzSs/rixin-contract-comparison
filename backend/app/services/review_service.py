@@ -7,10 +7,15 @@ from typing import Any
 
 from app.errors import ConflictError, NotFoundError
 from app.infrastructure.task_repository import TaskRepository, default_task_repository, to_jsonable
-from app.models import CompareTask, DiffItem, EvidenceBox, ReviewStatus
+from app.models import AuditItemReview, CompareTask, DiffItem, EvidenceBox, ReviewStatus
+from app.services.audit_summary import build_audit_items
 
 
 class DiffNotFoundError(NotFoundError):
+    pass
+
+
+class AuditItemNotFoundError(NotFoundError):
     pass
 
 
@@ -59,9 +64,49 @@ class CompareReviewService:
         assert updated_diff is not None
         return updated_task, updated_diff
 
+    def update_audit_item_review(
+        self,
+        task: CompareTask,
+        audit_item_id: str,
+        review_status: ReviewStatus,
+        review_comment: str = "",
+        reviewed_by: str = "",
+    ) -> tuple[CompareTask, AuditItemReview]:
+        updated_review: AuditItemReview | None = None
+
+        def mutate(persisted: CompareTask) -> None:
+            nonlocal updated_review
+            if persisted.status != "COMPLETED":
+                raise InvalidReviewStateError("任务尚未完成，不能提交复核结果。")
+            valid_item_ids = {item.item_id for item in build_audit_items(persisted.diffs)}
+            if audit_item_id not in valid_item_ids:
+                raise AuditItemNotFoundError(f"审计点不存在: {audit_item_id}")
+            updated_review = AuditItemReview(
+                review_status=review_status,
+                review_comment=review_comment.strip(),
+                reviewed_by=reviewed_by.strip(),
+                reviewed_at=datetime.now(UTC).isoformat(),
+            )
+            persisted.audit_item_reviews[audit_item_id] = updated_review
+            self.refresh_review_stats(persisted)
+
+        updated_task = self.repository.update_compare_task(task.task_id, mutate)
+        assert updated_review is not None
+        return updated_task, updated_review
+
     def refresh_review_stats(self, task: CompareTask) -> CompareTask:
-        counts = Counter(diff.review_status for diff in task.diffs)
-        task.reviewed_count = len([diff for diff in task.diffs if diff.review_status != "UNREVIEWED"])
+        if task.audit_item_reviews:
+            counts = Counter(review.review_status for review in task.audit_item_reviews.values())
+            task.reviewed_count = len(
+                [
+                    review
+                    for review in task.audit_item_reviews.values()
+                    if review.review_status != "UNREVIEWED"
+                ]
+            )
+        else:
+            counts = Counter(diff.review_status for diff in task.diffs)
+            task.reviewed_count = len([diff for diff in task.diffs if diff.review_status != "UNREVIEWED"])
         task.confirmed_count = counts["CONFIRMED"]
         task.false_positive_count = counts["FALSE_POSITIVE"]
         task.manual_review_count = counts["NEEDS_REVIEW"]

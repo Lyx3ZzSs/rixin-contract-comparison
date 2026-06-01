@@ -7,7 +7,7 @@ from typing import Any, Mapping
 from app.errors import ConflictError, NotFoundError
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.infrastructure.task_runner import QueuedTaskRunner, TaskJob, default_task_runner
-from app.models import CompareTask, DiffItem, ReviewStatus
+from app.models import AuditItemReview, CompareTask, DiffItem, ReviewStatus
 from app.services.compare_service import CompareService
 from app.services.review_service import CompareReviewService
 
@@ -110,6 +110,22 @@ class CompareTaskApplication:
         return CompareReviewService(repository=self.repository).update_diff_review(
             task,
             diff_id,
+            review_status,
+            review_comment,
+            reviewed_by,
+        )
+
+    def update_audit_item_review(
+        self,
+        task: CompareTask,
+        audit_item_id: str,
+        review_status: ReviewStatus,
+        review_comment: str = "",
+        reviewed_by: str = "",
+    ) -> tuple[CompareTask, AuditItemReview]:
+        return CompareReviewService(repository=self.repository).update_audit_item_review(
+            task,
+            audit_item_id,
             review_status,
             review_comment,
             reviewed_by,

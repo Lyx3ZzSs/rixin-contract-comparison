@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { updateDiffReview } from "../lib/api";
+import { updateAuditItemReview } from "../lib/api";
 import type { CompareTask, DiffItem } from "../types";
 import { ResultPage } from "./ResultPage";
 
@@ -40,10 +40,15 @@ vi.mock("../lib/api", () => ({
   getTask: vi.fn(async () => mockTask),
   getDiffs: vi.fn(async () => mockDiffs),
   getCompareQuality: vi.fn(async () => mockQuality),
-  updateDiffReview: vi.fn(async (_taskId: string, diffId: string, payload: { review_status: string; review_comment?: string }) => ({
+  updateAuditItemReview: vi.fn(async (
+    _taskId: string,
+    auditItemId: string,
+    payload: { review_status: string; review_comment?: string },
+  ) => ({
     task_id: "task-1",
-    diff: {
-      ...mockDiffs.find((diff) => diff.diff_id === diffId),
+    audit_item_id: auditItemId,
+    audit_item_review: {
+      audit_item_id: auditItemId,
       review_status: payload.review_status,
       review_comment: payload.review_comment ?? "",
       reviewed_by: "local_reviewer",
@@ -75,6 +80,7 @@ const mockTask: CompareTask = {
   false_positive_count: 0,
   manual_review_count: 0,
   ignored_count: 0,
+  audit_item_reviews: {},
   report_url: "/api/compare/task-1/report",
   report_filename: "销售合同差异分析报告.pdf",
   original_pdf_url: "/api/compare/task-1/original",
@@ -393,14 +399,30 @@ describe("ResultPage", () => {
     expect(screen.queryByText("未复核")).not.toBeInTheDocument();
     expect(screen.queryByText("同编号低相似")).not.toBeInTheDocument();
 
-    await user.click(screen.getAllByRole("button", { name: "忽略 diff-1" })[0]);
+    const ignoreButton = screen.getByRole("button", { name: "忽略 diff-1:ADD" });
+    const auditCard = ignoreButton.closest(".audit-diff-card");
+    await user.click(ignoreButton);
 
-    await waitFor(() => expect(updateDiffReview).toHaveBeenCalled());
-    expect(updateDiffReview).toHaveBeenCalledWith("task-1", "diff-1", {
+    await waitFor(() => expect(updateAuditItemReview).toHaveBeenCalled());
+    expect(updateAuditItemReview).toHaveBeenCalledWith("task-1", "diff-1:ADD", {
       review_status: "IGNORED",
       review_comment: "",
       reviewed_by: "local_reviewer",
     });
+    await waitFor(() => expect(auditCard).toHaveClass("ignored"));
+    expect(screen.getByRole("button", { name: "恢复 diff-1:ADD" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "恢复 diff-1:ADD" }));
+
+    await waitFor(() =>
+      expect(updateAuditItemReview).toHaveBeenLastCalledWith("task-1", "diff-1:ADD", {
+        review_status: "UNREVIEWED",
+        review_comment: "",
+        reviewed_by: "local_reviewer",
+      }),
+    );
+    await waitFor(() => expect(auditCard).not.toHaveClass("ignored"));
+    expect(screen.getByRole("button", { name: "忽略 diff-1:ADD" })).toBeInTheDocument();
   });
 
   it("collapses and reopens the audit panel", async () => {

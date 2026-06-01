@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.api_schemas import (
+    AuditItemReviewResponse,
+    AuditItemReviewUpdateResponse,
     CompareDiffListResponse,
     CompareDiffResponse,
     CompareRecordListResponse,
@@ -17,7 +19,7 @@ from app.api_schemas import (
     TaskExecutionResponse,
 )
 from app.infrastructure.task_runner import TaskJob
-from app.models import CompareTask
+from app.models import AuditItemReview, CompareTask
 from app.models_extraction import ExtractionTask
 from app.services.report_generator import build_report_filename
 from app.utils.json_utils import to_jsonable
@@ -35,6 +37,10 @@ def compare_task_response(task: CompareTask) -> CompareTaskResponse:
         "false_positive_count": task.false_positive_count,
         "manual_review_count": task.manual_review_count,
         "ignored_count": task.ignored_count,
+        "audit_item_reviews": {
+            item_id: to_jsonable(review)
+            for item_id, review in task.audit_item_reviews.items()
+        },
         "extractor_used": task.extractor_used,
         "parse_warnings": task.parse_warnings,
         "parse_warning_details": [to_jsonable(item) for item in task.parse_warning_details],
@@ -119,6 +125,25 @@ def diff_review_response(task: CompareTask, diff) -> DiffReviewResponse:
     return DiffReviewResponse(
         task_id=task.task_id,
         diff=diff_response(diff),
+        review_stats=review_stats(task),
+    )
+
+
+def audit_item_review_response(
+    task: CompareTask,
+    audit_item_id: str,
+    review: AuditItemReview,
+) -> AuditItemReviewUpdateResponse:
+    return AuditItemReviewUpdateResponse(
+        task_id=task.task_id,
+        audit_item_id=audit_item_id,
+        audit_item_review=AuditItemReviewResponse(
+            audit_item_id=audit_item_id,
+            review_status=review.review_status,
+            review_comment=review.review_comment,
+            reviewed_by=review.reviewed_by,
+            reviewed_at=review.reviewed_at,
+        ),
         review_stats=review_stats(task),
     )
 

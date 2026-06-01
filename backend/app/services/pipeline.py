@@ -243,6 +243,7 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.document_profiles = source.document_profiles
     target.debug_artifact_paths = source.debug_artifact_paths
     target.diff_count = source.diff_count
+    target.audit_item_reviews = source.audit_item_reviews
     target.diffs = _merge_review_state(target.diffs, source.diffs)
     target.errors = source.errors
     target.metrics = source.metrics
