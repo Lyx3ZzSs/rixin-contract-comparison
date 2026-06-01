@@ -9,6 +9,3 @@ pydantic-settings>=2
 python-dotenv
 pytest
 httpx
-SQLAlchemy>=2
-alembic
-psycopg[binary]

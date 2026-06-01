@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -70,7 +70,6 @@ class Settings(BaseSettings):
     reports_dir: Path | None = None
     ocr_dir: Path | None = None
     debug_dir: Path | None = None
-    task_jobs_dir: Path | None = None
     cache_dir: Path | None = None
     max_upload_size_mb: int = Field(default=30, ge=1)
 
@@ -143,8 +142,6 @@ class Settings(BaseSettings):
 
     # -- Pipeline (flat env vars) -----------------------------------------
 
-    task_repository_backend: Literal["local_json", "postgres"] = "postgres"
-    database_url: str = ""
     task_runner_max_workers: int = Field(default=2, ge=1, le=16)
     task_runner_max_attempts: int = Field(default=1, ge=1, le=5)
     task_runner_lease_seconds: int = Field(default=3600, ge=30)
@@ -183,21 +180,6 @@ class Settings(BaseSettings):
         if url and not url.startswith(("http://", "https://")):
             raise ValueError("URL values must start with http:// or https://")
         return url
-
-    @field_validator("database_url")
-    @classmethod
-    def normalize_database_url(cls, value: str) -> str:
-        url = value.strip()
-        if url.startswith("postgresql://"):
-            return "postgresql+psycopg://" + url.removeprefix("postgresql://")
-        if url.startswith("postgres://"):
-            return "postgresql+psycopg://" + url.removeprefix("postgres://")
-        return url
-
-    @field_validator("task_repository_backend", mode="before")
-    @classmethod
-    def normalize_task_repository_backend(cls, value: Any) -> str:
-        return str(value or "postgres").strip().lower()
 
     @field_validator(
         "extraction_task_description",
@@ -281,8 +263,6 @@ class Settings(BaseSettings):
         )
 
         self.pipeline = PipelineSettings(
-            task_repository_backend=self.task_repository_backend,
-            database_url=self.database_url,
             task_runner_max_workers=self.task_runner_max_workers,
             task_runner_max_attempts=self.task_runner_max_attempts,
             task_runner_lease_seconds=self.task_runner_lease_seconds,
@@ -319,10 +299,6 @@ class Settings(BaseSettings):
             self.debug_dir = storage_dir / "debug"
         else:
             self.debug_dir = self._resolve_runtime_path(self.debug_dir)
-        if self.task_jobs_dir is None:
-            self.task_jobs_dir = storage_dir / "task_jobs"
-        else:
-            self.task_jobs_dir = self._resolve_runtime_path(self.task_jobs_dir)
         if self.cache_dir is None:
             self.cache_dir = storage_dir / "cache"
         else:
@@ -336,10 +312,12 @@ class Settings(BaseSettings):
     @property
     def storage_subdirs(self) -> list[Path]:
         return [
+            self.tasks_dir,
             self.uploads_dir,
             self.reports_dir,
             self.ocr_dir,
             self.debug_dir,
+            self.cache_dir,
         ]
 
     def ensure_storage(self) -> None:

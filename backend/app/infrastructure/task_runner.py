@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings, settings
 from app.errors import ConflictError, NotFoundError
-from app.infrastructure.database import create_session_factory, session_scope
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +78,7 @@ class TaskJobRepository(Protocol):
 
 
 class LocalJsonTaskJobRepository:
-    """Durable local task queue metadata store.
-
-    The executor remains process-local, but queued/running/retry state is stored
-    on disk so task execution can be inspected and recovered by a replacement
-    adapter without changing the application layer.
-    """
+    """Durable local task queue metadata stored beside each task."""
 
     def __init__(self, app_settings: Settings = settings) -> None:
         self.settings = app_settings
@@ -112,12 +106,12 @@ class LocalJsonTaskJobRepository:
             return TaskJob(**json.loads(path.read_text(encoding="utf-8")))
 
     def list_jobs(self) -> list[TaskJob]:
-        job_dir = self.job_dir
-        if not job_dir.exists():
+        tasks_dir = self.settings.tasks_dir
+        if not tasks_dir.exists():
             return []
         jobs: list[TaskJob] = []
         with self._lock:
-            for path in job_dir.glob("*.json"):
+            for path in tasks_dir.glob("*/job.json"):
                 try:
                     jobs.append(TaskJob(**json.loads(path.read_text(encoding="utf-8"))))
                 except (OSError, ValueError, TypeError):
@@ -206,11 +200,11 @@ class LocalJsonTaskJobRepository:
 
     @property
     def job_dir(self) -> Path:
-        return self.settings.task_jobs_dir
+        return self.settings.tasks_dir
 
     def job_path(self, job_id: str) -> Path:
-        safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in job_id)
-        return self.job_dir / f"{safe_name}.json"
+        task_id = job_id.split(":", 1)[1] if ":" in job_id else job_id
+        return self._task_dir(task_id) / "job.json"
 
     def _is_claimable(self, job: TaskJob, now: str) -> bool:
         if job.status == "QUEUED":
@@ -227,223 +221,48 @@ class LocalJsonTaskJobRepository:
             return job
 
     def _write_job(self, job: TaskJob) -> None:
-        self.job_dir.mkdir(parents=True, exist_ok=True)
         path = self.job_path(job.job_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = path.with_suffix(path.suffix + ".tmp")
         temp_path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
         temp_path.replace(path)
+        self._write_manifest(job)
 
+    def _task_dir(self, task_id: str) -> Path:
+        safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in task_id)
+        return self.settings.tasks_dir / (safe_name or "task")
 
-class PostgresTaskJobRepository:
-    """PostgreSQL-backed task execution metadata store."""
-
-    def __init__(
-        self,
-        app_settings: Settings = settings,
-        *,
-        database_url: str | None = None,
-        session_factory: Any | None = None,
-    ) -> None:
-        self.settings = app_settings
-        self.session_factory = session_factory or create_session_factory(
-            app_settings.database_url if database_url is None else database_url
-        )
-
-    def enqueue(self, job: TaskJob) -> TaskJob:
-        from app.infrastructure.db_models import TaskJobRecord
-
-        with session_scope(self.session_factory) as session:
-            record = session.get(TaskJobRecord, job.job_id)
-            if record is not None and record.status not in TERMINAL_JOB_STATUSES:
-                return self._job_from_record(record)
-
-            job.status = "QUEUED"
-            job.queued_at = _utc_now()
-            job.updated_at = job.queued_at
-            values = self._record_values(job)
-            if record is None:
-                record = TaskJobRecord(**values)
-                session.add(record)
-            else:
-                for key, value in values.items():
-                    setattr(record, key, value)
-            return self._job_from_record(record)
-
-    def load(self, job_id: str) -> TaskJob:
-        from app.infrastructure.db_models import TaskJobRecord
-
-        with session_scope(self.session_factory) as session:
-            record = session.get(TaskJobRecord, job_id)
-            if record is None:
-                raise FileNotFoundError(f"任务执行记录不存在: {job_id}")
-            return self._job_from_record(record)
-
-    def list_jobs(self) -> list[TaskJob]:
-        from sqlalchemy import func, select
-        from app.infrastructure.db_models import TaskJobRecord
-
-        with session_scope(self.session_factory) as session:
-            statement = select(TaskJobRecord).order_by(
-                func.coalesce(TaskJobRecord.next_run_at, TaskJobRecord.queued_at),
-                TaskJobRecord.queued_at,
-            )
-            return [self._job_from_record(record) for record in session.execute(statement).scalars().all()]
-
-    def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        from sqlalchemy import and_, func, or_, select
-        from app.infrastructure.db_models import TaskJobRecord
-
-        now = datetime.now(UTC)
-        with session_scope(self.session_factory) as session:
-            statement = (
-                select(TaskJobRecord)
-                .where(
-                    or_(
-                        and_(
-                            TaskJobRecord.status == "QUEUED",
-                            or_(TaskJobRecord.next_run_at.is_(None), TaskJobRecord.next_run_at <= now),
-                        ),
-                        and_(
-                            TaskJobRecord.status == "RUNNING",
-                            TaskJobRecord.lease_expires_at.is_not(None),
-                            TaskJobRecord.lease_expires_at <= now,
-                        ),
-                    )
-                )
-                .order_by(
-                    func.coalesce(TaskJobRecord.next_run_at, TaskJobRecord.queued_at),
-                    TaskJobRecord.queued_at,
-                )
-            )
-            if session.bind.dialect.name == "postgresql":
-                statement = statement.with_for_update(skip_locked=True)
-            record = session.execute(statement).scalars().first()
-            if record is None:
-                return None
-
-            record.status = "RUNNING"
-            record.attempt += 1
-            record.started_at = now
-            record.updated_at = now
-            record.lease_owner = worker_id
-            record.lease_expires_at = now + timedelta(seconds=lease_seconds)
-            record.last_error = ""
-            return self._job_from_record(record)
-
-    def extend_lease(self, job_id: str, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        from app.infrastructure.db_models import TaskJobRecord
-
-        with session_scope(self.session_factory) as session:
-            record = session.get(TaskJobRecord, job_id)
-            if record is None or record.status != "RUNNING" or record.lease_owner != worker_id:
-                return None
-            now = datetime.now(UTC)
-            record.lease_expires_at = now + timedelta(seconds=lease_seconds)
-            record.updated_at = now
-            return self._job_from_record(record)
-
-    def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
-        with session_scope(self.session_factory) as session:
-            record = self._load_record(session, job_id)
-            if record.lease_owner != worker_id and record.status == "RUNNING":
-                raise RuntimeError(f"执行记录 {job_id} 不属于当前 worker。")
-            finished_at = datetime.now(UTC)
-            record.status = "SUCCEEDED"
-            record.finished_at = finished_at
-            record.updated_at = finished_at
-            record.lease_owner = ""
-            record.lease_expires_at = None
-            return self._job_from_record(record)
-
-    def mark_failed(self, job_id: str, *, worker_id: str, error: str, retry_delay_seconds: float) -> TaskJob:
-        with session_scope(self.session_factory) as session:
-            record = self._load_record(session, job_id)
-            if record.lease_owner != worker_id and record.status == "RUNNING":
-                raise RuntimeError(f"执行记录 {job_id} 不属于当前 worker。")
-            now = datetime.now(UTC)
-            record.last_error = error
-            record.updated_at = now
-            record.lease_owner = ""
-            record.lease_expires_at = None
-            if record.attempt < record.max_attempts:
-                record.status = "QUEUED"
-                record.next_run_at = now + timedelta(seconds=retry_delay_seconds)
-            else:
-                record.status = "FAILED"
-                record.finished_at = now
-            return self._job_from_record(record)
-
-    def request_cancel(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
-        from sqlalchemy import select
-        from app.infrastructure.db_models import TaskJobRecord
-
-        with session_scope(self.session_factory) as session:
-            statement = select(TaskJobRecord).where(TaskJobRecord.task_id == task_id)
-            if task_type:
-                statement = statement.where(TaskJobRecord.task_type == task_type)
-            records = list(session.execute(statement).scalars().all())
-            updated: list[TaskJob] = []
-            for record in records:
-                if record.status in TERMINAL_JOB_STATUSES:
-                    updated.append(self._job_from_record(record))
-                    continue
-                now = datetime.now(UTC)
-                if record.status == "QUEUED":
-                    record.status = "CANCELLED"
-                    record.finished_at = now
-                    record.lease_owner = ""
-                    record.lease_expires_at = None
-                else:
-                    record.status = "CANCEL_REQUESTED"
-                record.updated_at = now
-                updated.append(self._job_from_record(record))
-            return updated
-
-    def _load_record(self, session: Any, job_id: str) -> Any:
-        from app.infrastructure.db_models import TaskJobRecord
-
-        record = session.get(TaskJobRecord, job_id)
-        if record is None:
-            raise FileNotFoundError(f"任务执行记录不存在: {job_id}")
-        return record
-
-    def _record_values(self, job: TaskJob) -> dict[str, Any]:
-        return {
-            "job_id": job.job_id,
-            "task_id": job.task_id,
-            "task_type": job.task_type,
-            "status": job.status,
-            "payload": job.payload,
-            "attempt": job.attempt,
-            "max_attempts": job.max_attempts,
-            "queued_at": _parse_required_datetime(job.queued_at),
-            "started_at": _parse_optional_datetime(job.started_at),
-            "finished_at": _parse_optional_datetime(job.finished_at),
-            "updated_at": _parse_required_datetime(job.updated_at),
-            "next_run_at": _parse_optional_datetime(job.next_run_at),
-            "lease_owner": job.lease_owner,
-            "lease_expires_at": _parse_optional_datetime(job.lease_expires_at),
-            "last_error": job.last_error,
+    def _write_manifest(self, job: TaskJob) -> None:
+        task_dir = self._task_dir(job.task_id)
+        manifest_path = task_dir / "manifest.json"
+        now = _utc_now()
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                manifest = {}
+        else:
+            manifest = {}
+        artifacts = {
+            str(item.get("path")): item
+            for item in manifest.get("artifacts", [])
+            if isinstance(item, dict) and item.get("path")
         }
-
-    def _job_from_record(self, record: Any) -> TaskJob:
-        return TaskJob(
-            job_id=record.job_id,
-            task_id=record.task_id,
-            task_type=record.task_type,
-            status=record.status,
-            payload=record.payload,
-            attempt=record.attempt,
-            max_attempts=record.max_attempts,
-            queued_at=_format_datetime(record.queued_at),
-            started_at=_format_optional_datetime(record.started_at),
-            finished_at=_format_optional_datetime(record.finished_at),
-            updated_at=_format_datetime(record.updated_at),
-            next_run_at=_format_optional_datetime(record.next_run_at),
-            lease_owner=record.lease_owner,
-            lease_expires_at=_format_optional_datetime(record.lease_expires_at),
-            last_error=record.last_error,
+        artifacts["job.json"] = {
+            "path": "job.json",
+            "area": "metadata",
+            "kind": "json",
+            "updated_at": now,
+        }
+        manifest.update(
+            {
+                "task_id": task_dir.name,
+                "job_status": job.status,
+                "updated_at": now,
+                "artifacts": sorted(artifacts.values(), key=lambda item: str(item["path"])),
+            }
         )
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class LazyDefaultTaskJobRepository:
@@ -491,11 +310,7 @@ class LazyDefaultTaskJobRepository:
 
 
 def build_task_job_repository(app_settings: Settings = settings) -> TaskJobRepository:
-    if app_settings.task_repository_backend == "local_json":
-        return LocalJsonTaskJobRepository(app_settings)
-    if app_settings.task_repository_backend == "postgres":
-        return PostgresTaskJobRepository(app_settings)
-    raise ValueError(f"Unsupported task repository backend: {app_settings.task_repository_backend}")
+    return LocalJsonTaskJobRepository(app_settings)
 
 
 class QueuedTaskRunner:
@@ -709,27 +524,6 @@ def _utc_now() -> str:
 
 def _plus_seconds(seconds: float) -> str:
     return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
-
-
-def _parse_required_datetime(value: str) -> datetime:
-    parsed = _parse_optional_datetime(value)
-    return parsed or datetime.now(UTC)
-
-
-def _parse_optional_datetime(value: str) -> datetime | None:
-    if not value:
-        return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def _format_datetime(value: datetime) -> str:
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    return value.isoformat()
-
-
-def _format_optional_datetime(value: datetime | None) -> str:
-    return _format_datetime(value) if value else ""
 
 
 default_task_runner = QueuedTaskRunner()

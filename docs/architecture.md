@@ -2,14 +2,14 @@
 
 ## Current Shape
 
-The system is a FastAPI backend plus a Vite/React frontend. Backend code lives under `backend/`, while the frontend lives under `frontend/`. Backend routes expose contract comparison and field extraction. Runtime artifacts are stored locally under root `storage/`, while task metadata and task execution metadata are persisted in PostgreSQL by default.
+The system is a FastAPI backend plus a Vite/React frontend. Backend code lives under `backend/`, while the frontend lives under `frontend/`. Backend routes expose contract comparison and field extraction. Runtime state is persisted in a MinerU-style local file layout under `storage/tasks/{task_id}/`.
 
 ## Backend Boundaries
 
 - `api`: HTTP adapters. Keep route handlers thin; they should translate requests, call application services, and map exceptions to HTTP responses.
 - `api_schemas`: public request and response contracts. These schemas are stable API DTOs and should not be replaced with domain models or persistence payloads.
 - `application`: use-case orchestration. This layer owns task creation and background submission.
-- `infrastructure`: replaceable adapters for task persistence, task queue metadata, artifact storage, external HTTP clients, database access, and task execution.
+- `infrastructure`: adapters for task persistence, task queue metadata, artifact storage, external HTTP clients, and task execution.
 - `services`: domain and document-processing services. They should not depend on FastAPI request objects.
 
 ## API Contract Boundary
@@ -18,21 +18,21 @@ HTTP responses are built through presenter functions and API schemas. Public JSO
 
 ## Migration Direction
 
-- Keep public API paths compatible while moving storage and execution behind interfaces.
-- Keep PostgreSQL behind repository interfaces for task metadata and task execution metadata. Local JSON adapters remain available only for isolated tests and manual tooling.
-- Keep uploaded PDFs, OCR raw output, debug files, and reports behind the `ArtifactStore` interface; persist only metadata and artifact paths in the database.
+- Keep public API paths compatible while keeping storage and execution behind interfaces.
+- Persist task metadata, execution metadata, and artifacts in the task directory. The current phase intentionally does not use PostgreSQL, SQLite, or another database.
+- Keep uploaded PDFs, OCR raw output, debug files, and reports behind the `ArtifactStore` interface.
 - Keep task execution behind `QueuedTaskRunner`; production can replace the local JSON job repository with a broker-backed adapter without changing API or service code.
 - Split large comparison modules incrementally. Table comparison now keeps the public `TableComparator` entrypoint while moving constants and internal row/cell/diff support types into separate modules; future algorithm changes should continue that pattern by moving cohesive logic behind narrow helpers.
 
 ## Artifact And Client Boundaries
 
-Runtime file locations are resolved through `ArtifactStore`. Uploads, OCR/LLM raw JSON, compare debug files, and reports should not be built by direct `settings.*_dir` path concatenation outside infrastructure adapters. The default implementation is local filesystem storage under `storage/`, but service code receives the store as a dependency so an object-store implementation can be added later. Online comparison highlights are rendered by the frontend from diff evidence coordinates; the backend no longer renders or exports highlighted PDFs.
+Runtime file locations are resolved through `ArtifactStore`. Uploads, OCR/LLM raw JSON, compare debug files, and reports should not be built by direct `settings.*_dir` path concatenation outside infrastructure adapters. The default implementation is local filesystem storage under `storage/tasks/{task_id}/`, with `manifest.json` tracking generated artifacts. Online comparison highlights are rendered by the frontend from diff evidence coordinates; the backend no longer renders or exports highlighted PDFs.
 
 External OCR, PP-Structure, and LLM calls go through `HttpClientProvider`. Extractors and extraction services accept the provider and app settings through constructors, which keeps tests injectable and avoids hard-wiring module-level clients into domain flow.
 
 ## Task Execution
 
-Compare and extraction submissions are serialized into queue payloads before execution. The default runner stores job metadata in PostgreSQL, enforces a configurable worker limit, records attempts and terminal state, renews leases while jobs are running, and supports retry and queued-job cancellation through the runner boundary.
+Compare and extraction submissions are serialized into queue payloads before execution. The default runner stores job metadata in `storage/tasks/{task_id}/job.json`, enforces a configurable worker limit, records attempts and terminal state, renews leases while jobs are running, and supports retry and queued-job cancellation through the runner boundary.
 
 Execution metadata is exposed through narrow operational endpoints:
 
@@ -63,26 +63,24 @@ TASK_RUNNER_RETRY_DELAY_SECONDS=2
 TASK_RUNNER_POLL_INTERVAL_SECONDS=0.25
 ```
 
-## Database
+## Local Storage
 
-PostgreSQL stores task metadata in `task_records` and execution metadata in `task_jobs`. Frequently queried fields such as `task_type`, `status`, and `updated_at` are indexed columns. Full `CompareTask`, `ExtractionTask`, and task execution payloads remain in `payload JSONB` during the first database phase to preserve API compatibility and avoid premature table splitting.
+The local storage layout is intentionally close to MinerU output conventions: each task owns a directory and all metadata or artifacts are grouped below it.
 
-Runtime requires `DATABASE_URL`; without it, the default repositories fail during startup or first use. Table structure is kept in SQL files under `backend/migrations/sql/`, with Alembic revision wrappers executing the corresponding `up.sql` and `down.sql` files.
-
-Run migrations with:
-
-```bash
-cd backend
-alembic upgrade head
+```text
+storage/
+  tasks/
+    {task_id}/
+      task.json
+      job.json
+      manifest.json
+      uploads/
+      ocr/
+      debug/
+      reports/
 ```
 
-Existing local JSON tasks can still be imported manually when needed:
-
-```bash
-cd backend
-python scripts/import_tasks_to_db.py --dry-run
-python scripts/import_tasks_to_db.py
-```
+`task.json` contains the complete `CompareTask` or `ExtractionTask` payload. `job.json` contains queue execution metadata. `manifest.json` is an artifact index maintained by the local repository and artifact store. The frontend login remains hard-coded for now; real users, permissions, and tenant-aware task lists should be designed separately if the product needs them later.
 
 ## Verification Baseline
 

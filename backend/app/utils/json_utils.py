@@ -16,7 +16,7 @@ from app.models_extraction import ExtractionTask
 def task_json_path(task_id: str) -> Path:
     repository = default_task_repository.resolve()
     if not isinstance(repository, LocalJsonTaskRepository):
-        raise RuntimeError("task_json_path is only available when TASK_REPOSITORY_BACKEND=local_json.")
+        raise RuntimeError("task_json_path is only available for the local file task repository.")
     return repository.task_json_path(task_id)
 
 

@@ -19,9 +19,6 @@ dependencies = [
     "pydantic-settings>=2",
     "python-dotenv",
     "httpx",
-    "SQLAlchemy>=2",
-    "alembic",
-    "psycopg[binary]",
 ]
 
 [project.optional-dependencies]

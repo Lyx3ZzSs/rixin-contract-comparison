@@ -143,8 +143,6 @@ class ReportSettings(BaseModel):
 class PipelineSettings(BaseModel):
     """Task runner and pipeline infrastructure settings."""
 
-    task_repository_backend: str = "postgres"
-    database_url: str = ""
     task_runner_max_workers: int = Field(default=2, ge=1, le=16)
     task_runner_max_attempts: int = Field(default=1, ge=1, le=5)
     task_runner_lease_seconds: int = Field(default=3600, ge=30)

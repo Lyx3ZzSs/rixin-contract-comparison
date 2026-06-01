@@ -33,8 +33,6 @@ def configure_storage(tmp_path: Path) -> None:
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.debug_dir = settings.storage_dir / "debug"
-    settings.task_jobs_dir = settings.storage_dir / "task_jobs"
-    settings.task_repository_backend = "local_json"
     settings.document_extractor = "auto"
     settings.ai_llm_base_url = ""
     settings.ai_llm_api_key = ""

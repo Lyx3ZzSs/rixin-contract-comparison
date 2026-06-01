@@ -14,10 +14,10 @@ def test_local_artifact_store_resolves_task_artifact_paths(tmp_path: Path) -> No
     store = LocalArtifactStore(app_settings)
 
     assert store.upload_path("T/001", "original", "a.pdf") == (
-        app_settings.uploads_dir / "T_001" / "original_a.pdf"
+        app_settings.tasks_dir / "T_001" / "uploads" / "original_a.pdf"
     )
     assert store.report_pdf_path("T001") == (
-        app_settings.reports_dir / "T001" / "contract_compare_report.pdf"
+        app_settings.tasks_dir / "T001" / "reports" / "contract_compare_report.pdf"
     )
     assert store.raw_json_path("T001", "合同 初稿.pdf", "ppocrv5_raw").name == "合同_初稿_ppocrv5_raw.json"
 
@@ -37,3 +37,4 @@ def test_local_artifact_store_writes_json_inside_storage(tmp_path: Path) -> None
 
     assert written == path
     assert path.read_text(encoding="utf-8").strip().startswith("{")
+    assert (path.parents[1] / "manifest.json").exists()

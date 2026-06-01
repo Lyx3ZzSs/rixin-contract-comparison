@@ -45,10 +45,10 @@ def to_jsonable(model: Any) -> dict[str, Any]:
 
 
 class LocalJsonTaskRepository:
-    """Local JSON task store used by the MVP runtime.
+    """MinerU-style local file task store.
 
-    The repository keeps the current file format but centralizes task persistence
-    behind an interface so API and service code do not depend on JSON files.
+    Each task owns a directory under ``storage/tasks/{task_id}``. The complete
+    task payload lives in ``task.json`` and task artifacts live beside it.
     """
 
     def __init__(self, app_settings: Settings = settings) -> None:
@@ -110,15 +110,20 @@ class LocalJsonTaskRepository:
             return self.load_extraction_task(task_id)
 
     def task_json_path(self, task_id: str) -> Path:
-        return self.settings.tasks_dir / f"{task_id}.json"
+        return self.task_dir(task_id) / "task.json"
+
+    def task_dir(self, task_id: str) -> Path:
+        return self.settings.tasks_dir / self._safe_task_id(task_id)
 
     def _write_task(self, task_id: str, data: dict[str, Any]) -> Path:
         with self._lock:
             self.settings.tasks_dir.mkdir(parents=True, exist_ok=True)
             path = self.task_json_path(task_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
             temp_path = path.with_suffix(path.suffix + ".tmp")
             temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             temp_path.replace(path)
+            self._write_manifest(task_id, data)
             return path
 
     def _stamped_payload(self, task_id: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -144,7 +149,7 @@ class LocalJsonTaskRepository:
             return []
 
         items: list[dict[str, Any]] = []
-        for path in self.settings.tasks_dir.glob("*.json"):
+        for path in self.settings.tasks_dir.glob("*/task.json"):
             try:
                 with self._lock:
                     items.append(json.loads(path.read_text(encoding="utf-8")))
@@ -152,23 +157,47 @@ class LocalJsonTaskRepository:
                 continue
         return items
 
+    def _write_manifest(self, task_id: str, data: dict[str, Any]) -> None:
+        task_dir = self.task_dir(task_id)
+        manifest_path = task_dir / "manifest.json"
+        now = datetime.now(UTC).isoformat()
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                manifest = {}
+        else:
+            manifest = {}
+        artifacts = {
+            str(item.get("path")): item
+            for item in manifest.get("artifacts", [])
+            if isinstance(item, dict) and item.get("path")
+        }
+        artifacts["task.json"] = {
+            "path": "task.json",
+            "area": "metadata",
+            "kind": "json",
+            "updated_at": now,
+        }
+        manifest.update(
+            {
+                "task_id": self._safe_task_id(task_id),
+                "task_type": data.get("task_type") or "compare",
+                "status": data.get("status", ""),
+                "stage": data.get("stage", ""),
+                "updated_at": now,
+                "artifacts": sorted(artifacts.values(), key=lambda item: str(item["path"])),
+            }
+        )
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _safe_task_id(self, task_id: str) -> str:
+        sanitized = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in task_id)
+        return sanitized or "task"
+
 
 def build_task_repository(app_settings: Settings = settings) -> TaskRepository:
-    if app_settings.task_repository_backend == "local_json":
-        return LocalJsonTaskRepository(app_settings)
-    if app_settings.task_repository_backend == "postgres":
-        try:
-            from app.infrastructure.postgres_task_repository import PostgresTaskRepository
-        except ModuleNotFoundError as exc:
-            if exc.name == "sqlalchemy":
-                raise RuntimeError(
-                    "TASK_REPOSITORY_BACKEND=postgres requires SQLAlchemy. "
-                    "Install backend dependencies with `python -m pip install -r requirements.txt`."
-                ) from exc
-            raise
-
-        return PostgresTaskRepository(app_settings)
-    raise ValueError(f"Unsupported task repository backend: {app_settings.task_repository_backend}")
+    return LocalJsonTaskRepository(app_settings)
 
 
 class LazyDefaultTaskRepository:
