@@ -28,6 +28,7 @@ describe("UploadPage", () => {
     expect(screen.getByLabelText("原版文件")).toBeInTheDocument();
     expect(screen.getByLabelText("新版文件")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始对比" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "使用示例" })).not.toBeInTheDocument();
     expect(screen.queryByText("等待上传两份 PDF 合同")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "排除对比项" })).not.toBeInTheDocument();
   });

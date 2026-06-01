@@ -122,9 +122,6 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
         <button className="compare-submit" type="submit" disabled={!canSubmit}>
           {isSubmitting ? "处理中..." : "开始对比"}
         </button>
-        <div className="compare-actions" aria-label="辅助操作">
-          <button type="button">使用示例</button>
-        </div>
         <p className={error ? "status-line error" : "status-line"} role="status">
           {error || ""}
         </p>
