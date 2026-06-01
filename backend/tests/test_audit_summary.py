@@ -13,7 +13,7 @@ def evidence(text: str, highlight_type: str | None, page_no: int = 1) -> Evidenc
     )
 
 
-def test_audit_items_keep_single_raw_diff() -> None:
+def test_audit_items_skip_diff_without_typed_evidence() -> None:
     diff = DiffItem(
         diff_id="D001",
         diff_type="MODIFY",
@@ -25,12 +25,10 @@ def test_audit_items_keep_single_raw_diff() -> None:
 
     items = build_audit_items([diff])
 
-    assert len(items) == 1
-    assert items[0].item_id == "D001:MODIFY"
-    assert items[0].summary == "付款期限调整。"
+    assert items == []
 
 
-def test_audit_items_keep_mixed_evidence_as_single_diff_type() -> None:
+def test_audit_items_split_mixed_evidence_by_highlight_type() -> None:
     diff = DiffItem(
         diff_id="D002",
         diff_type="MODIFY",
@@ -45,9 +43,15 @@ def test_audit_items_keep_mixed_evidence_as_single_diff_type() -> None:
     items = build_audit_items([diff])
 
     assert [(item.item_id, item.diff_type) for item in items] == [
+        ("D002:ADD", "ADD"),
+        ("D002:DELETE", "DELETE"),
         ("D002:MODIFY", "MODIFY"),
     ]
-    assert items[0].summary == "暂无摘要"
+    assert items[0].summary == "新增付款说明"
+    assert items[1].summary == "旧付款说明"
+    assert items[2].summary == "原文：30 days 修改后：45 days"
+    assert items[0].compare_evidence[0].text == "新增付款说明"
+    assert items[1].original_evidence[0].text == "旧付款说明"
 
 
 def test_audit_items_follow_diff_type() -> None:
@@ -90,7 +94,7 @@ def test_audit_items_reclassify_legacy_modify_with_single_evidence_type() -> Non
     ]
 
 
-def test_audit_stats_count_each_raw_diff_once() -> None:
+def test_audit_stats_count_each_audit_item() -> None:
     diffs = [
         DiffItem(
             diff_id="D001",
@@ -100,14 +104,15 @@ def test_audit_stats_count_each_raw_diff_once() -> None:
         ),
         DiffItem(diff_id="D002", diff_type="DELETE", original_evidence=[evidence("删除条款", "DELETE")]),
         DiffItem(diff_id="D003", diff_type="MODIFY", compare_evidence=[evidence("新增条款", "ADD")]),
+        DiffItem(diff_id="D004", diff_type="DELETE", original_text="无证据删除"),
     ]
 
     stats = build_audit_stats(diffs)
 
-    assert stats.total == 3
-    assert stats.add == 1
+    assert stats.total == 4
+    assert stats.add == 2
     assert stats.delete == 1
     assert stats.modify == 1
-    assert stats.raw_diff_count == 3
-    expected_summary = "本次共识别 3 个审计点，其中新增 1 个、删除 1 个、修改 1 个；对应原始差异记录 3 条。"
+    assert stats.raw_diff_count == 4
+    expected_summary = "本次共识别 4 个审计点，其中新增 2 个、删除 1 个、修改 1 个；对应原始差异记录 4 条。"
     assert audit_stats_summary(stats) == expected_summary

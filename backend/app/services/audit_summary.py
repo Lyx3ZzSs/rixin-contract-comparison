@@ -13,6 +13,8 @@ class AuditItem:
     diff_type: DiffType
     title: str
     summary: str
+    original_evidence: list[EvidenceBox]
+    compare_evidence: list[EvidenceBox]
 
 
 @dataclass(frozen=True)
@@ -25,7 +27,10 @@ class AuditStats:
 
 
 def build_audit_items(diffs: list[DiffItem]) -> list[AuditItem]:
-    return [_audit_item(diff, _audit_diff_type(diff), _diff_summary(diff)) for diff in diffs]
+    items: list[AuditItem] = []
+    for diff in diffs:
+        items.extend(_audit_items_for_diff(diff))
+    return items
 
 
 def build_audit_stats(diffs: list[DiffItem]) -> AuditStats:
@@ -48,30 +53,65 @@ def audit_stats_summary(stats: AuditStats) -> str:
     )
 
 
-def _audit_item(diff: DiffItem, diff_type: DiffType, summary: str) -> AuditItem:
+def _audit_items_for_diff(diff: DiffItem) -> list[AuditItem]:
+    original_evidence = diff.original_evidence or []
+    compare_evidence = diff.compare_evidence or []
+    has_typed_evidence = any(
+        evidence.highlight_type is not None
+        for evidence in [*original_evidence, *compare_evidence]
+    )
+    if not has_typed_evidence:
+        return []
+
+    items: list[AuditItem] = []
+    add_evidence = _typed_evidence(compare_evidence, "ADD")
+    delete_evidence = _typed_evidence(original_evidence, "DELETE")
+    original_modify_evidence = _typed_evidence(original_evidence, "MODIFY")
+    compare_modify_evidence = _typed_evidence(compare_evidence, "MODIFY")
+
+    if add_evidence:
+        items.append(_audit_item(diff, "ADD", _evidence_text(add_evidence), [], add_evidence))
+    if delete_evidence:
+        items.append(_audit_item(diff, "DELETE", _evidence_text(delete_evidence), delete_evidence, []))
+    if original_modify_evidence or compare_modify_evidence:
+        summary = _modify_summary(
+            _evidence_text(original_modify_evidence),
+            _evidence_text(compare_modify_evidence),
+        )
+        items.append(_audit_item(diff, "MODIFY", summary, original_modify_evidence, compare_modify_evidence))
+    return items
+
+
+def _audit_item(
+    diff: DiffItem,
+    diff_type: DiffType,
+    summary: str,
+    original_evidence: list[EvidenceBox],
+    compare_evidence: list[EvidenceBox],
+) -> AuditItem:
     return AuditItem(
         item_id=f"{diff.diff_id}:{diff_type}",
         diff=diff,
         diff_type=diff_type,
         title=diff.title or diff.clause_no or diff.diff_id,
         summary=summary or _diff_summary(diff),
+        original_evidence=original_evidence,
+        compare_evidence=compare_evidence,
     )
 
 
-def _audit_diff_type(diff: DiffItem) -> DiffType:
-    if diff.diff_type != "MODIFY":
-        return diff.diff_type
-
-    evidence_types = _evidence_types([*diff.original_evidence, *diff.compare_evidence])
-    if evidence_types == {"ADD"}:
-        return "ADD"
-    if evidence_types == {"DELETE"}:
-        return "DELETE"
-    return "MODIFY"
+def _typed_evidence(evidence_list: list[EvidenceBox], diff_type: DiffType) -> list[EvidenceBox]:
+    return [evidence for evidence in evidence_list if evidence.highlight_type == diff_type]
 
 
-def _evidence_types(evidence_list: list[EvidenceBox]) -> set[DiffType]:
-    return {evidence.highlight_type for evidence in evidence_list if evidence.highlight_type is not None}
+def _evidence_text(evidence_list: list[EvidenceBox]) -> str:
+    return _compact_text(" ".join(evidence.text for evidence in evidence_list if evidence.text.strip()), limit=92)
+
+
+def _modify_summary(original_text: str, compare_text: str) -> str:
+    if original_text and compare_text:
+        return f"原文：{original_text} 修改后：{compare_text}"
+    return original_text or compare_text
 
 
 def _diff_summary(diff: DiffItem) -> str:

@@ -179,6 +179,22 @@ const mockDiffs: DiffItem[] = [
     ],
     compare_evidence: [],
   },
+  {
+    diff_id: "diff-4",
+    diff_type: "DELETE",
+    clause_no: "4",
+    title: "无定位表格项",
+    original_text: "3 | 短期模型 | 光伏场短期功率预报 模型开发。 | 国能日新 | 套 | 1",
+    compare_text: "",
+    original_snippet: "3 | 短期模型 | 光伏场短期功率预报 模型开发。 | 国能日新 | 套 | 1",
+    compare_snippet: "",
+    readable_change: "表格行38: 删除 '3', 删除 '短期模型'",
+    source_type: "table",
+    review_flags: ["LOW_CONFIDENCE_ORIGINAL_TABLE_EVIDENCE"],
+    review_status: "UNREVIEWED",
+    original_evidence: [],
+    compare_evidence: [],
+  },
 ];
 
 const mockQuality = {
@@ -311,6 +327,7 @@ describe("ResultPage", () => {
     const markers = Array.from(container.querySelectorAll(".compare-axis .axis-marker"));
 
     expect(markers).toHaveLength(4);
+    expect(screen.queryByRole("button", { name: "定位删除改动 diff-4:DELETE" })).not.toBeInTheDocument();
     expect(topAddMarker).toHaveClass("add");
     expect(mixedAddMarker).toHaveClass("add");
     expect(mixedModifyMarker).toHaveClass("modify");
@@ -335,6 +352,7 @@ describe("ResultPage", () => {
     expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("1");
     expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("2");
     expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
+    expect(screen.queryByRole("button", { name: "审计定位改动 diff-4:DELETE" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
 
     expect(screen.getByRole("button", { name: "审计定位改动 diff-1:ADD" })).toBeInTheDocument();

@@ -19,6 +19,7 @@ from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate, Spacer, T
 
 from app.config import settings
 from app.models import CompareTask, DiffItem
+from app.services.audit_summary import AuditItem, build_audit_items
 
 
 def build_report_title(task: CompareTask) -> str:
@@ -51,16 +52,17 @@ class ReportGenerator:
         )
 
         report_title = build_report_title(task)
+        audit_items = build_audit_items(task.diffs)
         story = [
             Paragraph(escape(report_title), styles["Title"]),
             Spacer(1, 0.45 * cm),
             self._metadata_table(task, styles),
             Spacer(1, 0.5 * cm),
             Paragraph("审计统计与差异概览", styles["Heading2"]),
-            self._summary_table(task, styles),
+            self._summary_table(audit_items, styles),
             Spacer(1, 0.35 * cm),
             Paragraph("差异明细", styles["Heading2"]),
-            *self._diff_cards(task, styles),
+            *self._diff_cards(audit_items, styles),
         ]
 
         doc.build(story)
@@ -198,10 +200,10 @@ class ReportGenerator:
         )
         return table
 
-    def _summary_table(self, task: CompareTask, styles: dict[str, ParagraphStyle]) -> Table:
-        counts = Counter(diff.diff_type for diff in task.diffs)
+    def _summary_table(self, audit_items: list[AuditItem], styles: dict[str, ParagraphStyle]) -> Table:
+        counts = Counter(item.diff_type for item in audit_items)
         items = [
-            ("全部差异", len(task.diffs), "#111827"),
+            ("全部差异", len(audit_items), "#111827"),
             ("新增", counts["ADD"], "#15804F"),
             ("删除", counts["DELETE"], "#C9362C"),
             ("修改", counts["MODIFY"], "#A96300"),
@@ -230,25 +232,25 @@ class ReportGenerator:
         )
         return table
 
-    def _diff_cards(self, task: CompareTask, styles: dict[str, ParagraphStyle]) -> list[Flowable]:
-        if not task.diffs:
-            return [Paragraph("未发现改动点。", styles["Normal"])]
+    def _diff_cards(self, audit_items: list[AuditItem], styles: dict[str, ParagraphStyle]) -> list[Flowable]:
+        if not audit_items:
+            return [Paragraph("未发现可定位审计点。", styles["Normal"])]
         flowables: list[Flowable] = []
-        for index, diff in enumerate(task.diffs, start=1):
-            flowables.append(self._diff_card(index, diff, styles))
+        for index, item in enumerate(audit_items, start=1):
+            flowables.append(self._diff_card(index, item, styles))
             flowables.append(Spacer(1, 0.22 * cm))
         return flowables
 
-    def _diff_card(self, index: int, diff: DiffItem, styles: dict[str, ParagraphStyle]) -> Table:
-        type_label = self._diff_type_label(diff.diff_type)
-        palette = self._diff_palette(diff.diff_type)
+    def _diff_card(self, index: int, item: AuditItem, styles: dict[str, ParagraphStyle]) -> Table:
+        type_label = self._diff_type_label(item.diff_type)
+        palette = self._diff_palette(item.diff_type)
         header = Paragraph(
-            escape(f"{index:02d} · {diff.diff_id} · {type_label}"),
+            escape(f"{index:02d} · {item.item_id} · {type_label}"),
             styles["CardTitle"],
         )
-        source = Paragraph(f"<b>来源段落：</b>{escape(self._source_label(diff))}", styles["CardMeta"])
-        original = self._text_panel("原文", self._side_text(diff, "original"), styles, "#F8FAFC")
-        compare = self._text_panel("修改后", self._side_text(diff, "compare"), styles, "#F8FAFC")
+        source = Paragraph(f"<b>来源段落：</b>{escape(self._source_label(item))}", styles["CardMeta"])
+        original = self._text_panel("原文", self._side_text(item, "original"), styles, "#F8FAFC")
+        compare = self._text_panel("修改后", self._side_text(item, "compare"), styles, "#F8FAFC")
         body = Table([[original, compare]], colWidths=[7.82 * cm, 7.82 * cm])
         body.setStyle(
             TableStyle(
@@ -318,9 +320,10 @@ class ReportGenerator:
             "MODIFY": {"accent": "#A96300", "background": "#FFF7E6"},
         }.get(diff_type, {"accent": "#4B5563", "background": "#F8FAFC"})
 
-    def _source_label(self, diff: DiffItem) -> str:
+    def _source_label(self, item: AuditItem) -> str:
+        diff = item.diff
         paragraph = self._paragraph_label(diff)
-        page_label = self._page_label(diff)
+        page_label = self._page_label(item)
         return f"{paragraph} · {page_label}"
 
     def _paragraph_label(self, diff: DiffItem) -> str:
@@ -328,12 +331,12 @@ class ReportGenerator:
             return f"{diff.clause_no} {diff.title}"
         return diff.title or diff.clause_no or diff.diff_id
 
-    def _page_label(self, diff: DiffItem) -> str:
-        original_pages = self._pages(diff, "original")
-        compare_pages = self._pages(diff, "compare")
-        if diff.diff_type == "ADD":
+    def _page_label(self, item: AuditItem) -> str:
+        original_pages = self._pages(item, "original")
+        compare_pages = self._pages(item, "compare")
+        if item.diff_type == "ADD":
             return f"新版第 {compare_pages} 页" if compare_pages else "新版页码未定位"
-        if diff.diff_type == "DELETE":
+        if item.diff_type == "DELETE":
             return f"原文第 {original_pages} 页" if original_pages else "原文页码未定位"
         if original_pages and compare_pages:
             return f"原文第 {original_pages} 页 / 新版第 {compare_pages} 页"
@@ -343,17 +346,21 @@ class ReportGenerator:
             return f"原文页码未定位 / 新版第 {compare_pages} 页"
         return "页码未定位"
 
-    def _pages(self, diff: DiffItem, side: str) -> str:
-        evidence = diff.original_evidence if side == "original" else diff.compare_evidence
+    def _pages(self, item: AuditItem, side: str) -> str:
+        evidence = item.original_evidence if side == "original" else item.compare_evidence
         pages = sorted({box.page_no for box in evidence if box.page_no})
         return "、".join(str(page) for page in pages)
 
-    def _side_text(self, diff: DiffItem, side: str) -> str:
-        if diff.diff_type == "ADD" and side == "original":
+    def _side_text(self, item: AuditItem, side: str) -> str:
+        diff = item.diff
+        if item.diff_type == "ADD" and side == "original":
             return "（原文无对应内容）"
-        if diff.diff_type == "DELETE" and side == "compare":
+        if item.diff_type == "DELETE" and side == "compare":
             return "（新版已删除）"
 
+        evidence_text = self._audit_evidence_text(item, side)
+        if evidence_text:
+            return evidence_text
         snippet = diff.original_snippet if side == "original" else diff.compare_snippet
         if diff.diff_type == "MODIFY" and (not diff.original_snippet or not diff.compare_snippet):
             side_text = diff.original_text if side == "original" else diff.compare_text
@@ -361,25 +368,13 @@ class ReportGenerator:
                 return side_text
         if snippet:
             return snippet
-        evidence_text = self._evidence_text(diff, side)
-        if evidence_text:
-            return evidence_text
         if side == "original":
             return diff.original_snippet or diff.original_text or "（未定位到原文片段）"
         return diff.compare_snippet or diff.compare_text or "（未定位到新版片段）"
 
-    def _evidence_text(self, diff: DiffItem, side: str) -> str:
-        evidence = diff.original_evidence if side == "original" else diff.compare_evidence
-        typed = [box.text for box in evidence if box.highlight_type == diff.diff_type and box.text.strip()]
-        if typed:
-            return " ".join(text.strip() for text in typed)
-        fallback = [box.text for box in evidence if box.highlight_type is None and box.text.strip()]
-        if fallback:
-            return " ".join(text.strip() for text in fallback)
-        if diff.diff_type == "MODIFY":
-            any_text = [box.text for box in evidence if box.text.strip()]
-            return " ".join(text.strip() for text in any_text)
-        return ""
+    def _audit_evidence_text(self, item: AuditItem, side: str) -> str:
+        evidence = item.original_evidence if side == "original" else item.compare_evidence
+        return " ".join(box.text.strip() for box in evidence if box.text.strip())
 
     def _diff_type_label(self, diff_type: str) -> str:
         return {"ADD": "新增", "DELETE": "删除", "MODIFY": "修改"}.get(diff_type, diff_type)

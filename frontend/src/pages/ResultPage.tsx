@@ -445,7 +445,7 @@ function auditItemsForDiff(diff: DiffItem): AuditChangeItem[] {
   const hasTypedEvidence = [...originalEvidence, ...compareEvidence].some((evidence) => Boolean(evidence.highlight_type));
 
   if (!hasTypedEvidence) {
-    return [auditItem(diff, diff.diff_type, diffSummary(diff), [...originalEvidence, ...compareEvidence])];
+    return [];
   }
 
   const items: AuditChangeItem[] = [];

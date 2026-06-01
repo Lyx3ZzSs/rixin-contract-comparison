@@ -47,6 +47,29 @@ def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path)
                     EvidenceBox(page_no=4, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="旧质保条款", highlight_type="DELETE"),
                 ],
             ),
+            DiffItem(
+                diff_id="D004",
+                diff_type="DELETE",
+                title="无定位表格项",
+                original_text="3 | 短期模型 | 光伏场短期功率预报 模型开发。 | 国能日新 | 套 | 1",
+                original_snippet="3 | 短期模型 | 光伏场短期功率预报 模型开发。 | 国能日新 | 套 | 1",
+                original_evidence=[],
+                compare_evidence=[],
+            ),
+            DiffItem(
+                diff_id="D005",
+                diff_type="MODIFY",
+                clause_no="5",
+                title="混合改动",
+                original_evidence=[
+                    EvidenceBox(page_no=5, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="旧说明", highlight_type="DELETE"),
+                    EvidenceBox(page_no=5, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="30 days", highlight_type="MODIFY"),
+                ],
+                compare_evidence=[
+                    EvidenceBox(page_no=6, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="新增说明", highlight_type="ADD"),
+                    EvidenceBox(page_no=6, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="45 days", highlight_type="MODIFY"),
+                ],
+            ),
         ],
     )
     output_path = tmp_path / "report.pdf"
@@ -69,3 +92,10 @@ def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path)
     assert "3 旧质保" in report_text
     assert "旧质保条款" in report_text
     assert "新版已删除" in report_text
+    assert "D004" not in report_text
+    assert "无定位表格项" not in report_text
+    assert "D005:ADD" in report_text
+    assert "D005:DELETE" in report_text
+    assert "D005:MODIFY" in report_text
+    assert "新增说明" in report_text
+    assert "旧说明" in report_text
