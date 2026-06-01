@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from html import escape
+from io import BytesIO
 from pathlib import Path
 
 import fitz
@@ -15,11 +17,18 @@ from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Flowable, Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.config import settings
-from app.models import CompareTask, DiffItem
+from app.models import CompareTask, DiffItem, EvidenceBox
 from app.services.audit_summary import AuditItem, build_audit_items
+
+
+@dataclass(frozen=True)
+class ReportEvidenceImage:
+    data: bytes
+    width: float
+    height: float
 
 
 def build_report_title(task: CompareTask) -> str:
@@ -53,6 +62,9 @@ class ReportGenerator:
 
         report_title = build_report_title(task)
         audit_items = build_audit_items(task.diffs)
+        indexed_items = self._indexed_items(audit_items)
+        self._current_original_pdf_path = task.original_pdf_path
+        self._current_compare_pdf_path = task.compare_pdf_path
         story = [
             Paragraph(escape(report_title), styles["Title"]),
             Spacer(1, 0.45 * cm),
@@ -61,11 +73,17 @@ class ReportGenerator:
             Paragraph("审计统计与差异概览", styles["Heading2"]),
             self._summary_table(audit_items, styles),
             Spacer(1, 0.35 * cm),
+            Paragraph("差异类型与证据说明", styles["Heading2"]),
+            self._legend_table(styles),
+            Spacer(1, 0.35 * cm),
+            Paragraph("差异索引", styles["Heading2"]),
+            self._index_table(indexed_items, styles),
+            Spacer(1, 0.35 * cm),
             Paragraph("差异明细", styles["Heading2"]),
-            *self._diff_cards(audit_items, styles),
+            *self._diff_cards(indexed_items, styles),
         ]
 
-        doc.build(story)
+        doc.build(story, onFirstPage=self._page_footer, onLaterPages=self._page_footer)
         return output_path
 
     def _register_font(self) -> str:
@@ -131,6 +149,14 @@ class ReportGenerator:
                 leading=11,
                 textColor=colors.HexColor("#374151"),
             ),
+            "Tiny": ParagraphStyle(
+                "ContractTiny",
+                parent=base["Normal"],
+                fontName=font_name,
+                fontSize=6.8,
+                leading=9,
+                textColor=colors.HexColor("#6B7280"),
+            ),
             "MetaLabel": ParagraphStyle(
                 "ContractMetaLabel",
                 parent=base["Normal"],
@@ -147,6 +173,22 @@ class ReportGenerator:
                 leading=14,
                 textColor=colors.HexColor("#111827"),
                 spaceAfter=2,
+            ),
+            "IndexHead": ParagraphStyle(
+                "ContractIndexHead",
+                parent=base["Normal"],
+                fontName=font_name,
+                fontSize=7.5,
+                leading=10,
+                textColor=colors.HexColor("#FFFFFF"),
+            ),
+            "IndexCell": ParagraphStyle(
+                "ContractIndexCell",
+                parent=base["Normal"],
+                fontName=font_name,
+                fontSize=7.5,
+                leading=10.5,
+                textColor=colors.HexColor("#1F2937"),
             ),
             "CardMeta": ParagraphStyle(
                 "ContractCardMeta",
@@ -175,6 +217,14 @@ class ReportGenerator:
             ),
         }
         return styles
+
+    def _page_footer(self, canvas, doc) -> None:
+        canvas.saveState()
+        canvas.setFont(self._font_name, 7)
+        canvas.setFillColor(colors.HexColor("#6B7280"))
+        canvas.drawString(doc.leftMargin, 0.8 * cm, "合同差异审计报告")
+        canvas.drawRightString(A4[0] - doc.rightMargin, 0.8 * cm, f"第 {doc.page} 页")
+        canvas.restoreState()
 
     def _metadata_table(self, task: CompareTask, styles: dict[str, ParagraphStyle]) -> Table:
         rows = [
@@ -232,12 +282,89 @@ class ReportGenerator:
         )
         return table
 
-    def _diff_cards(self, audit_items: list[AuditItem], styles: dict[str, ParagraphStyle]) -> list[Flowable]:
-        if not audit_items:
+    def _legend_table(self, styles: dict[str, ParagraphStyle]) -> Table:
+        rows = [
+            [
+                Paragraph('<font color="#15804F"><b>新增</b></font>', styles["IndexCell"]),
+                Paragraph("新版存在、原文无对应内容。", styles["IndexCell"]),
+            ],
+            [
+                Paragraph('<font color="#C9362C"><b>删除</b></font>', styles["IndexCell"]),
+                Paragraph("原文存在、新版已删除。", styles["IndexCell"]),
+            ],
+            [
+                Paragraph('<font color="#A96300"><b>修改</b></font>', styles["IndexCell"]),
+                Paragraph("同一位置或语义对应内容发生变化。", styles["IndexCell"]),
+            ],
+        ]
+        table = Table(rows, colWidths=[2.4 * cm, 13.8 * cm])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E5E7EB")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
+            )
+        )
+        return table
+
+    def _index_table(self, indexed_items: list[tuple[int, AuditItem]], styles: dict[str, ParagraphStyle]) -> Table:
+        if not indexed_items:
+            return Table([[Paragraph("未发现可定位审计点。", styles["Normal"])]], colWidths=[16.2 * cm])
+        rows = [
+            [
+                Paragraph("序号", styles["IndexHead"]),
+                Paragraph("差异编号", styles["IndexHead"]),
+                Paragraph("类型", styles["IndexHead"]),
+                Paragraph("来源", styles["IndexHead"]),
+                Paragraph("页码", styles["IndexHead"]),
+                Paragraph("摘要", styles["IndexHead"]),
+            ]
+        ]
+        for index, item in indexed_items:
+            rows.append(
+                [
+                    Paragraph(f"{index:02d}", styles["IndexCell"]),
+                    Paragraph(escape(item.item_id), styles["IndexCell"]),
+                    Paragraph(escape(self._diff_type_label(item.diff_type)), styles["IndexCell"]),
+                    Paragraph(escape(self._source_type_label(item.diff.source_type)), styles["IndexCell"]),
+                    Paragraph(escape(self._page_label(item)), styles["IndexCell"]),
+                    Paragraph(escape(_clean_report_text(item.summary, 58)), styles["IndexCell"]),
+                ]
+            )
+        table = Table(rows, colWidths=[1.0 * cm, 2.4 * cm, 1.4 * cm, 1.8 * cm, 3.6 * cm, 6.0 * cm], repeatRows=1)
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#374151")),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#FFFFFF")),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#E5E7EB")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        return table
+
+    def _indexed_items(self, audit_items: list[AuditItem]) -> list[tuple[int, AuditItem]]:
+        return [(index, item) for index, item in enumerate(audit_items, start=1)]
+
+    def _diff_cards(self, indexed_items: list[tuple[int, AuditItem]], styles: dict[str, ParagraphStyle]) -> list[Flowable]:
+        if not indexed_items:
             return [Paragraph("未发现可定位审计点。", styles["Normal"])]
         flowables: list[Flowable] = []
-        for index, item in enumerate(audit_items, start=1):
-            flowables.append(self._diff_card(index, item, styles))
+        for index, item in indexed_items:
+            flowables.append(KeepTogether([self._diff_card(index, item, styles)]))
             flowables.append(Spacer(1, 0.22 * cm))
         return flowables
 
@@ -248,10 +375,22 @@ class ReportGenerator:
             escape(f"{index:02d} · {item.item_id} · {type_label}"),
             styles["CardTitle"],
         )
-        source = Paragraph(f"<b>来源段落：</b>{escape(self._source_label(item))}", styles["CardMeta"])
+        source = Paragraph(
+            f"<b>来源段落：</b>{escape(self._source_label(item))}　"
+            f"<b>来源类型：</b>{escape(self._source_type_label(item.diff.source_type))}",
+            styles["CardMeta"],
+        )
         original = self._text_panel("原文", self._side_text(item, "original"), styles, "#F8FAFC")
         compare = self._text_panel("修改后", self._side_text(item, "compare"), styles, "#F8FAFC")
-        body = Table([[original, compare]], colWidths=[7.82 * cm, 7.82 * cm])
+        original_evidence = self._evidence_panel("原文截图", item, "original", styles)
+        compare_evidence = self._evidence_panel("新版截图", item, "compare", styles)
+        body = Table(
+            [
+                [original, compare],
+                [original_evidence, compare_evidence],
+            ],
+            colWidths=[7.82 * cm, 7.82 * cm],
+        )
         body.setStyle(
             TableStyle(
                 [
@@ -312,6 +451,133 @@ class ReportGenerator:
             )
         )
         return table
+
+    def _evidence_panel(self, label: str, item: AuditItem, side: str, styles: dict[str, ParagraphStyle]) -> Table:
+        evidence = item.original_evidence if side == "original" else item.compare_evidence
+        if not evidence:
+            if item.diff_type == "ADD" and side == "original":
+                message = "原文无对应截图。"
+            elif item.diff_type == "DELETE" and side == "compare":
+                message = "新版无对应截图。"
+            else:
+                message = "未定位到可截图证据。"
+            content: Flowable = Paragraph(message, styles["Small"])
+        else:
+            image = self._render_evidence_image(item, side)
+            if image:
+                max_width = 7.1 * cm
+                max_height = 4.6 * cm
+                ratio = min(max_width / image.width, max_height / image.height, 1)
+                content = Image(BytesIO(image.data), width=image.width * ratio, height=image.height * ratio)
+            else:
+                content = Paragraph("截图生成失败，请以页码和文本证据复核。", styles["Small"])
+        table = Table(
+            [
+                [Paragraph(escape(label), styles["FieldLabel"])],
+                [content],
+            ],
+            colWidths=[7.55 * cm],
+        )
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFFFFF")),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        return table
+
+    def _render_evidence_image(self, item: AuditItem, side: str) -> ReportEvidenceImage | None:
+        task_path = self._side_pdf_path(item, side)
+        evidence_list = item.original_evidence if side == "original" else item.compare_evidence
+        evidence = self._first_valid_evidence(evidence_list)
+        if not task_path or not evidence:
+            return None
+        path = Path(task_path)
+        if not path.exists():
+            return None
+        try:
+            with fitz.open(path) as pdf:
+                if evidence.page_no < 1 or evidence.page_no > len(pdf):
+                    return None
+                page = pdf[evidence.page_no - 1]
+                crop_rect = self._crop_rect(page, evidence_list)
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=crop_rect, alpha=False)
+                image_bytes = self._draw_highlight(pix.tobytes("png"), crop_rect, evidence_list, item.diff_type)
+                return ReportEvidenceImage(data=image_bytes, width=float(pix.width) * 0.45, height=float(pix.height) * 0.45)
+        except Exception:
+            return None
+
+    def _side_pdf_path(self, item: AuditItem, side: str) -> str:
+        # AuditItem keeps only the DiffItem; the PDF paths are attached temporarily while building cards.
+        return getattr(self, "_current_original_pdf_path" if side == "original" else "_current_compare_pdf_path", "")
+
+    def _first_valid_evidence(self, evidence_list: list[EvidenceBox]) -> EvidenceBox | None:
+        for evidence in evidence_list:
+            if evidence.page_no and evidence.bbox and evidence.bbox.x1 > evidence.bbox.x0 and evidence.bbox.y1 > evidence.bbox.y0:
+                return evidence
+        return None
+
+    def _crop_rect(self, page, evidence_list: list[EvidenceBox]) -> fitz.Rect:
+        boxes = [evidence.bbox for evidence in evidence_list if evidence.bbox and evidence.page_no]
+        first_page_no = next((evidence.page_no for evidence in evidence_list if evidence.page_no), None)
+        boxes = [evidence.bbox for evidence in evidence_list if evidence.page_no == first_page_no and evidence.bbox]
+        x0 = min(box.x0 for box in boxes)
+        y0 = min(box.y0 for box in boxes)
+        x1 = max(box.x1 for box in boxes)
+        y1 = max(box.y1 for box in boxes)
+        page_rect = page.rect
+        width = max(180, x1 - x0)
+        height = max(80, y1 - y0)
+        center_x = (x0 + x1) / 2
+        center_y = (y0 + y1) / 2
+        crop = fitz.Rect(
+            center_x - width / 2 - 42,
+            center_y - height / 2 - 36,
+            center_x + width / 2 + 42,
+            center_y + height / 2 + 46,
+        )
+        return crop & page_rect
+
+    def _draw_highlight(self, image_bytes: bytes, crop_rect: fitz.Rect, evidence_list: list[EvidenceBox], diff_type: str) -> bytes:
+        try:
+            from PIL import Image as PILImage
+            from PIL import ImageDraw
+        except Exception:
+            return image_bytes
+        with PILImage.open(BytesIO(image_bytes)) as image:
+            draw = ImageDraw.Draw(image, "RGBA")
+            scale_x = image.width / max(1, crop_rect.width)
+            scale_y = image.height / max(1, crop_rect.height)
+            outline, fill = self._highlight_rgba(diff_type)
+            first_page_no = next((evidence.page_no for evidence in evidence_list if evidence.page_no), None)
+            for evidence in evidence_list:
+                if evidence.page_no != first_page_no:
+                    continue
+                box = evidence.bbox
+                rect = [
+                    (box.x0 - crop_rect.x0) * scale_x,
+                    (box.y0 - crop_rect.y0) * scale_y,
+                    (box.x1 - crop_rect.x0) * scale_x,
+                    (box.y1 - crop_rect.y0) * scale_y,
+                ]
+                draw.rectangle(rect, fill=fill, outline=outline, width=4)
+            output = BytesIO()
+            image.save(output, format="PNG")
+            return output.getvalue()
+
+    def _highlight_rgba(self, diff_type: str) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+        return {
+            "ADD": ((21, 128, 79, 230), (21, 128, 79, 58)),
+            "DELETE": ((201, 54, 44, 230), (201, 54, 44, 58)),
+            "MODIFY": ((169, 99, 0, 230), (246, 196, 64, 70)),
+        }.get(diff_type, ((75, 85, 99, 220), (75, 85, 99, 50)))
 
     def _diff_palette(self, diff_type: str) -> dict[str, str]:
         return {
@@ -378,6 +644,14 @@ class ReportGenerator:
 
     def _diff_type_label(self, diff_type: str) -> str:
         return {"ADD": "新增", "DELETE": "删除", "MODIFY": "修改"}.get(diff_type, diff_type)
+
+    def _source_type_label(self, source_type: str) -> str:
+        return {
+            "clause": "条款",
+            "table": "表格",
+            "metadata": "封面",
+            "seal": "印章",
+        }.get(source_type or "clause", source_type or "条款")
 
 
 def _extract_pdf_heading(path_value: str) -> str:

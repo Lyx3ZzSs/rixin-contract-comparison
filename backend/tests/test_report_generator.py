@@ -1,17 +1,36 @@
 from __future__ import annotations
 
 import fitz
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 
 from app.models import BBox, CompareTask, DiffItem, EvidenceBox
 from app.services.report_generator import ReportGenerator
 
 
+def _make_pdf(path, page_count: int = 6) -> None:
+    pdf = canvas.Canvas(str(path), pagesize=A4)
+    for page_no in range(1, page_count + 1):
+        pdf.setFont("Helvetica", 12)
+        pdf.drawString(72, 760, f"fixture page {page_no}")
+        pdf.drawString(72, 720, "30 days 45 days invoice warranty")
+        pdf.showPage()
+    pdf.save()
+
+
 def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path) -> None:
+    original_pdf = tmp_path / "original.pdf"
+    compare_pdf = tmp_path / "compare.pdf"
+    _make_pdf(original_pdf)
+    _make_pdf(compare_pdf)
+
     task = CompareTask(
         task_id="TREPORT001",
         status="COMPLETED",
         original_filename="original.pdf",
         compare_filename="compare.pdf",
+        original_pdf_path=str(original_pdf),
+        compare_pdf_path=str(compare_pdf),
         diffs=[
             DiffItem(
                 diff_id="D001",
@@ -78,6 +97,7 @@ def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path)
 
     with fitz.open(output_path) as report_pdf:
         report_text = "\n".join(page.get_text() for page in report_pdf)
+        image_count = sum(len(page.get_images()) for page in report_pdf)
     assert "审计统计与差异概览" in report_text
     assert "差异明细" in report_text
     assert "来源段落" in report_text
@@ -92,6 +112,11 @@ def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path)
     assert "3 旧质保" in report_text
     assert "旧质保条款" in report_text
     assert "新版已删除" in report_text
+    assert "差异索引" in report_text
+    assert "差异类型与证据说明" in report_text
+    assert "未定位/需复核差异附录" not in report_text
+    assert "高质量证据" not in report_text
+    assert "需复核" not in report_text
     assert "D004" not in report_text
     assert "无定位表格项" not in report_text
     assert "D005:ADD" in report_text
@@ -99,3 +124,4 @@ def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path)
     assert "D005:MODIFY" in report_text
     assert "新增说明" in report_text
     assert "旧说明" in report_text
+    assert image_count > 0
