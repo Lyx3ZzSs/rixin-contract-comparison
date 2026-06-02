@@ -8,9 +8,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from pydantic import TypeAdapter
+
 from app.services.extractors.base import ExtractionResult
 
 logger = logging.getLogger(__name__)
+_EXTRACTION_RESULT_ADAPTER = TypeAdapter(ExtractionResult)
 
 
 class ExtractionCache(Protocol):
@@ -36,7 +39,7 @@ class FileExtractionCache:
             self._remove(cache_key)
             return None
         try:
-            return ExtractionResult.model_validate_json(data_path.read_text(encoding="utf-8"))
+            return _EXTRACTION_RESULT_ADAPTER.validate_json(data_path.read_text(encoding="utf-8"))
         except Exception:
             logger.warning("Failed to deserialize cached extraction result for key %s", cache_key)
             self._remove(cache_key)
@@ -48,7 +51,7 @@ class FileExtractionCache:
         # Atomic write: write to temp file then rename
         for path, content in [
             (self._meta_path(cache_key), json.dumps(meta)),
-            (self._data_path(cache_key), result.model_dump_json()),
+            (self._data_path(cache_key), _EXTRACTION_RESULT_ADAPTER.dump_json(result).decode("utf-8")),
         ]:
             tmp = path.with_suffix(".tmp")
             tmp.write_text(content, encoding="utf-8")

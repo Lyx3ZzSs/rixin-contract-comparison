@@ -313,11 +313,6 @@ class Settings(BaseSettings):
     def storage_subdirs(self) -> list[Path]:
         return [
             self.tasks_dir,
-            self.uploads_dir,
-            self.reports_dir,
-            self.ocr_dir,
-            self.debug_dir,
-            self.cache_dir,
         ]
 
     def ensure_storage(self) -> None:

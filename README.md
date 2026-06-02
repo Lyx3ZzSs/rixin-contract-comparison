@@ -134,7 +134,7 @@ EXTRACTION_MAX_DOCUMENT_SIZE_MB=60
 EXTRACTION_MAX_IMAGE_SIZE_MB=5
 ```
 
-字段抽取会复用 `EXTRACTION_TASK_DESCRIPTION`、`EXTRACTION_OUTPUT_FORMAT`、`EXTRACTION_RULES_STR` 和 `EXTRACTION_FEW_SHOT_DEMO` 作为 LLM 提示词约束。OCR 和 LLM 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量和字段抽取质量。
+字段抽取会复用 `EXTRACTION_TASK_DESCRIPTION`、`EXTRACTION_OUTPUT_FORMAT`、`EXTRACTION_RULES_STR` 和 `EXTRACTION_FEW_SHOT_DEMO` 作为 LLM 提示词约束。OCR 和 LLM 原始结果会保存到 `storage/tasks/{task_id}/ocr`，用于排查识别质量和字段抽取质量。
 
 默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本或文本量不足时切换到结构化 OCR。扫描件链路优先使用 PP-Structure 做版面/表格结构识别，并使用 PP-OCRv5 提供真实文本、行坐标和词/字符坐标；如果 PP-Structure 不可用，会回退到仅 PP-OCRv5 文本抽取，并跳过结构化表格比对。
 
@@ -170,7 +170,7 @@ PPOCRV5_TEXT_REC_SCORE_THRESH=0.0
 SAVE_OCR_RAW_RESULT=true
 ```
 
-OCR 原始结果会保存到 `storage/ocr/{task_id}`，用于排查识别质量。扫描件默认链路使用 PP-Structure 的结构区域标记 PP-OCRv5 文字行，不再基于 OCR 文本关键词推断表格区域。差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
+OCR 原始结果会保存到 `storage/tasks/{task_id}/ocr`，用于排查识别质量。扫描件默认链路使用 PP-Structure 的结构区域标记 PP-OCRv5 文字行，不再基于 OCR 文本关键词推断表格区域。差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
 
 点击导出报告或请求 `/api/compare/{task_id}/report` 时，系统不会调用大模型，会生成包含基础信息和审计统计改动点表格的差异分析报告。`AI_LLM_*` 配置仅用于合同字段提取。
 
