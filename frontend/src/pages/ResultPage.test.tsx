@@ -257,6 +257,32 @@ const mockQuality = {
   debug_artifacts: { clause_matches: "clause_matches.json" },
 };
 
+function makeBottomAxisDiff(index: number): DiffItem {
+  return {
+    diff_id: `bottom-${index}`,
+    diff_type: "ADD",
+    clause_no: `${index + 1}`,
+    title: `底部差异 ${index + 1}`,
+    original_text: "",
+    compare_text: `新增底部差异 ${index + 1}`,
+    original_snippet: "",
+    compare_snippet: `新增底部差异 ${index + 1}`,
+    readable_change: `新增底部差异 ${index + 1}`,
+    source_type: "clause",
+    review_status: "UNREVIEWED",
+    original_evidence: [],
+    compare_evidence: [
+      {
+        page_no: 1,
+        bbox: { x0: 72, y0: 812 + index * 5, x1: 240, y1: 830 + index * 5 },
+        method: "block",
+        text: `新增底部差异 ${index + 1}`,
+        highlight_type: "ADD",
+      },
+    ],
+  };
+}
+
 describe("ResultPage", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -424,6 +450,23 @@ describe("ResultPage", () => {
     await user.click(mixedModifyMarker);
 
     expect(mixedModifyMarker).toHaveClass("active");
+  });
+
+  it("spreads clustered comparison axis markers away from the bottom boundary", async () => {
+    vi.mocked(getDiffs).mockResolvedValueOnce(Array.from({ length: 6 }, (_, index) => makeBottomAxisDiff(index)));
+    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "定位新增改动 bottom-0:ADD" })).toBeInTheDocument());
+
+    const tops = Array.from(container.querySelectorAll<HTMLButtonElement>(".compare-axis .axis-marker"))
+      .map((marker) => parseFloat(marker.style.top));
+
+    expect(tops).toHaveLength(6);
+    expect(Math.min(...tops)).toBeGreaterThanOrEqual(3);
+    expect(Math.max(...tops)).toBeLessThanOrEqual(97);
+    for (let index = 1; index < tops.length; index += 1) {
+      expect(tops[index] - tops[index - 1]).toBeGreaterThanOrEqual(3.99);
+    }
   });
 
   it("filters audit panel items and marks the selected diff", async () => {

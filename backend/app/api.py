@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.api_errors import http_error
@@ -28,7 +28,7 @@ from app.api_schemas import (
     DiffReviewResponse,
     TaskExecutionResponse,
 )
-from app.models import CompareTask
+from app.models import CompareOptions, CompareTask
 from app.services.review_service import (
     AuditItemNotFoundError,
     CompareQualityService,
@@ -46,8 +46,16 @@ router = APIRouter(prefix="/api/compare", tags=["compare"])
 async def compare_contracts(
     original_file: UploadFile = File(...),
     compare_file: UploadFile = File(...),
+    ignore_punctuation: bool = Form(False),
+    ignore_headers_footers: bool = Form(False),
+    ignore_stamps: bool = Form(False),
 ) -> CompareTaskResponse:
     task_id = generate_task_id()
+    compare_options = CompareOptions(
+        ignore_punctuation=ignore_punctuation,
+        ignore_headers_footers=ignore_headers_footers,
+        ignore_stamps=ignore_stamps,
+    )
     try:
         original_path = await save_upload_file(original_file, task_id, "original")
         compare_path = await save_upload_file(compare_file, task_id, "compare")
@@ -57,6 +65,7 @@ async def compare_contracts(
             compare_path=compare_path,
             original_filename=original_file.filename or original_path.name,
             compare_filename=compare_file.filename or compare_path.name,
+            compare_options=compare_options,
         )
     except FileValidationError as exc:
         raise http_error(exc) from exc
@@ -69,6 +78,7 @@ async def compare_contracts(
         task_id=task_id,
         original_filename=original_file.filename,
         compare_filename=compare_file.filename,
+        compare_options=compare_options,
     )
     return compare_task_response(task)
 

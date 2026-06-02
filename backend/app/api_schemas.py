@@ -37,6 +37,12 @@ class TextRangeResponse(BaseModel):
     highlight_type: DiffType = "MODIFY"
 
 
+class CompareOptionsResponse(BaseModel):
+    ignore_punctuation: bool = False
+    ignore_headers_footers: bool = False
+    ignore_stamps: bool = False
+
+
 class CompareTaskResponse(BaseModel):
     task_id: str
     status: TaskStatus
@@ -49,6 +55,7 @@ class CompareTaskResponse(BaseModel):
     manual_review_count: int = 0
     ignored_count: int = 0
     audit_item_reviews: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    compare_options: CompareOptionsResponse = Field(default_factory=CompareOptionsResponse)
     extractor_used: str = ""
     parse_warnings: list[str] = Field(default_factory=list)
     parse_warning_details: list[dict[str, Any]] = Field(default_factory=list)

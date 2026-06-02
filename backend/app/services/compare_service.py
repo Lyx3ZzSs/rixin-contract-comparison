@@ -7,7 +7,7 @@ from pathlib import Path
 from app.config import settings
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
-from app.models import CompareTask
+from app.models import CompareOptions, CompareTask
 from app.services.extractors.base import DocumentExtractor
 from app.services.pipeline import ComparePipeline, PipelineContext
 from app.services.pipeline_stages import ExtractionStage
@@ -68,6 +68,7 @@ class CompareService:
         task_id: str | None = None,
         original_filename: str | None = None,
         compare_filename: str | None = None,
+        compare_options: CompareOptions | None = None,
     ) -> CompareTask:
         settings.ensure_storage()
         task_id = task_id or generate_task_id()
@@ -77,6 +78,7 @@ class CompareService:
             compare_pdf=Path(compare_pdf),
             original_filename=original_filename,
             compare_filename=compare_filename,
+            compare_options=compare_options,
         )
 
         ctx = PipelineContext(
@@ -126,6 +128,7 @@ class CompareService:
         compare_pdf: Path,
         original_filename: str | None,
         compare_filename: str | None,
+        compare_options: CompareOptions | None = None,
     ) -> CompareTask:
         try:
             task = self.repository.load_compare_task(task_id)
@@ -139,6 +142,8 @@ class CompareService:
         task.compare_filename = compare_filename or task.compare_filename or compare_pdf.name
         task.original_pdf_path = str(original_pdf)
         task.compare_pdf_path = str(compare_pdf)
+        if compare_options is not None:
+            task.compare_options = compare_options
         task.updated_at = datetime.now(UTC).isoformat()
         self.repository.save_compare_task(task)
         return task

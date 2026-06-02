@@ -41,6 +41,7 @@ def compare_task_response(task: CompareTask) -> CompareTaskResponse:
             item_id: to_jsonable(review)
             for item_id, review in task.audit_item_reviews.items()
         },
+        "compare_options": to_jsonable(task.compare_options),
         "extractor_used": task.extractor_used,
         "parse_warnings": task.parse_warnings,
         "parse_warning_details": [to_jsonable(item) for item in task.parse_warning_details],

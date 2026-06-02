@@ -193,6 +193,12 @@ class AuditItemReview(BaseModel):
     reviewed_at: str = ""
 
 
+class CompareOptions(BaseModel):
+    ignore_punctuation: bool = False
+    ignore_headers_footers: bool = False
+    ignore_stamps: bool = False
+
+
 class CompareTask(BaseModel):
     task_id: str
     schema_version: int = 1
@@ -222,6 +228,7 @@ class CompareTask(BaseModel):
     manual_review_count: int = 0
     ignored_count: int = 0
     audit_item_reviews: dict[str, AuditItemReview] = Field(default_factory=dict)
+    compare_options: CompareOptions = Field(default_factory=CompareOptions)
     diffs: list[DiffItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)

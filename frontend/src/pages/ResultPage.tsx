@@ -383,7 +383,7 @@ interface EvidenceLocation {
 const ESTIMATED_PAGE_HEIGHT = 842;
 const AXIS_MIN_TOP = 3;
 const AXIS_MAX_TOP = 97;
-const AXIS_MIN_GAP = 2.5;
+const AXIS_MIN_GAP = 4;
 
 function buildAxisMarkers(items: AuditChangeItem[]): AxisMarkerItem[] {
   const candidates = items
@@ -421,19 +421,43 @@ function axisTypePriority(type: DiffType): number {
 }
 
 function enforceAxisSpacing(markers: AxisMarkerItem[]): AxisMarkerItem[] {
+  if (markers.length <= 1) {
+    return markers.map((marker) => ({ ...marker, positionPercent: clampAxisPercent(marker.positionPercent) }));
+  }
+
+  const availableRange = AXIS_MAX_TOP - AXIS_MIN_TOP;
+  const effectiveGap = Math.min(AXIS_MIN_GAP, availableRange / (markers.length - 1));
   const spaced: AxisMarkerItem[] = [];
   for (const marker of markers) {
     const previous = spaced.at(-1);
+    const rawPosition = clampAxisPercent(marker.positionPercent);
     if (!previous) {
-      spaced.push(marker);
+      spaced.push({ ...marker, positionPercent: Math.max(AXIS_MIN_TOP, rawPosition) });
     } else {
       spaced.push({
         ...marker,
-        positionPercent: Math.min(AXIS_MAX_TOP, Math.max(marker.positionPercent, previous.positionPercent + AXIS_MIN_GAP)),
+        positionPercent: Math.max(rawPosition, previous.positionPercent + effectiveGap),
       });
     }
   }
-  return spaced;
+
+  const lastIndex = spaced.length - 1;
+  if (spaced[lastIndex].positionPercent > AXIS_MAX_TOP) {
+    spaced[lastIndex] = { ...spaced[lastIndex], positionPercent: AXIS_MAX_TOP };
+    for (let index = lastIndex - 1; index >= 0; index -= 1) {
+      const next = spaced[index + 1];
+      const current = spaced[index];
+      spaced[index] = {
+        ...current,
+        positionPercent: Math.max(AXIS_MIN_TOP, Math.min(current.positionPercent, next.positionPercent - effectiveGap)),
+      };
+    }
+  }
+
+  return spaced.map((marker) => ({
+    ...marker,
+    positionPercent: Number(marker.positionPercent.toFixed(2)),
+  }));
 }
 
 function clampAxisPercent(value: number): number {

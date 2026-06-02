@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
-import unicodedata
 from pathlib import Path
 
 from app.config import settings
@@ -10,13 +8,15 @@ from app.infrastructure.artifact_store import ArtifactStore, default_artifact_st
 from app.models import (
     Clause,
     CompareTask,
-    DiffItem,
+    Document,
     DocumentProfile,
     ParseWarningDetail,
 )
 from app.services.compare_debug import CompareDebugWriter
+from app.services.compare_exclusions import CompareExclusionFilter
 from app.services.clause_splitter import ClauseSplitter
 from app.services.cover_metadata import CoverMetadataComparator
+from app.services.diff.punctuation_filter import apply_punctuation_filter
 from app.services.diff_engine import DiffEngine
 from app.services.document_profiler import DocumentProfiler
 from app.services.evidence_locator import EvidenceLocator
@@ -243,11 +243,13 @@ class PreClauseDiffStage:
         self.header_footer = HeaderFooterComparator()
         self.cover_metadata = CoverMetadataComparator()
         self.table_comparator = TableComparator()
+        self.exclusion_filter = CompareExclusionFilter()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
         extractions = ctx.require_extractions()
+        self._apply_document_exclusions(ctx)
         original_doc = extractions.original.document
         compare_doc = extractions.compare.document
 
@@ -266,10 +268,12 @@ class PreClauseDiffStage:
             original_doc, compare_doc,
             start_index=len(header_footer_diffs) + len(metadata_diffs) + 1,
         )
-        seal_diffs = build_seal_diffs(
-            original_doc, compare_doc,
-            start_index=len(header_footer_diffs) + len(metadata_diffs) + len(table_diffs) + 1,
-        )
+        seal_diffs = []
+        if not task.compare_options.ignore_stamps:
+            seal_diffs = build_seal_diffs(
+                original_doc, compare_doc,
+                start_index=len(header_footer_diffs) + len(metadata_diffs) + len(table_diffs) + 1,
+            )
         result = ctx.set_table_diffs(
             header_footer_diffs=header_footer_diffs,
             metadata_diffs=metadata_diffs,
@@ -279,6 +283,14 @@ class PreClauseDiffStage:
         task.parse_warnings.extend(result.table_warnings)
         _append_text_warnings(task, result.table_warnings, "table_compare")
         ctx.seal_diffs = seal_diffs
+
+    def _apply_document_exclusions(self, ctx: PipelineContext) -> None:
+        options = ctx.task.compare_options
+        if not options.ignore_headers_footers and not options.ignore_stamps:
+            return
+        extractions = ctx.require_extractions()
+        extractions.original.document = self.exclusion_filter.apply(extractions.original.document, options)
+        extractions.compare.document = self.exclusion_filter.apply(extractions.compare.document, options)
 
     @staticmethod
     def _recognize_seals(ctx: PipelineContext, original_doc: Document, compare_doc: Document) -> None:
@@ -297,7 +309,6 @@ class PreClauseDiffStage:
             if not seal_blocks:
                 continue
             from app.services.models.layout_detector import LayoutRegion, LayoutResult
-            from app.models import BBox
             regions = LayoutResult(regions=[
                 LayoutRegion(
                     region_type="seal",
@@ -401,16 +412,17 @@ class ClauseDiffStage:
             start_index=pre_clause_count + 1,
         )
         _emit_progress(ctx, 59, self.name, "clause_diff_done")
-        ctx.set_clause_diffs(
-            clause_diffs,
-            [
-                *table_diffs.header_footer_diffs,
-                *table_diffs.metadata_diffs,
-                *table_diffs.table_diffs,
-                *ctx.seal_diffs,
-                *clause_diffs,
-            ],
-        )
+        diffs = [
+            *table_diffs.header_footer_diffs,
+            *table_diffs.metadata_diffs,
+            *table_diffs.table_diffs,
+            *ctx.seal_diffs,
+            *clause_diffs,
+        ]
+        if ctx.task.compare_options.ignore_punctuation:
+            clause_diffs = apply_punctuation_filter(clause_diffs)
+            diffs = apply_punctuation_filter(diffs)
+        ctx.set_clause_diffs(clause_diffs, diffs)
 
 
 class EvidenceStage:
