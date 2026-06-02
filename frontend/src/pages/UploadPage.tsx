@@ -1,4 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { SlidersHorizontal } from "lucide-react";
 
 import { ProgressRing } from "../components/ProgressRing";
 import { compareContracts } from "../lib/api";
@@ -13,6 +14,12 @@ interface UploadPageProps {
 export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs = 5000 }: UploadPageProps) {
   const [originalFile, setOriginalFile] = useState<File | null>(null);
   const [compareFile, setCompareFile] = useState<File | null>(null);
+  const [compareExclusions, setCompareExclusions] = useState({
+    ignorePunctuation: false,
+    ignoreHeadersFooters: false,
+    ignoreStamps: false,
+  });
+  const [isExclusionPanelOpen, setIsExclusionPanelOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -22,6 +29,10 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
   const canSubmit = useMemo(
     () => Boolean(originalFile && compareFile && !isSubmitting),
     [compareFile, isSubmitting, originalFile],
+  );
+  const selectedExclusionCount = useMemo(
+    () => Object.values(compareExclusions).filter(Boolean).length,
+    [compareExclusions],
   );
 
   useEffect(() => {
@@ -48,7 +59,7 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
     setIsTaskToastVisible(false);
     setMessage("正在上传并创建合同对比任务...");
     try {
-      const payload = await compareContracts(originalFile, compareFile);
+      const payload = await compareContracts(originalFile, compareFile, compareExclusions);
       setOriginalFile(null);
       setCompareFile(null);
       setCreatedTask(payload);
@@ -120,9 +131,47 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
           />
         </div>
 
-        <button className="compare-submit" type="submit" disabled={!canSubmit}>
-          {isSubmitting ? "处理中..." : "开始对比"}
-        </button>
+        <div className="compare-actions">
+          <button className="compare-submit" type="submit" disabled={!canSubmit}>
+            {isSubmitting ? "处理中..." : "开始对比"}
+          </button>
+          <div className="compare-exclusion-wrap">
+            <button
+              aria-controls="compare-exclusion-panel"
+              aria-expanded={isExclusionPanelOpen}
+              className="compare-exclusion-trigger"
+              type="button"
+              onClick={() => setIsExclusionPanelOpen((open) => !open)}
+            >
+              <SlidersHorizontal size={16} aria-hidden="true" />
+              {selectedExclusionCount > 0 ? `排除对比项 · ${selectedExclusionCount}` : "排除对比项"}
+            </button>
+          </div>
+        </div>
+        {isExclusionPanelOpen && (
+          <div id="compare-exclusion-panel" className="compare-exclusion-row" role="group" aria-label="排除对比项">
+            <span className="compare-exclusion-label">排除：</span>
+            <ExclusionChip
+              label="标点符号"
+              selected={compareExclusions.ignorePunctuation}
+              onToggle={() =>
+                setCompareExclusions((current) => ({ ...current, ignorePunctuation: !current.ignorePunctuation }))
+              }
+            />
+            <ExclusionChip
+              label="页眉页脚"
+              selected={compareExclusions.ignoreHeadersFooters}
+              onToggle={() =>
+                setCompareExclusions((current) => ({ ...current, ignoreHeadersFooters: !current.ignoreHeadersFooters }))
+              }
+            />
+            <ExclusionChip
+              label="印章"
+              selected={compareExclusions.ignoreStamps}
+              onToggle={() => setCompareExclusions((current) => ({ ...current, ignoreStamps: !current.ignoreStamps }))}
+            />
+          </div>
+        )}
         <p className={error ? "status-line error" : "status-line"} role="status">
           {error || ""}
         </p>
@@ -145,6 +194,21 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
         </aside>
       )}
     </section>
+  );
+}
+
+interface ExclusionChipProps {
+  label: string;
+  selected: boolean;
+  onToggle: () => void;
+}
+
+function ExclusionChip({ label, selected, onToggle }: ExclusionChipProps) {
+  return (
+    <button className="compare-exclusion-chip" type="button" aria-pressed={selected} onClick={onToggle}>
+      {selected && <span aria-hidden="true">✓</span>}
+      {label}
+    </button>
   );
 }
 

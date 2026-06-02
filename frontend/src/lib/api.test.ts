@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { extractFields, getApiBaseUrl, toApiUrl } from "./api";
+import { compareContracts, extractFields, getApiBaseUrl, toApiUrl } from "./api";
 
 describe("api client URLs", () => {
   it("uses the configured API base URL without duplicate slashes", () => {
@@ -15,6 +15,30 @@ describe("api client URLs", () => {
 
   it("keeps absolute URLs unchanged", () => {
     expect(toApiUrl("https://example.test/file.pdf")).toBe("https://example.test/file.pdf");
+  });
+
+  it("sends comparison exclusion options as form fields", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ task_id: "task-1", status: "PROCESSING" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await compareContracts(
+      new File(["original"], "original.pdf", { type: "application/pdf" }),
+      new File(["compare"], "compare.pdf", { type: "application/pdf" }),
+      {
+        ignorePunctuation: true,
+        ignoreHeadersFooters: false,
+        ignoreStamps: true,
+      },
+    );
+
+    const body = fetchMock.mock.calls[0][1]?.body as FormData;
+    expect(body.get("ignore_punctuation")).toBe("true");
+    expect(body.get("ignore_headers_footers")).toBe("false");
+    expect(body.get("ignore_stamps")).toBe("true");
+
+    vi.unstubAllGlobals();
   });
 
   it("sends extraction fields with the compatibility text type and semantic flag", async () => {

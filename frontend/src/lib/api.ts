@@ -13,6 +13,12 @@ import type {
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 
+export interface CompareExclusionOptions {
+  ignorePunctuation: boolean;
+  ignoreHeadersFooters: boolean;
+  ignoreStamps: boolean;
+}
+
 export function getApiBaseUrl(): string {
   return (import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/+$/, "");
 }
@@ -46,10 +52,16 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
 export async function compareContracts(
   originalFile: File,
   compareFile: File,
+  options?: CompareExclusionOptions,
 ): Promise<CompareResponse> {
   const formData = new FormData();
   formData.append("original_file", originalFile);
   formData.append("compare_file", compareFile);
+  if (options) {
+    formData.append("ignore_punctuation", String(options.ignorePunctuation));
+    formData.append("ignore_headers_footers", String(options.ignoreHeadersFooters));
+    formData.append("ignore_stamps", String(options.ignoreStamps));
+  }
 
   const response = await fetch(toApiUrl("/api/compare"), {
     method: "POST",
