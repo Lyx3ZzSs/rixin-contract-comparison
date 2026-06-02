@@ -7,6 +7,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from app.config import settings
+from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.models import BBox, Document, Page, TextBlock
 from app.services.compare_service import CompareService
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
@@ -96,6 +97,48 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
     assert "差异分析报告" in report_text
     assert "审计统计" in report_text
     assert "修改" in report_text
+
+
+def test_compare_service_progress_callback_persists_monotonic_progress(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    repository = LocalJsonTaskRepository(settings)
+    repository.save_compare_task(CompareService(repository=repository)._load_or_create_task(
+        task_id="TPROGRESS_CALLBACK",
+        original_pdf=tmp_path / "original.pdf",
+        compare_pdf=tmp_path / "compare.pdf",
+        original_filename="original.pdf",
+        compare_filename="compare.pdf",
+    ))
+    service = CompareService(repository=repository)
+    callback = service._make_progress_callback("TPROGRESS_CALLBACK")
+
+    callback(42, "条款匹配中", {"sub_stage": "match_done"})
+    task = repository.load_compare_task("TPROGRESS_CALLBACK")
+
+    assert task.stage == "条款匹配中"
+    assert task.progress_percent == 42
+
+    callback(30, "文档解析中", {"sub_stage": "late_old_event"})
+    task = repository.load_compare_task("TPROGRESS_CALLBACK")
+
+    assert task.progress_percent == 42
+
+
+def test_compare_service_progress_callback_clamps_processing_progress_below_complete(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    repository = LocalJsonTaskRepository(settings)
+    task = CompareService(repository=repository)._load_or_create_task(
+        task_id="TPROGRESS_CLAMP",
+        original_pdf=tmp_path / "original.pdf",
+        compare_pdf=tmp_path / "compare.pdf",
+        original_filename="original.pdf",
+        compare_filename="compare.pdf",
+    )
+    repository.save_compare_task(task)
+
+    CompareService(repository=repository)._make_progress_callback("TPROGRESS_CLAMP")(100, "汇总统计中", None)
+
+    assert repository.load_compare_task("TPROGRESS_CLAMP").progress_percent == 99
 
 
 def test_compare_service_aligns_pymupdf_side_to_structured_extraction(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Ban, ChevronRight, Download, Eye, EyeOff, PanelRightOpen, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 
 import { PdfDocumentViewer, type PdfDocumentViewerHandle } from "../components/PdfDocumentViewer";
+import { ProgressRing } from "../components/ProgressRing";
 import { toApiUrl, updateAuditItemReview } from "../lib/api";
 import { useTaskProgress } from "../lib/hooks";
 import { navigateToComparisonRecords } from "../lib/routes";
@@ -160,15 +161,13 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
   }
 
   if (task.status === "PROCESSING") {
+    const progressPercent = Math.max(0, Math.min(100, task.progress_percent || 0));
     return (
       <section className="state-screen">
         <p className="eyebrow">合同审查系统</p>
         <h1>{task.stage || "处理中"}</h1>
-        <div className="progress-bar-container">
-          <div className="progress-bar-track">
-            <span style={{ width: `${Math.max(0, Math.min(100, task.progress_percent || 0))}%` }} />
-          </div>
-          <strong>{Math.max(0, Math.min(100, task.progress_percent || 0))}%</strong>
+        <div className="progress-ring-panel">
+          <ProgressRing value={progressPercent} label={task.stage || "处理中"} size="large" />
         </div>
         <p>{`任务 ${taskId}`}</p>
       </section>

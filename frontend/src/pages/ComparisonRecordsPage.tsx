@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { ProgressRing } from "../components/ProgressRing";
 import { getCompareRecords, toApiUrl } from "../lib/api";
 import { useRecordProgressSSE } from "../lib/hooks";
 import type { CompareRecordSummary, TaskStatus } from "../types";
@@ -129,19 +130,9 @@ function RecordProgress({ record }: { record: CompareRecordSummary }) {
 
   return (
     <div className="record-progress">
+      <ProgressRing value={progressPercent} label={record.stage || "处理中"} size="compact" />
       <div className="record-progress-label">
         <span>{record.stage || "处理中"}</span>
-        <strong>{progressPercent}%</strong>
-      </div>
-      <div
-        className="record-progress-track"
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={progressPercent}
-        aria-label={`${record.stage || "处理中"} ${progressPercent}%`}
-      >
-        <span style={{ width: `${progressPercent}%` }} />
       </div>
     </div>
   );

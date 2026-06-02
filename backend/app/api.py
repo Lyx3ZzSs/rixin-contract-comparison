@@ -87,7 +87,7 @@ def get_task(task_id: str) -> CompareTaskDetailResponse:
 @router.get("/{task_id}/progress")
 async def stream_progress(task_id: str):
     try:
-        default_compare_task_application.load_compare_task(task_id)
+        current_task = default_compare_task_application.load_compare_task(task_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -95,9 +95,19 @@ async def stream_progress(task_id: str):
 
     bus = ProgressBus.get_instance()
     queue = await bus.subscribe(task_id)
+    current_task = default_compare_task_application.load_compare_task(task_id)
 
     async def event_stream():
         try:
+            initial_payload = {
+                "task_id": current_task.task_id,
+                "stage": current_task.stage,
+                "progress_percent": current_task.progress_percent,
+                "status": current_task.status,
+            }
+            yield f"data: {json.dumps(initial_payload, ensure_ascii=False)}\n\n"
+            if current_task.status in ("COMPLETED", "FAILED"):
+                return
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=30)

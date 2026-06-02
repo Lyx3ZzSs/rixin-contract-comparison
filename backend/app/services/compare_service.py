@@ -9,7 +9,7 @@ from app.infrastructure.artifact_store import ArtifactStore, default_artifact_st
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.models import CompareTask
 from app.services.extractors.base import DocumentExtractor
-from app.services.pipeline import ComparePipeline, PipelineContext, _update_progress
+from app.services.pipeline import ComparePipeline, PipelineContext
 from app.services.pipeline_stages import ExtractionStage
 from app.services.report_generator import ReportGenerator
 from app.utils.id_utils import generate_task_id
@@ -97,10 +97,22 @@ class CompareService:
     def _make_progress_callback(self, task_id: str):
         def callback(percent: int, stage: str, detail: dict | None = None) -> None:
             from app.services.progress_bus import ProgressBus, ProgressEvent
+            progress = min(max(percent, 0), 99)
+
+            def mutate(task: CompareTask) -> None:
+                task.stage = stage
+                task.progress_percent = max(task.progress_percent, progress)
+
+            try:
+                task = self.repository.update_compare_task(task_id, mutate)
+            except FileNotFoundError:
+                task = CompareTask(task_id=task_id, stage=stage, progress_percent=progress)
+                self.repository.save_compare_task(task)
+
             ProgressBus.get_instance().publish(ProgressEvent(
                 task_id=task_id,
-                stage=stage,
-                progress_percent=percent,
+                stage=task.stage,
+                progress_percent=task.progress_percent,
                 status="PROCESSING",
                 detail=detail,
             ))

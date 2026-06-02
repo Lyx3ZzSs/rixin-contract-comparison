@@ -660,6 +660,7 @@ class ReportGenerator:
             "table": "表格",
             "metadata": "封面",
             "seal": "印章",
+            "header_footer": "页眉页脚",
         }.get(source_type or "clause", source_type or "条款")
 
 

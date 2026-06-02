@@ -2193,6 +2193,20 @@ h2 {
   line-height: 1.3;
 }
 
+.task-toast-progress {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.task-toast-progress small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .compare-task-toast button {
   justify-self: start;
   min-height: 28px;
@@ -2438,15 +2452,15 @@ h2 {
 
 .record-progress {
   display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
   width: 180px;
-  gap: 7px;
+  gap: 9px;
 }
 
 .record-progress-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  display: block;
+  min-width: 0;
   color: #5f7073;
   font-size: 0.76rem;
   font-weight: 800;
@@ -2457,29 +2471,6 @@ h2 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.record-progress-label strong {
-  flex: 0 0 auto;
-  color: var(--teal-strong);
-  font-size: 0.78rem;
-}
-
-.record-progress-track {
-  position: relative;
-  height: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e6eeee;
-}
-
-.record-progress-track span {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--teal), var(--teal-strong));
-  box-shadow: 0 0 0 1px rgba(45, 149, 140, 0.08);
-  transition: width 220ms ease;
 }
 
 .extraction-records-workspace {
@@ -4077,6 +4068,115 @@ h2 {
 
 .state-screen p {
   color: var(--muted);
+}
+
+.progress-ring-panel {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  max-width: 220px;
+  min-height: 148px;
+}
+
+.progress-ring {
+  --ring-size: 34px;
+  --ring-width: 5px;
+  --ring-stroke: 5;
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: var(--ring-size);
+  height: var(--ring-size);
+  border-radius: 50%;
+  background: #edf6f6;
+  box-shadow:
+    inset 0 0 0 1px rgba(45, 149, 140, 0.18),
+    0 8px 22px rgba(31, 62, 64, 0.1);
+  transition: transform 0.18s ease;
+}
+
+.progress-ring::before {
+  position: absolute;
+  inset: var(--ring-width);
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(45, 149, 140, 0.08);
+  content: "";
+}
+
+.progress-ring::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(var(--ring-size) * 0.1);
+  height: calc(var(--ring-size) * 0.1);
+  border-radius: 50%;
+  background: var(--teal-strong);
+  box-shadow: 0 0 0 4px rgba(73, 170, 160, 0.12);
+  transform: translate(-50%, -50%);
+  content: "";
+}
+
+.progress-ring-svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  transform: rotate(-90deg);
+}
+
+.progress-ring-track,
+.progress-ring-value {
+  fill: none;
+  stroke-width: var(--ring-stroke);
+}
+
+.progress-ring-track {
+  stroke: rgba(73, 170, 160, 0.15);
+}
+
+.progress-ring-value {
+  stroke: var(--teal-strong);
+  stroke-linecap: round;
+  filter: drop-shadow(0 1px 3px rgba(45, 149, 140, 0.28));
+  transition: stroke-dashoffset 520ms cubic-bezier(0.22, 0.8, 0.26, 1);
+}
+
+.progress-ring-scan {
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 1px solid rgba(45, 149, 140, 0.18);
+  border-top-color: rgba(45, 149, 140, 0.58);
+  animation: progress-ring-scan 1.6s linear infinite;
+}
+
+.progress-ring-toast {
+  --ring-size: 24px;
+  --ring-width: 4px;
+  --ring-stroke: 6;
+}
+
+.progress-ring-compact {
+  --ring-size: 34px;
+  --ring-width: 5px;
+  --ring-stroke: 5.4;
+}
+
+.progress-ring-large {
+  --ring-size: 128px;
+  --ring-width: 12px;
+  --ring-stroke: 5.6;
+}
+
+.progress-ring-large::after {
+  width: 12px;
+  height: 12px;
+}
+
+@keyframes progress-ring-scan {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .progress-bar-container {

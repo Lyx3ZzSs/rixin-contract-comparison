@@ -158,6 +158,25 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert client.get(f"/api/compare/{task_id}/preview").status_code == 404
 
 
+def test_compare_progress_stream_sends_current_snapshot(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(CompareTask(
+        task_id="TPROGRESS_SNAPSHOT",
+        status="COMPLETED",
+        stage="已完成",
+        progress_percent=100,
+    ))
+
+    client = TestClient(app)
+    with client.stream("GET", "/api/compare/TPROGRESS_SNAPSHOT/progress") as response:
+        assert response.status_code == 200
+        lines = [line for line in response.iter_lines() if line]
+
+    assert lines == [
+        'data: {"task_id": "TPROGRESS_SNAPSHOT", "stage": "已完成", "progress_percent": 100, "status": "COMPLETED"}'
+    ]
+
+
 def test_root_is_not_a_backend_page() -> None:
     client = TestClient(app)
     response = client.get("/")

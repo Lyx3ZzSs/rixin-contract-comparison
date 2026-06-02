@@ -1,5 +1,6 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
+import { ProgressRing } from "../components/ProgressRing";
 import { compareContracts } from "../lib/api";
 import type { CompareResponse } from "../types";
 
@@ -130,11 +131,14 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
         <aside className="compare-task-toast" role="status" aria-label="后台对比任务通知">
           <span className="task-toast-kicker">{createdTask.status === "PROCESSING" ? "后台比对已开始" : "合同比对已完成"}</span>
           <strong>任务编号：{createdTask.task_id}</strong>
-          <small>
-            {createdTask.status === "PROCESSING"
-              ? `${createdTask.stage || "处理中"} · ${Math.max(0, Math.min(100, createdTask.progress_percent || 0))}%`
-              : `已识别 ${createdTask.diff_count} 项差异`}
-          </small>
+          {createdTask.status === "PROCESSING" ? (
+            <div className="task-toast-progress">
+              <ProgressRing value={createdTask.progress_percent} label={createdTask.stage || "处理中"} size="toast" />
+              <small>{createdTask.stage || "处理中"}</small>
+            </div>
+          ) : (
+            <small>已识别 {createdTask.diff_count} 项差异</small>
+          )}
           <button type="button" onClick={onOpenRecords}>
             查看对比记录
           </button>

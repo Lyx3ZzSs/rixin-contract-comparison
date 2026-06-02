@@ -48,6 +48,9 @@ describe("UploadPage", () => {
     const taskNotice = screen.getByRole("status", { name: "后台对比任务通知" });
     expect(taskNotice).toHaveTextContent("后台比对已开始");
     expect(taskNotice).toHaveTextContent("任务编号：task-1");
+    expect(taskNotice).toHaveTextContent("文档解析中");
+    expect(taskNotice).not.toHaveTextContent("8%");
+    expect(screen.getByRole("progressbar", { name: /文档解析中/ })).toHaveAttribute("aria-valuenow", "8");
     expect(screen.queryByText("original.pdf")).not.toBeInTheDocument();
     expect(screen.queryByText("compare.pdf")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始对比" })).toBeDisabled();

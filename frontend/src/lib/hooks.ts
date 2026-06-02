@@ -5,6 +5,8 @@ import type { CompareRecordSummary, CompareTask, DiffItem, TaskStatus } from "..
 
 const POLL_INTERVAL_MS = 1200;
 const SSE_FALLBACK_DELAY_MS = 3000;
+const RESULT_COMPLETION_ANIMATION_MS = 1200;
+const RECORD_COMPLETION_ANIMATION_MS = 900;
 
 interface UseTaskProgressResult {
   task: CompareTask | null;
@@ -65,6 +67,7 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
 
     let isMounted = true;
     let fallbackTimer: number | undefined;
+    let completionTimer: number | undefined;
 
     const eventSource = createProgressEventSource(taskId);
 
@@ -92,14 +95,17 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
 
         if (progress.status === "COMPLETED") {
           setTask((prev) =>
-            prev ? { ...prev, status: "COMPLETED", stage: "已完成", progress_percent: 100 } : prev,
+            prev ? { ...prev, status: "PROCESSING", stage: "收尾完成中", progress_percent: 100 } : prev,
           );
-          void getTask(taskId).then((fullTask) => {
-            if (isMounted) setTask(fullTask);
-          });
-          void getDiffs(taskId).then((diffData) => {
-            if (isMounted) setDiffs(diffData);
-          });
+          const fullTaskPromise = getTask(taskId);
+          const diffDataPromise = getDiffs(taskId);
+          completionTimer = window.setTimeout(() => {
+            void Promise.all([fullTaskPromise, diffDataPromise]).then(([fullTask, diffData]) => {
+              if (!isMounted) return;
+              setTask(fullTask);
+              setDiffs(diffData);
+            });
+          }, RESULT_COMPLETION_ANIMATION_MS);
           eventSource.close();
         } else if (progress.status === "FAILED") {
           void getTask(taskId).then((fullTask) => {
@@ -131,6 +137,7 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
     return () => {
       isMounted = false;
       if (fallbackTimer !== undefined) window.clearTimeout(fallbackTimer);
+      if (completionTimer !== undefined) window.clearTimeout(completionTimer);
       eventSource.close();
     };
   }, [taskId, task?.status]);
@@ -152,6 +159,7 @@ export function useRecordProgressSSE(
 ): void {
   const connectionsRef = useRef<Map<string, EventSource>>(new Map());
   const fallbackRef = useRef<Map<string, number>>(new Map());
+  const completionRef = useRef<Map<string, number>>(new Map());
   const onUpdateRef = useRef(onUpdate);
   const onCompletedRef = useRef(onCompleted);
   onUpdateRef.current = onUpdate;
@@ -169,6 +177,7 @@ export function useRecordProgressSSE(
   useEffect(() => {
     const activeConnections = connectionsRef.current;
     const activeFallbacks = fallbackRef.current;
+    const activeCompletions = completionRef.current;
     const processingIds = new Set(processingKey.split(",").filter(Boolean));
 
     // Close SSE for records that are no longer PROCESSING
@@ -185,6 +194,24 @@ export function useRecordProgressSSE(
         activeFallbacks.delete(taskId);
       }
     }
+    for (const [taskId, timerId] of activeCompletions) {
+      if (!processingIds.has(taskId)) {
+        window.clearTimeout(timerId);
+        activeCompletions.delete(taskId);
+      }
+    }
+
+    const completeAfterRingAnimation = (taskId: string) => {
+      const existingTimer = activeCompletions.get(taskId);
+      if (existingTimer !== undefined) {
+        window.clearTimeout(existingTimer);
+      }
+      const timerId = window.setTimeout(() => {
+        activeCompletions.delete(taskId);
+        onCompletedRef.current();
+      }, RECORD_COMPLETION_ANIMATION_MS);
+      activeCompletions.set(taskId, timerId);
+    };
 
     // Open SSE for new PROCESSING records
     for (const taskId of processingIds) {
@@ -203,7 +230,8 @@ export function useRecordProgressSSE(
               const next = window.setTimeout(poll, SSE_FALLBACK_POLL_MS);
               activeFallbacks.set(taskId, next);
             } else {
-              onCompletedRef.current();
+              onUpdateRef.current(taskId, 100, "收尾完成中", "PROCESSING");
+              completeAfterRingAnimation(taskId);
               activeFallbacks.delete(taskId);
             }
           });
@@ -214,11 +242,18 @@ export function useRecordProgressSSE(
       eventSource.onmessage = (event) => {
         try {
           const progress: ProgressEvent = JSON.parse(event.data);
-          onUpdateRef.current(taskId, progress.progress_percent, progress.stage, progress.status);
-          if (progress.status === "COMPLETED" || progress.status === "FAILED") {
+          if (progress.status === "COMPLETED") {
+            onUpdateRef.current(taskId, 100, "收尾完成中", "PROCESSING");
+            eventSource.close();
+            activeConnections.delete(taskId);
+            completeAfterRingAnimation(taskId);
+          } else if (progress.status === "FAILED") {
+            onUpdateRef.current(taskId, progress.progress_percent, progress.stage, progress.status);
             eventSource.close();
             activeConnections.delete(taskId);
             onCompletedRef.current();
+          } else {
+            onUpdateRef.current(taskId, progress.progress_percent, progress.stage, progress.status);
           }
         } catch {
           // keepalive comments — ignore
@@ -240,6 +275,8 @@ export function useRecordProgressSSE(
       connectionsRef.current.clear();
       for (const timerId of fallbackRef.current.values()) window.clearTimeout(timerId);
       fallbackRef.current.clear();
+      for (const timerId of completionRef.current.values()) window.clearTimeout(timerId);
+      completionRef.current.clear();
     };
   }, []);
 }

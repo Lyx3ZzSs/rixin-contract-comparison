@@ -187,8 +187,10 @@ class TestClauseDiffStage:
 class TestClauseDiffStageMerge:
     def test_merges_metadata_table_and_clause_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        meta_diff = DiffItem(diff_id="D001", diff_type="MODIFY", title="meta")
-        table_diff = DiffItem(diff_id="D002", diff_type="ADD", title="table")
+        header_diff = DiffItem(diff_id="D001", diff_type="MODIFY", title="header", source_type="header_footer")
+        meta_diff = DiffItem(diff_id="D002", diff_type="MODIFY", title="meta")
+        table_diff = DiffItem(diff_id="D003", diff_type="ADD", title="table")
+        ctx.header_footer_diffs = [header_diff]
         ctx.metadata_diffs = [meta_diff]
         ctx.table_diffs = [table_diff]
         ctx.pairs = []
@@ -196,7 +198,7 @@ class TestClauseDiffStageMerge:
         stage = ClauseDiffStage()
         stage.execute(ctx)
 
-        assert ctx.diffs == [meta_diff, table_diff]
+        assert ctx.diffs == [header_diff, meta_diff, table_diff]
 
 
 class TestPreClauseDiffStage:
@@ -216,6 +218,41 @@ class TestPreClauseDiffStage:
         PreClauseDiffStage().execute(ctx)
 
         assert [diff.title for diff in ctx.metadata_diffs] == ["封面字段：签订日期"]
+
+    def test_extracts_header_footer_diffs_before_metadata_and_table(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        original_html = "<table><tr><td>甲方</td><td>江苏东大</td></tr></table>"
+        compare_html = "<table><tr><td>甲方</td><td>江苏新公司</td></tr></table>"
+        original = make_table_document(original_html)
+        compare = make_table_document(compare_html)
+        original.pages[0].blocks.insert(
+            0,
+            TextBlock(
+                block_id="o_header",
+                page_no=1,
+                text="合同编号：A-001",
+                bbox=BBox(x0=40, y0=20, x1=180, y1=36),
+                block_type="header",
+            ),
+        )
+        compare.pages[0].blocks.insert(
+            0,
+            TextBlock(
+                block_id="c_header",
+                page_no=1,
+                text="合同编号：B-002",
+                bbox=BBox(x0=40, y0=20, x1=180, y1=36),
+                block_type="header",
+            ),
+        )
+        ctx.original_extraction = ExtractionResult(document=original, extractor_used="test")
+        ctx.compare_extraction = ExtractionResult(document=compare, extractor_used="test")
+
+        PreClauseDiffStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.header_footer_diffs] == ["D001"]
+        assert ctx.header_footer_diffs[0].source_type == "header_footer"
+        assert all(diff.diff_id != "D001" for diff in [*ctx.metadata_diffs, *ctx.table_diffs])
 
 
 class TestSummaryStage:

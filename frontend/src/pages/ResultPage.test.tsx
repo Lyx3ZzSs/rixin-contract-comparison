@@ -1,8 +1,8 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { updateAuditItemReview } from "../lib/api";
+import { getDiffs, getTask, updateAuditItemReview } from "../lib/api";
 import type { CompareTask, DiffItem } from "../types";
 import { ResultPage } from "./ResultPage";
 
@@ -63,6 +63,16 @@ vi.mock("../lib/api", () => ({
     },
   })),
   toApiUrl: (path: string) => `http://api.test${path}`,
+}));
+
+const mockEventSource = {
+  onmessage: null as ((e: MessageEvent) => void) | null,
+  onerror: null as (() => void) | null,
+  close: vi.fn(),
+};
+
+vi.mock("../lib/api_sse", () => ({
+  createProgressEventSource: vi.fn(() => mockEventSource),
 }));
 
 const mockTask: CompareTask = {
@@ -248,6 +258,75 @@ const mockQuality = {
 };
 
 describe("ResultPage", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+    mockEventSource.onmessage = null;
+    mockEventSource.onerror = null;
+    mockEventSource.close.mockClear();
+  });
+
+  it("renders processing state as a progress ring without visible percent text", async () => {
+    vi.mocked(getTask).mockResolvedValueOnce({
+      ...mockTask,
+      status: "PROCESSING",
+      stage: "证据定位中",
+      progress_percent: 66,
+      report_url: "",
+    });
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await screen.findByText("证据定位中");
+    expect(screen.getByRole("progressbar", { name: /证据定位中/ })).toHaveAttribute("aria-valuenow", "66");
+    expect(screen.queryByText("66%")).not.toBeInTheDocument();
+  });
+
+  it("keeps the progress ring visible briefly when SSE completes before rendering results", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getTask)
+      .mockResolvedValueOnce({
+        ...mockTask,
+        status: "PROCESSING",
+        stage: "证据定位中",
+        progress_percent: 66,
+        report_url: "",
+      })
+      .mockResolvedValueOnce(mockTask);
+    vi.mocked(getDiffs).mockResolvedValueOnce(mockDiffs);
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("证据定位中")).toBeInTheDocument();
+
+    await act(async () => {
+      mockEventSource.onmessage?.({
+        data: JSON.stringify({
+          task_id: "task-1",
+          stage: "已完成",
+          progress_percent: 100,
+          status: "COMPLETED",
+        }),
+      } as MessageEvent);
+    });
+
+    expect(screen.getByText("收尾完成中")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: /收尾完成中/ })).toHaveAttribute("aria-valuenow", "100");
+    expect(screen.queryByLabelText("原版PDF 在线预览")).not.toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1200);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument();
+  });
+
   it("renders only the PDF.js comparison workspace", async () => {
     const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 

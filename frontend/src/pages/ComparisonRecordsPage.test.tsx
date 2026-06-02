@@ -43,6 +43,7 @@ const completedRecord: CompareRecordSummary = {
 
 describe("ComparisonRecordsPage", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
     mockEventSource.onmessage = null;
@@ -60,7 +61,7 @@ describe("ComparisonRecordsPage", () => {
     expect(screen.queryByRole("button", { name: "查看进度" })).not.toBeInTheDocument();
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "35");
     expect(screen.getByText("文档解析中")).toBeInTheDocument();
-    expect(screen.getByText("35%")).toBeInTheDocument();
+    expect(screen.queryByText("35%")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "查看结果" })).toBeInTheDocument();
     expect(onOpenTask).not.toHaveBeenCalled();
   });
@@ -87,7 +88,7 @@ describe("ComparisonRecordsPage", () => {
 
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "55");
     expect(screen.getByText("条款匹配中")).toBeInTheDocument();
-    expect(screen.getByText("55%")).toBeInTheDocument();
+    expect(screen.queryByText("55%")).not.toBeInTheDocument();
   });
 
   it("refreshes full list when SSE reports completion", async () => {
@@ -98,6 +99,7 @@ describe("ComparisonRecordsPage", () => {
     render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
 
     await screen.findByText("task-processing");
+    vi.useFakeTimers();
 
     // Simulate SSE completion event
     await act(async () => {
@@ -111,9 +113,16 @@ describe("ComparisonRecordsPage", () => {
       } as MessageEvent);
     });
 
-    // Should have called getCompareRecords again for full refresh
+    expect(screen.getByText("收尾完成中")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: /收尾完成中/ })).toHaveAttribute("aria-valuenow", "100");
+    expect(getCompareRecords).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+      await Promise.resolve();
+    });
+
     expect(getCompareRecords).toHaveBeenCalledTimes(2);
-    // After refresh, the completed record should show "查看结果"
     expect(screen.getByRole("button", { name: "查看结果" })).toBeInTheDocument();
   });
 });

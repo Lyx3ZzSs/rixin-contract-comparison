@@ -31,6 +31,7 @@ class ExtractionPair:
 
 @dataclass
 class TableDiffResult:
+    header_footer_diffs: list[DiffItem] = field(default_factory=list)
     metadata_diffs: list[DiffItem] = field(default_factory=list)
     table_diffs: list[DiffItem] = field(default_factory=list)
     table_warnings: list[str] = field(default_factory=list)
@@ -63,6 +64,7 @@ class PipelineContext:
 
     original_extraction: ExtractionResult | None = None
     compare_extraction: ExtractionResult | None = None
+    header_footer_diffs: list[DiffItem] = field(default_factory=list)
     metadata_diffs: list[DiffItem] = field(default_factory=list)
     table_diffs: list[DiffItem] = field(default_factory=list)
     table_warnings: list[str] = field(default_factory=list)
@@ -87,17 +89,29 @@ class PipelineContext:
     def set_table_diffs(
         self,
         *,
+        header_footer_diffs: list[DiffItem],
         metadata_diffs: list[DiffItem],
         table_diffs: list[DiffItem],
         table_warnings: list[str],
     ) -> TableDiffResult:
+        self.header_footer_diffs = header_footer_diffs
         self.metadata_diffs = metadata_diffs
         self.table_diffs = table_diffs
         self.table_warnings = table_warnings
-        return TableDiffResult(metadata_diffs, table_diffs, table_warnings)
+        return TableDiffResult(
+            header_footer_diffs=header_footer_diffs,
+            metadata_diffs=metadata_diffs,
+            table_diffs=table_diffs,
+            table_warnings=table_warnings,
+        )
 
     def require_table_diffs(self) -> TableDiffResult:
-        return TableDiffResult(self.metadata_diffs, self.table_diffs, self.table_warnings)
+        return TableDiffResult(
+            header_footer_diffs=self.header_footer_diffs,
+            metadata_diffs=self.metadata_diffs,
+            table_diffs=self.table_diffs,
+            table_warnings=self.table_warnings,
+        )
 
     def set_clauses(self, original_clauses: list[Clause], compare_clauses: list[Clause]) -> ClauseSplitResult:
         self.original_clauses = original_clauses
@@ -136,9 +150,11 @@ class PipelineStage(Protocol):
 
 
 def _update_progress(ctx: PipelineContext, stage: str, progress: int, repository: TaskRepository) -> None:
+    progress = min(max(progress, 0), 99)
+
     def mutate(task: CompareTask) -> None:
         task.stage = stage
-        task.progress_percent = max(task.progress_percent, min(progress, 99))
+        task.progress_percent = max(task.progress_percent, progress)
 
     try:
         persisted = repository.update_compare_task(ctx.task.task_id, mutate)
@@ -146,17 +162,16 @@ def _update_progress(ctx: PipelineContext, stage: str, progress: int, repository
         mutate(ctx.task)
         ctx.task.updated_at = datetime.now(UTC).isoformat()
         repository.save_compare_task(ctx.task)
-        return
-
-    ctx.task.stage = persisted.stage
-    ctx.task.progress_percent = persisted.progress_percent
-    ctx.task.updated_at = persisted.updated_at
-    ctx.task.revision = persisted.revision
+    else:
+        ctx.task.stage = persisted.stage
+        ctx.task.progress_percent = persisted.progress_percent
+        ctx.task.updated_at = persisted.updated_at
+        ctx.task.revision = persisted.revision
 
     ProgressBus.get_instance().publish(ProgressEvent(
         task_id=ctx.task.task_id,
-        stage=stage,
-        progress_percent=progress,
+        stage=ctx.task.stage,
+        progress_percent=ctx.task.progress_percent,
         status="PROCESSING",
     ))
 

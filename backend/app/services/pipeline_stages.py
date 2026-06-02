@@ -26,6 +26,7 @@ from app.services.extractors.base import (
     DocumentExtractor,
     ExtractionResult,
 )
+from app.services.header_footer_compare import HeaderFooterComparator
 from app.services.matcher import ClauseMatcher
 from app.services.pipeline import PipelineContext
 from app.services.table_compare import TableComparator
@@ -79,6 +80,11 @@ def _write_debug_artifact(
         logger.debug("Compare debug artifact write failed: %s", name, exc_info=True)
 
 
+def _emit_progress(ctx: PipelineContext, progress: int, stage: str, sub_stage: str) -> None:
+    if ctx.progress_callback:
+        ctx.progress_callback(progress, stage, {"sub_stage": sub_stage})
+
+
 class ExtractionStage:
     name = "文档解析中"
     start_progress = 10
@@ -98,19 +104,21 @@ class ExtractionStage:
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
+        _emit_progress(ctx, 12, self.name, "original_extraction_started")
         original_extraction = self.extractor.extract(ctx.original_pdf, task_id=task.task_id)
-        if ctx.progress_callback:
-            ctx.progress_callback(25, "文档解析中", {"sub_stage": "original_extraction_done"})
+        _emit_progress(ctx, 22, self.name, "original_extraction_done")
+        _emit_progress(ctx, 24, self.name, "compare_extraction_started")
         compare_extraction = self.extractor.extract(ctx.compare_pdf, task_id=task.task_id)
-        if ctx.progress_callback:
-            ctx.progress_callback(30, "文档解析中", {"sub_stage": "compare_extraction_done"})
+        _emit_progress(ctx, 30, self.name, "compare_extraction_done")
 
         original_extraction, compare_extraction = self._align_structured_extractions(
             ctx.original_pdf, ctx.compare_pdf, task.task_id,
             original_extraction, compare_extraction,
         )
+        _emit_progress(ctx, 32, self.name, "structured_alignment_done")
         original_extraction = self._ensure_profile(original_extraction)
         compare_extraction = self._ensure_profile(compare_extraction)
+        _emit_progress(ctx, 34, self.name, "document_profile_done")
 
         task.extractor_used = self._merge_extractor_names(
             original_extraction.extractor_used,
@@ -232,6 +240,7 @@ class PreClauseDiffStage:
     progress = 40
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.header_footer = HeaderFooterComparator()
         self.cover_metadata = CoverMetadataComparator()
         self.table_comparator = TableComparator()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
@@ -243,17 +252,26 @@ class PreClauseDiffStage:
         compare_doc = extractions.compare.document
 
         self._recognize_seals(ctx, original_doc, compare_doc)
+        _emit_progress(ctx, 37, self.name, "seal_recognition_done")
 
-        metadata_diffs = self.cover_metadata.build_diffs(original_doc, compare_doc)
+        header_footer_diffs = self.header_footer.build_diffs(original_doc, compare_doc)
+        _emit_progress(ctx, 38, self.name, "header_footer_diff_done")
+        metadata_diffs = self.cover_metadata.build_diffs(
+            original_doc,
+            compare_doc,
+            start_index=len(header_footer_diffs) + 1,
+        )
+        _emit_progress(ctx, 39, self.name, "cover_metadata_diff_done")
         table_diffs, table_warnings = self.table_comparator.build_diffs(
             original_doc, compare_doc,
-            start_index=len(metadata_diffs) + 1,
+            start_index=len(header_footer_diffs) + len(metadata_diffs) + 1,
         )
         seal_diffs = build_seal_diffs(
             original_doc, compare_doc,
-            start_index=len(metadata_diffs) + len(table_diffs) + 1,
+            start_index=len(header_footer_diffs) + len(metadata_diffs) + len(table_diffs) + 1,
         )
         result = ctx.set_table_diffs(
+            header_footer_diffs=header_footer_diffs,
             metadata_diffs=metadata_diffs,
             table_diffs=table_diffs,
             table_warnings=table_warnings,
@@ -318,6 +336,7 @@ class SplitStage:
             self.splitter.split(original_doc, "O"),
             self.splitter.split(compare_doc, "N"),
         )
+        _emit_progress(ctx, 43, self.name, "clause_split_done")
         _write_debug_artifact(
             ctx.task,
             "original_clauses",
@@ -328,6 +347,7 @@ class SplitStage:
             "compare_clauses",
             lambda: self.debug_writer.write_clauses(ctx.task.task_id, "compare", clauses.compare_clauses),
         )
+        _emit_progress(ctx, 44, self.name, "clause_debug_artifacts_done")
 
 
 class MatchStage:
@@ -349,11 +369,13 @@ class MatchStage:
     def execute(self, ctx: PipelineContext) -> None:
         clauses = ctx.require_clauses()
         matches = ctx.set_matches(self.matcher.match(clauses.original_clauses, clauses.compare_clauses))
+        _emit_progress(ctx, 53, self.name, "clause_match_done")
         _write_debug_artifact(
             ctx.task,
             "clause_matches",
             lambda: self.debug_writer.write_matches(ctx.task.task_id, matches.pairs),
         )
+        _emit_progress(ctx, 54, self.name, "match_debug_artifact_done")
 
 
 class ClauseDiffStage:
@@ -368,21 +390,33 @@ class ClauseDiffStage:
     def execute(self, ctx: PipelineContext) -> None:
         table_diffs = ctx.require_table_diffs()
         matches = ctx.require_matches()
-        pre_clause_count = len(table_diffs.metadata_diffs) + len(table_diffs.table_diffs) + len(ctx.seal_diffs)
+        pre_clause_count = (
+            len(table_diffs.header_footer_diffs)
+            + len(table_diffs.metadata_diffs)
+            + len(table_diffs.table_diffs)
+            + len(ctx.seal_diffs)
+        )
         clause_diffs = self.diff_engine.build_diffs(
             matches.pairs,
             start_index=pre_clause_count + 1,
         )
+        _emit_progress(ctx, 59, self.name, "clause_diff_done")
         ctx.set_clause_diffs(
             clause_diffs,
-            [*table_diffs.metadata_diffs, *table_diffs.table_diffs, *ctx.seal_diffs, *clause_diffs],
+            [
+                *table_diffs.header_footer_diffs,
+                *table_diffs.metadata_diffs,
+                *table_diffs.table_diffs,
+                *ctx.seal_diffs,
+                *clause_diffs,
+            ],
         )
 
 
 class EvidenceStage:
     name = "证据定位中"
     start_progress = 61
-    progress = 70
+    progress = 84
 
     def __init__(self) -> None:
         self.evidence_locator = EvidenceLocator()
@@ -400,17 +434,20 @@ class EvidenceStage:
         ctx.diffs = self.evidence_locator.locate(
             ctx.diffs, original_locate_clauses, compare_locate_clauses,
         )
+        _emit_progress(ctx, 66, self.name, "text_evidence_located")
         ctx.diffs = self.text_coordinate_locator.refine(
             ctx.original_pdf, ctx.compare_pdf, ctx.diffs,
         )
+        _emit_progress(ctx, 76, self.name, "coordinate_refined")
         self.evidence_locator.assign_evidence_confidence(ctx.diffs)
         ctx.diffs = DiffEngine().deduplicate_overlaps(ctx.diffs)
+        _emit_progress(ctx, 82, self.name, "evidence_confidence_done")
 
 
 class VisualizationStage:
     name = "高亮信息准备中"
-    start_progress = 71
-    progress = 90
+    start_progress = 85
+    progress = 86
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.artifact_store = artifact_store
@@ -422,7 +459,7 @@ class VisualizationStage:
 
 class SummaryStage:
     name = "汇总统计中"
-    start_progress = 91
+    start_progress = 87
     progress = 95
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
@@ -436,6 +473,7 @@ class SummaryStage:
             "diff_decisions",
             lambda: self.debug_writer.write_diffs(task.task_id, task.diffs),
         )
+        _emit_progress(ctx, 93, self.name, "diff_debug_artifact_done")
         _refresh_stats(task)
 
 
