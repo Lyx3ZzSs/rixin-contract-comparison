@@ -505,20 +505,23 @@ class ReportGenerator:
     def _render_evidence_image(self, item: AuditItem, side: str) -> ReportEvidenceImage | None:
         task_path = self._side_pdf_path(item, side)
         evidence_list = item.original_evidence if side == "original" else item.compare_evidence
-        evidence = self._first_valid_evidence(evidence_list)
-        if not task_path or not evidence:
+        page_no = self._dominant_evidence_page(evidence_list)
+        if not task_path or page_no is None:
+            return None
+        page_evidence = self._evidence_for_page(evidence_list, page_no)
+        if not page_evidence:
             return None
         path = Path(task_path)
         if not path.exists():
             return None
         try:
             with fitz.open(path) as pdf:
-                if evidence.page_no < 1 or evidence.page_no > len(pdf):
+                if page_no < 1 or page_no > len(pdf):
                     return None
-                page = pdf[evidence.page_no - 1]
-                crop_rect = self._crop_rect(page, evidence_list)
+                page = pdf[page_no - 1]
+                crop_rect = self._crop_rect(page, page_evidence)
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=crop_rect, alpha=False)
-                image_bytes = self._draw_highlight(pix.tobytes("png"), crop_rect, evidence_list, item.diff_type)
+                image_bytes = self._draw_highlight(pix.tobytes("png"), crop_rect, page_evidence, item.diff_type)
                 return ReportEvidenceImage(data=image_bytes, width=float(pix.width) * 0.45, height=float(pix.height) * 0.45)
         except Exception:
             return None
@@ -527,16 +530,36 @@ class ReportGenerator:
         # AuditItem keeps only the DiffItem; the PDF paths are attached temporarily while building cards.
         return getattr(self, "_current_original_pdf_path" if side == "original" else "_current_compare_pdf_path", "")
 
-    def _first_valid_evidence(self, evidence_list: list[EvidenceBox]) -> EvidenceBox | None:
-        for evidence in evidence_list:
-            if evidence.page_no and evidence.bbox and evidence.bbox.x1 > evidence.bbox.x0 and evidence.bbox.y1 > evidence.bbox.y0:
-                return evidence
-        return None
+    def _dominant_evidence_page(self, evidence_list: list[EvidenceBox]) -> int | None:
+        page_stats: dict[int, tuple[int, float, int]] = {}
+        for evidence in self._valid_evidence(evidence_list):
+            page_no = int(evidence.page_no)
+            text_len, area, count = page_stats.get(page_no, (0, 0.0, 0))
+            box = evidence.bbox
+            page_stats[page_no] = (
+                text_len + len(evidence.text.strip()),
+                area + max(0.0, box.x1 - box.x0) * max(0.0, box.y1 - box.y0),
+                count + 1,
+            )
+        if not page_stats:
+            return None
+        return max(page_stats, key=lambda page_no: page_stats[page_no])
+
+    def _valid_evidence(self, evidence_list: list[EvidenceBox]) -> list[EvidenceBox]:
+        return [
+            evidence
+            for evidence in evidence_list
+            if evidence.page_no
+            and evidence.bbox
+            and evidence.bbox.x1 > evidence.bbox.x0
+            and evidence.bbox.y1 > evidence.bbox.y0
+        ]
+
+    def _evidence_for_page(self, evidence_list: list[EvidenceBox], page_no: int) -> list[EvidenceBox]:
+        return [evidence for evidence in self._valid_evidence(evidence_list) if evidence.page_no == page_no]
 
     def _crop_rect(self, page, evidence_list: list[EvidenceBox]) -> fitz.Rect:
-        boxes = [evidence.bbox for evidence in evidence_list if evidence.bbox and evidence.page_no]
-        first_page_no = next((evidence.page_no for evidence in evidence_list if evidence.page_no), None)
-        boxes = [evidence.bbox for evidence in evidence_list if evidence.page_no == first_page_no and evidence.bbox]
+        boxes = [evidence.bbox for evidence in self._valid_evidence(evidence_list)]
         x0 = min(box.x0 for box in boxes)
         y0 = min(box.y0 for box in boxes)
         x1 = max(box.x1 for box in boxes)
@@ -565,10 +588,7 @@ class ReportGenerator:
             scale_x = image.width / max(1, crop_rect.width)
             scale_y = image.height / max(1, crop_rect.height)
             outline, fill = self._highlight_rgba(diff_type)
-            first_page_no = next((evidence.page_no for evidence in evidence_list if evidence.page_no), None)
-            for evidence in evidence_list:
-                if evidence.page_no != first_page_no:
-                    continue
+            for evidence in self._valid_evidence(evidence_list):
                 box = evidence.bbox
                 rect = [
                     (box.x0 - crop_rect.x0) * scale_x,
