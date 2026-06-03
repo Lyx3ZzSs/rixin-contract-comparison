@@ -103,6 +103,7 @@ class HeaderFooterComparator:
         block_type = (block.block_type or "").lower()
         if block_type in self.excluded_types:
             return None
+        is_page_number = self._is_page_number(text)
         slot = ""
         if block_type in self.header_types:
             slot = "header"
@@ -111,9 +112,10 @@ class HeaderFooterComparator:
         elif page_height > 0:
             near_top = block.bbox.y1 <= page_height * 0.08
             near_bottom = block.bbox.y0 >= page_height * 0.92
+            near_page_number_bottom = is_page_number and block.bbox.y0 >= page_height * 0.90
             if near_top and not self._looks_like_clause_start(text):
                 slot = "header"
-            elif near_bottom:
+            elif near_bottom or near_page_number_bottom:
                 slot = "footer"
         if not slot:
             return None
@@ -124,7 +126,7 @@ class HeaderFooterComparator:
             page_no=block.page_no,
             bbox=block.bbox,
             block_id=block.block_id,
-            is_page_number=self._is_page_number(text),
+            is_page_number=is_page_number,
         )
 
     def _non_page_number_entries(

@@ -101,6 +101,39 @@ def test_header_footer_summarizes_page_numbers_without_per_page_noise() -> None:
     assert diffs == []
 
 
+def test_header_footer_matches_page_numbers_slightly_above_footer_margin() -> None:
+    original = _document([
+        [_block(f"o{page_no}", f"共9页第{page_no}页", y0=780, y1=792, block_type="number", page_no=page_no)]
+        for page_no in range(1, 10)
+    ])
+    compare = _document([
+        [
+            _block(
+                f"c{page_no}",
+                f"共9页第{page_no}页",
+                y0=770,
+                y1=784,
+                block_type="vision_footnote" if page_no == 3 else "number",
+                page_no=page_no,
+            )
+        ]
+        for page_no in range(1, 10)
+    ])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_does_not_treat_mid_page_page_number_text_as_footer() -> None:
+    original = _document([[_block("o1", "第 1 页", y0=360, y1=374)]])
+    compare = _document([[_block("c1", "第 2 页", y0=360, y1=374)]])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
 def test_header_footer_reports_page_number_total_change_once() -> None:
     original = _document([
         [_block(f"o{page_no}", f"共 14 页第 {page_no} 页", y0=810, y1=826, page_no=page_no)]
