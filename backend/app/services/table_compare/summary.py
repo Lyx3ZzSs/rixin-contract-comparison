@@ -9,7 +9,6 @@ from difflib import SequenceMatcher
 from app.models import TextBlock
 from app.models_table import StructuredTable
 from app.services.table_compare.constants import AMOUNT_TOKEN_PATTERN
-from app.services.table_compare.types import _SummaryPair
 from app.services.table_compare import utils
 from app.services.table_compare.matcher import TableMatcher
 from app.services.table_compare.repair import TableRepairService
@@ -93,6 +92,88 @@ class SummaryComparator:
             reference_section,
         )
 
+    def one_sided_summary_row_covered_by_malformed_source(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+    ) -> bool:
+        if bool(orig_row is not None) == bool(comp_row is not None):
+            return False
+
+        present_table = original if orig_row is not None else compare
+        missing_table = compare if orig_row is not None else original
+        present_row = orig_row if orig_row is not None else comp_row
+        if present_row is None:
+            return False
+
+        pair = self.summary_pair_from_row(present_table, present_row)
+        if pair is None:
+            return False
+        label, amount = pair
+        if not self._has_malformed_summary_context(missing_table, present_table.rows[present_row].page_no):
+            return False
+
+        seen_sources: set[tuple[str, str]] = set()
+        for row in missing_table.rows:
+            if abs(row.page_no - present_table.rows[present_row].page_no) > 1:
+                continue
+            source_text = getattr(row, "source_text", "") or ""
+            source_key = (row.source_block_id, source_text)
+            if not source_text or source_key in seen_sources:
+                continue
+            seen_sources.add(source_key)
+            if any(pair.label == label and pair.canonical_amount == amount for pair in self._repair._summary_pairs_from_text(source_text)):
+                return True
+        return False
+
+    def matched_malformed_summary_row_covered_by_source(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+    ) -> bool:
+        if orig_row is None or comp_row is None:
+            return False
+        return (
+            self._summary_row_covered_by_malformed_source(compare, comp_row, original, orig_row)
+            or self._summary_row_covered_by_malformed_source(original, orig_row, compare, comp_row)
+        )
+
+    def matched_sparse_product_row_covered_by_source(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+        original_block: TextBlock | None,
+        compare_block: TextBlock | None,
+    ) -> bool:
+        if orig_row is None or comp_row is None:
+            return False
+        if self._matcher._row_sequence(original, orig_row) != self._matcher._row_sequence(compare, comp_row):
+            return False
+
+        if self._is_dense_product_row_for_source_cover(compare, comp_row) and self._is_sparse_product_row(original, orig_row):
+            return self._dense_row_covered_by_other_source(
+                compare,
+                comp_row,
+                original,
+                orig_row,
+                original_block,
+            )
+        if self._is_dense_product_row_for_source_cover(original, orig_row) and self._is_sparse_product_row(compare, comp_row):
+            return self._dense_row_covered_by_other_source(
+                original,
+                orig_row,
+                compare,
+                comp_row,
+                compare_block,
+            )
+        return False
+
     def one_sided_product_row_covered_by_source(
         self,
         original: StructuredTable,
@@ -119,6 +200,75 @@ class SummaryComparator:
             if self._product_row_covered_by_source_text(present_table, present_row, source_text):
                 return True
         return False
+
+    def _has_malformed_summary_context(self, table: StructuredTable, reference_page: int) -> bool:
+        for row in table.rows:
+            if abs(row.page_no - reference_page) > 1:
+                continue
+            if self._row_has_malformed_summary_context(row):
+                return True
+        return False
+
+    def _summary_row_covered_by_malformed_source(
+        self,
+        present_table: StructuredTable,
+        present_row: int,
+        malformed_table: StructuredTable,
+        malformed_row: int,
+    ) -> bool:
+        pair = self.summary_pair_from_row(present_table, present_row)
+        if pair is None:
+            return False
+        if malformed_row < 0 or malformed_row >= len(malformed_table.rows):
+            return False
+        malformed_logical_row = malformed_table.rows[malformed_row]
+        if not self._row_has_malformed_summary_context(malformed_logical_row):
+            return False
+
+        label, amount = pair
+        source_text = getattr(malformed_logical_row, "source_text", "") or ""
+        if not source_text:
+            return False
+        return any(
+            source_pair.label == label and source_pair.canonical_amount == amount
+            for source_pair in self._repair._summary_pairs_from_text(source_text)
+        )
+
+    def _row_has_malformed_summary_context(self, row: object) -> bool:
+        row_text = " ".join(cell.text for cell in getattr(row, "cells", []))
+        labels = utils.summary_labels(row_text)
+        if len(labels) >= 2:
+            return True
+        return bool(labels and "备注" in row_text)
+
+    def _is_sparse_product_row(self, table: StructuredTable, row: int) -> bool:
+        if row < 0 or row >= len(table.rows):
+            return False
+        if self._repair._summary_label_from_row(table.rows[row]):
+            return False
+        if not self._matcher._row_sequence(table, row):
+            return False
+        cells = self._matcher._row_nonempty_cells(table, row)
+        if len(cells) >= 6:
+            return False
+        return any(
+            utils.normalize(cell.text)
+            and not utils.is_number_like(utils.normalize(cell.text))
+            and not utils.canonical_amount(cell.text)
+            for cell in cells
+        )
+
+    def _dense_row_covered_by_other_source(
+        self,
+        dense_table: StructuredTable,
+        dense_row: int,
+        sparse_table: StructuredTable,
+        sparse_row: int,
+        sparse_block: TextBlock | None,
+    ) -> bool:
+        reference_page = dense_table.rows[dense_row].page_no
+        source_texts = self._nearby_plain_source_texts(sparse_table, reference_page, sparse_block)
+        return self._product_row_covered_by_source_text(dense_table, dense_row, "\n".join(source_texts))
 
     def _is_dense_product_row_for_source_cover(self, table: StructuredTable, row: int) -> bool:
         if row < 0 or row >= len(table.rows):

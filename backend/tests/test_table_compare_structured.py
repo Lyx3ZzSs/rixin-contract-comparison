@@ -1247,6 +1247,65 @@ class TestStructuredTableComparison:
         combined = " ".join(diff.readable_change for diff in diffs)
         assert "'594000' -> '590000'" in combined
 
+    def test_malformed_product_and_summary_rows_are_covered_by_plain_ocr_text(self):
+        original_html = _product_table([
+            "<tr><td>8</td><td colspan='4'></td><td>国能日新探针 系统V3.0</td>"
+            "<td></td><td>agent 软件</td><td></td></tr>",
+            "<tr><td colspan='5'>1套总计 四套合计</td><td>备注</td><td></td>"
+            "<td>1、本报价有效期为30天； 2、本报价设备质保期为12个月；</td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>8</td><td>国能日新探针 系统V3.0</td><td>agent 软件</td>"
+            "<td>国能 日新</td><td>套</td><td>2</td><td>200</td><td>400</td><td></td></tr>",
+            "<tr><td colspan='7'>小计</td><td>12400</td><td></td></tr>",
+            "<tr><td colspan='7'>1套总计</td><td>29500</td><td></td></tr>",
+            "<tr><td colspan='7'>四套合计</td><td>118000</td><td></td></tr>",
+        ])
+        source_text = (
+            "国" + "其他内容" * 20 + "\n"
+            "8\n国能日新探针\n系统V3.0\nagent 软件\n国能 日新\n套\n2\n200\n400\n"
+            "小计\n12400\n1套总计\n29500\n四套合计\n118000\n备注\n"
+            "1、本报价有效期为30天；\n2、本报价设备质保期为12个月；"
+        )
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_raw_table_block("o1", 4, original_html, source_text)]),
+            _make_doc([_make_raw_table_block("c1", 4, compare_html, source_text)]),
+        )
+
+        assert warnings == []
+        assert diffs == []
+
+    def test_malformed_summary_source_amount_conflict_still_reports(self):
+        original_html = _product_table([
+            "<tr><td>8</td><td colspan='4'></td><td>国能日新探针 系统V3.0</td>"
+            "<td></td><td>agent 软件</td><td></td></tr>",
+            "<tr><td colspan='5'>1套总计 四套合计</td><td>备注</td><td></td>"
+            "<td>1、本报价有效期为30天； 2、本报价设备质保期为12个月；</td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>8</td><td>国能日新探针 系统V3.0</td><td>agent 软件</td>"
+            "<td>国能 日新</td><td>套</td><td>2</td><td>200</td><td>400</td><td></td></tr>",
+            "<tr><td colspan='7'>小计</td><td>12400</td><td></td></tr>",
+            "<tr><td colspan='7'>1套总计</td><td>29500</td><td></td></tr>",
+            "<tr><td colspan='7'>四套合计</td><td>119000</td><td></td></tr>",
+        ])
+        original_source = (
+            "国" + "其他内容" * 20 + "\n"
+            "8\n国能日新探针\n系统V3.0\nagent 软件\n国能 日新\n套\n2\n200\n400\n"
+            "小计\n12400\n1套总计\n29500\n四套合计\n118000\n备注"
+        )
+        compare_source = original_source.replace("118000", "119000")
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_raw_table_block("o1", 4, original_html, original_source)]),
+            _make_doc([_make_raw_table_block("c1", 4, compare_html, compare_source)]),
+        )
+
+        assert warnings == []
+        combined = " ".join(diff.readable_change for diff in diffs)
+        assert "119000" in combined
+
     def test_label_only_summary_row_is_filtered(self):
         original_html = _product_table([
             _product_row("1", "国产操作系统", "12000"),

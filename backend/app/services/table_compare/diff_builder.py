@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-import unicodedata
 from difflib import SequenceMatcher
 
 from app.models import BBox, CharBox, DiffItem, DiffType, EvidenceBox, TextBlock
@@ -12,8 +10,6 @@ from app.services.table_compare.types import (
     CellDiff,
     CellDiffGroup,
     CharSegment,
-    _LogicalCell,
-    _LogicalRow,
 )
 from app.services.table_compare import utils
 from app.services.table_compare.matcher import TableMatcher
@@ -78,7 +74,30 @@ class TableDiffBuilder:
                 compare_block,
             ):
                 continue
+            if self._summary.matched_malformed_summary_row_covered_by_source(
+                original,
+                compare,
+                orig_row,
+                comp_row,
+            ):
+                continue
+            if self._summary.matched_sparse_product_row_covered_by_source(
+                original,
+                compare,
+                orig_row,
+                comp_row,
+                original_block,
+                compare_block,
+            ):
+                continue
             if self._summary.one_sided_summary_row_covered_by_source(original, compare, orig_row, comp_row):
+                continue
+            if self._summary.one_sided_summary_row_covered_by_malformed_source(
+                original,
+                compare,
+                orig_row,
+                comp_row,
+            ):
                 continue
             if self._summary.one_sided_product_row_covered_by_source(
                 original,

@@ -11,6 +11,7 @@ import unicodedata
 from app.services.table_compare.constants import (
     AMOUNT_TOKEN_PATTERN,
     NOISE_PATTERN,
+    SUMMARY_LABEL_PATTERN,
     TABLE_HEADERS,
     TABLE_TYPE_LABELS,
 )
@@ -179,15 +180,24 @@ def looks_like_amount_value(norm: str) -> bool:
 def is_loose_subsequence_present(token: str, source: str) -> bool:
     if len(token) < 4 or not re.search(r"[一-鿿]", token):
         return False
-    positions: list[int] = []
-    start = 0
-    for char in token:
-        index = source.find(char, start)
-        if index < 0:
-            return False
-        positions.append(index)
-        start = index + 1
-    return positions[-1] - positions[0] <= max(80, len(token) * 8)
+    max_span = max(80, len(token) * 8)
+    first_char = token[0]
+    start = source.find(first_char)
+    while start >= 0:
+        pos = start + 1
+        matched = True
+        last = start
+        for char in token[1:]:
+            index = source.find(char, pos)
+            if index < 0 or index - start > max_span:
+                matched = False
+                break
+            last = index
+            pos = index + 1
+        if matched and last - start <= max_span:
+            return True
+        start = source.find(first_char, start + 1)
+    return False
 
 
 def anchor_cell(table, row: int, col: int):
@@ -265,7 +275,6 @@ def first_unit_token(tokens: list[str]) -> str:
 
 
 def summary_labels(text: str) -> list[str]:
-    from app.services.table_compare.constants import SUMMARY_LABEL_PATTERN
     compact = normalize(text)
     if not compact:
         return []
@@ -273,7 +282,6 @@ def summary_labels(text: str) -> list[str]:
 
 
 def summary_amounts(text: str, labels: list[str] | None = None) -> list[str]:
-    from app.services.table_compare.constants import SUMMARY_LABEL_PATTERN
     raw = unicodedata.normalize("NFKC", text or "")
     for label in (summary_labels(raw) if labels is None else labels):
         raw = re.sub(loose_literal_pattern(label), " ", raw)
