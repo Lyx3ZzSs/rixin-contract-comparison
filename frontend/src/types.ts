@@ -54,11 +54,6 @@ export interface CompareResponse {
   manual_review_count?: number;
   ignored_count?: number;
   audit_item_reviews?: Record<string, AuditItemReview>;
-  compare_options?: {
-    ignore_punctuation: boolean;
-    ignore_headers_footers: boolean;
-    ignore_stamps: boolean;
-  };
   extractor_used?: string;
   parse_warnings?: string[];
   parse_warning_details?: ParseWarningDetail[];

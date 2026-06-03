@@ -158,7 +158,7 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert client.get(f"/api/compare/{task_id}/preview").status_code == 404
 
 
-def test_api_compare_persists_exclusion_options(tmp_path: Path) -> None:
+def test_api_compare_ignores_legacy_exclusion_options(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     default_task_runner.stop(wait=True)
     original_autostart = default_task_runner.autostart
@@ -189,17 +189,13 @@ def test_api_compare_persists_exclusion_options(tmp_path: Path) -> None:
     assert response.status_code == 200, response.text
     payload = response.json()
     task_id = payload["task_id"]
-    assert payload["compare_options"] == {
-        "ignore_punctuation": True,
-        "ignore_headers_footers": True,
-        "ignore_stamps": True,
-    }
+    assert "compare_options" not in payload
     task = load_task(task_id)
-    assert task.compare_options.ignore_punctuation is True
-    assert task.compare_options.ignore_headers_footers is True
-    assert task.compare_options.ignore_stamps is True
+    assert task.compare_options.ignore_punctuation is False
+    assert task.compare_options.ignore_headers_footers is False
+    assert task.compare_options.ignore_stamps is False
     job = default_task_runner.latest_job(task_id, task_type="compare")
-    assert job.payload["compare_options"] == payload["compare_options"]
+    assert "compare_options" not in job.payload
 
 
 def test_compare_progress_stream_sends_current_snapshot(tmp_path: Path) -> None:

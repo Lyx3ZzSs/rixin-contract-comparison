@@ -11,7 +11,6 @@ from app.models import (
     BBox,
     Clause,
     ClausePair,
-    CompareOptions,
     CompareTask,
     DiffItem,
     Document,
@@ -184,9 +183,8 @@ class TestClauseDiffStage:
         assert ctx.diffs == ctx.clause_diffs
         assert ctx.diffs[0].diff_type == "MODIFY"
 
-    def test_removes_punctuation_only_diffs_when_enabled(self, tmp_path: Path) -> None:
+    def test_keeps_punctuation_only_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        ctx.task.compare_options = CompareOptions(ignore_punctuation=True)
         ctx.pairs = [
             ClausePair(
                 original=make_clause("O001", "1", "甲方应付款。"),
@@ -198,12 +196,11 @@ class TestClauseDiffStage:
 
         ClauseDiffStage().execute(ctx)
 
-        assert ctx.clause_diffs == []
-        assert ctx.diffs == []
+        assert len(ctx.clause_diffs) == 1
+        assert ctx.diffs == ctx.clause_diffs
 
-    def test_keeps_non_punctuation_changes_when_punctuation_ignored(self, tmp_path: Path) -> None:
+    def test_keeps_non_punctuation_changes_with_punctuation_changes(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        ctx.task.compare_options = CompareOptions(ignore_punctuation=True)
         ctx.pairs = [
             ClausePair(
                 original=make_clause("O001", "1", "甲方应在30日内付款。"),
@@ -219,8 +216,8 @@ class TestClauseDiffStage:
         diff = ctx.diffs[0]
         assert "30" in diff.original_snippet
         assert "45" in diff.compare_snippet
-        assert "。" not in diff.original_snippet
-        assert "，" not in diff.compare_snippet
+        assert "。" in diff.original_snippet
+        assert "，" in diff.compare_snippet
 
 
 class TestClauseDiffStageMerge:
@@ -293,9 +290,8 @@ class TestPreClauseDiffStage:
         assert ctx.header_footer_diffs[0].source_type == "header_footer"
         assert all(diff.diff_id != "D001" for diff in [*ctx.metadata_diffs, *ctx.table_diffs])
 
-    def test_ignores_header_footer_diffs_when_enabled(self, tmp_path: Path) -> None:
+    def test_keeps_header_footer_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        ctx.task.compare_options = CompareOptions(ignore_headers_footers=True)
         original = make_document("正文条款一致。")
         compare = make_document("正文条款一致。")
         original.pages[0].blocks.insert(
@@ -323,13 +319,13 @@ class TestPreClauseDiffStage:
 
         PreClauseDiffStage().execute(ctx)
 
-        assert ctx.header_footer_diffs == []
-        assert all(block.block_type != "header" for block in ctx.original_extraction.document.pages[0].blocks)
-        assert all(block.block_type != "header" for block in ctx.compare_extraction.document.pages[0].blocks)
+        assert [diff.diff_id for diff in ctx.header_footer_diffs] == ["D001"]
+        assert ctx.header_footer_diffs[0].source_type == "header_footer"
+        assert any(block.block_type == "header" for block in ctx.original_extraction.document.pages[0].blocks)
+        assert any(block.block_type == "header" for block in ctx.compare_extraction.document.pages[0].blocks)
 
-    def test_ignores_stamp_diffs_when_enabled(self, tmp_path: Path) -> None:
+    def test_keeps_stamp_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        ctx.task.compare_options = CompareOptions(ignore_stamps=True)
         original = make_document("正文条款一致。")
         compare = make_document("正文条款一致。")
         original.pages[0].blocks.append(
@@ -355,9 +351,10 @@ class TestPreClauseDiffStage:
 
         PreClauseDiffStage().execute(ctx)
 
-        assert ctx.seal_diffs == []
-        assert all(block.block_type != "seal" for block in ctx.original_extraction.document.pages[0].blocks)
-        assert all(block.block_type != "seal" for block in ctx.compare_extraction.document.pages[0].blocks)
+        assert len(ctx.seal_diffs) == 1
+        assert ctx.seal_diffs[0].source_type == "seal"
+        assert any(block.block_type == "seal" for block in ctx.original_extraction.document.pages[0].blocks)
+        assert any(block.block_type == "seal" for block in ctx.compare_extraction.document.pages[0].blocks)
 
 
 class TestSummaryStage:

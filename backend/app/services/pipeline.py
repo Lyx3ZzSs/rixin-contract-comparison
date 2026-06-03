@@ -249,7 +249,6 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.compare_filename = source.compare_filename
     target.original_pdf_path = source.original_pdf_path
     target.compare_pdf_path = source.compare_pdf_path
-    target.compare_options = source.compare_options
     target.original_highlight_pdf_path = source.original_highlight_pdf_path
     target.compare_highlight_pdf_path = source.compare_highlight_pdf_path
     target.extractor_used = source.extractor_used

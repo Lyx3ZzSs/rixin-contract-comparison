@@ -17,7 +17,7 @@ describe("api client URLs", () => {
     expect(toApiUrl("https://example.test/file.pdf")).toBe("https://example.test/file.pdf");
   });
 
-  it("sends comparison exclusion options as form fields", async () => {
+  it("sends comparison files without exclusion options", async () => {
     const fetchMock = vi.fn<typeof fetch>(
       async () => new Response(JSON.stringify({ task_id: "task-1", status: "PROCESSING" }), { status: 200 }),
     );
@@ -26,17 +26,14 @@ describe("api client URLs", () => {
     await compareContracts(
       new File(["original"], "original.pdf", { type: "application/pdf" }),
       new File(["compare"], "compare.pdf", { type: "application/pdf" }),
-      {
-        ignorePunctuation: true,
-        ignoreHeadersFooters: false,
-        ignoreStamps: true,
-      },
     );
 
     const body = fetchMock.mock.calls[0][1]?.body as FormData;
-    expect(body.get("ignore_punctuation")).toBe("true");
-    expect(body.get("ignore_headers_footers")).toBe("false");
-    expect(body.get("ignore_stamps")).toBe("true");
+    expect(body.get("original_file")).toBeInstanceOf(File);
+    expect(body.get("compare_file")).toBeInstanceOf(File);
+    expect(body.has("ignore_punctuation")).toBe(false);
+    expect(body.has("ignore_headers_footers")).toBe(false);
+    expect(body.has("ignore_stamps")).toBe(false);
 
     vi.unstubAllGlobals();
   });

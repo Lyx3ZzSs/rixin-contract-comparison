@@ -34,7 +34,7 @@ describe("UploadPage", () => {
     expect(screen.getByRole("button", { name: "开始对比" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "使用示例" })).not.toBeInTheDocument();
     expect(screen.queryByText("等待上传两份 PDF 合同")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "排除对比项" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "排除对比项" })).not.toBeInTheDocument();
   });
 
   it("submits basic comparison without blocking on AI analysis", async () => {
@@ -47,11 +47,7 @@ describe("UploadPage", () => {
     await user.click(screen.getByRole("button", { name: "开始对比" }));
 
     await waitFor(() => expect(compareContracts).toHaveBeenCalled());
-    expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File), {
-      ignorePunctuation: false,
-      ignoreHeadersFooters: false,
-      ignoreStamps: false,
-    });
+    expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File));
     expect(onTaskCreated).toHaveBeenCalledWith("task-1");
     const taskNotice = screen.getByRole("status", { name: "后台对比任务通知" });
     expect(taskNotice).toHaveTextContent("后台比对已开始");
@@ -62,36 +58,6 @@ describe("UploadPage", () => {
     expect(screen.queryByText("original.pdf")).not.toBeInTheDocument();
     expect(screen.queryByText("compare.pdf")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始对比" })).toBeDisabled();
-  });
-
-  it("opens exclusion options and submits selected filters", async () => {
-    const user = userEvent.setup();
-    render(<UploadPage {...defaultProps} />);
-
-    await user.click(screen.getByRole("button", { name: "排除对比项" }));
-
-    expect(screen.getByRole("group", { name: "排除对比项" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "标点符号" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: "页眉页脚" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: "印章" })).toHaveAttribute("aria-pressed", "false");
-
-    await user.click(screen.getByRole("button", { name: "标点符号" }));
-    await user.click(screen.getByRole("button", { name: "印章" }));
-
-    expect(screen.getByRole("button", { name: "排除对比项 · 2" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "标点符号" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "印章" })).toHaveAttribute("aria-pressed", "true");
-
-    await user.upload(screen.getByLabelText("原版文件"), new File(["original"], "original.pdf", { type: "application/pdf" }));
-    await user.upload(screen.getByLabelText("新版文件"), new File(["compare"], "compare.pdf", { type: "application/pdf" }));
-    await user.click(screen.getByRole("button", { name: "开始对比" }));
-
-    await waitFor(() => expect(compareContracts).toHaveBeenCalled());
-    expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File), {
-      ignorePunctuation: true,
-      ignoreHeadersFooters: false,
-      ignoreStamps: true,
-    });
   });
 
   it("opens comparison records from the background task notice", async () => {
