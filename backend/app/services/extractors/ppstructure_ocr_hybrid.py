@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 import re
+import unicodedata
 from pathlib import Path
 
 from app.clients import HttpClientProvider, default_http_client_provider
@@ -90,8 +92,10 @@ class PPStructureOCRHybridExtractor:
         if not structure_blocks:
             return ocr_blocks
         html_tables = self._collect_html_tables(structure_blocks)
+        structure_by_id = {block.block_id: block for block in structure_blocks}
         merged = [self._attach_structure(block, structure_blocks) for block in ocr_blocks]
-        return self._consolidate_table_blocks(merged, html_tables)
+        merged = self._consolidate_table_blocks(merged, html_tables)
+        return self._consolidate_structure_text_blocks(merged, structure_by_id, set(html_tables))
 
     def _attach_structure(self, ocr_block: TextBlock, structure_blocks: list[TextBlock]) -> TextBlock:
         matched = self._best_structure_match(ocr_block.bbox, structure_blocks)
@@ -212,6 +216,160 @@ class PPStructureOCRHybridExtractor:
             offset += len(text) + 1
 
         return "\n".join(parts), char_boxes
+
+    def _consolidate_structure_text_blocks(
+        self,
+        blocks: list[TextBlock],
+        structure_blocks: dict[str, TextBlock],
+        table_layout_ids: set[str],
+    ) -> list[TextBlock]:
+        text_children: dict[str, list[TextBlock]] = {}
+        for block in blocks:
+            layout_id = block.layout_block_id
+            if not layout_id or layout_id in table_layout_ids:
+                continue
+            structure_block = structure_blocks.get(layout_id)
+            if structure_block is None or not self._is_replaceable_structure_text(structure_block):
+                continue
+            text_children.setdefault(layout_id, []).append(block)
+
+        replacements: dict[str, TextBlock] = {}
+        for layout_id, children in text_children.items():
+            structure_block = structure_blocks[layout_id]
+            replacement = self._structure_text_replacement(structure_block, children)
+            if replacement is not None:
+                replacements[layout_id] = replacement
+
+        if not replacements:
+            return blocks
+
+        seen: set[str] = set()
+        result: list[TextBlock] = []
+        for block in blocks:
+            layout_id = block.layout_block_id
+            replacement = replacements.get(layout_id)
+            if replacement is None:
+                result.append(block)
+                continue
+            if layout_id in seen:
+                continue
+            seen.add(layout_id)
+            result.append(replacement)
+        return result
+
+    def _structure_text_replacement(self, structure_block: TextBlock, children: list[TextBlock]) -> TextBlock | None:
+        structure_text = unicodedata.normalize("NFKC", structure_block.text or "").strip()
+        if not structure_text:
+            return None
+        ordered_children = self._ordered_text_children_for_structure(structure_block, children)
+        ocr_text = "\n".join(block.text.strip() for block in ordered_children if block.text.strip())
+        if not self._should_trust_structure_text(structure_text, ocr_text):
+            return None
+
+        return ordered_children[0].model_copy(
+            update={
+                "block_id": ordered_children[0].block_id,
+                "text": structure_text,
+                "bbox": structure_block.bbox,
+                "block_type": self._normalize_block_type(structure_block.block_type) or "text",
+                "layout_block_id": structure_block.block_id,
+                "layout_order": self._layout_order(structure_block.block_id),
+                "layout_bbox": structure_block.bbox,
+                "confidence": structure_block.confidence,
+                "source": "ppstructure_text",
+                "char_boxes": self._estimate_structure_char_boxes(structure_text, structure_block.bbox, structure_block.page_no),
+            }
+        )
+
+    def _ordered_text_children_for_structure(self, structure_block: TextBlock, children: list[TextBlock]) -> list[TextBlock]:
+        if self._is_single_line_structure_block(structure_block, children):
+            return sorted(children, key=lambda block: (block.bbox.x0, block.bbox.y0, block.block_id))
+        return children
+
+    def _is_single_line_structure_block(self, structure_block: TextBlock, children: list[TextBlock]) -> bool:
+        if not children:
+            return False
+        structure_height = structure_block.bbox.y1 - structure_block.bbox.y0
+        child_heights = sorted(max(0.0, block.bbox.y1 - block.bbox.y0) for block in children)
+        median_child_height = child_heights[len(child_heights) // 2] if child_heights else 0.0
+        return structure_height <= max(24.0, median_child_height * 2.0)
+
+    def _should_trust_structure_text(self, structure_text: str, ocr_text: str) -> bool:
+        structure_norm = self._compact_text_for_repair(structure_text)
+        ocr_norm = self._compact_text_for_repair(ocr_text)
+        if not structure_norm or not ocr_norm or structure_norm == ocr_norm:
+            return False
+        if min(len(structure_norm), len(ocr_norm)) < 8:
+            return False
+        similarity = SequenceMatcher(None, structure_norm, ocr_norm).ratio()
+        if similarity < 0.92:
+            return False
+        return (
+            self._is_delivery_date_structure_correction(structure_norm, ocr_norm)
+            or self._only_confusable_text_differences(structure_norm, ocr_norm)
+        )
+
+    @staticmethod
+    def _is_delivery_date_structure_correction(structure_norm: str, ocr_norm: str) -> bool:
+        return bool(
+            re.search(r"交货日期\d{4}年.*月.*日交货", structure_norm)
+            and re.search(r"交货日期\d{4}年.*月.*且交货", ocr_norm)
+        )
+
+    @staticmethod
+    def _only_confusable_text_differences(structure_norm: str, ocr_norm: str) -> bool:
+        if len(structure_norm) != len(ocr_norm):
+            return False
+        confusables = {
+            ("且", "日"),
+            ("目", "日"),
+            ("曰", "日"),
+            ("口", "日"),
+        }
+        differences = [
+            (ocr_char, structure_char)
+            for structure_char, ocr_char in zip(structure_norm, ocr_norm, strict=True)
+            if structure_char != ocr_char
+        ]
+        return 0 < len(differences) <= 2 and all(pair in confusables for pair in differences)
+
+    @staticmethod
+    def _compact_text_for_repair(text: str) -> str:
+        text = unicodedata.normalize("NFKC", text or "")
+        return re.sub(r"[\s，。；：、“”‘’（）()\[\]【】《》,.!?:;\"']+", "", text)
+
+    def _is_replaceable_structure_text(self, block: TextBlock) -> bool:
+        block_type = self._normalize_block_type(block.block_type)
+        return block_type in {"text", "paragraph", "content", "list", "reference"}
+
+    @staticmethod
+    def _estimate_structure_char_boxes(text: str, bbox: BBox, page_no: int) -> list[CharBox]:
+        lines = text.splitlines() or [text]
+        line_count = max(1, len(lines))
+        line_height = max(1.0, (bbox.y1 - bbox.y0) / line_count)
+        char_boxes: list[CharBox] = []
+        text_index = 0
+        for line_index, line in enumerate(lines):
+            if line_index > 0:
+                text_index += 1
+            visible_count = max(1, len(line))
+            char_width = max(1.0, bbox.x1 - bbox.x0) / visible_count
+            y0 = bbox.y0 + line_index * line_height
+            y1 = min(bbox.y1, y0 + line_height)
+            for char_index, char in enumerate(line):
+                x0 = bbox.x0 + char_index * char_width
+                x1 = bbox.x0 + (char_index + 1) * char_width
+                if not char.isspace():
+                    char_boxes.append(
+                        CharBox(
+                            char=char,
+                            page_no=page_no,
+                            bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1),
+                            text_index=text_index,
+                        )
+                    )
+                text_index += 1
+        return char_boxes
 
     def _normalize_block_type(self, block_type: str) -> str:
         value = (block_type or "").strip().lower()

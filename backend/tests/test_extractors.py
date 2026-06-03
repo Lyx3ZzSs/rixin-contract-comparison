@@ -376,6 +376,148 @@ def test_ppstructure_ocr_hybrid_preserves_all_table_ocr_char_boxes() -> None:
     assert blocks[0].char_boxes[4].text_index == len("签订日期") + 1
 
 
+def test_ppstructure_ocr_hybrid_repairs_confusable_text_from_structure_line() -> None:
+    class FakeStructureExtractor:
+        def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+            return ExtractionResult(
+                document=Document(
+                    filename="scan.pdf",
+                    path="scan.pdf",
+                    page_count=1,
+                    pages=[
+                        Page(
+                            page_no=1,
+                            width=600,
+                            height=800,
+                            blocks=[
+                                TextBlock(
+                                    block_id="p1_ppstructure_b1",
+                                    page_no=1,
+                                    text="交货日期：2026年月日交货",
+                                    bbox=BBox(x0=80, y0=100, x1=290, y1=120),
+                                    block_type="text",
+                                ),
+                            ],
+                        )
+                    ],
+                ),
+                extractor_used="ppstructure",
+            )
+
+    class FakeOCRExtractor:
+        def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+            return ExtractionResult(
+                document=Document(
+                    filename="scan.pdf",
+                    path="scan.pdf",
+                    page_count=1,
+                    pages=[
+                        Page(
+                            page_no=1,
+                            width=600,
+                            height=800,
+                            blocks=[
+                                TextBlock(
+                                    block_id="p1_ocr_b1",
+                                    page_no=1,
+                                    text="且交货",
+                                    bbox=BBox(x0=245, y0=99, x1=285, y1=119),
+                                    block_type="ocr_line",
+                                ),
+                                TextBlock(
+                                    block_id="p1_ocr_b2",
+                                    page_no=1,
+                                    text="交货日期：2026年",
+                                    bbox=BBox(x0=80, y0=101, x1=190, y1=119),
+                                    block_type="ocr_line",
+                                ),
+                                TextBlock(
+                                    block_id="p1_ocr_b3",
+                                    page_no=1,
+                                    text="月",
+                                    bbox=BBox(x0=205, y0=101, x1=220, y1=119),
+                                    block_type="ocr_line",
+                                ),
+                            ],
+                        )
+                    ],
+                ),
+                extractor_used="ppocrv5",
+            )
+
+    result = PPStructureOCRHybridExtractor(FakeStructureExtractor(), FakeOCRExtractor()).extract("scan.pdf")
+
+    blocks = result.document.pages[0].blocks
+    assert len(blocks) == 1
+    assert blocks[0].text == "交货日期:2026年月日交货"
+    assert blocks[0].source == "ppstructure_text"
+    assert "且交货" not in blocks[0].text
+    assert [box.char for box in blocks[0].char_boxes] == list(blocks[0].text)
+
+
+def test_ppstructure_ocr_hybrid_does_not_replace_substantially_different_text() -> None:
+    class FakeStructureExtractor:
+        def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+            return ExtractionResult(
+                document=Document(
+                    filename="scan.pdf",
+                    path="scan.pdf",
+                    page_count=1,
+                    pages=[
+                        Page(
+                            page_no=1,
+                            width=600,
+                            height=800,
+                            blocks=[
+                                TextBlock(
+                                    block_id="p1_ppstructure_b1",
+                                    page_no=1,
+                                    text="交货日期：2026年月日交货",
+                                    bbox=BBox(x0=80, y0=100, x1=320, y1=120),
+                                    block_type="text",
+                                ),
+                            ],
+                        )
+                    ],
+                ),
+                extractor_used="ppstructure",
+            )
+
+    class FakeOCRExtractor:
+        def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+            return ExtractionResult(
+                document=Document(
+                    filename="scan.pdf",
+                    path="scan.pdf",
+                    page_count=1,
+                    pages=[
+                        Page(
+                            page_no=1,
+                            width=600,
+                            height=800,
+                            blocks=[
+                                TextBlock(
+                                    block_id="p1_ocr_b1",
+                                    page_no=1,
+                                    text="交货日期：2026年月15日交货",
+                                    bbox=BBox(x0=80, y0=101, x1=310, y1=119),
+                                    block_type="ocr_line",
+                                ),
+                            ],
+                        )
+                    ],
+                ),
+                extractor_used="ppocrv5",
+            )
+
+    result = PPStructureOCRHybridExtractor(FakeStructureExtractor(), FakeOCRExtractor()).extract("scan.pdf")
+
+    blocks = result.document.pages[0].blocks
+    assert len(blocks) == 1
+    assert blocks[0].text == "交货日期：2026年月15日交货"
+    assert blocks[0].source != "ppstructure_text"
+
+
 def test_ppstructure_ocr_hybrid_falls_back_to_ppocrv5_when_structure_fails() -> None:
     class FailingStructureExtractor:
         def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:

@@ -256,6 +256,37 @@ class TestStructuredTableComparison:
         diffs, warnings = TableComparator().build_diffs(orig, comp)
         assert diffs == []
 
+    def test_contextual_box_character_in_interface_is_filtered_as_ocr_noise(self):
+        orig_html = _product_table([
+            "<tr><td>5</td><td>通信应用接 口</td><td>功率预测系统与其相关联系统通信接口开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+        comp_html = _product_table([
+            "<tr><td>5</td><td>通信应用接 □</td><td>功率预测系统与其相关联系统通信接口开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, orig_html)]),
+            _make_doc([_make_table_block("c1", 1, comp_html)]),
+        )
+
+        assert warnings == []
+        assert diffs == []
+
+    def test_standalone_box_character_change_is_not_filtered_as_interface_ocr_noise(self):
+        orig_html = '<table><tr><td>选项</td><td>□ 是</td></tr></table>'
+        comp_html = '<table><tr><td>选项</td><td>口 是</td></tr></table>'
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, orig_html)]),
+            _make_doc([_make_table_block("c1", 1, comp_html)]),
+        )
+
+        assert warnings == []
+        assert len(diffs) == 1
+        assert diffs[0].diff_type == "MODIFY"
+
     def test_high_similarity_business_change_is_not_filtered(self):
         original_html = '<table><tr><td>签订日期</td><td>2026年4月 日</td></tr></table>'
         compare_html = '<table><tr><td>签订日期</td><td>2026年4月21日</td></tr></table>'

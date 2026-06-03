@@ -242,6 +242,8 @@ class TableMatcher:
     def is_similar_ocr_noise(self, orig_norm: str, comp_norm: str, cell_similarity_threshold: float = 0.85) -> bool:
         if not orig_norm or not comp_norm:
             return False
+        if self._has_contextual_box_or_kou_noise(orig_norm, comp_norm):
+            return True
         if SequenceMatcher(None, orig_norm, comp_norm).ratio() < cell_similarity_threshold:
             return False
         orig_fold = utils.punctuation_fold(orig_norm)
@@ -267,8 +269,44 @@ class TableMatcher:
                 return True
         if tag == "replace" and len(left_delta) == len(right_delta) == 1:
             ambiguous_groups = ({"0", "o", "O"}, {"1", "l", "I", "|"})
-            return any(left_delta in group and right_delta in group for group in ambiguous_groups)
+            if any(left_delta in group and right_delta in group for group in ambiguous_groups):
+                return True
+            if self._is_contextual_box_or_kou_noise(orig_norm, comp_norm, i1, j1):
+                return True
         return False
+
+    @staticmethod
+    def _has_contextual_box_or_kou_noise(orig_norm: str, comp_norm: str) -> bool:
+        if len(orig_norm) != len(comp_norm):
+            return False
+        opcodes = [
+            opcode for opcode in SequenceMatcher(None, orig_norm, comp_norm).get_opcodes()
+            if opcode[0] != "equal"
+        ]
+        if len(opcodes) != 1:
+            return False
+        tag, i1, i2, j1, j2 = opcodes[0]
+        if tag != "replace" or i2 - i1 != 1 or j2 - j1 != 1:
+            return False
+        return TableMatcher._is_contextual_box_or_kou_noise(orig_norm, comp_norm, i1, j1)
+
+    @staticmethod
+    def _is_contextual_box_or_kou_noise(orig_norm: str, comp_norm: str, orig_index: int, comp_index: int) -> bool:
+        left_delta = orig_norm[orig_index]
+        right_delta = comp_norm[comp_index]
+        if {left_delta, right_delta} != {"口", "□"}:
+            return False
+        if len(orig_norm) != len(comp_norm):
+            return False
+
+        source = orig_norm if left_delta == "口" else comp_norm
+        index = orig_index if left_delta == "口" else comp_index
+        before = source[index - 1] if index > 0 else ""
+        after = source[index + 1] if index + 1 < len(source) else ""
+        context = f"{before}口{after}"
+        known_word_noise = any(word in context for word in ("接口", "端口", "窗口", "开口", "网口"))
+        chinese_context = bool(before and "\u4e00" <= before <= "\u9fff") or bool(after and "\u4e00" <= after <= "\u9fff")
+        return known_word_noise or (len(source) >= 4 and chinese_context)
 
     def is_short_text_fragment(
         self,
