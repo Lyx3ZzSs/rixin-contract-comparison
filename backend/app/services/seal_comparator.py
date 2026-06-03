@@ -5,11 +5,20 @@ Compares seal blocks between two documents and produces diffs with
 """
 from __future__ import annotations
 
-from app.models import DiffItem, Document, EvidenceBox, TextBlock, TextRange
+from dataclasses import dataclass
+
+from app.models import BBox, DiffItem, Document, EvidenceBox, TextBlock, TextRange
 from app.utils.id_utils import generate_diff_id
 
 
 SEAL_BLOCK_TYPES = {"seal", "stamp", "signature"}
+
+
+@dataclass(frozen=True)
+class SealEntry:
+    page_no: int
+    text: str
+    bbox: BBox
 
 
 def build_seal_diffs(
@@ -47,22 +56,29 @@ def build_seal_diffs(
     return diffs
 
 
-def _collect_seals(document: Document) -> list[TextBlock]:
-    """Collect all seal blocks, grouped by page, sorted by y then x."""
-    seals = [
-        block
-        for page in document.pages
-        for block in page.blocks
-        if (block.block_type or "").lower() in SEAL_BLOCK_TYPES
-    ]
-    seals.sort(key=lambda b: (b.page_no, b.bbox.y0, b.bbox.x0))
-    return seals
+def _collect_seals(document: Document) -> list[SealEntry]:
+    """Collect seal regions, merging OCR fragments that share one layout region."""
+    grouped: dict[tuple[int, tuple[float, float, float, float] | str], list[TextBlock]] = {}
+    for page in document.pages:
+        for block in page.blocks:
+            if (block.block_type or "").lower() not in SEAL_BLOCK_TYPES:
+                continue
+            key: tuple[int, tuple[float, float, float, float] | str]
+            if block.layout_bbox is not None:
+                key = (block.page_no, _bbox_key(block.layout_bbox))
+            else:
+                key = (block.page_no, block.block_id)
+            grouped.setdefault(key, []).append(block)
+
+    entries = [_seal_entry(blocks) for blocks in grouped.values()]
+    entries.sort(key=lambda entry: (entry.page_no, entry.bbox.y0, entry.bbox.x0))
+    return entries
 
 
 def _match_seals(
-    original: list[TextBlock],
-    compare: list[TextBlock],
-) -> list[tuple[TextBlock | None, TextBlock | None]]:
+    original: list[SealEntry],
+    compare: list[SealEntry],
+) -> list[tuple[SealEntry | None, SealEntry | None]]:
     """Match seal blocks by page position.
 
     Seals on the same page are paired by positional order (left-to-right,
@@ -70,15 +86,15 @@ def _match_seals(
     """
     from collections import defaultdict
 
-    orig_by_page: dict[int, list[TextBlock]] = defaultdict(list)
-    comp_by_page: dict[int, list[TextBlock]] = defaultdict(list)
+    orig_by_page: dict[int, list[SealEntry]] = defaultdict(list)
+    comp_by_page: dict[int, list[SealEntry]] = defaultdict(list)
     for s in original:
         orig_by_page[s.page_no].append(s)
     for s in compare:
         comp_by_page[s.page_no].append(s)
 
     all_pages = sorted(set(orig_by_page) | set(comp_by_page))
-    pairs: list[tuple[TextBlock | None, TextBlock | None]] = []
+    pairs: list[tuple[SealEntry | None, SealEntry | None]] = []
     for page_no in all_pages:
         o_list = orig_by_page.get(page_no, [])
         c_list = comp_by_page.get(page_no, [])
@@ -90,39 +106,75 @@ def _match_seals(
     return pairs
 
 
-def _build_add(block: TextBlock, index: int) -> DiffItem:
-    text = block.text.strip()
+def _seal_entry(blocks: list[TextBlock]) -> SealEntry:
+    blocks = sorted(blocks, key=lambda block: (block.page_no, block.bbox.y0, block.bbox.x0, block.block_id))
+    first = blocks[0]
+    bbox = first.layout_bbox or _union_bbox([block.bbox for block in blocks])
+    return SealEntry(
+        page_no=first.page_no,
+        text=_merge_text(blocks),
+        bbox=bbox,
+    )
+
+
+def _bbox_key(bbox: BBox) -> tuple[float, float, float, float]:
+    return round(bbox.x0, 2), round(bbox.y0, 2), round(bbox.x1, 2), round(bbox.y1, 2)
+
+
+def _union_bbox(bboxes: list[BBox]) -> BBox:
+    return BBox(
+        x0=min(bbox.x0 for bbox in bboxes),
+        y0=min(bbox.y0 for bbox in bboxes),
+        x1=max(bbox.x1 for bbox in bboxes),
+        y1=max(bbox.y1 for bbox in bboxes),
+    )
+
+
+def _merge_text(blocks: list[TextBlock]) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+    for block in blocks:
+        text = block.text.strip()
+        if not text or text in seen:
+            continue
+        parts.append(text)
+        seen.add(text)
+    return " ".join(parts)
+
+
+def _build_add(entry: SealEntry, index: int) -> DiffItem:
+    text = entry.text
     return DiffItem(
         diff_id=generate_diff_id(index),
         diff_type="ADD",
-        title=f"印章区域（第{block.page_no}页）",
+        title=f"印章区域（第{entry.page_no}页）",
         compare_text=text,
         compare_snippet=text,
-        readable_change=f"新增印章：{text}" if text else f"新增印章区域（第{block.page_no}页）",
+        readable_change=f"新增印章：{text}" if text else f"新增印章区域（第{entry.page_no}页）",
         source_type="seal",
-        compare_evidence=[_region_evidence(block, "ADD")],
+        compare_evidence=[_region_evidence(entry, "ADD")],
         compare_change_ranges=[TextRange(start=0, end=len(text), highlight_type="ADD")] if text else [],
     )
 
 
-def _build_delete(block: TextBlock, index: int) -> DiffItem:
-    text = block.text.strip()
+def _build_delete(entry: SealEntry, index: int) -> DiffItem:
+    text = entry.text
     return DiffItem(
         diff_id=generate_diff_id(index),
         diff_type="DELETE",
-        title=f"印章区域（第{block.page_no}页）",
+        title=f"印章区域（第{entry.page_no}页）",
         original_text=text,
         original_snippet=text,
-        readable_change=f"删除印章：{text}" if text else f"删除印章区域（第{block.page_no}页）",
+        readable_change=f"删除印章：{text}" if text else f"删除印章区域（第{entry.page_no}页）",
         source_type="seal",
-        original_evidence=[_region_evidence(block, "DELETE")],
+        original_evidence=[_region_evidence(entry, "DELETE")],
         original_change_ranges=[TextRange(start=0, end=len(text), highlight_type="DELETE")] if text else [],
     )
 
 
-def _build_modify(orig: TextBlock, comp: TextBlock, index: int) -> DiffItem | None:
-    orig_text = orig.text.strip()
-    comp_text = comp.text.strip()
+def _build_modify(orig: SealEntry, comp: SealEntry, index: int) -> DiffItem | None:
+    orig_text = orig.text
+    comp_text = comp.text
     if orig_text == comp_text:
         return None
 
@@ -143,13 +195,13 @@ def _build_modify(orig: TextBlock, comp: TextBlock, index: int) -> DiffItem | No
     )
 
 
-def _region_evidence(block: TextBlock, highlight_type: str) -> EvidenceBox:
-    """Create a single region-level evidence box for a seal block."""
+def _region_evidence(entry: SealEntry, highlight_type: str) -> EvidenceBox:
+    """Create a single region-level evidence box for a seal region."""
     return EvidenceBox(
-        page_no=block.page_no,
-        bbox=block.bbox,
+        page_no=entry.page_no,
+        bbox=entry.bbox,
         method="seal_region",
-        text=block.text.strip()[:300],
+        text=entry.text[:300],
         highlight_type=highlight_type,
         confidence=0.9,
         evidence_quality="HIGH",
