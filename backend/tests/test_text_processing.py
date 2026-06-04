@@ -764,6 +764,60 @@ def test_cover_metadata_compares_cover_fields_without_title_false_positive() -> 
     assert date_diff.compare_evidence == []
 
 
+def test_cover_metadata_treats_sign_time_as_sign_date_alias() -> None:
+    def doc(name: str, sign_time: str) -> Document:
+        return Document(
+            filename=f"{name}.pdf",
+            path=f"{name}.pdf",
+            page_count=2,
+            pages=[
+                Page(
+                    page_no=1,
+                    width=595,
+                    height=842,
+                    blocks=[
+                        TextBlock(
+                            block_id=f"{name}_place",
+                            page_no=1,
+                            text="签订地点：青海西宁",
+                            bbox=BBox(x0=380, y0=140, x1=515, y1=158),
+                        ),
+                        TextBlock(
+                            block_id=f"{name}_time",
+                            page_no=1,
+                            text=f"签订时间：{sign_time}",
+                            bbox=BBox(x0=380, y0=166, x1=520, y1=184),
+                        ),
+                    ],
+                ),
+                Page(
+                    page_no=2,
+                    width=595,
+                    height=842,
+                    blocks=[
+                        TextBlock(
+                            block_id=f"{name}_body",
+                            page_no=2,
+                            text="一、产品名称、型号、数量、金额、供货时间：",
+                            bbox=BBox(x0=80, y0=80, x1=420, y1=110),
+                        )
+                    ],
+                ),
+            ],
+        )
+
+    original = doc("original", "年月日")
+    compare = doc("compare", "2026年5月22日")
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    date_diff = next(diff for diff in diffs if diff.title == "封面字段：签订日期")
+    assert date_diff.diff_type == "MODIFY"
+    assert date_diff.original_text == "年月日"
+    assert date_diff.compare_text == "2026年5月22日"
+    assert not any(diff.title == "封面额外文本" and "签订时间" in (diff.original_text + diff.compare_text) for diff in diffs)
+
+
 def test_cover_metadata_joins_split_same_line_date_and_marks_deleted_day() -> None:
     original = Document(
         filename="original.pdf",

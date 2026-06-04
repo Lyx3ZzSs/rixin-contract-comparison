@@ -587,7 +587,10 @@ class TableRepairService:
             sequence = self._row_sequence_int(row)
             if sequence is not None:
                 return sequence
-            if self._summary_label_from_row(row) or self._section_title_from_cells(row.cells, len(row.cells)):
+            if (
+                self._row_looks_like_summary(row, len(row.cells))
+                or self._section_title_from_cells(row.cells, len(row.cells))
+            ):
                 return None
         return None
 
@@ -640,7 +643,7 @@ class TableRepairService:
     def _is_product_continuation_row(self, row: _LogicalRow, col_count: int) -> bool:
         if self._row_sequence_int(row) is not None:
             return False
-        if self._summary_label_from_row(row) or self._section_title_from_cells(row.cells, col_count):
+        if self._row_looks_like_summary(row, col_count) or self._section_title_from_cells(row.cells, col_count):
             return False
         nonempty = [cell for cell in row.cells if utils.normalize(cell.text)]
         if not nonempty or len(nonempty) > 3:
@@ -1415,7 +1418,7 @@ class TableRepairService:
         amount_cell: _LogicalCell | None = None
 
         for cell in row.cells:
-            cell_labels = utils.summary_labels_from_summary_text(cell.text)
+            cell_labels = self._summary_labels_from_text(cell.text)
             if cell_labels:
                 labels.extend(cell_labels)
                 label_cell = label_cell or cell
@@ -1461,7 +1464,7 @@ class TableRepairService:
 
         label_cells = [
             cell for cell in nonempty
-            if utils.summary_labels_from_summary_text(cell.text)
+            if self._summary_labels_from_text(cell.text)
         ]
         if not label_cells:
             return False
@@ -1479,6 +1482,51 @@ class TableRepairService:
 
         return len(nonempty) <= 3 or any(cell.colspan >= max(2, col_count - 2) for cell in label_cells)
 
+    def _row_looks_like_summary(self, row: _LogicalRow, col_count: int) -> bool:
+        nonempty = [cell for cell in row.cells if utils.normalize(cell.text)]
+        if not nonempty:
+            return False
+        if self._row_sequence_from_cells(row.cells) and len(nonempty) >= 4:
+            return False
+
+        label_cells = [cell for cell in nonempty if self._summary_labels_from_text(cell.text)]
+        if not label_cells:
+            return False
+
+        combined_text = " ".join(cell.text for cell in nonempty)
+        has_amount = bool(utils.summary_amounts(combined_text, labels=[]))
+        has_chinese_amount = self._has_chinese_amount_text(combined_text)
+        if not has_amount and not has_chinese_amount:
+            return False
+
+        return len(nonempty) <= 3 or any(cell.colspan >= max(2, col_count - 3) for cell in label_cells)
+
+    def _summary_labels_from_text(self, text: str) -> list[str]:
+        labels = utils.summary_labels_from_summary_text(text)
+        if labels:
+            return labels
+        if not self._looks_like_broad_summary_text(text):
+            return []
+        return utils.summary_labels(text)
+
+    def _looks_like_broad_summary_text(self, text: str) -> bool:
+        labels = utils.summary_labels(text)
+        if not labels:
+            return False
+        compact = utils.normalize(text)
+        if not compact:
+            return False
+        if utils.summary_amounts(text, labels=labels):
+            return True
+        if self._has_chinese_amount_text(text):
+            return True
+        return any(token in compact for token in ("人民币金额", "含税价", "大写"))
+
+    @staticmethod
+    def _has_chinese_amount_text(text: str) -> bool:
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
+        return bool(re.search(r"[壹贰叁肆伍陆柒捌玖拾佰仟万亿圆元整]{2,}", compact))
+
     def _virtual_cell(self, source: _LogicalCell, row_index: int, col_index: int, text: str) -> _LogicalCell:
         return _LogicalCell(
             row_index=row_index,
@@ -1495,16 +1543,15 @@ class TableRepairService:
 
     def _summary_label_from_row(self, row: _LogicalRow) -> str:
         for cell in row.cells:
-            labels = utils.summary_labels_from_summary_text(cell.text)
+            labels = self._summary_labels_from_text(cell.text)
             if labels:
                 return labels[0]
         return ""
 
     def _summary_amount_from_row(self, row: _LogicalRow) -> str:
         for cell in row.cells:
-            if utils.summary_labels_from_summary_text(cell.text):
-                continue
-            amounts = utils.summary_amounts(cell.text)
+            labels = self._summary_labels_from_text(cell.text)
+            amounts = utils.summary_amounts(cell.text, labels=labels) if labels else utils.summary_amounts(cell.text)
             if amounts:
                 return amounts[0]
         return ""

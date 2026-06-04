@@ -1,5 +1,7 @@
 from app.models import BBox, CharBox, Document, Page, TextBlock
 from app.services.table_compare import TableComparator
+from app.services.table_compare.parser import LogicalTableParser
+from app.services.table_compare.repair import TableRepairService
 
 
 def _make_table_block(block_id: str, page_no: int, html: str, bbox: BBox | None = None) -> TextBlock:
@@ -50,6 +52,216 @@ def _product_row(seq: str, name: str, amount: str = "100") -> str:
     return (
         f"<tr><td>{seq}</td><td>{name}</td><td>{name}配置</td><td>国能日新</td>"
         f"<td>套</td><td>1</td><td>{amount}</td><td>{amount}</td><td></td></tr>"
+    )
+
+
+def _quote_table(rows: list[str]) -> str:
+    header = (
+        "<tr><td>序号</td><td>名称</td><td>型号规格</td><td>单位</td><td>数量</td>"
+        "<td>单价</td><td>总金额</td><td>税率</td><td>备注</td><td>质保期</td><td>交付期</td></tr>"
+    )
+    return "<table>" + header + "".join(rows) + "</table>"
+
+
+def _service_table() -> str:
+    return (
+        "<table>"
+        "<tr><td>序号</td><td>项目</td><td>内容</td><td>数量</td><td>单位</td>"
+        "<td>生产厂家</td><td>单价</td><td>总价</td><td>备注</td></tr>"
+        "<tr><td>1</td><td>数值气象服务</td><td>每日提供高精度数值天气预报。</td>"
+        "<td>0.5</td><td>项</td><td>国能日新</td><td>60000</td><td>60000</td>"
+        "<td>以后每年服务费5万圆整</td></tr>"
+        "<tr><td>2</td><td>功率预测服务</td><td>提供后期数据库更新升级服务。</td>"
+        "<td>0.5</td><td>项</td><td></td><td></td><td></td><td></td></tr>"
+        "<tr><td>3</td><td>日常维护服务</td><td>每天都有专人负责，提供实时更新服务。</td>"
+        "<td>0.5</td><td>项</td><td></td><td></td><td></td><td></td></tr>"
+        "<tr><td></td><td></td><td>提供7×24小时日常维护及售后服务。</td>"
+        "<td>0.5</td><td>项</td><td></td><td></td><td></td><td></td></tr>"
+        "<tr><td>总价</td><td colspan='8'>大写：陆万元整 (¥60000元)</td></tr>"
+        "</table>"
+    )
+
+
+def _product_restart_continuation_table() -> str:
+    header = (
+        "<tr><td>序号</td><td>产品名称</td><td>详细配置</td><td>品牌</td>"
+        "<td>单位</td><td>数量</td><td>单价</td><td>金额</td><td>备注</td></tr>"
+    )
+    subtotal_rows = (
+        "<tr><td>1</td><td>国产操作系统</td><td>国产操作系统</td><td>凝思</td>"
+        "<td>套</td><td>3</td><td>4000</td><td>12000</td><td></td></tr>"
+        "<tr><td>小计</td><td colspan='6'></td><td>12000</td><td></td></tr>"
+        "<tr><td>1套总计</td><td colspan='6'></td><td>99000</td><td></td></tr>"
+        "<tr><td>4套合计</td><td colspan='6'></td><td>396000</td><td></td></tr>"
+    )
+    restarted_section = (
+        "<tr><td>1</td><td>预测服务器</td><td>14020R双电</td><td>航天联志</td>"
+        "<td>台</td><td>1</td><td>8500</td><td>8500</td><td></td></tr>"
+        "<tr><td>2</td><td>气象服务器</td><td>14020R双电</td><td>航天联志</td>"
+        "<td>台</td><td>1</td><td>8500</td><td>8500</td><td></td></tr>"
+    )
+    return "<table>" + subtotal_rows + header + restarted_section + "</table>"
+
+
+def _product_table_with_quote_remarks(days: str = "30") -> str:
+    return (
+        "<table>"
+        "<tr><td>序号</td><td>产品名称</td><td>详细配置</td><td>品牌</td>"
+        "<td>单位</td><td>数量</td><td>单价</td><td>金额</td><td>备注</td></tr>"
+        "<tr><td>1</td><td>功率预测服务器</td><td>H540-G30</td><td>中科可控</td>"
+        "<td>台</td><td>1</td><td>26000</td><td>26000</td><td>国产芯片</td></tr>"
+        "<tr><td>合计</td><td colspan='7'>26000</td><td></td></tr>"
+        f"<tr><td>备注：①本报价有效期为{days}天；税率13%</td>"
+        "<td colspan='8'>②本报价设备质保期为12个月；</td></tr>"
+        "<tr><td colspan='9'>③我公司保留对于报价和产品的最终解释权。</td></tr>"
+        "</table>"
+    )
+
+
+def _product_table_without_quote_remarks() -> str:
+    return (
+        "<table>"
+        "<tr><td>序号</td><td>产品名称</td><td>详细配置</td><td>品牌</td>"
+        "<td>单位</td><td>数量</td><td>单价</td><td>金额</td><td>备注</td></tr>"
+        "<tr><td>1</td><td>功率预测服务器</td><td>H540-G30</td><td>中科可控</td>"
+        "<td>台</td><td>1</td><td>26000</td><td>26000</td><td>国产芯片</td></tr>"
+        "<tr><td>合计</td><td colspan='7'>26000</td><td></td></tr>"
+        "</table>"
+    )
+
+
+def _standalone_quote_remarks_table(days: str = "30") -> str:
+    return (
+        "<table>"
+        f"<tr><td>备注：①本报价有效期为{days}天；税率13%</td></tr>"
+        "<tr><td>②本报价设备质保期为12个月；</td></tr>"
+        "<tr><td>③我公司保留对于报价和产品的最终解释权。</td></tr>"
+        "</table>"
+    )
+
+
+def _product_table_with_split_quote_remarks() -> str:
+    return (
+        "<table>"
+        "<tr><td>序号</td><td>产品名称</td><td>详细配置</td><td>品牌</td>"
+        "<td>单位</td><td>数量</td><td>单价</td><td>金额</td><td>备注</td></tr>"
+        "<tr><td>1</td><td>技术维护服务费</td><td>数值天气预报</td><td>国能日新</td>"
+        "<td>套</td><td>1</td><td>29500</td><td>29500</td><td></td></tr>"
+        "<tr><td>1套总计 四套合计</td><td>备注</td>"
+        "<td colspan='7'>1、本报价有效期为30天； 2、本报价设备质保期为12个月；</td></tr>"
+        "<tr><td colspan='9'>3、我公司保留对于报价和产品的最终解释权。</td></tr>"
+        "</table>"
+    )
+
+
+def _product_table_with_merged_quote_remarks() -> str:
+    return (
+        "<table>"
+        "<tr><td>序号</td><td>产品名称</td><td>详细配置</td><td>品牌</td>"
+        "<td>单位</td><td>数量</td><td>单价</td><td>金额</td><td>备注</td></tr>"
+        "<tr><td>1</td><td>技术维护服务费</td><td>数值天气预报</td><td>国能日新</td>"
+        "<td>套</td><td>1</td><td>29500</td><td>29500</td><td></td></tr>"
+        "<tr><td>1套总计</td><td colspan='7'>29500</td><td></td></tr>"
+        "<tr><td>四套合计</td><td colspan='7'>118000</td><td></td></tr>"
+        "<tr><td colspan='9'>备注 1、本报价有效期为30天； "
+        "2、本报价设备质保期为12个月； 3、我公司保留对于报价和产品的最终解释权。</td></tr>"
+        "</table>"
+    )
+
+
+def _hardware_table_with_remark(remark: str = "国产芯片", amount: str = "20000") -> str:
+    return (
+        "<table>"
+        "<tr><td>序号</td><td>名称</td><td>型号</td><td>单位</td><td>数量</td>"
+        "<td>产地</td><td>生产厂家</td><td>单价</td><td>总价</td><td>备注</td></tr>"
+        f"<tr><td>3</td><td>工作站</td><td>CPU:HG3350</td><td>台</td><td>1</td>"
+        f"<td>中国</td><td>中科可控</td><td>{amount}</td><td>{amount}</td><td>{remark}</td></tr>"
+        "</table>"
+    )
+
+
+def _hardware_table_with_shifted_amount_missing_remark(amount: str = "20000") -> str:
+    return (
+        "<table>"
+        "<tr><td>序号</td><td>名称</td><td>型号</td><td>单位</td><td>数量</td>"
+        "<td>产地</td><td>生产厂家</td><td>单价</td><td>总价</td><td>备注</td></tr>"
+        f"<tr><td>3</td><td>工作站</td><td>CPU:HG3350</td><td>台</td><td>1</td>"
+        f"<td>中国</td><td>中科可控</td><td>{amount}</td><td></td><td>{amount}</td></tr>"
+        "</table>"
+    )
+
+
+def _signature_contact_table(
+    left_party: str = "供 方",
+    right_party: str = "需 方",
+    left_bank: str = "招商银行北京大屯路支行",
+    right_bank: str = "招商银行股份有限公司西宁生物园区",
+) -> str:
+    return (
+        "<table>"
+        f"<tr><td>{left_party}</td><td>{right_party}</td></tr>"
+        "<tr><td>单位名称（章）：国能日新科技股份有限公司 单位地址：北京市海淀区西三旗建材城中路</td>"
+        "<td>单位名称(章）：斯美能源科技(青海)有限公司 单位地址：青海省西宁市城北区宁张路44号西宁</td></tr>"
+        "<tr><td>27号1幢2层227号</td><td>创业孵化基地1号楼0814室</td></tr>"
+        "<tr><td>法人代表：雍正</td><td>法人代表或授权委托人：</td></tr>"
+        "<tr><td>委托代理人：</td><td>(签字)</td></tr>"
+        "<tr><td>电 话：010-83458100</td><td>电话：18097182156</td></tr>"
+        "<tr><td>传 真：010-83458107</td><td>传真：</td></tr>"
+        f"<tr><td>开户银行：{left_bank}</td>"
+        f"<td>开户银行：{right_bank}</td></tr>"
+        "<tr><td></td><td>支行</td></tr>"
+        "<tr><td>帐 号：110904199110901</td><td>账 号：972900591810801</td></tr>"
+        "<tr><td>税 号：911101086723891430</td><td>税 号：91630000MA7588E76L</td></tr>"
+        "<tr><td>政编码：100096</td><td></td></tr>"
+        "<tr><td>邮</td><td>邮政编码：813000</td></tr>"
+        "</table>"
+    )
+
+
+def _merged_signature_contact_table(
+    phone: str = "18097182156",
+    left_party: str = "供 方 技照",
+    right_party: str = "需 方 司",
+    left_bank: str = "招商银行北京大屯路支行",
+    right_bank: str = "招商银行股份有限公司西宁生物园区",
+) -> str:
+    return (
+        "<table>"
+        f"<tr><td>{left_party}</td><td>{right_party}</td></tr>"
+        "<tr><td colspan='2'>宁</td></tr>"
+        f"<tr><td colspan='2'>电 话：010-83458100 电话：{phone} 传</td></tr>"
+        "<tr><td colspan='2'>真：010-83458107 传真： 开户银 帐 税</td></tr>"
+        f"<tr><td colspan='2'>行：{left_bank} 开户银行：{right_bank}</td></tr>"
+        "<tr><td colspan='2'>支行 号：110904199110901 账 号：972900591810801</td></tr>"
+        "<tr><td colspan='2'>号：911101086723891430 税 号：91630000MA7588E76L</td></tr>"
+        "<tr><td colspan='2'>邮政编码：100096</td></tr>"
+        "<tr><td colspan='2'>邮政编 码：813000</td></tr>"
+        "</table>"
+    )
+
+
+def _contract_product_table(summary_colspan: int, summary_text: str) -> str:
+    empty_cells = "".join("<td></td>" for _ in range(9 - summary_colspan))
+    return (
+        "<table>"
+        "<tr><td>序号</td><td>名称</td><td>型号规格</td><td>单位</td><td>数量</td>"
+        "<td>单价</td><td>总金额</td><td>税率</td><td>备注</td></tr>"
+        "<tr><td>1</td><td>光伏功率预测拓展 系统V1.0</td><td>光功率国产化改造</td>"
+        "<td>套</td><td>1</td><td>140000</td><td>140000</td><td>13%</td><td></td></tr>"
+        "<tr><td>2</td><td>数值天气预报</td><td>光功率预测系统技 术服务合同</td>"
+        "<td>年</td><td>0.5</td><td>60000</td><td>60000</td><td>6%</td>"
+        "<td>以后每年服务 费5万圆整</td></tr>"
+        f'<tr><td colspan="{summary_colspan}">{summary_text}</td>{empty_cells}</tr>'
+        "</table>"
+    )
+
+
+def _contract_product_source_text(summary_text: str) -> str:
+    return (
+        "序号\n名称\n单位\n数量\n单价\n税率\n备注\n总金额\n型号规格\n"
+        "光伏功率预测拓展\n套\n光功率国产化改造\n13%\n1\n140000\n140000\n1\n系统V1.0\n"
+        "以后每年服务\n光功率预测系统技\n年\n60000\n0.5\n数值天气预报\n60000\n6%\n2\n"
+        f"费5万圆整\n术服务合同\n{summary_text}"
     )
 
 
@@ -132,6 +344,54 @@ class TestStructuredTableComparison:
         texts = [d.original_text + d.compare_text for d in diffs]
         combined = " ".join(texts)
         assert "风电系统" in combined or "光伏系统" in combined
+
+    def test_product_summary_row_colspan_difference_not_reported_as_delete(self):
+        original_summary = "合计人民币金额200000.00元（含税价）：贰拾万圆整"
+        compare_summary = "合计人民币金额200000.00元(含税价):贰拾万圆整"
+        original = _make_doc([
+            _make_raw_table_block(
+                "original_product",
+                1,
+                _contract_product_table(6, original_summary),
+                _contract_product_source_text(original_summary),
+            )
+        ])
+        compare = _make_doc([
+            _make_raw_table_block(
+                "compare_product",
+                1,
+                _contract_product_table(7, compare_summary),
+                _contract_product_source_text(compare_summary),
+            )
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert not any("合计人民币金额200000.00元" in (diff.original_text + diff.compare_text) for diff in diffs)
+
+    def test_product_summary_row_is_not_merged_into_previous_product_row(self):
+        summary = "合计人民币金额200000.00元（含税价）：贰拾万圆整"
+        doc = _make_doc([
+            _make_raw_table_block(
+                "compare_product",
+                1,
+                _contract_product_table(7, summary),
+                _contract_product_source_text(summary),
+            )
+        ])
+        parser = LogicalTableParser()
+        tables = parser.stitch_logical_tables(
+            parser.parse_tables(parser.table_blocks(doc)),
+            TableRepairService(),
+        )
+        product_table = next(table for table in tables if "合计" in table.all_cell_text())
+
+        assert len(product_table.rows) == 3
+        second_row_text = " ".join(cell.text for cell in product_table.rows[1].cells)
+        summary_cells = {cell.col_index: cell.text for cell in product_table.rows[2].cells}
+        assert "合计" not in second_row_text
+        assert summary_cells == {0: "合计", 1: "200000.00元"}
 
     def test_evidence_has_page_and_bbox(self):
         orig_html = '<table><tr><td>名称</td><td>Server-X</td></tr></table>'
@@ -376,6 +636,341 @@ class TestStructuredTableComparison:
         ])
         diffs, warnings = TableComparator().build_diffs(orig, comp)
         assert diffs == []
+
+    def test_product_subsection_restart_on_next_page_stays_stitched(self):
+        doc = _make_doc([
+            _make_table_block("t1", 1, _product_table([
+                _product_row("1", "预测服务器"),
+                _product_row("2", "气象服务器"),
+                _product_row("3", "工作站"),
+            ])),
+            _make_table_block("t2", 2, _product_restart_continuation_table()),
+        ])
+        parser = LogicalTableParser()
+
+        tables = parser.stitch_logical_tables(
+            parser.parse_tables(parser.table_blocks(doc)),
+            TableRepairService(),
+        )
+
+        assert len(tables) == 1
+        combined_text = tables[0].all_cell_text()
+        assert "国产操作系统" in combined_text
+        assert "4套合计" in combined_text
+        assert "预测服务器" in combined_text
+        assert "气象服务器" in combined_text
+
+    def test_quote_remarks_tail_matches_standalone_remarks_table(self):
+        original = _make_doc([
+            _make_table_block("o1", 1, _product_table_with_quote_remarks()),
+        ])
+        compare = _make_doc([
+            _make_table_block("c1", 1, _product_table_without_quote_remarks()),
+            _make_table_block("c2", 2, _standalone_quote_remarks_table()),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert not any("本报价有效期" in (diff.original_text + diff.compare_text) for diff in diffs)
+
+    def test_standalone_quote_remarks_matches_tail_remarks(self):
+        original = _make_doc([
+            _make_table_block("o1", 1, _product_table_without_quote_remarks()),
+            _make_table_block("o2", 2, _standalone_quote_remarks_table()),
+        ])
+        compare = _make_doc([
+            _make_table_block("c1", 1, _product_table_with_quote_remarks()),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert not any("本报价有效期" in (diff.original_text + diff.compare_text) for diff in diffs)
+
+    def test_changed_quote_remarks_are_reported_as_modify_not_add_delete_pair(self):
+        original = _make_doc([
+            _make_table_block("o1", 1, _product_table_with_quote_remarks("30")),
+        ])
+        compare = _make_doc([
+            _make_table_block("c1", 1, _product_table_without_quote_remarks()),
+            _make_table_block("c2", 2, _standalone_quote_remarks_table("60")),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        remark_diffs = [diff for diff in diffs if "本报价有效期" in (diff.original_text + diff.compare_text)]
+        assert warnings == []
+        assert len(remark_diffs) == 1
+        assert remark_diffs[0].diff_type == "MODIFY"
+        assert "30天" in remark_diffs[0].original_text
+        assert "60天" in remark_diffs[0].compare_text
+
+    def test_split_and_merged_quote_remarks_do_not_report_modify(self):
+        original = _make_doc([
+            _make_table_block("o1", 1, _product_table_with_split_quote_remarks()),
+        ])
+        compare = _make_doc([
+            _make_table_block("c1", 1, _product_table_with_merged_quote_remarks()),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert not any("本报价有效期" in (diff.original_text + diff.compare_text) for diff in diffs)
+        assert not any("最终解释权" in (diff.original_text + diff.compare_text) for diff in diffs)
+
+    def test_signature_contact_table_colspan_merge_does_not_report_field_diffs(self):
+        original = _make_doc([
+            _make_table_block("o1", 2, _signature_contact_table()),
+        ])
+        compare = _make_doc([
+            _make_table_block("c1", 2, _merged_signature_contact_table()),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        contact_terms = (
+            "电话",
+            "传真",
+            "开户银行",
+            "支行",
+            "110904199110901",
+            "972900591810801",
+            "911101086723891430",
+            "91630000MA7588E76L",
+            "邮政编码",
+        )
+        assert not any(
+            any(term in (diff.original_text + diff.compare_text) for term in contact_terms)
+            for diff in diffs
+        )
+
+    def test_signature_contact_table_colspan_merge_keeps_real_phone_change(self):
+        original = _make_doc([
+            _make_table_block("o1", 2, _signature_contact_table()),
+        ])
+        compare = _make_doc([
+            _make_table_block("c1", 2, _merged_signature_contact_table("18097182157")),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert any(
+            diff.diff_type == "MODIFY"
+            and "18097182156" in diff.original_text
+            and "18097182157" in diff.compare_text
+            for diff in diffs
+        )
+
+    def test_signature_contact_table_colspan_merge_supports_other_bank_names(self):
+        original = _make_doc([
+            _make_table_block(
+                "o1",
+                2,
+                _signature_contact_table(
+                    left_bank="建设银行北京大屯路支行",
+                    right_bank="中国工商银行西宁生物园区支行",
+                ),
+            ),
+        ])
+        compare = _make_doc([
+            _make_table_block(
+                "c1",
+                2,
+                _merged_signature_contact_table(
+                    left_bank="建设银行北京大屯路支行",
+                    right_bank="中国工商银行西宁生物园区支行",
+                ),
+            ),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert not any(
+            "建设银行" in (diff.original_text + diff.compare_text)
+            or "中国工商银行" in (diff.original_text + diff.compare_text)
+            for diff in diffs
+        )
+
+    def test_signature_contact_table_colspan_merge_supports_party_labels(self):
+        original = _make_doc([
+            _make_table_block(
+                "o1",
+                2,
+                _signature_contact_table(left_party="甲 方", right_party="乙 方"),
+            ),
+        ])
+        compare = _make_doc([
+            _make_table_block(
+                "c1",
+                2,
+                _merged_signature_contact_table(left_party="甲 方", right_party="乙 方"),
+            ),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert not any("18097182156" in (diff.original_text + diff.compare_text) for diff in diffs)
+
+    def test_signature_contact_table_colspan_merge_keeps_real_bank_change(self):
+        original = _make_doc([
+            _make_table_block(
+                "o1",
+                2,
+                _signature_contact_table(left_bank="建设银行北京大屯路支行"),
+            ),
+        ])
+        compare = _make_doc([
+            _make_table_block(
+                "c1",
+                2,
+                _merged_signature_contact_table(left_bank="中国工商银行北京大屯路支行"),
+            ),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert any(
+            diff.diff_type == "MODIFY"
+            and "建设银行北京大屯路支行" in diff.original_text
+            and "中国工商银行北京大屯路支行" in diff.compare_text
+            for diff in diffs
+        )
+
+    def test_product_table_with_contact_words_does_not_use_contact_filter(self):
+        original = _make_doc([
+            _make_table_block("o1", 1, _product_table([
+                "<tr><td>1</td><td>电话模块</td><td>开户银行接口 税号校验 邮政编码服务</td>"
+                "<td>国能日新</td><td>套</td><td>1</td><td>100</td><td>100</td><td></td></tr>",
+            ])),
+        ])
+        compare = _make_doc([
+            _make_table_block("c1", 1, _product_table([
+                "<tr><td>1</td><td>电话模块</td><td>开户银行接口 税号校验 邮政编码服务</td>"
+                "<td>国能日新</td><td>套</td><td>1</td><td>200</td><td>200</td><td></td></tr>",
+            ])),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert any("100" in diff.original_text and "200" in diff.compare_text for diff in diffs)
+
+    def test_short_remark_missing_cell_is_covered_by_compare_source_text(self):
+        original = _make_doc([
+            _make_raw_table_block(
+                "o1",
+                1,
+                _hardware_table_with_remark(),
+                "工作站 CPU:HG3350 中国 中科可控 20000 20000 国产芯片",
+            )
+        ])
+        compare = _make_doc([
+            _make_raw_table_block(
+                "c1",
+                1,
+                _hardware_table_with_shifted_amount_missing_remark(),
+                "工作站 CPU:HG3350 中国 中科可控 20000 国产芯 片",
+            )
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert not any("国产芯片" in (diff.original_text + diff.compare_text) for diff in diffs)
+
+    def test_short_remark_missing_cell_without_source_text_still_reports_delete(self):
+        original = _make_doc([
+            _make_raw_table_block(
+                "o1",
+                1,
+                _hardware_table_with_remark(),
+                "工作站 CPU:HG3350 中国 中科可控 20000 20000 国产芯片",
+            )
+        ])
+        compare = _make_doc([
+            _make_raw_table_block(
+                "c1",
+                1,
+                _hardware_table_with_shifted_amount_missing_remark(),
+                "工作站 CPU:HG3350 中国 中科可控 20000",
+            )
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert any(diff.diff_type == "DELETE" and "国产芯片" in diff.original_text for diff in diffs)
+
+    def test_amount_missing_cell_is_not_covered_by_source_text_filter(self):
+        original = _make_doc([
+            _make_raw_table_block(
+                "o1",
+                1,
+                _hardware_table_with_remark(amount="20000"),
+                "工作站 CPU:HG3350 中国 中科可控 20000 20000 国产芯片",
+            )
+        ])
+        compare = _make_doc([
+            _make_raw_table_block(
+                "c1",
+                1,
+                _hardware_table_with_remark(amount=""),
+                "工作站 CPU:HG3350 中国 中科可控 国产芯片",
+            )
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert any(diff.diff_type == "DELETE" and "20000" in diff.original_text for diff in diffs)
+
+    def test_new_product_like_table_after_quote_table_is_not_stitched_as_continuation(self):
+        quote_html = _quote_table([
+            "<tr><td>1</td><td>光伏功率预测拓展系统</td><td>国产化改造</td>"
+            "<td>套</td><td>1</td><td>140000</td><td>140000</td><td>13%</td>"
+            "<td></td><td>12个月</td><td>30天</td></tr>",
+            "<tr><td>2</td><td>数值天气预报</td><td>技术服务合同</td>"
+            "<td>年</td><td>0.5</td><td>60000</td><td>60000</td><td>6%</td>"
+            "<td>以后每年服务费5万圆整</td><td>12个月</td><td>30天</td></tr>",
+        ])
+        notes_html = (
+            "<table>"
+            "<tr><td>备注：本报价有效期为30天；税率13%</td></tr>"
+            "<tr><td>本报价设备质保期为12个月</td></tr>"
+            "<tr><td>我公司保留对于报价和产品的最终解释权。</td></tr>"
+            "</table>"
+        )
+        service_html = _service_table()
+
+        original = _make_doc([
+            _make_table_block("o1", 1, quote_html),
+            _make_table_block("o2", 2, service_html),
+        ])
+        compare = _make_doc([
+            _make_table_block("c1", 1, quote_html),
+            _make_table_block("c2", 2, notes_html),
+            _make_table_block("c3", 2, service_html),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        assert warnings == []
+        assert [diff.diff_type for diff in diffs] == ["ADD"]
+        assert "备注：本报价有效期为30天" in diffs[0].compare_text
+        combined_deleted_text = "\n".join(diff.original_text for diff in diffs if diff.diff_type == "DELETE")
+        combined_added_text = "\n".join(diff.compare_text for diff in diffs if diff.diff_type == "ADD")
+        assert "数值气象服务" not in combined_deleted_text
+        assert "功率预测服务" not in combined_deleted_text
+        assert "日常维护服务" not in combined_deleted_text
+        assert "大写：陆万元整" not in combined_deleted_text
+        assert "数值气象服务" not in combined_added_text
 
     def test_unreliable_tall_numeric_cell_bbox_is_not_used_as_evidence(self):
         orig_html = _product_table([_product_row("1", "功率预测软件", "21000")])

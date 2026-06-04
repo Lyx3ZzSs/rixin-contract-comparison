@@ -63,6 +63,30 @@ class TableDiffBuilder:
                         compare_block,
                     ):
                         continue
+                    if self._short_remark_cell_covered_by_missing_source(
+                        original,
+                        compare,
+                        filter_orig_row,
+                        filter_comp_row,
+                        cell_diff.original_text,
+                        cell_diff.compare_text,
+                        utils.normalize_cell_for_compare(cell_diff.original_text),
+                        utils.normalize_cell_for_compare(cell_diff.compare_text),
+                        original_block,
+                        compare_block,
+                    ):
+                        continue
+                    if self._contact_field_diff_covered_by_table_source(
+                        original,
+                        compare,
+                        cell_diff.original_text,
+                        cell_diff.compare_text,
+                        utils.normalize_cell_for_compare(cell_diff.original_text),
+                        utils.normalize_cell_for_compare(cell_diff.compare_text),
+                        original_block,
+                        compare_block,
+                    ):
+                        continue
                     diffs.append(cell_diff)
                 continue
             if self._summary.is_sparse_row_covered_by_source(
@@ -136,6 +160,32 @@ class TableDiffBuilder:
                     orig_row,
                     comp_row,
                     c,
+                    orig_norm,
+                    comp_norm,
+                    original_block,
+                    compare_block,
+                ):
+                    continue
+
+                if self._short_remark_cell_covered_by_missing_source(
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                    orig_text,
+                    comp_text,
+                    orig_norm,
+                    comp_norm,
+                    original_block,
+                    compare_block,
+                ):
+                    continue
+
+                if self._contact_field_diff_covered_by_table_source(
+                    original,
+                    compare,
+                    orig_text,
+                    comp_text,
                     orig_norm,
                     comp_norm,
                     original_block,
@@ -267,6 +317,169 @@ class TableDiffBuilder:
         if diff_types == {"DELETE"}:
             return "DELETE"
         return "MODIFY"
+
+    def _short_remark_cell_covered_by_missing_source(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+        orig_text: str,
+        comp_text: str,
+        orig_norm: str,
+        comp_norm: str,
+        original_block: TextBlock | None,
+        compare_block: TextBlock | None,
+    ) -> bool:
+        if orig_row is None or comp_row is None:
+            return False
+        if bool(orig_norm) == bool(comp_norm):
+            return False
+
+        present_text = orig_text if orig_norm else comp_text
+        present_norm = orig_norm or comp_norm
+        if not self._is_short_remark_label_for_source_cover(present_text, present_norm):
+            return False
+        if self._matcher._row_similarity(original, orig_row, compare, comp_row) < 0.82:
+            return False
+
+        missing_table = compare if orig_norm else original
+        missing_row = comp_row if orig_norm else orig_row
+        missing_block = compare_block if orig_norm else original_block
+        present_table = original if orig_norm else compare
+        present_row = orig_row if orig_norm else comp_row
+        if not self._matched_row_has_source_cover_anchor(present_table, present_row, missing_table, missing_row):
+            return False
+
+        source_text = self._source_text_for_cell_cover(missing_table, missing_row, missing_block)
+        source_norm = utils.normalize(source_text)
+        return bool(source_norm and present_norm in source_norm)
+
+    def _contact_field_diff_covered_by_table_source(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_text: str,
+        comp_text: str,
+        orig_norm: str,
+        comp_norm: str,
+        original_block: TextBlock | None,
+        compare_block: TextBlock | None,
+    ) -> bool:
+        if not self._is_noisy_contact_table_pair(original, compare):
+            return False
+        if not orig_norm and not comp_norm:
+            return False
+
+        original_source = self._contact_table_source_norm(original, original_block)
+        compare_source = self._contact_table_source_norm(compare, compare_block)
+        if not original_source or not compare_source:
+            return False
+
+        orig_tokens = utils.contact_value_tokens(orig_text)
+        comp_tokens = utils.contact_value_tokens(comp_text)
+        if orig_tokens and not all(token in compare_source for token in orig_tokens):
+            return False
+        if comp_tokens and not all(token in original_source for token in comp_tokens):
+            return False
+
+        orig_covered = (
+            bool(orig_tokens)
+            or not orig_norm
+            or utils.is_contact_fragment_covered(orig_norm, compare_source)
+        )
+        comp_covered = (
+            bool(comp_tokens)
+            or not comp_norm
+            or utils.is_contact_fragment_covered(comp_norm, original_source)
+        )
+        has_contact_signal = bool(orig_tokens) or bool(comp_tokens) or bool(orig_norm) or bool(comp_norm)
+        return orig_covered and comp_covered and has_contact_signal
+
+    def _is_noisy_contact_table_pair(self, original: StructuredTable, compare: StructuredTable) -> bool:
+        if not self._is_contact_signature_table(original) or not self._is_contact_signature_table(compare):
+            return False
+        return self._has_merged_contact_rows(original) or self._has_merged_contact_rows(compare)
+
+    @staticmethod
+    def _is_contact_signature_table(table: StructuredTable) -> bool:
+        return utils.looks_like_contact_signature_text(table.all_cell_text())
+
+    @staticmethod
+    def _has_merged_contact_rows(table: StructuredTable) -> bool:
+        for row in table.rows:
+            for cell in row.cells:
+                text = utils.normalize(cell.text)
+                if not text:
+                    continue
+                label_count = utils.contact_label_count(text)
+                if cell.colspan >= max(table.col_count, 2) and label_count >= 1:
+                    return True
+                if label_count >= 2:
+                    return True
+        return False
+
+    @staticmethod
+    def _contact_table_source_norm(table: StructuredTable, block: TextBlock | None) -> str:
+        parts = [table.all_cell_text()]
+        if block is not None:
+            parts.append(block.text or "")
+            if block.raw_html:
+                parts.append(utils.strip_html(block.raw_html))
+        return utils.normalize_contact_text(" ".join(part for part in parts if part))
+
+    @staticmethod
+    def _is_short_remark_label_for_source_cover(text: str, norm: str) -> bool:
+        if not norm or len(norm) < 2 or len(norm) > 12:
+            return False
+        if norm.startswith(("amount:", "quantity:", "date:", "percent:")):
+            return False
+        if utils.canonical_amount(text) or utils.canonical_date(text) or utils.canonical_percent(text):
+            return False
+        if utils.is_number_like(norm):
+            return False
+        return bool(any(token in norm for token in ("国产", "芯片", "操作系统", "数据库")))
+
+    def _matched_row_has_source_cover_anchor(
+        self,
+        present_table: StructuredTable,
+        present_row: int,
+        missing_table: StructuredTable,
+        missing_row: int,
+    ) -> bool:
+        for cell in self._matcher.row_match_cells(present_table, present_row):
+            norm = str(cell["norm"])
+            if len(norm) < 2 or norm.startswith(("quantity:", "percent:", "date:")):
+                continue
+            if self._source_cover_anchor_norm(norm, missing_table, missing_row):
+                return True
+        return False
+
+    def _source_cover_anchor_norm(self, norm: str, table: StructuredTable, row: int) -> bool:
+        if norm.startswith("amount:"):
+            raw = norm.split(":", 1)[1].rstrip("0").rstrip(".")
+            if not raw:
+                return False
+            return any(raw and raw in utils.normalize(cell.text) for cell in self._matcher._row_nonempty_cells(table, row))
+        if utils.is_number_like(norm):
+            return False
+        return any(
+            norm in utils.normalize(cell.text) or utils.normalize(cell.text) in norm
+            for cell in self._matcher._row_nonempty_cells(table, row)
+        )
+
+    def _source_text_for_cell_cover(
+        self,
+        table: StructuredTable,
+        row: int,
+        block: TextBlock | None,
+    ) -> str:
+        parts = [TableMatcher.row_plain_source_text(table, row)]
+        if block is not None:
+            parts.append(block.text or "")
+            if block.raw_html:
+                parts.append(utils.strip_html(block.raw_html))
+        return " ".join(part for part in parts if part)
 
     def whole_table_diff(
         self, table: StructuredTable, diff_type: str, index: int, block: tuple[TextBlock, str] | None, other_block: tuple[TextBlock, str] | None

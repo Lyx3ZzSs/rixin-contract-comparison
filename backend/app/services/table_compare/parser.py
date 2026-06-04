@@ -84,6 +84,7 @@ class LogicalTableParser:
     # ------------------------------------------------------------------
 
     _MAX_HEADER_SCAN = 5
+    _MAX_RESTART_CONTEXT_SCAN = 10
 
     def stitch_logical_tables(self, tables: list[StructuredTable], repair_service) -> list[_LogicalTable]:
         """Merge consecutive table fragments into logical tables.
@@ -165,10 +166,84 @@ class LogicalTableParser:
 
         # Signal 3: product-like on consecutive page with compatible structure
         if candidate.page_no == last.page_no + 1 and self._is_product_like_table(candidate):
+            if self._looks_like_independent_product_table(pending, candidate, header_sigs):
+                return False
             return col_diff <= 2
 
         # No supporting signal — keep strict col_count gate
         return col_diff <= 1
+
+    def _looks_like_independent_product_table(
+        self,
+        pending: list[StructuredTable],
+        candidate: StructuredTable,
+        header_sigs: list[RowSignature],
+    ) -> bool:
+        """Guard weak cross-page stitching from absorbing a new product-like table."""
+        if self._has_distinct_header(candidate, header_sigs):
+            return True
+        first_sequence = self._first_data_sequence(candidate)
+        if first_sequence == 1 and self._has_data_sequence(pending):
+            if self._has_sequence_restart_continuation_context(candidate, header_sigs):
+                return False
+            return True
+        return False
+
+    def _has_sequence_restart_continuation_context(
+        self, candidate: StructuredTable, header_sigs: list[RowSignature],
+    ) -> bool:
+        """Detect subtotal/section restarts inside one long product quotation table."""
+        return (
+            self._has_embedded_matching_header(candidate, header_sigs)
+            or self._has_near_top_summary_context(candidate)
+        )
+
+    def _has_embedded_matching_header(
+        self, candidate: StructuredTable, header_sigs: list[RowSignature],
+    ) -> bool:
+        if not header_sigs:
+            return False
+        for row in candidate.rows[1:self._MAX_RESTART_CONTEXT_SCAN]:
+            if not self._is_table_header_cells_from_struct(row.cells):
+                continue
+            sig = utils.build_row_signature(row.cells)
+            if any(sig.matches_with_text(cached, threshold=0.5) for cached in header_sigs):
+                return True
+        return False
+
+    def _has_near_top_summary_context(self, candidate: StructuredTable) -> bool:
+        for row in candidate.rows[:self._MAX_RESTART_CONTEXT_SCAN]:
+            if any(utils.summary_labels(cell.text) for cell in row.cells):
+                return True
+        return False
+
+    def _has_distinct_header(self, candidate: StructuredTable, header_sigs: list[RowSignature]) -> bool:
+        if not header_sigs:
+            return False
+        for row in candidate.rows[:self._MAX_HEADER_SCAN]:
+            if not self._is_table_header_cells_from_struct(row.cells):
+                continue
+            sig = utils.build_row_signature(row.cells)
+            return not any(sig.matches_with_text(cached, threshold=0.5) for cached in header_sigs)
+        return False
+
+    def _has_data_sequence(self, tables: list[StructuredTable]) -> bool:
+        return any(self._first_data_sequence(table) is not None for table in tables)
+
+    def _first_data_sequence(self, table: StructuredTable) -> int | None:
+        for row in table.rows:
+            if self._is_table_header_cells_from_struct(row.cells):
+                continue
+            ordered_cells = sorted(row.cells, key=lambda cell: cell.col_index)
+            texts = [utils.normalize(cell.text) for cell in ordered_cells if utils.normalize(cell.text)]
+            if not texts:
+                continue
+            if any(utils.summary_labels(text) for text in texts):
+                continue
+            first = texts[0]
+            if re.fullmatch(r"\d{1,3}", first):
+                return int(first)
+        return None
 
     def _has_continuation_marker(self, table: StructuredTable) -> bool:
         """Check whether the table or its surrounding text carries a continuation marker."""
@@ -373,6 +448,8 @@ class LogicalTableParser:
         cell = nonempty[0]
         text = utils.normalize(cell.text)
         if utils.summary_labels(text):
+            return ""
+        if utils.is_quote_remark_text(text):
             return ""
         if cell.colspan >= max(2, col_count - 1) or ("系统" in text and ("硬件" in text or "软件" in text or "v" in text)):
             return text
