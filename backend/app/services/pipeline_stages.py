@@ -10,6 +10,7 @@ from app.models import (
     CompareTask,
     Document,
     DocumentProfile,
+    OcrRawResultPaths,
     ParseWarningDetail,
 )
 from app.services.compare_debug import CompareDebugWriter
@@ -126,6 +127,7 @@ class ExtractionStage:
             original_extraction.raw_result_path,
             compare_extraction.raw_result_path,
         )
+        task.ocr_raw_result_paths = OcrRawResultPaths.from_legacy_value(task.ocr_raw_result_path)
         task.parse_warnings.extend(original_extraction.warnings)
         task.parse_warnings.extend(compare_extraction.warnings)
         _append_text_warnings(task, original_extraction.warnings, "original_extractor")
@@ -448,8 +450,8 @@ class VisualizationStage:
         self.artifact_store = artifact_store
 
     def execute(self, ctx: PipelineContext) -> None:
-        ctx.task.original_highlight_pdf_path = ""
-        ctx.task.compare_highlight_pdf_path = ""
+        ctx.task.original_highlight_pdf_path = None
+        ctx.task.compare_highlight_pdf_path = None
 
 
 class SummaryStage:

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
+DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal"]
 
 
 class NormalizedBBox(BaseModel):
@@ -170,7 +172,7 @@ class DiffItem(BaseModel):
     original_snippet: str = ""
     compare_snippet: str = ""
     readable_change: str = ""
-    source_type: str = "clause"
+    source_type: DiffSourceType = "clause"
     match_score: float | None = None
     match_method: str = ""
     match_score_details: dict[str, float] = Field(default_factory=dict)
@@ -199,6 +201,61 @@ class CompareOptions(BaseModel):
     ignore_stamps: bool = False
 
 
+class OcrRawResultSidePaths(BaseModel):
+    ppstructure: str | None = None
+    ppocrv5: str | None = None
+    hybrid: str | None = None
+
+    def is_empty(self) -> bool:
+        return not any([self.ppstructure, self.ppocrv5, self.hybrid])
+
+
+class OcrRawResultPaths(BaseModel):
+    original: OcrRawResultSidePaths = Field(default_factory=OcrRawResultSidePaths)
+    compare: OcrRawResultSidePaths = Field(default_factory=OcrRawResultSidePaths)
+
+    @classmethod
+    def from_legacy_value(cls, value: Any) -> "OcrRawResultPaths":
+        paths: list[str] = []
+        if isinstance(value, str):
+            paths = [line.strip() for line in value.splitlines() if line.strip()]
+        elif isinstance(value, list):
+            paths = [str(item).strip() for item in value if str(item).strip()]
+        elif isinstance(value, dict):
+            return cls(**value)
+
+        parsed = cls()
+        for raw_path in paths:
+            side = _ocr_raw_path_side(raw_path)
+            kind = _ocr_raw_path_kind(raw_path)
+            if side and kind:
+                setattr(getattr(parsed, side), kind, raw_path)
+        return parsed
+
+    def is_empty(self) -> bool:
+        return self.original.is_empty() and self.compare.is_empty()
+
+
+def _ocr_raw_path_side(raw_path: str) -> Literal["original", "compare"] | None:
+    name = Path(raw_path).name.lower()
+    if name.startswith("original_"):
+        return "original"
+    if name.startswith("compare_"):
+        return "compare"
+    return None
+
+
+def _ocr_raw_path_kind(raw_path: str) -> Literal["ppstructure", "ppocrv5", "hybrid"] | None:
+    name = Path(raw_path).name.lower()
+    if "ppstructure_ocr_hybrid_raw" in name:
+        return "hybrid"
+    if "ppstructure_raw" in name:
+        return "ppstructure"
+    if "ppocrv5_raw" in name:
+        return "ppocrv5"
+    return None
+
+
 class CompareTask(BaseModel):
     task_id: str
     schema_version: int = 1
@@ -212,11 +269,12 @@ class CompareTask(BaseModel):
     compare_filename: str = ""
     original_pdf_path: str = ""
     compare_pdf_path: str = ""
-    original_highlight_pdf_path: str = ""
-    compare_highlight_pdf_path: str = ""
-    report_pdf_path: str = ""
+    original_highlight_pdf_path: str | None = None
+    compare_highlight_pdf_path: str | None = None
+    report_pdf_path: str | None = None
     extractor_used: str = ""
     ocr_raw_result_path: str = ""
+    ocr_raw_result_paths: OcrRawResultPaths = Field(default_factory=OcrRawResultPaths)
     parse_warnings: list[str] = Field(default_factory=list)
     parse_warning_details: list[ParseWarningDetail] = Field(default_factory=list)
     document_profiles: dict[str, DocumentProfile] = Field(default_factory=dict)
@@ -232,3 +290,22 @@ class CompareTask(BaseModel):
     diffs: list[DiffItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy_task_payload(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        for key in [
+            "original_highlight_pdf_path",
+            "compare_highlight_pdf_path",
+            "report_pdf_path",
+        ]:
+            if normalized.get(key) == "":
+                normalized[key] = None
+        if not normalized.get("ocr_raw_result_paths") and normalized.get("ocr_raw_result_path"):
+            normalized["ocr_raw_result_paths"] = OcrRawResultPaths.from_legacy_value(
+                normalized.get("ocr_raw_result_path")
+            ).model_dump(mode="json")
+        return normalized

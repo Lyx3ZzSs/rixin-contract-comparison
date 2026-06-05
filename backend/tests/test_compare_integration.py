@@ -83,9 +83,9 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
         for diff in task.diffs
         for evidence in [*diff.original_evidence, *diff.compare_evidence]
     )
-    assert task.original_highlight_pdf_path == ""
-    assert task.compare_highlight_pdf_path == ""
-    assert task.report_pdf_path == ""
+    assert task.original_highlight_pdf_path is None
+    assert task.compare_highlight_pdf_path is None
+    assert task.report_pdf_path is None
     assert (settings.tasks_dir / "TTEST000001" / "task.json").exists()
 
     task = service.ensure_report(task)

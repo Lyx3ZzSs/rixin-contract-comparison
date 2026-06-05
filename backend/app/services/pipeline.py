@@ -253,6 +253,7 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.compare_highlight_pdf_path = source.compare_highlight_pdf_path
     target.extractor_used = source.extractor_used
     target.ocr_raw_result_path = source.ocr_raw_result_path
+    target.ocr_raw_result_paths = source.ocr_raw_result_paths
     target.parse_warnings = source.parse_warnings
     target.parse_warning_details = source.parse_warning_details
     target.document_profiles = source.document_profiles
