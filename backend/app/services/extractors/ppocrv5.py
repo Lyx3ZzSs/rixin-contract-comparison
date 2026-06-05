@@ -26,6 +26,9 @@ class PPOCRV5Extractor:
         re.IGNORECASE,
     )
     per_mille_ocr_pattern = re.compile(r"(?P<number>\d+(?:[.,]\d+)?)%0(?=\D|$)")
+    per_mille_contract_context_pattern = re.compile(
+        r"违约金|逾期|赔偿|罚金|滞纳金|费率|利率|违约责任"
+    )
 
     def __init__(
         self,
@@ -175,13 +178,22 @@ class PPOCRV5Extractor:
         for page in pages:
             native_text = page_texts[page.page_no - 1] if 0 <= page.page_no - 1 < len(page_texts) else ""
             native_compact = self._compact_text(native_text)
-            if "‰" not in native_compact:
+            allow_contextual_repair = not native_compact
+            if "‰" not in native_compact and not allow_contextual_repair:
                 continue
             for block in page.blocks:
-                corrected_text = self._correct_line_per_mille_text(block.text, native_compact)
+                corrected_text = self._correct_line_per_mille_text(
+                    block.text,
+                    native_compact,
+                    allow_contextual_repair=allow_contextual_repair,
+                )
                 if corrected_text == block.text:
                     continue
-                replacements = self._per_mille_replacements(block.text, native_compact)
+                replacements = self._per_mille_replacements(
+                    block.text,
+                    native_compact,
+                    allow_contextual_repair=allow_contextual_repair,
+                )
                 block.text = corrected_text
                 block.char_boxes = self._correct_per_mille_char_boxes(block.text, block.char_boxes, replacements)
                 corrected_count += len(replacements)
@@ -197,8 +209,18 @@ class PPOCRV5Extractor:
         finally:
             pdf.close()
 
-    def _correct_line_per_mille_text(self, text: str, native_compact: str) -> str:
-        replacements = self._per_mille_replacements(text, native_compact)
+    def _correct_line_per_mille_text(
+        self,
+        text: str,
+        native_compact: str,
+        *,
+        allow_contextual_repair: bool = False,
+    ) -> str:
+        replacements = self._per_mille_replacements(
+            text,
+            native_compact,
+            allow_contextual_repair=allow_contextual_repair,
+        )
         if not replacements:
             return text
         corrected = text
@@ -206,13 +228,21 @@ class PPOCRV5Extractor:
             corrected = f"{corrected[:percent_index]}‰{corrected[percent_index + 2:]}"
         return corrected
 
-    def _per_mille_replacements(self, text: str, native_compact: str) -> list[tuple[int, int]]:
+    def _per_mille_replacements(
+        self,
+        text: str,
+        native_compact: str,
+        *,
+        allow_contextual_repair: bool = False,
+    ) -> list[tuple[int, int]]:
         replacements: list[tuple[int, int]] = []
         for match in self.per_mille_ocr_pattern.finditer(text or ""):
             percent_index = match.end("number")
             zero_index = percent_index + 1
             candidate = f"{text[:percent_index]}‰{text[zero_index + 1:]}"
             if self._verified_per_mille_context(text, candidate, match.start(), match.end(), native_compact):
+                replacements.append((percent_index, zero_index))
+            elif allow_contextual_repair and self._contextual_per_mille_ocr_match(text, match):
                 replacements.append((percent_index, zero_index))
         return replacements
 
@@ -232,6 +262,19 @@ class PPOCRV5Extractor:
         context_end = min(len(original), match_end + 12)
         context = corrected[context_start : max(context_start, context_end - 1)]
         return self._compact_text(context) in native_compact
+
+    def _contextual_per_mille_ocr_match(self, text: str, match: re.Match[str]) -> bool:
+        number = match.group("number")
+        try:
+            numeric_value = float(number.replace(",", "."))
+        except ValueError:
+            return False
+        if numeric_value >= 100:
+            return False
+        context_start = max(0, match.start() - 24)
+        context_end = min(len(text), match.end() + 24)
+        context = text[context_start:context_end]
+        return bool(self.per_mille_contract_context_pattern.search(context))
 
     def _correct_per_mille_char_boxes(
         self,

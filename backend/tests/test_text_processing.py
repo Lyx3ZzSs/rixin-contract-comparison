@@ -315,6 +315,253 @@ def test_clause_splitter_uses_geometry_when_any_layout_order_is_missing() -> Non
     assert "心" not in clause_72.text
 
 
+def test_clause_splitter_filters_short_seal_and_page_noise_from_clause_body() -> None:
+    document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=597,
+                height=819,
+                blocks=[
+                    TextBlock(
+                        block_id="p1_b44",
+                        page_no=1,
+                        text="二、质量要求，技术标准，供方对质量负责的条件和期限：符合国家相关电气设备技术标",
+                        bbox=BBox(x0=68.5, y0=388, x1=540, y1=402),
+                        block_type="text",
+                        confidence=0.99,
+                        layout_order=9,
+                    ),
+                    TextBlock(
+                        block_id="p1_b45",
+                        page_no=1,
+                        text="准，供方对所提供的产品制造质量负责.",
+                        bbox=BBox(x0=91.5, y0=410.5, x1=300, y1=425),
+                        block_type="text",
+                        confidence=0.97,
+                        layout_order=9,
+                    ),
+                    TextBlock(
+                        block_id="p1_b46",
+                        page_no=1,
+                        text="日新科技",
+                        bbox=BBox(x0=541, y0=382, x1=597, y1=435),
+                        block_type="ocr_line",
+                        confidence=0.87,
+                    ),
+                    TextBlock(
+                        block_id="p1_b50",
+                        page_no=1,
+                        text="三、交（提）货日期、地点、方式：",
+                        bbox=BBox(x0=69, y0=435, x1=252.5, y1=447),
+                        block_type="text",
+                        confidence=0.99,
+                        layout_order=10,
+                    ),
+                    TextBlock(
+                        block_id="p1_b47",
+                        page_no=1,
+                        text="2026年月日前",
+                        bbox=BBox(x0=276, y0=433, x1=404.5, y1=448.5),
+                        block_type="text",
+                        confidence=0.99,
+                        layout_order=10,
+                    ),
+                    TextBlock(
+                        block_id="p1_b48",
+                        page_no=1,
+                        text="黄河水电海西公司德令",
+                        bbox=BBox(x0=418, y0=434.5, x1=537, y1=446.5),
+                        block_type="text",
+                        confidence=0.99,
+                        layout_order=10,
+                    ),
+                    TextBlock(
+                        block_id="p1_b52",
+                        page_no=1,
+                        text="-1",
+                        bbox=BBox(x0=348, y0=451.5, x1=356, y1=457),
+                        block_type="text",
+                        confidence=0.512,
+                        layout_order=10,
+                    ),
+                    TextBlock(
+                        block_id="p1_b54",
+                        page_no=1,
+                        text="合同专",
+                        bbox=BBox(x0=559.5, y0=450.5, x1=597, y1=477.5),
+                        block_type="ocr_line",
+                        confidence=0.97,
+                    ),
+                    TextBlock(
+                        block_id="p1_b55",
+                        page_no=1,
+                        text="哈蓄积光伏电站",
+                        bbox=BBox(x0=91.5, y0=457, x1=182.5, y1=470.5),
+                        block_type="text",
+                        confidence=0.99,
+                        layout_order=10,
+                    ),
+                    TextBlock(
+                        block_id="p1_b58",
+                        page_no=1,
+                        text="四、运输方式及到达站港和费用负担：整车，运费由供方负担。",
+                        bbox=BBox(x0=69, y0=478.5, x1=400, y1=493),
+                        block_type="text",
+                        confidence=0.99,
+                        layout_order=11,
+                    ),
+                    TextBlock(
+                        block_id="p1_b57",
+                        page_no=1,
+                        text="(1）",
+                        bbox=BBox(x0=580.5, y0=474.5, x1=596.5, y1=484),
+                        block_type="ocr_line",
+                        confidence=0.679,
+                    ),
+                    TextBlock(
+                        block_id="p1_b59",
+                        page_no=1,
+                        text="Csar",
+                        bbox=BBox(x0=365, y0=493.5, x1=389, y1=502),
+                        block_type="ocr_line",
+                        confidence=0.578,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert [clause.clause_no for clause in clauses] == ["二", "三", "四"]
+    delivery = next(clause for clause in clauses if clause.clause_no == "三")
+    assert "2026年月日前" in delivery.text
+    assert "黄河水电海西公司德令" in delivery.text
+    assert "哈蓄积光伏电站" in delivery.text
+    assert "-1" not in delivery.text
+    assert "合同专" not in delivery.text
+    quality = next(clause for clause in clauses if clause.clause_no == "二")
+    transport = next(clause for clause in clauses if clause.clause_no == "四")
+    assert "日新科技" not in quality.text
+    assert "(1)" not in transport.text
+    assert "Csar" not in transport.text
+
+
+def test_clause_splitter_filters_right_edge_single_ocr_fragment() -> None:
+    document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=597,
+                height=819,
+                blocks=[
+                    TextBlock(
+                        block_id="p1_clause",
+                        page_no=1,
+                        text="一、产品名称、型号、数量、金额、供货时间：",
+                        bbox=BBox(x0=69, y0=216.5, x1=309.5, y1=227),
+                        block_type="text",
+                        confidence=0.99,
+                    ),
+                    TextBlock(
+                        block_id="p1_unit",
+                        page_no=1,
+                        text="单位：元（人民币）",
+                        bbox=BBox(x0=439.5, y0=215.5, x1=539.5, y1=227.5),
+                        block_type="vision_footnote",
+                        confidence=0.99,
+                    ),
+                    TextBlock(
+                        block_id="p1_edge",
+                        page_no=1,
+                        text="合",
+                        bbox=BBox(x0=574, y0=330.5, x1=597, y1=359),
+                        block_type="ocr_line",
+                        confidence=0.94,
+                    ),
+                    TextBlock(
+                        block_id="p1_next",
+                        page_no=1,
+                        text="二、质量要求：符合标准。",
+                        bbox=BBox(x0=68.5, y0=388, x1=230, y1=402),
+                        block_type="text",
+                        confidence=0.99,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "N")
+
+    subject = next(clause for clause in clauses if clause.clause_no == "一")
+    assert "单位:元(人民币)" in subject.text
+    assert "合" not in subject.text
+
+
+def test_clause_splitter_keeps_meaningful_short_values_and_seal_business_text() -> None:
+    document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=597,
+                height=819,
+                blocks=[
+                    TextBlock(
+                        block_id="p1_clause",
+                        page_no=1,
+                        text="三、交货及验收：",
+                        bbox=BBox(x0=69, y0=435, x1=180, y1=447),
+                        block_type="text",
+                        confidence=0.99,
+                    ),
+                    TextBlock(
+                        block_id="p1_amount",
+                        page_no=1,
+                        text="3台",
+                        bbox=BBox(x0=210, y0=451.5, x1=224, y1=457),
+                        block_type="text",
+                        confidence=0.61,
+                    ),
+                    TextBlock(
+                        block_id="p1_period",
+                        page_no=1,
+                        text="1年",
+                        bbox=BBox(x0=230, y0=451.5, x1=244, y1=457),
+                        block_type="text",
+                        confidence=0.62,
+                    ),
+                    TextBlock(
+                        block_id="p1_seal_business",
+                        page_no=1,
+                        text="合同专用章管理按甲方制度执行。",
+                        bbox=BBox(x0=69, y0=470, x1=255, y1=484),
+                        block_type="text",
+                        confidence=0.97,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert len(clauses) == 1
+    assert "3台" in clauses[0].text
+    assert "1年" in clauses[0].text
+    assert "合同专用章管理" in clauses[0].text
+
+
 def test_clause_splitter_keeps_product_table_cells_in_parent_clause() -> None:
     document = Document(
         filename="table.pdf",

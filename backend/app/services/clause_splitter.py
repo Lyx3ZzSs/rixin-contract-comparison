@@ -39,6 +39,7 @@ class ClauseSplitter:
         "vertical_text",
     }
     min_ocr_confidence = 0.5
+    short_noise_confidence = 0.7
     vertical_height_width_ratio = 2.3
     mask_block_types = {"formula", "chart", "image", "figure"}
     mask_overlap_threshold = 0.5
@@ -86,6 +87,8 @@ class ClauseSplitter:
                     continue
                 normalized_block = self.normalizer.normalize(block.text)
                 if not normalized_block:
+                    continue
+                if self._is_body_ocr_noise(block, normalized_block, page.width, page.height):
                     continue
                 normalized_char_boxes = self._char_boxes_for_normalized_block(block.text, normalized_block, block.char_boxes)
                 if not any(normalized_char_boxes):
@@ -157,6 +160,88 @@ class ClauseSplitter:
             return True
         text_len = len(block.text.strip())
         return text_len * height < width * self.min_content_density
+
+    def _is_body_ocr_noise(
+        self,
+        block: TextBlock,
+        normalized_text: str,
+        page_width: float,
+        page_height: float,
+    ) -> bool:
+        compact = re.sub(r"\s+", "", normalized_text or "")
+        if not compact:
+            return True
+        marker = self._parse_marker(normalized_text)
+        if marker is not None and not self._is_quantity_or_amount_marker(normalized_text, marker):
+            return False
+        if self._is_seal_fragment_noise(block, compact, page_width):
+            return True
+        if self._is_right_edge_ocr_fragment(block, compact, page_width):
+            return True
+        if self._is_short_isolated_noise(block, compact, page_width, page_height):
+            return True
+        return False
+
+    def _is_seal_fragment_noise(self, block: TextBlock, compact: str, page_width: float) -> bool:
+        if not re.fullmatch(r"(合同专|合同专用|合同专用章|合同章|专用章|公章|印章)", compact):
+            return False
+        return self._near_horizontal_edge(block.bbox, page_width)
+
+    def _is_short_isolated_noise(
+        self,
+        block: TextBlock,
+        compact: str,
+        page_width: float,
+        page_height: float,
+    ) -> bool:
+        if len(compact) > 5:
+            return False
+        if self._looks_like_meaningful_short_text(compact):
+            return False
+        bbox = block.bbox
+        width = bbox.x1 - bbox.x0
+        height = bbox.y1 - bbox.y0
+        block_type = (block.block_type or "").lower()
+        confidence = block.confidence
+        low_confidence = confidence is not None and confidence < self.short_noise_confidence
+        tiny_block = width <= max(page_width * 0.035, 16.0) and height <= max(page_height * 0.02, 16.0)
+        edge_ocr_line = block_type == "ocr_line" and self._near_horizontal_edge(bbox, page_width)
+        latin_noise = bool(re.fullmatch(r"[A-Za-z]{1,5}", compact)) and low_confidence
+        small_latin_ocr_noise = block_type == "ocr_line" and latin_noise and height <= max(page_height * 0.02, 16.0)
+        punctuation_number_noise = bool(re.fullmatch(r"[(（]?[-—_~]*\d{1,2}[)）.]?", compact)) and low_confidence
+        symbol_noise = bool(re.fullmatch(r"[\W_]{1,5}", compact)) and low_confidence
+        return bool(
+            small_latin_ocr_noise
+            or (
+                (tiny_block or edge_ocr_line)
+                and (latin_noise or punctuation_number_noise or symbol_noise)
+            )
+        )
+
+    def _is_right_edge_ocr_fragment(self, block: TextBlock, compact: str, page_width: float) -> bool:
+        if (block.block_type or "").lower() != "ocr_line":
+            return False
+        if len(compact) > 6:
+            return False
+        if self._looks_like_meaningful_short_text(compact):
+            return False
+        return self._near_horizontal_edge(block.bbox, page_width)
+
+    def _looks_like_meaningful_short_text(self, compact: str) -> bool:
+        if re.fullmatch(r"\d{4}年?", compact):
+            return True
+        if re.fullmatch(r"\d+(?:\.\d+)?(元|万元|台|套|个|项|批|份|天|月|年|%)", compact):
+            return True
+        if re.fullmatch(r"[一二三四五六七八九十百千万]+(元|万元|台|套|个|项|批|份|天|月|年)?", compact):
+            return True
+        if re.fullmatch(r"[甲乙丙丁]方", compact):
+            return True
+        return False
+
+    def _near_horizontal_edge(self, bbox: BBox, page_width: float) -> bool:
+        if page_width <= 0:
+            return False
+        return bbox.x0 <= page_width * 0.03 or bbox.x1 >= page_width * 0.97
 
     def _order_units(self, units: list[ClauseUnit]) -> list[ClauseUnit]:
         ordered: list[ClauseUnit] = []
@@ -453,7 +538,7 @@ class ClauseSplitter:
         compact = re.sub(r"\s+", "", first_line)
         if re.fullmatch(r"\d{1,3}", compact):
             return True
-        if re.match(r"^\s*\d+\s*(套|台|个|项|批|份|万元|元|%)", first_line):
+        if re.match(r"^\s*\d+\s*(套|台|个|项|批|份|万元|元|天|月|个月|年|%)", first_line):
             return True
         if re.match(r"^\s*\d{4}\s*年", first_line):
             return True

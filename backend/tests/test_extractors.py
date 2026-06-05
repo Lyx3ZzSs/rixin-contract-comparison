@@ -648,22 +648,75 @@ def test_ppocrv5_corrects_verified_per_mille_ocr(monkeypatch: pytest.MonkeyPatch
     assert per_mille_box.bbox.x1 == 70
 
 
+def test_ppocrv5_corrects_contextual_per_mille_ocr_without_native_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf = _pdf(tmp_path / "scan.pdf", width=360, height=100)
+    texts = [
+        "物价款的3%0作为违约金",
+        "甲方应支付合同总额3%0的违约金给乙方",
+    ]
+    payload = [
+        {
+            "page_index": 0,
+            "doc_preprocessor_res": {"output_img_shape": [100, 360, 3]},
+            "rec_texts": texts,
+            "rec_boxes": [[0, 10, 220, 30], [0, 40, 340, 60]],
+            "text_word": [list(text) for text in texts],
+            "text_word_region": [
+                [[index * 10, 10, (index + 1) * 10, 30] for index in range(len(texts[0]))],
+                [[index * 10, 40, (index + 1) * 10, 60] for index in range(len(texts[1]))],
+            ],
+        }
+    ]
+    extractor = PPOCRV5Extractor()
+    monkeypatch.setattr(extractor, "_pdf_page_texts", lambda path: [""])
+
+    document = extractor.payload_to_document(payload, pdf)
+
+    first, second = document.pages[0].blocks
+    assert first.text == "物价款的3‰作为违约金"
+    assert second.text == "甲方应支付合同总额3‰的违约金给乙方"
+    assert [char_box.char for char_box in first.char_boxes] == list(first.text)
+    assert [char_box.text_index for char_box in first.char_boxes] == list(range(len(first.text)))
+    per_mille_box = first.char_boxes[5]
+    assert per_mille_box.char == "‰"
+    assert per_mille_box.bbox.x0 == 50
+    assert per_mille_box.bbox.x1 == 70
+
+
 def test_ppocrv5_does_not_guess_unverified_per_mille_ocr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     pdf = _pdf(tmp_path / "scan.pdf", width=240, height=100)
     payload = [
         {
             "page_index": 0,
             "doc_preprocessor_res": {"output_img_shape": [100, 240, 3]},
-            "rec_texts": ["完成率100%0缺陷"],
-            "rec_boxes": [[0, 10, 180, 30]],
+            "rec_texts": [
+                "完成率100%0缺陷",
+                "版本V1.0支持100%0配置",
+                "合同总额3%作为违约金",
+                "3%0",
+            ],
+            "rec_boxes": [
+                [0, 10, 180, 30],
+                [0, 35, 210, 55],
+                [0, 60, 180, 80],
+                [0, 85, 40, 98],
+            ],
         }
     ]
     extractor = PPOCRV5Extractor()
-    monkeypatch.setattr(extractor, "_pdf_page_texts", lambda path: ["完成率100%0缺陷"])
+    monkeypatch.setattr(extractor, "_pdf_page_texts", lambda path: [""])
 
     document = extractor.payload_to_document(payload, pdf)
 
-    assert document.pages[0].blocks[0].text == "完成率100%0缺陷"
+    assert [block.text for block in document.pages[0].blocks] == [
+        "完成率100%0缺陷",
+        "版本V1.0支持100%0配置",
+        "合同总额3%作为违约金",
+        "3%0",
+    ]
 
 
 def test_ppocrv5_postprocess_keeps_price_explanation_as_ocr_lines(tmp_path: Path) -> None:
