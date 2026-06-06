@@ -3,11 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.clients import HttpClientProvider, default_http_client_provider
-from app.config import settings
+from app.config import STRUCTURED_DOCUMENT_EXTRACTORS, settings
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.base import DocumentExtractor
-from app.services.extractors.ppocrv5 import PPOCRV5Extractor
 from app.services.extractors.ppstructure_ocr_hybrid import PPStructureOCRHybridExtractor
 from app.services.extractors.pymupdf import PyMuPDFExtractor
 from app.services.document_profiler import DocumentProfiler
@@ -71,6 +70,7 @@ class AutoDocumentExtractor:
 def build_document_extractor(
     name: str | None = None,
     *,
+    require_structured_ocr: bool = False,
     artifact_store: ArtifactStore = default_artifact_store,
     client_provider: HttpClientProvider = default_http_client_provider,
 ):
@@ -86,8 +86,17 @@ def build_document_extractor(
 
     extractor_name = (name or settings.document_extractor or "auto").lower()
 
+    if require_structured_ocr and extractor_name not in STRUCTURED_DOCUMENT_EXTRACTORS:
+        raise DocumentExtractionError(f"严格结构化 OCR 模式不支持提取器: {extractor_name}")
+
     if extractor_name in {"auto", "default"}:
         extractor = AutoDocumentExtractor(artifact_store=artifact_store, client_provider=client_provider)
+    elif require_structured_ocr:
+        extractor = PPStructureOCRHybridExtractor(
+            require_structure=True,
+            client_provider=client_provider,
+            artifact_store=artifact_store,
+        )
     else:
         try:
             extractor = default_extractor_registry.build(
@@ -104,7 +113,10 @@ def build_document_extractor(
             cache_dir=settings.cache_dir,
             default_ttl_hours=settings.extraction_cache_ttl_hours,
         )
-        fingerprint = _extractor_config_fingerprint(extractor_name)
+        fingerprint = _extractor_config_fingerprint(
+            extractor_name,
+            require_structured_ocr=require_structured_ocr,
+        )
         extractor = CachedExtractor(extractor, cache, fingerprint)
 
     if settings.extraction.window_size > 0:
@@ -118,12 +130,28 @@ def build_document_extractor(
     return extractor
 
 
-def _extractor_config_fingerprint(extractor_name: str) -> str:
+def build_compare_document_extractor(
+    *,
+    artifact_store: ArtifactStore = default_artifact_store,
+    client_provider: HttpClientProvider = default_http_client_provider,
+):
+    return build_document_extractor(
+        settings.compare_document_extractor,
+        require_structured_ocr=settings.compare_require_structured_ocr,
+        artifact_store=artifact_store,
+        client_provider=client_provider,
+    )
+
+
+def _extractor_config_fingerprint(extractor_name: str, *, require_structured_ocr: bool = False) -> str:
     """Deterministic hash of the config fields that affect extraction output."""
     import hashlib
     import json
 
-    parts: dict[str, str] = {"name": extractor_name}
+    parts: dict[str, str] = {
+        "name": extractor_name,
+        "require_structured_ocr": str(require_structured_ocr),
+    }
     ext = settings.extraction
     if extractor_name in {"ppocrv5", "paddleocr", "paddle_ocr", "paddle", "pp_ocrv5"}:
         parts["ppocrv5"] = ext.ppocrv5.model_dump_json()

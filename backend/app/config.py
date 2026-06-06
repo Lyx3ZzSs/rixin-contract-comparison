@@ -17,7 +17,6 @@ from app.config_models import (
     ExtractionSettings,
     HybridSettings,
     MatchingSettings,
-    ModelConfig,
     PipelineSettings,
     PPOCRV5Settings,
     PPStructureSettings,
@@ -38,6 +37,12 @@ SUPPORTED_DOCUMENT_EXTRACTORS = {
     "paddleocr",
     "paddle_ocr",
     "paddle",
+    "ppstructure_ocr_hybrid",
+    "ppstructure_ppocrv5",
+    "structure_ocr",
+    "ppstructure",
+}
+STRUCTURED_DOCUMENT_EXTRACTORS = {
     "ppstructure_ocr_hybrid",
     "ppstructure_ppocrv5",
     "structure_ocr",
@@ -76,6 +81,8 @@ class Settings(BaseSettings):
     # -- Extraction (flat env vars → nested model) ----------------------
 
     document_extractor: str = "auto"
+    compare_document_extractor: str = "ppstructure_ocr_hybrid"
+    compare_require_structured_ocr: bool = True
     pymupdf_min_text_chars: int = Field(default=1, ge=0)
     align_structured_extraction: bool = True
     save_ocr_raw_result: bool = True
@@ -164,7 +171,7 @@ class Settings(BaseSettings):
 
     # -- Validators (flat env var validation, unchanged) -----------------
 
-    @field_validator("document_extractor", mode="before")
+    @field_validator("document_extractor", "compare_document_extractor", mode="before")
     @classmethod
     def validate_document_extractor(cls, value: Any) -> str:
         extractor = str(value or "auto").strip().lower()
@@ -201,6 +208,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _build_nested_and_paths(self) -> Settings:
+        if (
+            self.compare_require_structured_ocr
+            and self.compare_document_extractor not in STRUCTURED_DOCUMENT_EXTRACTORS
+        ):
+            allowed = ", ".join(sorted(STRUCTURED_DOCUMENT_EXTRACTORS))
+            raise ValueError(
+                "COMPARE_DOCUMENT_EXTRACTOR must use a structured OCR extractor "
+                f"when COMPARE_REQUIRE_STRUCTURED_OCR=true: {allowed}"
+            )
+
         # Populate nested models from flat fields
         self.extraction = ExtractionSettings(
             backend=self.document_extractor,

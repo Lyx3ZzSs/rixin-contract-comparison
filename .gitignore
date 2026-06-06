@@ -211,7 +211,7 @@ frontend/vite.config.js
 frontend/vite.config.d.ts
 
 # 本地运行产物
-#storage/
+/storage/
 backend/app/storage/
 
 # PyPI 配置文件
@@ -224,4 +224,3 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-#/storage/

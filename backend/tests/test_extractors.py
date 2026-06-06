@@ -8,7 +8,11 @@ import pytest
 from app.config import settings
 from app.models import BBox, CharBox, Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
-from app.services.extractors.factory import AutoDocumentExtractor, build_document_extractor
+from app.services.extractors.factory import (
+    AutoDocumentExtractor,
+    _extractor_config_fingerprint,
+    build_document_extractor,
+)
 from app.services.extractors.paddleocr import PaddleOCRExtractor
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
 from app.services.extractors.ppstructure_ocr_hybrid import PPStructureOCRHybridExtractor
@@ -53,6 +57,25 @@ def test_build_document_extractor_supports_ppstructure_ocr_hybrid() -> None:
 
     assert isinstance(extractor, PPStructureOCRHybridExtractor)
     assert extractor.name == "ppstructure_ocr_hybrid"
+
+
+def test_build_document_extractor_rejects_non_structured_extractor_in_strict_mode() -> None:
+    with pytest.raises(DocumentExtractionError, match="严格结构化 OCR 模式"):
+        build_document_extractor("pymupdf", require_structured_ocr=True)
+
+
+def test_build_document_extractor_enables_required_structure_in_strict_mode() -> None:
+    extractor = build_document_extractor("ppstructure_ocr_hybrid", require_structured_ocr=True)
+
+    assert isinstance(extractor, PPStructureOCRHybridExtractor)
+    assert extractor.require_structure is True
+
+
+def test_strict_structured_ocr_uses_a_separate_cache_fingerprint() -> None:
+    non_strict = _extractor_config_fingerprint("ppstructure_ocr_hybrid")
+    strict = _extractor_config_fingerprint("ppstructure_ocr_hybrid", require_structured_ocr=True)
+
+    assert strict != non_strict
 
 
 def test_build_document_extractor_keeps_paddleocr_as_ppocrv5_alias() -> None:
@@ -534,6 +557,28 @@ def test_ppstructure_ocr_hybrid_falls_back_to_ppocrv5_when_structure_fails() -> 
 
     assert result.extractor_used == "ppstructure_ocr_hybrid_ocr_only"
     assert "PP-Structure" in result.warnings[0]
+
+
+def test_ppstructure_ocr_hybrid_does_not_fallback_when_structure_is_required() -> None:
+    class FailingStructureExtractor:
+        def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+            raise DocumentExtractionError("remote layout service unavailable")
+
+    class FakeOCRExtractor:
+        def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+            return ExtractionResult(
+                document=Document(filename="scan.pdf", path="scan.pdf", page_count=0, pages=[]),
+                extractor_used="ppocrv5",
+            )
+
+    extractor = PPStructureOCRHybridExtractor(
+        FailingStructureExtractor(),
+        FakeOCRExtractor(),
+        require_structure=True,
+    )
+
+    with pytest.raises(DocumentExtractionError, match="PP-Structure 结构识别失败"):
+        extractor.extract("scan.pdf")
 
 
 def test_auto_document_extractor_switches_to_ppocrv5() -> None:

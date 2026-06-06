@@ -136,15 +136,17 @@ EXTRACTION_MAX_IMAGE_SIZE_MB=5
 
 字段抽取会复用 `EXTRACTION_TASK_DESCRIPTION`、`EXTRACTION_OUTPUT_FORMAT`、`EXTRACTION_RULES_STR` 和 `EXTRACTION_FEW_SHOT_DEMO` 作为 LLM 提示词约束。OCR 和 LLM 原始结果会保存到 `storage/tasks/{task_id}/ocr`，用于排查识别质量和字段抽取质量。
 
-默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本或文本量不足时切换到结构化 OCR。扫描件链路优先使用 PP-Structure 做版面/表格结构识别，并使用 PP-OCRv5 提供真实文本、行坐标和词/字符坐标；如果 PP-Structure 不可用，会回退到仅 PP-OCRv5 文本抽取，并跳过结构化表格比对。
+通用文档提取默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本或文本量不足时切换到结构化 OCR。该通用链路在 PP-Structure 不可用时可回退到仅 PP-OCRv5 文本抽取。
 
 ```bash
 DOCUMENT_EXTRACTOR=auto
+COMPARE_DOCUMENT_EXTRACTOR=ppstructure_ocr_hybrid
+COMPARE_REQUIRE_STRUCTURED_OCR=true
 PYMUPDF_MIN_TEXT_CHARS=1
 ALIGN_STRUCTURED_EXTRACTION=true
 ```
 
-也可以显式指定 `pymupdf`、`ppocrv5` 或 `ppstructure_ocr_hybrid`。`ppstructure_ocr_hybrid` 会同时调用 `{PPSTRUCTURE_URL}/layout-parsing` 和 `{PPOCRV5_URL}/ocr`，最终对比文本以 PP-OCRv5 为准。
+合同比对接口默认强制使用 `ppstructure_ocr_hybrid`。每份文件都会同时调用 `{PPSTRUCTURE_URL}/layout-parsing` 和 `{PPOCRV5_URL}/ocr`，最终对比文本以 PP-OCRv5 为准，版面和表格区域以 PP-Structure 为准。任一服务不可用或 PP-Structure 解析失败时，比对任务会标记为失败，不会降级到 PyMuPDF 或仅 PP-OCRv5。
 
 `ALIGN_STRUCTURED_EXTRACTION=true` 时，如果同一对比任务中一侧已经切换到结构化抽取、另一侧仍为 PyMuPDF，系统会将 PyMuPDF 侧重新用结构化抽取器处理，以保持表格边界一致，避免表格文本被当作正文条款参与比对。
 
@@ -231,7 +233,7 @@ cd frontend && npm test && npm run build
 
 ## 当前限制
 
-- 扫描件默认抽取需要配置可用的 `PPOCRV5_URL`；如需结构化表格边界，还需要配置 `PPSTRUCTURE_URL`。
+- 合同比对必须同时配置可用的 `PPOCRV5_URL` 和 `PPSTRUCTURE_URL`；任一服务不可用都会使比对任务失败。
 - 合同字段提取的 Word 支持依赖 LibreOffice；合同对比仍暂不支持 Word、Excel 和复杂表格深度 diff。
 - MVP 使用同步任务；任务元数据支持本地 JSON 或 PostgreSQL，文件产物仍使用本地文件存储。
 - 报告导出不会在导出时重新调用大模型；风险统计基于任务已有的差异分析结果。

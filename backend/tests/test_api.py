@@ -35,6 +35,8 @@ def configure_storage(tmp_path: Path) -> None:
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.debug_dir = settings.storage_dir / "debug"
     settings.document_extractor = "auto"
+    settings.compare_document_extractor = "auto"
+    settings.compare_require_structured_ocr = False
     settings.ai_llm_base_url = ""
     settings.ai_llm_api_key = ""
     settings.ai_llm_model = ""
@@ -156,6 +158,80 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert client.get(f"/api/compare/{task_id}/screenshot/example.png").status_code == 404
     assert client.get("/api/compare/missing-task/original").status_code == 404
     assert client.get(f"/api/compare/{task_id}/preview").status_code == 404
+
+
+def test_api_compare_rejects_damaged_pdf_before_task_creation(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/compare",
+        files={
+            "original_file": ("damaged.pdf", b"%PDF-not-a-real-document", "application/pdf"),
+            "compare_file": ("compare.pdf", b"%PDF-not-a-real-document", "application/pdf"),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "PDF 文件已损坏或格式无效" in response.json()["detail"]
+    assert not list(settings.tasks_dir.rglob("task.json"))
+    assert not list(settings.tasks_dir.rglob("job.json"))
+
+
+def test_api_compare_rejects_encrypted_pdf_before_task_creation(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    pdf = fitz.open()
+    pdf.new_page()
+    try:
+        encrypted = pdf.tobytes(
+            encryption=fitz.PDF_ENCRYPT_AES_256,
+            owner_pw="owner",
+            user_pw="user",
+        )
+    finally:
+        pdf.close()
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/compare",
+        files={
+            "original_file": ("encrypted.pdf", encrypted, "application/pdf"),
+            "compare_file": ("compare.pdf", encrypted, "application/pdf"),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "PDF 文件已加密" in response.json()["detail"]
+    assert not list(settings.tasks_dir.rglob("task.json"))
+    assert not list(settings.tasks_dir.rglob("job.json"))
+
+
+def test_api_compare_rejects_owner_only_encrypted_pdf_before_task_creation(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    pdf = fitz.open()
+    pdf.new_page()
+    try:
+        encrypted = pdf.tobytes(
+            encryption=fitz.PDF_ENCRYPT_AES_256,
+            owner_pw="owner",
+            user_pw="",
+        )
+    finally:
+        pdf.close()
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/compare",
+        files={
+            "original_file": ("encrypted.pdf", encrypted, "application/pdf"),
+            "compare_file": ("compare.pdf", encrypted, "application/pdf"),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "PDF 文件已加密" in response.json()["detail"]
+    assert not list(settings.tasks_dir.rglob("task.json"))
+    assert not list(settings.tasks_dir.rglob("job.json"))
 
 
 def test_api_compare_ignores_legacy_exclusion_options(tmp_path: Path) -> None:
@@ -701,6 +777,35 @@ def test_api_extract_rejects_unsupported_file(tmp_path: Path) -> None:
 
     assert response.status_code == 400
     assert "仅支持 PDF、Word、PNG、JPG、JPEG、BMP 文件" in response.json()["detail"]
+
+
+def test_api_extract_rejects_damaged_pdf_before_task_creation(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/extract",
+        files={"file": ("damaged.pdf", b"%PDF-not-a-real-document", "application/pdf")},
+        data={"fields": '[{"id":"amount","name":"合同金额","type":"文本","description":"合同金额"}]'},
+    )
+
+    assert response.status_code == 400
+    assert "PDF 文件已损坏或格式无效" in response.json()["detail"]
+    assert not list(settings.tasks_dir.rglob("task.json"))
+    assert not list(settings.tasks_dir.rglob("job.json"))
+
+
+def test_api_extract_preview_rejects_damaged_pdf(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/extract/preview",
+        files={"file": ("damaged.pdf", b"%PDF-not-a-real-document", "application/pdf")},
+    )
+
+    assert response.status_code == 400
+    assert "PDF 文件已损坏或格式无效" in response.json()["detail"]
 
 
 def test_api_extract_preview_converts_word_to_pdf(monkeypatch, tmp_path: Path) -> None:

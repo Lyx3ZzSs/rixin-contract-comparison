@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import fitz
 from fastapi import UploadFile
 
 from app.config import settings
@@ -41,11 +42,33 @@ def ensure_pdf_filename(filename: str) -> None:
 
 def validate_pdf_bytes(content: bytes, filename: str) -> None:
     ensure_pdf_filename(filename)
-    if not content.startswith(b"%PDF"):
-        raise FileValidationError("文件不是有效的 PDF。")
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     if len(content) > max_bytes:
         raise FileValidationError(f"文件超过 {settings.max_upload_size_mb}MB 限制。")
+    validate_pdf_structure(content)
+
+
+def validate_pdf_structure(content: bytes) -> None:
+    if not content.startswith(b"%PDF"):
+        raise FileValidationError("文件不是有效的 PDF。")
+
+    try:
+        pdf = fitz.open(stream=content, filetype="pdf")
+    except Exception as exc:
+        raise FileValidationError("PDF 文件已损坏或格式无效。") from exc
+
+    try:
+        encrypt_type, _ = pdf.xref_get_key(-1, "Encrypt")
+        if pdf.needs_pass or pdf.is_encrypted or encrypt_type != "null":
+            raise FileValidationError("PDF 文件已加密，请上传未加密版本。")
+        if pdf.page_count <= 0:
+            raise FileValidationError("PDF 文件不包含有效页面。")
+    except FileValidationError:
+        raise
+    except Exception as exc:
+        raise FileValidationError("PDF 文件已损坏或格式无效。") from exc
+    finally:
+        pdf.close()
 
 
 def validate_extraction_upload_bytes(content: bytes, filename: str) -> None:
@@ -61,8 +84,8 @@ def validate_extraction_upload_bytes(content: bytes, filename: str) -> None:
     if len(content) > max_mb * 1024 * 1024:
         raise FileValidationError(f"文件超过 {max_mb}MB 限制。")
 
-    if extension == ".pdf" and not content.startswith(b"%PDF"):
-        raise FileValidationError("文件不是有效的 PDF。")
+    if extension == ".pdf":
+        validate_pdf_structure(content)
     if extension in IMAGE_SIGNATURES and not any(
         content.startswith(signature) for signature in IMAGE_SIGNATURES[extension]
     ):

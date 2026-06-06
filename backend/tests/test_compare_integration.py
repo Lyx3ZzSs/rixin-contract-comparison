@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import fitz
+import pytest
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
@@ -11,6 +12,7 @@ from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.models import BBox, Document, Page, TextBlock
 from app.services.compare_service import CompareService
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
+from app.services.extractors.pymupdf import PyMuPDFExtractor
 from app.services.pipeline_stages import ExtractionStage
 from app.services.report_generator import build_report_filename
 
@@ -33,6 +35,8 @@ def configure_storage(tmp_path: Path) -> None:
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.debug_dir = settings.storage_dir / "debug"
     settings.document_extractor = "auto"
+    settings.compare_document_extractor = "ppstructure_ocr_hybrid"
+    settings.compare_require_structured_ocr = True
     settings.align_structured_extraction = True
     settings.ai_llm_base_url = ""
     settings.ai_llm_api_key = ""
@@ -65,13 +69,13 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
         ],
     )
 
-    service = CompareService()
+    service = CompareService(extractor=LocalStructuredExtractor())
     task = service.compare(original, compare, task_id="TTEST000001")
 
     assert task.status == "COMPLETED"
     assert task.stage == "已完成"
     assert task.progress_percent == 100
-    assert task.extractor_used == "pymupdf"
+    assert task.extractor_used == "ppstructure_ocr_hybrid"
     assert task.document_profiles["original"].recommended_strategy == "text"
     assert task.document_profiles["compare"].total_text_chars > 0
     assert Path(task.debug_artifact_paths["document_profiles"]).exists()
@@ -202,6 +206,30 @@ def test_compare_service_keeps_pymupdf_when_structured_alignment_fails(tmp_path:
     assert "compare 尝试切换结构化 OCR 抽取失败，已保留 PyMuPDF 结果" in compare_aligned.warnings[0]
 
 
+def test_compare_service_marks_task_failed_when_structured_ocr_fails(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    original = tmp_path / "original.pdf"
+    compare = tmp_path / "compare.pdf"
+    make_pdf(original, ["Original"])
+    make_pdf(compare, ["Compare"])
+    repository = LocalJsonTaskRepository(settings)
+    service = CompareService(extractor=FailingStructuredExtractor(), repository=repository)
+
+    with pytest.raises(DocumentExtractionError, match="原版文件结构化 OCR 失败"):
+        service.compare(original, compare, task_id="TSTRICT_FAIL")
+
+    task = repository.load_compare_task("TSTRICT_FAIL")
+    assert task.status == "FAILED"
+    assert any("原版文件结构化 OCR 失败" in error for error in task.errors)
+
+
+def test_extraction_stage_rejects_ocr_only_result_in_strict_mode(tmp_path: Path) -> None:
+    stage = ExtractionStage(extractor=OCRonlyExtractor(), require_structured_ocr=True)
+
+    with pytest.raises(DocumentExtractionError, match="非结构化结果 ppstructure_ocr_hybrid_ocr_only"):
+        stage._extract_side(tmp_path / "original.pdf", "TSTRICT_RESULT", "原版文件")
+
+
 def make_document(text: str, block_type: str) -> Document:
     return Document(
         filename="sample.pdf",
@@ -246,3 +274,22 @@ class FailingStructuredExtractor:
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         raise DocumentExtractionError("remote OCR unavailable")
+
+
+class LocalStructuredExtractor:
+    name = "ppstructure_ocr_hybrid"
+
+    def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+        result = PyMuPDFExtractor().extract(path, task_id=task_id)
+        result.extractor_used = self.name
+        return result
+
+
+class OCRonlyExtractor:
+    name = "ppstructure_ocr_hybrid"
+
+    def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+        return ExtractionResult(
+            document=make_document("ocr only", "ocr_line"),
+            extractor_used="ppstructure_ocr_hybrid_ocr_only",
+        )

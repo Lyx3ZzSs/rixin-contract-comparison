@@ -22,12 +22,14 @@ class PPStructureOCRHybridExtractor:
         structure_extractor: PPStructureExtractor | None = None,
         ocr_extractor: PPOCRV5Extractor | None = None,
         overlap_threshold: float | None = None,
+        require_structure: bool = False,
         app_settings: Settings = settings,
         client_provider: HttpClientProvider = default_http_client_provider,
         artifact_store: ArtifactStore = default_artifact_store,
     ) -> None:
         self.settings = app_settings
         self.artifact_store = artifact_store
+        self.require_structure = require_structure
         self.structure_extractor = structure_extractor or PPStructureExtractor(
             app_settings=app_settings,
             client_provider=client_provider,
@@ -45,6 +47,8 @@ class PPStructureOCRHybridExtractor:
         try:
             structure_result = self.structure_extractor.extract(path, task_id=task_id)
         except DocumentExtractionError as exc:
+            if self.require_structure:
+                raise DocumentExtractionError(f"PP-Structure 结构识别失败: {exc}") from exc
             ocr_result.extractor_used = "ppstructure_ocr_hybrid_ocr_only"
             ocr_result.warnings.append(f"PP-Structure 结构识别失败，已使用 PP-OCRv5 文本继续处理: {exc}")
             return ocr_result

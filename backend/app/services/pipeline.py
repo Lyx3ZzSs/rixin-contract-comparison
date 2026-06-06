@@ -198,6 +198,7 @@ class ComparePipeline:
             _update_progress(ctx, stage.name, stage.start_progress, self.repository)
             stage_t0 = time.perf_counter()
             mem_start = get_process_memory_mb()
+            peak_memory = max(peak_memory, mem_start)
             sm = StageMetrics(name=stage.name, memory_mb_start=mem_start)
             try:
                 stage.execute(ctx)
@@ -205,6 +206,7 @@ class ComparePipeline:
                 sm.error = str(exc)
                 sm.duration_seconds = time.perf_counter() - stage_t0
                 sm.memory_mb_end = get_process_memory_mb()
+                peak_memory = max(peak_memory, sm.memory_mb_end)
                 metrics.stages.append(sm)
                 metrics.finished_at = datetime.now(UTC).isoformat()
                 metrics.total_duration_seconds = time.perf_counter() - pipeline_t0

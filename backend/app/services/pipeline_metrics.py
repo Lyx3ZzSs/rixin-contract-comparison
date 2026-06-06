@@ -5,13 +5,25 @@ from dataclasses import dataclass, field
 
 
 def get_process_memory_mb() -> float:
-    """Return current process RSS in MB using resource module."""
-    import resource
+    """Return peak process memory usage in MB, or zero when metrics are unavailable."""
+    try:
+        import resource
 
-    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    if sys.platform == "darwin":
-        return rss / (1024 * 1024)
-    return rss / 1024
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if sys.platform == "darwin":
+            return rss / (1024 * 1024)
+        return rss / 1024
+    except Exception:
+        pass
+
+    try:
+        import psutil
+
+        memory_info = psutil.Process().memory_info()
+        memory_bytes = getattr(memory_info, "peak_wset", memory_info.rss)
+        return memory_bytes / (1024 * 1024)
+    except Exception:
+        return 0.0
 
 
 @dataclass

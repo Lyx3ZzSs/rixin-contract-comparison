@@ -19,6 +19,7 @@ dependencies = [
     "pydantic-settings>=2",
     "python-dotenv",
     "httpx",
+    "psutil",
 ]
 
 [project.optional-dependencies]

@@ -19,7 +19,7 @@ from app.services.cover_metadata import CoverMetadataComparator
 from app.services.diff_engine import DiffEngine
 from app.services.document_profiler import DocumentProfiler
 from app.services.evidence_locator import EvidenceLocator
-from app.services.extractors import build_document_extractor
+from app.services.extractors import build_compare_document_extractor, build_document_extractor
 from app.services.extractors.base import (
     DocumentExtractionError,
     DocumentExtractor,
@@ -94,9 +94,15 @@ class ExtractionStage:
         extractor: DocumentExtractor | None = None,
         structured_extractor: DocumentExtractor | None = None,
         artifact_store: ArtifactStore = default_artifact_store,
+        require_structured_ocr: bool | None = None,
     ) -> None:
         self.artifact_store = artifact_store
-        self.extractor = extractor or build_document_extractor(artifact_store=artifact_store)
+        self.require_structured_ocr = (
+            settings.compare_require_structured_ocr
+            if require_structured_ocr is None
+            else require_structured_ocr
+        )
+        self.extractor = extractor or build_compare_document_extractor(artifact_store=artifact_store)
         self.structured_extractor = structured_extractor
         self.profiler = DocumentProfiler()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
@@ -104,10 +110,10 @@ class ExtractionStage:
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
         _emit_progress(ctx, 12, self.name, "original_extraction_started")
-        original_extraction = self.extractor.extract(ctx.original_pdf, task_id=task.task_id)
+        original_extraction = self._extract_side(ctx.original_pdf, task.task_id, "原版文件")
         _emit_progress(ctx, 22, self.name, "original_extraction_done")
         _emit_progress(ctx, 24, self.name, "compare_extraction_started")
-        compare_extraction = self.extractor.extract(ctx.compare_pdf, task_id=task.task_id)
+        compare_extraction = self._extract_side(ctx.compare_pdf, task.task_id, "新版文件")
         _emit_progress(ctx, 30, self.name, "compare_extraction_done")
 
         original_extraction, compare_extraction = self._align_structured_extractions(
@@ -144,6 +150,17 @@ class ExtractionStage:
         )
 
         ctx.set_extractions(original_extraction, compare_extraction)
+
+    def _extract_side(self, pdf_path: Path, task_id: str, side_label: str) -> ExtractionResult:
+        try:
+            result = self.extractor.extract(pdf_path, task_id=task_id)
+        except DocumentExtractionError as exc:
+            raise DocumentExtractionError(f"{side_label}结构化 OCR 失败：{exc}") from exc
+        if self.require_structured_ocr and result.extractor_used != "ppstructure_ocr_hybrid":
+            raise DocumentExtractionError(
+                f"{side_label}结构化 OCR 失败：提取器返回了非结构化结果 {result.extractor_used or 'unknown'}"
+            )
+        return result
 
     def _ensure_profile(self, extraction: ExtractionResult) -> ExtractionResult:
         if extraction.profile is None:

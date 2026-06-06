@@ -460,6 +460,30 @@ class TestComparePipeline:
         assert result.diffs[0].review_status == "CONFIRMED"
         assert result.diffs[0].review_comment == "已确认"
 
+    def test_pipeline_records_peak_memory_from_stage_start_and_end(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        ctx = make_ctx(tmp_path)
+
+        class NoOpStage:
+            name = "noop"
+            start_progress = 50
+            progress = 50
+
+            def execute(self, ctx: PipelineContext) -> None:
+                return None
+
+        samples = iter([64.0, 48.0])
+        monkeypatch.setattr("app.services.pipeline.get_process_memory_mb", lambda: next(samples))
+
+        result = ComparePipeline(stages=[NoOpStage()]).run(ctx)
+
+        assert result.metrics["peak_memory_mb"] == 64.0
+        assert result.metrics["stages"][0]["memory_mb_start"] == 64.0
+        assert result.metrics["stages"][0]["memory_mb_end"] == 48.0
+
 
 class TestPipelineStageFailure:
     def test_pipeline_error_propagates(self, tmp_path: Path) -> None:
@@ -476,3 +500,27 @@ class TestPipelineStageFailure:
         pipeline = ComparePipeline(stages=[FailingStage()])
         with pytest.raises(RuntimeError, match="extraction failed"):
             pipeline.run(ctx)
+
+    def test_pipeline_failure_records_end_memory_as_peak(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        ctx = make_ctx(tmp_path)
+
+        class FailingStage:
+            name = "failing"
+            start_progress = 50
+            progress = 50
+
+            def execute(self, ctx: PipelineContext) -> None:
+                raise RuntimeError("extraction failed")
+
+        samples = iter([32.0, 96.0])
+        monkeypatch.setattr("app.services.pipeline.get_process_memory_mb", lambda: next(samples))
+
+        with pytest.raises(RuntimeError, match="extraction failed"):
+            ComparePipeline(stages=[FailingStage()]).run(ctx)
+
+        assert ctx.task.metrics["peak_memory_mb"] == 96.0
+        assert ctx.task.metrics["stages"][0]["memory_mb_end"] == 96.0
