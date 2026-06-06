@@ -6,12 +6,13 @@ import {
   useRef,
   useState,
 } from "react";
-import * as pdfjsLib from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/pdf";
 
 import { bboxToViewportRect } from "../lib/pdfCoordinates";
 import type { ViewportRect } from "../lib/pdfCoordinates";
+import { formatPdfLoadError } from "../lib/pdfLoadError";
 import type { DiffItem, EvidenceBox } from "../types";
 import { getCurrentPageFromScroll } from "./pdfPageScroll";
 
@@ -60,6 +61,7 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
   ) {
     const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
     const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+    const [loadError, setLoadError] = useState("");
     const [currentPage, setCurrentPage] = useState(1);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const pageRefs = useRef(new Map<number, HTMLDivElement>());
@@ -69,6 +71,7 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
       if (!src || hidden) {
         setPdf(null);
         setLoadState(src ? "idle" : "error");
+        setLoadError(src ? "" : "PDF 文件地址不可用。");
         setCurrentPage(1);
         return;
       }
@@ -76,6 +79,7 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
       let isMounted = true;
       const loadingTask = pdfjsLib.getDocument(src);
       setLoadState("loading");
+      setLoadError("");
       setCurrentPage(1);
 
       loadingTask.promise
@@ -88,9 +92,11 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
           setLoadState("ready");
           setCurrentPage(1);
         })
-        .catch(() => {
+        .catch((error) => {
           if (isMounted) {
+            console.error("PDF preview loading failed", error);
             setPdf(null);
+            setLoadError(formatPdfLoadError(error));
             setLoadState("error");
           }
         });
@@ -183,7 +189,7 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
       <article className={`pdf-pane ${side}`} aria-label={`${title}PDF 在线预览`}>
         <div ref={scrollRef} className="pdf-scroll-shell" onScroll={handleScroll}>
           {loadState === "loading" && <div className="empty-pane">正在载入 PDF...</div>}
-          {loadState === "error" && <div className="empty-pane">PDF 载入失败</div>}
+          {loadState === "error" && <div className="empty-pane">{loadError || "PDF 载入失败"}</div>}
           {pdf &&
             Array.from({ length: pdf.numPages }, (_, index) => (
               <PdfPageCanvas

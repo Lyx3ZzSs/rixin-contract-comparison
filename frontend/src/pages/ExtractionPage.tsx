@@ -1,13 +1,14 @@
 import { forwardRef, type ChangeEvent, type UIEvent, useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
-import * as pdfjsLib from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/pdf";
 
 import { getCurrentPageFromScroll } from "../components/pdfPageScroll";
 import type { ExtractionFieldDefinition } from "../data/extractionFields";
 import { createExtractionPreview, extractFields, getExtractionTask } from "../lib/api";
 import { readExtractionFieldLibrary } from "../lib/extractionFieldLibrary";
+import { formatPdfLoadError } from "../lib/pdfLoadError";
 import type { ExtractionFieldValue } from "../types";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -547,6 +548,7 @@ function isLongExtractionValue(value: string): boolean {
 function FlatPdfPreview({ src, file }: { src: string; file: File }) {
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [loadError, setLoadError] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [zoom, setZoom] = useState(DEFAULT_PREVIEW_ZOOM);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -556,6 +558,7 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
     if (!src) {
       setPdf(null);
       setLoadState("idle");
+      setLoadError("");
       setCurrentPage(1);
       setZoom(DEFAULT_PREVIEW_ZOOM);
       return undefined;
@@ -564,6 +567,7 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
     let isMounted = true;
     const loadingTask = pdfjsLib.getDocument(src);
     setLoadState("loading");
+    setLoadError("");
     setCurrentPage(1);
     setZoom(DEFAULT_PREVIEW_ZOOM);
     loadingTask.promise
@@ -575,9 +579,11 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
         setPdf(document);
         setLoadState("ready");
       })
-      .catch(() => {
+      .catch((error) => {
         if (isMounted) {
+          console.error("PDF extraction preview loading failed", error);
           setPdf(null);
+          setLoadError(formatPdfLoadError(error));
           setLoadState("error");
         }
       });
@@ -657,7 +663,7 @@ function FlatPdfPreview({ src, file }: { src: string; file: File }) {
   return (
     <div className="extract-flat-pdf" aria-label="合同 PDF 预览">
       {loadState === "loading" && <div className="extract-document-loading">正在载入 PDF...</div>}
-      {loadState === "error" && <DocumentFallback file={file} />}
+      {loadState === "error" && <DocumentFallback file={file} message={loadError} isError />}
       {pdf && (
         <>
           <div ref={scrollRef} className="extract-pdf-scroll-shell" onScroll={handleScroll}>

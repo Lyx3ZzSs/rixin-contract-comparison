@@ -8,7 +8,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           react: ["react", "react-dom"],
-          pdf: ["pdfjs-dist"],
+          pdf: ["pdfjs-dist/legacy/build/pdf.mjs"],
         },
       },
     },

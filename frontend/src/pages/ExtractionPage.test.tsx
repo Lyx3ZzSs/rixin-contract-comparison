@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { EXTRACTION_FIELD_LIBRARY_STORAGE_KEY } from "../lib/extractionFieldLibrary";
 import { ExtractionPage } from "./ExtractionPage";
@@ -10,7 +11,7 @@ const getViewport = vi.fn((options: { scale: number }) => ({
   height: 600 * options.scale,
 }));
 
-vi.mock("pdfjs-dist", () => ({
+vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   GlobalWorkerOptions: {},
   getDocument: vi.fn(() => ({
     promise: Promise.resolve({
@@ -27,7 +28,7 @@ vi.mock("pdfjs-dist", () => ({
   })),
 }));
 
-vi.mock("pdfjs-dist/build/pdf.worker.mjs?url", () => ({
+vi.mock("pdfjs-dist/legacy/build/pdf.worker.mjs?url", () => ({
   default: "pdf-worker-test-url",
 }));
 
@@ -88,6 +89,30 @@ describe("ExtractionPage PDF preview", () => {
     expect(screen.queryByLabelText("PDF缩放")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
     expect(screen.getAllByLabelText(/第 \d 页/)).toHaveLength(3);
+  });
+
+  it("shows the classified PDF loading error", async () => {
+    const user = userEvent.setup();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let rejectLoading: (reason: unknown) => void = () => undefined;
+    const loadingPromise = new Promise<never>((_, reject) => {
+      rejectLoading = reject;
+    });
+    vi.mocked(pdfjsLib.getDocument).mockReturnValueOnce({
+      promise: loadingPromise,
+      destroy: vi.fn(),
+    } as unknown as ReturnType<typeof pdfjsLib.getDocument>);
+    render(<ExtractionPage />);
+
+    await user.upload(
+      screen.getByLabelText("上传合同提取文件"),
+      new File(["pdf"], "damaged.pdf", { type: "application/pdf" }),
+    );
+    await act(async () => rejectLoading({ name: "InvalidPDFException" }));
+
+    expect(await screen.findByText("PDF 已损坏或格式无效。")).toBeInTheDocument();
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 
   it("scrolls the continuous PDF preview from toolbar page controls", async () => {
