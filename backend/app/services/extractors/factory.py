@@ -151,6 +151,8 @@ def _extractor_config_fingerprint(extractor_name: str, *, require_structured_ocr
     parts: dict[str, str] = {
         "name": extractor_name,
         "require_structured_ocr": str(require_structured_ocr),
+        "layout_parser_version": "v3" if settings.layout_analysis_mode in {"v3", "v3_shadow"} else "v2",
+        "layout_analysis_mode": settings.layout_analysis_mode,
     }
     ext = settings.extraction
     if extractor_name in {"ppocrv5", "paddleocr", "paddle_ocr", "paddle", "pp_ocrv5"}:

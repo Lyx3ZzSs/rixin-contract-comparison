@@ -49,6 +49,15 @@ Task services still own domain status such as `PROCESSING`, `COMPLETED`, and `FA
 
 The comparison pipeline still runs the same stage order, but stage data should move through typed `PipelineContext` accessors such as `require_extractions`, `set_clauses`, and `set_clause_diffs`. Stages should raise `PipelineContractError` for missing required inputs instead of assuming previous mutable fields are populated.
 
+PP-Structure response conversion is centralized in the shared layout adapter.
+Production extraction and the model orchestration layer must reuse that adapter
+instead of implementing separate bbox, label, or table-cell parsing. Hybrid OCR
+results expose deterministic `reading_order` values and write layout quality
+diagnostics to the task debug directory.
+V3 layout analysis adds flow roles and explicit OCR/layout match diagnostics.
+Use `v3_shadow` before enabling `v3`; the default remains `v2` until shadow
+rollout and approved real-fixture regression thresholds pass.
+
 ## Error Boundary
 
 Domain errors inherit from `AppError` and carry their HTTP status mapping at the API boundary. API handlers should prefer `http_error()` over ad hoc `HTTPException` mapping for validation, not-found, conflict, document-processing, and task-execution errors.

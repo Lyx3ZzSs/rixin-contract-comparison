@@ -12,6 +12,14 @@ EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
 DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal"]
+LayoutMatchStatus = Literal[
+    "matched",
+    "ambiguous",
+    "meaningful_unmatched",
+    "noise_unmatched",
+    "structure_only",
+    "not_applicable",
+]
 
 
 class NormalizedBBox(BaseModel):
@@ -64,6 +72,43 @@ class ParseWarningDetail(BaseModel):
     source: str = ""
 
 
+class PageLayoutQualityReport(BaseModel):
+    page_no: int
+    region_count: int = 0
+    ocr_block_count: int = 0
+    matched_ocr_block_count: int = 0
+    ambiguous_match_count: int = 0
+    meaningful_unmatched_count: int = 0
+    noise_unmatched_count: int = 0
+    structure_only_count: int = 0
+    reading_order_conflict_count: int = 0
+    issues: list[str] = Field(default_factory=list)
+
+
+class LayoutQualityReport(BaseModel):
+    parser_version: str = "v2"
+    mode: str = "v2"
+    page_count: int = 0
+    region_count: int = 0
+    label_counts: dict[str, int] = Field(default_factory=dict)
+    invalid_bbox_count: int = 0
+    empty_region_count: int = 0
+    table_region_count: int = 0
+    table_cell_matched_count: int = 0
+    table_cell_unmatched_count: int = 0
+    ocr_block_count: int = 0
+    matched_ocr_block_count: int = 0
+    unmatched_ocr_block_count: int = 0
+    ambiguous_match_count: int = 0
+    meaningful_unmatched_count: int = 0
+    noise_unmatched_count: int = 0
+    structure_only_count: int = 0
+    reading_order_count: int = 0
+    reading_order_conflict_count: int = 0
+    page_quality: list[PageLayoutQualityReport] = Field(default_factory=list)
+    warnings: list[ParseWarningDetail] = Field(default_factory=list)
+
+
 class PageProfile(BaseModel):
     page_no: int
     width: float = 0
@@ -111,6 +156,10 @@ class TextBlock(BaseModel):
     source: str = ""
     reading_order: int | None = None
     block_role: str = ""
+    flow_role: str = ""
+    layout_match_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    layout_match_status: LayoutMatchStatus = "not_applicable"
+    layout_match_reason: str = ""
     char_boxes: list[CharBox] = Field(default_factory=list)
     raw_html: str = ""
     table_cell_bboxes: list[list[float]] = Field(default_factory=list)

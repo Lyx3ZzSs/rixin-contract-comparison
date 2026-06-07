@@ -58,6 +58,7 @@ def _layout_detector_factory(cfg: PPStructureSettings) -> Callable[..., ModelPro
             use_doc_orientation_classify=cfg.use_doc_orientation_classify,
             use_doc_unwarping=cfg.use_doc_unwarping,
             use_textline_orientation=cfg.use_textline_orientation,
+            layout_analysis_mode=settings.layout_analysis_mode,
         )
     return factory
 

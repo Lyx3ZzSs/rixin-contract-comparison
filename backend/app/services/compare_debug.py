@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
-from app.models import Clause, ClausePair, DiffItem, DocumentProfile
+from app.models import Clause, ClausePair, DiffItem, DocumentProfile, LayoutQualityReport
 from app.utils.json_utils import to_jsonable
 
 
@@ -34,6 +34,23 @@ class CompareDebugWriter:
     def write_clauses(self, task_id: str, side: str, clauses: list[Clause]) -> str:
         payload = [self._clause_summary(clause) for clause in clauses]
         return str(self._write_json(task_id, f"clauses_{side}.json", payload))
+
+    def write_layout_quality(
+        self,
+        task_id: str,
+        original: LayoutQualityReport | None,
+        compare: LayoutQualityReport | None,
+    ) -> str:
+        return str(
+            self._write_json(
+                task_id,
+                "layout_quality.json",
+                {
+                    "original": self._dump_model(original),
+                    "compare": self._dump_model(compare),
+                },
+            )
+        )
 
     def write_matches(self, task_id: str, pairs: list[ClausePair]) -> str:
         payload = []

@@ -141,6 +141,8 @@ class ExtractionStage:
 
         self._record_profile(task, "original", original_extraction.profile)
         self._record_profile(task, "compare", compare_extraction.profile)
+        self._record_layout_quality(task, original_extraction)
+        self._record_layout_quality(task, compare_extraction)
         _write_debug_artifact(
             task,
             "document_profiles",
@@ -148,6 +150,16 @@ class ExtractionStage:
                 task.task_id, original_extraction.profile, compare_extraction.profile,
             ),
         )
+        if original_extraction.layout_quality is not None or compare_extraction.layout_quality is not None:
+            _write_debug_artifact(
+                task,
+                "layout_quality",
+                lambda: self.debug_writer.write_layout_quality(
+                    task.task_id,
+                    original_extraction.layout_quality,
+                    compare_extraction.layout_quality,
+                ),
+            )
 
         ctx.set_extractions(original_extraction, compare_extraction)
 
@@ -173,6 +185,10 @@ class ExtractionStage:
             return
         task.document_profiles[side] = profile
         _append_warning_details(task, profile.warnings)
+
+    def _record_layout_quality(self, task: CompareTask, extraction: ExtractionResult) -> None:
+        if extraction.layout_quality is not None:
+            _append_warning_details(task, extraction.layout_quality.warnings)
 
     def _align_structured_extractions(
         self,

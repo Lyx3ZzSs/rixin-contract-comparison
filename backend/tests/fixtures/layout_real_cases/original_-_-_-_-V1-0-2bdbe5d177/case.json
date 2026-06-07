@@ -1,0 +1,11 @@
+{
+  "case_id": "original_-_-_-_-V1-0-2bdbe5d177",
+  "source_name": "original_凯力_旭皖能源_双环_和安分布式光伏电站分布式功率预测系统V1.0采购合同主.pdf",
+  "source_sha256": "2bdbe5d177ea0f1c1665cd9f1c055c7ca6efd168783286f96256fb854f28f380",
+  "approved_by": "user-confirmed",
+  "approved_at": "2026-06-07T02:28:29.289432+00:00",
+  "pdf": "source.pdf",
+  "ppstructure": "ppstructure.json.gz",
+  "ppocrv5": "ppocrv5.json.gz",
+  "mode": "v3"
+}

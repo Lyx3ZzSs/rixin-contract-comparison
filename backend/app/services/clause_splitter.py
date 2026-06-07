@@ -20,6 +20,7 @@ class ClauseUnit:
     evidence: EvidenceBox
     layout_block_id: str = ""
     layout_order: int | None = None
+    reading_order: int | None = None
 
 
 class ClauseSplitter:
@@ -72,6 +73,8 @@ class ClauseSplitter:
         for page in document.pages:
             page_masks = mask_index.get(page.page_no, [])
             for block in page.blocks:
+                if block.flow_role in {"margin", "noise", "non_text"}:
+                    continue
                 block_type = (block.block_type or "").lower()
                 if block_type in self.skip_block_types:
                     continue
@@ -111,6 +114,7 @@ class ClauseSplitter:
                             ),
                             layout_block_id=block.layout_block_id,
                             layout_order=block.layout_order,
+                            reading_order=block.reading_order,
                         )
                     )
         return units
@@ -248,7 +252,16 @@ class ClauseSplitter:
         pages = sorted({unit.page_no for unit in units})
         for page_no in pages:
             page_units = [unit for unit in units if unit.page_no == page_no]
-            if self._can_trust_layout_order(page_units):
+            if self._can_trust_reading_order(page_units):
+                page_units.sort(
+                    key=lambda unit: (
+                        unit.reading_order or 0,
+                        unit.bbox.y0,
+                        unit.bbox.x0,
+                        unit.block_id,
+                    )
+                )
+            elif self._can_trust_layout_order(page_units):
                 snapped = self._snap_y_by_layout_group(page_units)
                 page_units.sort(key=lambda unit: (unit.layout_order or 0, snapped[unit.block_id], unit.bbox.x0, unit.block_id))
             else:
@@ -256,6 +269,10 @@ class ClauseSplitter:
                 page_units.sort(key=lambda unit: (snapped[unit.block_id], unit.bbox.x0, unit.layout_order or 0, unit.block_id))
             ordered.extend(page_units)
         return ordered
+
+    def _can_trust_reading_order(self, units: list[ClauseUnit]) -> bool:
+        orders = [unit.reading_order for unit in units]
+        return bool(orders) and all(order is not None for order in orders) and len(set(orders)) == len(orders)
 
     def _snap_y_coordinates(self, units: list[ClauseUnit]) -> dict[str, float]:
         if not units:

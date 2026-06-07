@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 from app.errors import DocumentProcessingError
-from app.models import Document, DocumentProfile
+from app.models import Document, DocumentProfile, LayoutQualityReport
 
 
 class DocumentExtractionError(DocumentProcessingError):
@@ -19,6 +19,7 @@ class ExtractionResult:
     raw_result_path: str = ""
     warnings: list[str] = field(default_factory=list)
     profile: DocumentProfile | None = None
+    layout_quality: LayoutQualityReport | None = None
 
 
 class DocumentExtractor(Protocol):

@@ -209,6 +209,8 @@ frontend/coverage/
 *.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+.layout-report*/
+backend/.layout-report*/
 
 # 本地运行产物
 /storage/

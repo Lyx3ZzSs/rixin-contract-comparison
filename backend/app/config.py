@@ -121,6 +121,7 @@ class Settings(BaseSettings):
     extraction_cache_ttl_hours: int = Field(default=72, ge=1)
     extraction_window_size: int = Field(default=0, ge=0)
     extraction_window_overlap: int = Field(default=1, ge=0)
+    layout_analysis_mode: str = "v2"
 
     # -- AI / LLM (flat env vars) ----------------------------------------
 
@@ -180,6 +181,14 @@ class Settings(BaseSettings):
             raise ValueError(f"DOCUMENT_EXTRACTOR must be one of: {allowed}")
         return extractor
 
+    @field_validator("layout_analysis_mode", mode="before")
+    @classmethod
+    def validate_layout_analysis_mode(cls, value: Any) -> str:
+        mode = str(value or "v2").strip().lower()
+        if mode not in {"legacy", "shadow", "v2", "v3_shadow", "v3"}:
+            raise ValueError("LAYOUT_ANALYSIS_MODE must be one of: legacy, shadow, v2, v3_shadow, v3")
+        return mode
+
     @field_validator("ppocrv5_url", "ppstructure_url", "ai_llm_base_url")
     @classmethod
     def validate_optional_http_url(cls, value: str) -> str:
@@ -230,6 +239,7 @@ class Settings(BaseSettings):
             cache_ttl_hours=self.extraction_cache_ttl_hours,
             window_size=self.extraction_window_size,
             window_overlap=self.extraction_window_overlap,
+            layout_analysis_mode=self.layout_analysis_mode,
             ppocrv5=PPOCRV5Settings(
                 url=self.ppocrv5_url,
                 access_token=self.ppocrv5_access_token,

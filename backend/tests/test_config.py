@@ -54,3 +54,20 @@ def test_compare_allows_non_structured_extractor_when_strict_mode_is_disabled() 
     )
 
     assert app_settings.compare_document_extractor == "pymupdf"
+
+
+def test_layout_analysis_mode_populates_nested_extraction_settings() -> None:
+    app_settings = Settings(layout_analysis_mode="shadow")
+
+    assert app_settings.layout_analysis_mode == "shadow"
+    assert app_settings.extraction.layout_analysis_mode == "shadow"
+
+
+def test_layout_analysis_mode_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError, match="LAYOUT_ANALYSIS_MODE"):
+        Settings(layout_analysis_mode="unknown")
+
+
+def test_layout_analysis_mode_accepts_v3_rollout_modes() -> None:
+    assert Settings(layout_analysis_mode="v3_shadow").layout_analysis_mode == "v3_shadow"
+    assert Settings(layout_analysis_mode="v3").layout_analysis_mode == "v3"

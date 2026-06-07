@@ -3,15 +3,37 @@ from __future__ import annotations
 from difflib import SequenceMatcher
 import re
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
+
+from rapidfuzz.fuzz import ratio
 
 from app.clients import HttpClientProvider, default_http_client_provider
 from app.config import Settings, settings
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
-from app.models import BBox, CharBox, Document, Page, TextBlock
+from app.models import (
+    BBox,
+    CharBox,
+    Document,
+    LayoutQualityReport,
+    Page,
+    PageLayoutQualityReport,
+    ParseWarningDetail,
+    TextBlock,
+)
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
 from app.services.extractors.ppstructure import PPStructureExtractor
+from app.services.layout_analysis import bbox_area, flow_role_for_region
+from app.services.reading_order import assign_page_reading_order, reading_order_conflict_count
+
+
+@dataclass(frozen=True)
+class LayoutMatchDecision:
+    block: TextBlock | None
+    score: float
+    status: str
+    reason: str
 
 
 class PPStructureOCRHybridExtractor:
@@ -54,6 +76,7 @@ class PPStructureOCRHybridExtractor:
             return ocr_result
 
         document = self._merge_documents(ocr_result.document, structure_result.document)
+        quality = self._build_layout_quality(document, structure_result.layout_quality)
         raw_result_path = self._merge_raw_paths(structure_result.raw_result_path, ocr_result.raw_result_path)
         if self.settings.save_ocr_raw_result and self.settings.hybrid_save_merged_raw and task_id:
             merged_raw_path = self._save_merged_raw(
@@ -70,24 +93,37 @@ class PPStructureOCRHybridExtractor:
             extractor_used=self.name,
             raw_result_path=raw_result_path,
             warnings=[*structure_result.warnings, *ocr_result.warnings],
+            layout_quality=quality,
         )
 
     def _merge_documents(self, ocr_document: Document, structure_document: Document) -> Document:
         structure_pages = {page.page_no: page for page in structure_document.pages}
-        pages = [
-            Page(
+        pages: list[Page] = []
+        for page in ocr_document.pages:
+            merged_page = Page(
                 page_no=page.page_no,
                 width=page.width,
                 height=page.height,
-                blocks=self._merge_page_blocks(page.blocks, structure_pages.get(page.page_no)),
+                blocks=self._merge_page_blocks(
+                    page.blocks,
+                    structure_pages.get(page.page_no),
+                    page.width,
+                    page.height,
+                ),
             )
-            for page in ocr_document.pages
-        ]
+            assign_page_reading_order(merged_page)
+            pages.append(merged_page)
         return ocr_document.model_copy(update={"pages": pages})
 
-    def _merge_page_blocks(self, ocr_blocks: list[TextBlock], structure_page: Page | None) -> list[TextBlock]:
+    def _merge_page_blocks(
+        self,
+        ocr_blocks: list[TextBlock],
+        structure_page: Page | None,
+        page_width: float,
+        page_height: float,
+    ) -> list[TextBlock]:
         if structure_page is None:
-            return ocr_blocks
+            return [self._unmatched_block(block, page_width, page_height) for block in ocr_blocks]
         structure_blocks = [
             block
             for block in structure_page.blocks
@@ -97,38 +133,127 @@ class PPStructureOCRHybridExtractor:
             return ocr_blocks
         html_tables = self._collect_html_tables(structure_blocks)
         structure_by_id = {block.block_id: block for block in structure_blocks}
-        merged = [self._attach_structure(block, structure_blocks) for block in ocr_blocks]
+        merged = [
+            self._attach_structure(block, structure_blocks, page_width, page_height)
+            for block in ocr_blocks
+        ]
         merged = self._consolidate_table_blocks(merged, html_tables)
-        return self._consolidate_structure_text_blocks(merged, structure_by_id, set(html_tables))
+        merged = self._consolidate_structure_text_blocks(merged, structure_by_id, set(html_tables))
+        return self._append_structure_only_regions(merged, structure_blocks)
 
-    def _attach_structure(self, ocr_block: TextBlock, structure_blocks: list[TextBlock]) -> TextBlock:
-        matched = self._best_structure_match(ocr_block.bbox, structure_blocks)
+    def _attach_structure(
+        self,
+        ocr_block: TextBlock,
+        structure_blocks: list[TextBlock],
+        page_width: float,
+        page_height: float,
+    ) -> TextBlock:
+        decision = self._structure_match_decision(ocr_block, structure_blocks)
+        matched = decision.block
         if matched is None:
-            return ocr_block
+            return self._unmatched_block(ocr_block, page_width, page_height)
         block_type = self._normalize_block_type(matched.block_type) or ocr_block.block_type
         return ocr_block.model_copy(
             update={
                 "block_type": block_type,
                 "layout_block_id": matched.block_id,
-                "layout_order": self._layout_order(matched.block_id),
+                "layout_order": matched.layout_order or self._layout_order(matched.block_id),
                 "layout_bbox": matched.bbox,
+                "block_role": matched.block_role or matched.block_type,
+                "flow_role": flow_role_for_region(matched.block_type) if self.settings.layout_analysis_mode == "v3" else "",
+                "layout_match_score": decision.score,
+                "layout_match_status": decision.status,
+                "layout_match_reason": decision.reason,
+                "source": ocr_block.source or "ppocrv5_layout_matched",
             }
         )
 
     def _best_structure_match(self, bbox: BBox, structure_blocks: list[TextBlock]) -> TextBlock | None:
-        best_block: TextBlock | None = None
-        best_coverage = 0.0
-        for block in structure_blocks:
-            coverage = self._overlap_coverage(bbox, block.bbox)
-            if coverage > best_coverage:
-                best_coverage = coverage
-                best_block = block
+        probe = TextBlock(block_id="probe", page_no=1, text="", bbox=bbox)
+        return self._structure_match_decision(probe, structure_blocks).block
 
-        if best_block is not None and best_coverage >= self.overlap_threshold:
-            return best_block
+    def _structure_match_decision(
+        self,
+        ocr_block: TextBlock,
+        structure_blocks: list[TextBlock],
+    ) -> LayoutMatchDecision:
+        scored: list[tuple[float, TextBlock, str]] = []
+        for block in structure_blocks:
+            coverage = self._overlap_coverage(ocr_block.bbox, block.bbox)
+            intersection = self._intersection_area(ocr_block.bbox, block.bbox)
+            iou = intersection / max(
+                self._area(ocr_block.bbox) + self._area(block.bbox) - intersection,
+                1.0,
+            )
+            contains_center = self._contains_center(ocr_block.bbox, block.bbox)
+            area_ratio = self._area(block.bbox) / max(self._area(ocr_block.bbox), 1.0)
+            oversized_penalty = min(0.3, max(0.0, area_ratio - 20.0) / 100.0)
+            score = coverage * 0.65 + iou * 0.25 + (0.1 if contains_center else 0.0) - oversized_penalty
+            reason = f"coverage={coverage:.3f}, iou={iou:.3f}, center={contains_center}"
+            scored.append((score, block, reason))
+
+        scored.sort(key=lambda item: (-item[0], self._area(item[1].bbox), item[1].block_id))
+        threshold = self.overlap_threshold * 0.65
+        if (
+            self.settings.layout_analysis_mode == "v3"
+            and len(scored) > 1
+            and scored[1][0] >= threshold * 0.75
+            and scored[0][0] - scored[1][0] <= 0.1
+        ):
+            top_spatial_score = scored[0][0]
+            reranked: list[tuple[float, TextBlock, str]] = []
+            for score, block, reason in scored:
+                if top_spatial_score - score <= 0.1 and score >= threshold * 0.75:
+                    text_similarity = self._layout_text_similarity(ocr_block.text, block.text)
+                    score = min(1.0, score * 0.9 + text_similarity * 0.1)
+                    reason += f", text_similarity={text_similarity:.3f}"
+                reranked.append((score, block, reason))
+            scored = sorted(reranked, key=lambda item: (-item[0], self._area(item[1].bbox), item[1].block_id))
+        if scored and scored[0][0] >= threshold:
+            best_score, best_block, reason = scored[0]
+            ambiguous = len(scored) > 1 and scored[1][0] >= threshold and best_score - scored[1][0] <= 0.05
+            return LayoutMatchDecision(
+                block=best_block,
+                score=round(best_score, 4),
+                status="ambiguous" if ambiguous else "matched",
+                reason=f"{reason}; second_gap={best_score - scored[1][0]:.3f}" if ambiguous else reason,
+            )
         if not self.settings.hybrid_layout_center_fallback:
-            return None
-        return self._smallest_center_containing_block(bbox, structure_blocks)
+            return LayoutMatchDecision(None, 0.0, "meaningful_unmatched", "no candidate passed match threshold")
+        fallback = self._smallest_center_containing_block(ocr_block.bbox, structure_blocks)
+        if fallback is None:
+            return LayoutMatchDecision(None, 0.0, "meaningful_unmatched", "no spatial or center-containing candidate")
+        return LayoutMatchDecision(fallback, round(threshold, 4), "ambiguous", "matched by center-containing fallback")
+
+    def _unmatched_block(self, block: TextBlock, page_width: float, page_height: float) -> TextBlock:
+        compact = re.sub(r"\s+", "", block.text or "")
+        near_edge = (
+            block.bbox.x0 <= page_width * 0.03
+            or block.bbox.x1 >= page_width * 0.97
+            or block.bbox.y1 <= page_height * 0.03
+            or block.bbox.y0 >= page_height * 0.97
+        )
+        low_confidence = block.confidence is not None and block.confidence < 0.4
+        is_noise = len(compact) <= 4 and (near_edge or low_confidence or not compact.isalnum())
+        status = "noise_unmatched" if is_noise else "meaningful_unmatched"
+        flow_role = "noise" if is_noise else flow_role_for_region(block.block_type)
+        return block.model_copy(
+            update={
+                "source": block.source or ("ppocrv5_noise_unmatched" if is_noise else "ppocrv5_unmatched"),
+                "flow_role": flow_role if self.settings.layout_analysis_mode == "v3" else "",
+                "layout_match_score": 0.0,
+                "layout_match_status": status,
+                "layout_match_reason": "short edge/low-confidence OCR fragment" if is_noise else "no layout region matched",
+            }
+        )
+
+    @staticmethod
+    def _layout_text_similarity(left: str, right: str) -> float:
+        left_compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", left or ""))
+        right_compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", right or ""))
+        if not left_compact or not right_compact:
+            return 0.0
+        return ratio(left_compact[:1000], right_compact[:1000]) / 100.0
 
     def _smallest_center_containing_block(self, bbox: BBox, structure_blocks: list[TextBlock]) -> TextBlock | None:
         center_x = (bbox.x0 + bbox.x1) / 2
@@ -154,12 +279,51 @@ class PPStructureOCRHybridExtractor:
             return 0.0
         return ((x1 - x0) * (y1 - y0)) / inner_area
 
+    def _intersection_area(self, left: BBox, right: BBox) -> float:
+        return max(0.0, min(left.x1, right.x1) - max(left.x0, right.x0)) * max(
+            0.0, min(left.y1, right.y1) - max(left.y0, right.y0)
+        )
+
+    def _contains_center(self, inner: BBox, outer: BBox) -> bool:
+        center_x = (inner.x0 + inner.x1) / 2
+        center_y = (inner.y0 + inner.y1) / 2
+        return outer.x0 <= center_x <= outer.x1 and outer.y0 <= center_y <= outer.y1
+
     def _area(self, bbox: BBox) -> float:
-        return max(0.0, bbox.x1 - bbox.x0) * max(0.0, bbox.y1 - bbox.y0)
+        return bbox_area(bbox)
 
     def _layout_order(self, block_id: str) -> int | None:
         match = re.search(r"_b(\d+)$", block_id or "")
         return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _append_structure_only_regions(
+        blocks: list[TextBlock],
+        structure_blocks: list[TextBlock],
+    ) -> list[TextBlock]:
+        attached = {block.layout_block_id for block in blocks if block.layout_block_id}
+        keep_types = {"seal", "figure", "image", "chart", "formula", "abandon"}
+        result = list(blocks)
+        for structure_block in structure_blocks:
+            if structure_block.block_id in attached or structure_block.block_type not in keep_types:
+                continue
+            result.append(
+                structure_block.model_copy(
+                    update={
+                        "layout_block_id": structure_block.block_id,
+                        "layout_bbox": structure_block.bbox,
+                        "source": "ppstructure_layout_only",
+                        "flow_role": (
+                            flow_role_for_region(structure_block.block_type)
+                            if structure_block.flow_role
+                            else ""
+                        ),
+                        "layout_match_status": "structure_only",
+                        "layout_match_reason": "PP-Structure region has no OCR child",
+                    }
+                )
+            )
+        return result
 
     @staticmethod
     def _collect_html_tables(structure_blocks: list[TextBlock]) -> dict[str, tuple[str, list[list[float]], BBox]]:
@@ -277,7 +441,7 @@ class PPStructureOCRHybridExtractor:
                 "bbox": structure_block.bbox,
                 "block_type": self._normalize_block_type(structure_block.block_type) or "text",
                 "layout_block_id": structure_block.block_id,
-                "layout_order": self._layout_order(structure_block.block_id),
+                "layout_order": structure_block.layout_order or self._layout_order(structure_block.block_id),
                 "layout_bbox": structure_block.bbox,
                 "confidence": structure_block.confidence,
                 "source": "ppstructure_text",
@@ -377,8 +541,10 @@ class PPStructureOCRHybridExtractor:
 
     def _normalize_block_type(self, block_type: str) -> str:
         value = (block_type or "").strip().lower()
-        if value in {"table", "table_title", "table_caption"}:
+        if value == "table":
             return "table"
+        if value in {"table_title", "table_caption", "table_footnote"}:
+            return value
         if value in {"header", "page_header"}:
             return "header"
         if value in {"footer", "page_footer"}:
@@ -388,6 +554,102 @@ class PPStructureOCRHybridExtractor:
         if value in {"paragraph", "text", "content", "list", "reference"}:
             return "text"
         return value
+
+    def _build_layout_quality(
+        self,
+        document: Document,
+        structure_quality: LayoutQualityReport | None,
+    ) -> LayoutQualityReport:
+        quality = structure_quality.model_copy(deep=True) if structure_quality is not None else LayoutQualityReport()
+        blocks = [block for page in document.pages for block in page.blocks]
+        ocr_blocks = [block for block in blocks if not block.source.startswith("ppstructure_layout_only")]
+        matched = [block for block in ocr_blocks if block.layout_block_id]
+        quality.ocr_block_count = len(ocr_blocks)
+        quality.matched_ocr_block_count = len(matched)
+        quality.unmatched_ocr_block_count = len(ocr_blocks) - len(matched)
+        quality.ambiguous_match_count = sum(block.layout_match_status == "ambiguous" for block in ocr_blocks)
+        quality.meaningful_unmatched_count = sum(
+            block.layout_match_status == "meaningful_unmatched" for block in ocr_blocks
+        )
+        quality.noise_unmatched_count = sum(block.layout_match_status == "noise_unmatched" for block in ocr_blocks)
+        quality.structure_only_count = sum(
+            block.layout_match_status == "structure_only" for block in blocks
+        )
+        quality.reading_order_count = sum(block.reading_order is not None for block in blocks)
+        quality.reading_order_conflict_count = sum(reading_order_conflict_count(page) for page in document.pages)
+        quality.page_quality = [self._page_layout_quality(page) for page in document.pages]
+        v3_diagnostics = quality.parser_version == "v3"
+        if quality.ocr_block_count and quality.matched_ocr_block_count / quality.ocr_block_count < 0.98:
+            quality.warnings.append(
+                ParseWarningDetail(
+                    code="LAYOUT_LOW_MATCH_RATE",
+                    message=(
+                        f"版面区域匹配率为 "
+                        f"{quality.matched_ocr_block_count / quality.ocr_block_count:.1%}，"
+                        f"有 {quality.unmatched_ocr_block_count} 个 OCR 块未匹配。"
+                    ),
+                    source="layout_analysis",
+                )
+            )
+        if v3_diagnostics and quality.ambiguous_match_count:
+            quality.warnings.append(
+                ParseWarningDetail(
+                    code="LAYOUT_AMBIGUOUS_MATCH",
+                    message=f"有 {quality.ambiguous_match_count} 个 OCR 块存在多个接近的版面候选。",
+                    source="layout_analysis",
+                )
+            )
+        if v3_diagnostics and quality.meaningful_unmatched_count:
+            quality.warnings.append(
+                ParseWarningDetail(
+                    code="LAYOUT_MEANINGFUL_UNMATCHED",
+                    message=f"有 {quality.meaningful_unmatched_count} 个有效 OCR 块未匹配到版面区域。",
+                    source="layout_analysis",
+                )
+            )
+        if v3_diagnostics and quality.reading_order_conflict_count:
+            quality.warnings.append(
+                ParseWarningDetail(
+                    code="LAYOUT_READING_ORDER_CONFLICT",
+                    message=f"检测到 {quality.reading_order_conflict_count} 个模型顺序与几何阅读顺序冲突。",
+                    source="layout_analysis",
+                )
+            )
+        if blocks and quality.reading_order_count != len(blocks):
+            quality.warnings.append(
+                ParseWarningDetail(
+                    code="LAYOUT_READING_ORDER_INCOMPLETE",
+                    message=f"有 {len(blocks) - quality.reading_order_count} 个版面块缺少阅读顺序。",
+                    source="layout_analysis",
+                )
+            )
+        return quality
+
+    @staticmethod
+    def _page_layout_quality(page: Page) -> PageLayoutQualityReport:
+        ocr_blocks = [block for block in page.blocks if not block.source.startswith("ppstructure_layout_only")]
+        issues: list[str] = []
+        ambiguous = sum(block.layout_match_status == "ambiguous" for block in ocr_blocks)
+        meaningful = sum(block.layout_match_status == "meaningful_unmatched" for block in ocr_blocks)
+        conflicts = reading_order_conflict_count(page)
+        if ambiguous:
+            issues.append("ambiguous_match")
+        if meaningful:
+            issues.append("meaningful_unmatched")
+        if conflicts:
+            issues.append("reading_order_conflict")
+        return PageLayoutQualityReport(
+            page_no=page.page_no,
+            region_count=len({block.layout_block_id for block in page.blocks if block.layout_block_id}),
+            ocr_block_count=len(ocr_blocks),
+            matched_ocr_block_count=sum(bool(block.layout_block_id) for block in ocr_blocks),
+            ambiguous_match_count=ambiguous,
+            meaningful_unmatched_count=meaningful,
+            noise_unmatched_count=sum(block.layout_match_status == "noise_unmatched" for block in ocr_blocks),
+            structure_only_count=sum(block.layout_match_status == "structure_only" for block in page.blocks),
+            reading_order_conflict_count=conflicts,
+            issues=issues,
+        )
 
     def _save_merged_raw(
         self,

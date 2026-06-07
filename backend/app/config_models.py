@@ -6,8 +6,6 @@ All fields have defaults so existing ``.env`` files work without changes.
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -92,6 +90,7 @@ class ExtractionSettings(BaseModel):
     cache_ttl_hours: int = Field(default=72, ge=1)
     window_size: int = Field(default=0, ge=0)
     window_overlap: int = Field(default=1, ge=0)
+    layout_analysis_mode: str = "v2"
 
     ppocrv5: PPOCRV5Settings = Field(default_factory=PPOCRV5Settings)
     ppstructure: PPStructureSettings = Field(default_factory=PPStructureSettings)

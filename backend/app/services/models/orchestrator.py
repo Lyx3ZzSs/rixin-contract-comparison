@@ -5,10 +5,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.models import BBox, CharBox, Document, Page, TextBlock
+from app.models import Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError
-from app.services.models.layout_detector import LayoutDetector, LayoutRegion, LayoutResult
+from app.services.models.layout_detector import LayoutRegion, LayoutResult
 from app.services.models.registry import ModelRegistry
+from app.services.layout_analysis import flow_role_for_region
+from app.services.reading_order import assign_page_reading_order
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +117,15 @@ class ModelOrchestrator:
         for page_no in sorted(layout.page_dimensions.keys()):
             width, height = layout.page_dimensions[page_no]
             page_regions = [r for r in layout.regions if r.page_number == page_no]
-            blocks = self._regions_to_blocks(page_no, page_regions, tables_by_page.get(page_no, []))
-            pages.append(Page(page_no=page_no, width=width, height=height, blocks=blocks))
+            blocks = self._regions_to_blocks(
+                page_no,
+                page_regions,
+                tables_by_page.get(page_no, []),
+                use_v3_flow=layout.quality.parser_version == "v3" and layout.quality.mode == "v3",
+            )
+            page = Page(page_no=page_no, width=width, height=height, blocks=blocks)
+            assign_page_reading_order(page)
+            pages.append(page)
 
         return Document(
             filename=pdf_path.name,
@@ -130,6 +139,8 @@ class ModelOrchestrator:
         page_no: int,
         regions: list[LayoutRegion],
         tables: list[Any],
+        *,
+        use_v3_flow: bool = False,
     ) -> list[TextBlock]:
         """Convert layout regions to TextBlocks for the Document model."""
         blocks: list[TextBlock] = []
@@ -152,6 +163,14 @@ class ModelOrchestrator:
                 text=region.text,
                 bbox=region.bbox,
                 block_type=block_type,
+                confidence=region.confidence,
+                layout_order=region.layout_order,
+                layout_bbox=region.bbox,
+                block_role=region.original_label,
+                flow_role=flow_role_for_region(region.region_type) if use_v3_flow else "",
+                source="ppstructure_layout",
+                layout_match_status="structure_only",
+                layout_match_reason="region returned by PP-Structure",
                 raw_html=raw_html,
                 table_cell_bboxes=cell_bboxes,
             )
@@ -183,8 +202,10 @@ class ModelOrchestrator:
 def _normalize_block_type(region_type: str) -> str:
     """Normalize PP-Structure block labels to canonical types."""
     value = (region_type or "").strip().lower()
-    if value in {"table", "table_title", "table_caption"}:
+    if value == "table":
         return "table"
+    if value in {"table_title", "table_caption", "table_footnote"}:
+        return value
     if value in {"header", "page_header"}:
         return "header"
     if value in {"footer", "page_footer"}:
