@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
+DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
 DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal"]
@@ -52,6 +53,7 @@ class CharBox(BaseModel):
     page_no: int
     bbox: BBox
     text_index: int | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class EvidenceBox(BaseModel):
@@ -62,6 +64,7 @@ class EvidenceBox(BaseModel):
     highlight_type: DiffType | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     evidence_quality: EvidenceQuality = "MEDIUM"
+    text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class ParseWarningDetail(BaseModel):
@@ -186,6 +189,7 @@ class Clause(BaseModel):
     title: str = ""
     text: str
     normalized_text: str
+    match_text: str = ""
     page_numbers: list[int] = Field(default_factory=list)
     bboxes: list[EvidenceBox] = Field(default_factory=list)
     source_block_ids: list[str] = Field(default_factory=list)
@@ -227,6 +231,9 @@ class DiffItem(BaseModel):
     match_score_details: dict[str, float] = Field(default_factory=dict)
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
+    quality_status: DiffQualityStatus = "NORMAL"
+    text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    merged_sources: list[str] = Field(default_factory=list)
     review_status: ReviewStatus = "UNREVIEWED"
     review_comment: str = ""
     reviewed_by: str = ""

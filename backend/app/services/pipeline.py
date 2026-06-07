@@ -300,6 +300,8 @@ def _has_review_state(diff: DiffItem) -> bool:
 def _default_stages() -> list[PipelineStage]:
     from app.services.pipeline_stages import (
         ClauseDiffStage,
+        DocumentPreparationStage,
+        DiffQualityStage,
         EvidenceStage,
         ExtractionStage,
         MatchStage,
@@ -311,11 +313,13 @@ def _default_stages() -> list[PipelineStage]:
 
     return [
         ExtractionStage(),
+        DocumentPreparationStage(),
         PreClauseDiffStage(),
         SplitStage(),
         MatchStage(),
         ClauseDiffStage(),
         EvidenceStage(),
+        DiffQualityStage(),
         VisualizationStage(),
         SummaryStage(),
     ]

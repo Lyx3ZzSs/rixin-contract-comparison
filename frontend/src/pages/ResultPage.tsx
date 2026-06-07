@@ -36,7 +36,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
   const axisMarkers = useMemo(() => buildAxisMarkers(auditItems), [auditItems]);
   const auditStats = useMemo(() => buildAuditStats(auditItems), [auditItems]);
   const filteredAuditItems = useMemo(
-    () => (diffFilter === "ALL" ? auditItems : auditItems.filter((item) => item.type === diffFilter)),
+    () => sortAuditItems(diffFilter === "ALL" ? auditItems : auditItems.filter((item) => item.type === diffFilter)),
     [auditItems, diffFilter],
   );
 
@@ -373,6 +373,8 @@ interface AuditChangeItem {
   y0: number | null;
   reviewStatus: ReviewStatus;
   reviewComment: string;
+  qualityStatus: DiffItem["quality_status"];
+  reviewFlags: string[];
 }
 
 interface EvidenceLocation {
@@ -534,7 +536,29 @@ function auditItem(
     y0: location?.y0 ?? null,
     reviewStatus: review?.review_status ?? "UNREVIEWED",
     reviewComment: review?.review_comment ?? "",
+    qualityStatus: diff.quality_status ?? "NORMAL",
+    reviewFlags: diff.review_flags ?? [],
   };
+}
+
+function sortAuditItems(items: AuditChangeItem[]): AuditChangeItem[] {
+  return [...items].sort((left, right) => {
+    const qualityDiff = auditQualityPriority(left) - auditQualityPriority(right);
+    if (qualityDiff !== 0) {
+      return qualityDiff;
+    }
+    return (left.pageNo ?? 9999) - (right.pageNo ?? 9999) || (left.y0 ?? 999999) - (right.y0 ?? 999999) || left.id.localeCompare(right.id);
+  });
+}
+
+function auditQualityPriority(item: AuditChangeItem): number {
+  if (item.reviewFlags.includes("CRITICAL_VALUE_CHANGE")) {
+    return 0;
+  }
+  if (item.qualityStatus === "NEEDS_REVIEW") {
+    return 2;
+  }
+  return 1;
 }
 
 function buildAuditStats(items: AuditChangeItem[]): DiffStats {
@@ -696,6 +720,7 @@ function AuditDiffCard({
   const reviewActionLabel = isIgnored ? "恢复" : "忽略";
   const reviewActionStatus: ReviewStatus = isIgnored ? "UNREVIEWED" : "IGNORED";
   const ReviewActionIcon = isIgnored ? RotateCcw : Ban;
+  const qualityBadges = auditQualityBadges(item);
   const cardClassName = ["audit-diff-card", active ? "active" : "", isIgnored ? "ignored" : ""]
     .filter(Boolean)
     .join(" ");
@@ -709,7 +734,14 @@ function AuditDiffCard({
         tabIndex={tabIndex}
         onClick={() => onSelect(item)}
       >
-        <span className={`audit-type-badge ${item.type.toLowerCase()}`}>{diffTypeLabel(item.type)}</span>
+        <span className="audit-card-badges">
+          <span className={`audit-type-badge ${item.type.toLowerCase()}`}>{diffTypeLabel(item.type)}</span>
+          {qualityBadges.map((badge) => (
+            <span key={badge.className} className={`audit-quality-badge ${badge.className}`}>
+              {badge.label}
+            </span>
+          ))}
+        </span>
         <strong>{item.title}</strong>
         <span>{item.summary}</span>
       </button>
@@ -728,6 +760,20 @@ function AuditDiffCard({
       </div>
     </article>
   );
+}
+
+function auditQualityBadges(item: AuditChangeItem): Array<{ className: string; label: string }> {
+  const badges: Array<{ className: string; label: string }> = [];
+  if (item.reviewFlags.includes("CRITICAL_VALUE_CHANGE")) {
+    badges.push({ className: "critical", label: "关键差异" });
+  }
+  if (item.qualityStatus === "NEEDS_REVIEW") {
+    badges.push({ className: "needs-review", label: "待复核" });
+  }
+  if (item.reviewFlags.includes("CROSS_SOURCE_MERGED")) {
+    badges.push({ className: "merged", label: "已合并" });
+  }
+  return badges;
 }
 
 function diffTypeLabel(type: DiffFilter): string {

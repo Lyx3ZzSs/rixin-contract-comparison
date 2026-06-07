@@ -7,11 +7,6 @@ import unicodedata
 from difflib import SequenceMatcher
 
 from app.models_table import StructuredTable
-from app.services.table_compare.constants import (
-    AMOUNT_TOKEN_PATTERN,
-    SUMMARY_LABEL_PATTERN,
-    TABLE_HEADERS,
-)
 from app.services.table_compare.types import (
     _LogicalCell,
     _LogicalRow,

@@ -1,6 +1,7 @@
 export type TaskStatus = "PROCESSING" | "COMPLETED" | "FAILED";
 export type DiffType = "ADD" | "DELETE" | "MODIFY";
 export type EvidenceQuality = "LOW" | "MEDIUM" | "HIGH";
+export type DiffQualityStatus = "NORMAL" | "NEEDS_REVIEW";
 export type ReviewStatus = "UNREVIEWED" | "CONFIRMED" | "FALSE_POSITIVE" | "NEEDS_REVIEW" | "IGNORED";
 
 export interface ParseWarningDetail {
@@ -103,6 +104,7 @@ export interface EvidenceBox {
   highlight_type?: DiffType;
   confidence?: number;
   evidence_quality?: EvidenceQuality;
+  text_confidence?: number | null;
 }
 
 export interface DiffItem {
@@ -121,6 +123,9 @@ export interface DiffItem {
   match_score_details?: Record<string, number>;
   match_candidates?: Record<string, unknown>[];
   review_flags?: string[];
+  quality_status?: DiffQualityStatus;
+  text_confidence?: number | null;
+  merged_sources?: string[];
   review_status?: ReviewStatus;
   review_comment?: string;
   reviewed_by?: string;
@@ -210,6 +215,9 @@ export interface QualityDiffItem {
   match_score?: number | null;
   match_method: string;
   review_flags: string[];
+  quality_status?: DiffQualityStatus;
+  text_confidence?: number | null;
+  merged_sources?: string[];
   review_status: ReviewStatus;
 }
 
@@ -219,6 +227,9 @@ export interface CompareQualitySummary {
   diff_count: number;
   review_stats: DiffReviewResponse["review_stats"];
   source_counts: Record<string, number>;
+  needs_review_count?: number;
+  review_flag_counts?: Record<string, number>;
+  cross_source_merged_count?: number;
   evidence_quality_counts: Record<EvidenceQuality, number>;
   document_profile_summary: Record<string, {
     filename: string;

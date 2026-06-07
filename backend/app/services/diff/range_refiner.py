@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import difflib
+import logging
+import os
 import re
 
 from app.models import TextRange
@@ -15,15 +17,72 @@ from app.services.diff.text_utils import (
     trim_range_whitespace,
 )
 
+try:
+    from diff_match_patch import diff_match_patch as _DiffMatchPatch
+except Exception:  # pragma: no cover - dependency may be absent in fallback deployments
+    _DiffMatchPatch = None
+
+DIFF_MATCH_PATCH_TIMEOUT_SECONDS = 1.0
+logger = logging.getLogger(__name__)
+
 
 def changed_snippets(left: str, right: str) -> tuple[str, str, list[TextRange], list[TextRange]]:
+    if configured_diff_engine() == "diff_match_patch":
+        try:
+            return changed_snippets_diff_match_patch(left, right)
+        except Exception:
+            logger.warning("diff-match-patch failed; falling back to difflib", exc_info=True)
+            return changed_snippets_difflib(left, right)
+    return changed_snippets_difflib(left, right)
+
+
+def configured_diff_engine() -> str:
+    env_value = os.getenv("DIFF_ENGINE")
+    if env_value:
+        return normalize_diff_engine(env_value)
+    try:
+        from app.config import settings
+
+        return normalize_diff_engine(settings.diff_engine)
+    except Exception:
+        return "diff_match_patch"
+
+
+def normalize_diff_engine(value: str) -> str:
+    engine = str(value or "diff_match_patch").strip().lower().replace("-", "_")
+    if engine in {"diff_match_patch", "difflib"}:
+        return engine
+    logger.warning("Invalid DIFF_ENGINE=%r; falling back to diff_match_patch", value)
+    return "diff_match_patch"
+
+
+def changed_snippets_diff_match_patch(left: str, right: str) -> tuple[str, str, list[TextRange], list[TextRange]]:
+    if _DiffMatchPatch is None:
+        raise RuntimeError("diff-match-patch is not available")
+    left_compacted, left_segments = build_compacted_text(left)
+    right_compacted, right_segments = build_compacted_text(right)
+    opcodes = diff_match_patch_opcodes(left_compacted, right_compacted)
+    return changed_snippets_from_opcodes(left, right, left_segments, right_segments, opcodes)
+
+
+def changed_snippets_difflib(left: str, right: str) -> tuple[str, str, list[TextRange], list[TextRange]]:
     left_compacted, left_segments = build_compacted_text(left)
     right_compacted, right_segments = build_compacted_text(right)
 
-    matcher = difflib.SequenceMatcher(None, left_compacted, right_compacted)
+    matcher = difflib.SequenceMatcher(None, left_compacted, right_compacted, autojunk=False)
+    return changed_snippets_from_opcodes(left, right, left_segments, right_segments, matcher.get_opcodes())
+
+
+def changed_snippets_from_opcodes(
+    left: str,
+    right: str,
+    left_segments: list[tuple[int, int]],
+    right_segments: list[tuple[int, int]],
+    opcodes: list[tuple[str, int, int, int, int]],
+) -> tuple[str, str, list[TextRange], list[TextRange]]:
     left_ranges: list[TextRange] = []
     right_ranges: list[TextRange] = []
-    for hunk in change_hunks(matcher.get_opcodes()):
+    for hunk in change_hunks(opcodes):
         c_left_start, c_left_end = hunk[0][1], hunk[-1][2]
         c_right_start, c_right_end = hunk[0][3], hunk[-1][4]
 
@@ -49,9 +108,18 @@ def changed_snippets(left: str, right: str) -> tuple[str, str, list[TextRange], 
             continue
 
         if has_left_change and has_right_change:
-            refined_left_ranges, refined_right_ranges = refine_changed_ranges(
-                left, left_start, left_end, right, right_start, right_end,
-            )
+            if (
+                should_force_inline_for_composite_hunk(hunk)
+                and "\n" not in left[left_start:left_end]
+                and "\n" not in right[right_start:right_end]
+            ):
+                refined_left_ranges, refined_right_ranges = refine_inline_changed_ranges(
+                    left, left_start, left_end, right, right_start, right_end,
+                )
+            else:
+                refined_left_ranges, refined_right_ranges = refine_changed_ranges(
+                    left, left_start, left_end, right, right_start, right_end,
+                )
             left_ranges.extend(refined_left_ranges)
             right_ranges.extend(refined_right_ranges)
         elif has_left_change:
@@ -67,6 +135,33 @@ def changed_snippets(left: str, right: str) -> tuple[str, str, list[TextRange], 
         left_ranges,
         right_ranges,
     )
+
+
+def diff_match_patch_opcodes(left: str, right: str) -> list[tuple[str, int, int, int, int]]:
+    if _DiffMatchPatch is None:
+        raise RuntimeError("diff-match-patch is not available")
+    dmp = _DiffMatchPatch()
+    dmp.Diff_Timeout = DIFF_MATCH_PATCH_TIMEOUT_SECONDS
+    diffs = dmp.diff_main(left, right)
+    dmp.diff_cleanupSemantic(diffs)
+    opcodes: list[tuple[str, int, int, int, int]] = []
+    left_pos = 0
+    right_pos = 0
+    for operation, text in diffs:
+        length = len(text)
+        if operation == 0:
+            opcodes.append(("equal", left_pos, left_pos + length, right_pos, right_pos + length))
+            left_pos += length
+            right_pos += length
+        elif operation == -1:
+            opcodes.append(("delete", left_pos, left_pos + length, right_pos, right_pos))
+            left_pos += length
+        elif operation == 1:
+            opcodes.append(("insert", left_pos, left_pos, right_pos, right_pos + length))
+            right_pos += length
+    if left_pos != len(left) or right_pos != len(right):
+        raise RuntimeError("diff-match-patch returned inconsistent cursor positions")
+    return opcodes
 
 
 def change_hunks(
@@ -101,6 +196,11 @@ def is_short_bridge(left_len: int, right_len: int) -> bool:
     return max(left_len, right_len) <= 5
 
 
+def should_force_inline_for_composite_hunk(hunk: list[tuple[str, int, int, int, int]]) -> bool:
+    changed_parts = [opcode for opcode in hunk if opcode[0] != "equal"]
+    return len(changed_parts) > 1 and any(opcode[0] == "equal" for opcode in hunk)
+
+
 def refine_changed_ranges(
     left: str, left_start: int, left_end: int,
     right: str, right_start: int, right_end: int,
@@ -123,6 +223,11 @@ def coarse_modify_ranges(
     left: str, left_start: int, left_end: int,
     right: str, right_start: int, right_end: int,
 ) -> tuple[list[TextRange], list[TextRange]]:
+    if is_numeric_value_change(left, left_start, left_end, right, right_start, right_end):
+        return (
+            [expand_numeric_value_range(left, left_start, left_end, "MODIFY")],
+            [expand_numeric_value_range(right, right_start, right_end, "MODIFY")],
+        )
     if is_percent_unit_change(left, left_start, left_end, right, right_start, right_end):
         return (
             [expand_numeric_unit_range(left, left_start, left_end, "MODIFY")],
@@ -187,7 +292,13 @@ def refine_inline_changed_ranges(
         has_left = tag != "insert" and current_left_start < current_left_end and not is_whitespace_only(left, current_left_start, current_left_end)
         has_right = tag != "delete" and current_right_start < current_right_end and not is_whitespace_only(right, current_right_start, current_right_end)
         if has_left and has_right:
-            if is_percent_unit_change(
+            if is_numeric_value_change(
+                left, current_left_start, current_left_end,
+                right, current_right_start, current_right_end,
+            ):
+                left_ranges.append(expand_numeric_value_range(left, current_left_start, current_left_end, "MODIFY"))
+                right_ranges.append(expand_numeric_value_range(right, current_right_start, current_right_end, "MODIFY"))
+            elif is_percent_unit_change(
                 left, current_left_start, current_left_end,
                 right, current_right_start, current_right_end,
             ):
@@ -368,6 +479,31 @@ def is_percent_unit_change(
 
 def has_numeric_prefix(text: str, index: int) -> bool:
     return index > 0 and text[index - 1].isdigit()
+
+
+def is_numeric_value_change(
+    left: str,
+    left_start: int,
+    left_end: int,
+    right: str,
+    right_start: int,
+    right_end: int,
+) -> bool:
+    return has_number_context(left, left_start, left_end) and has_number_context(right, right_start, right_end)
+
+
+def has_number_context(text: str, start: int, end: int) -> bool:
+    if any(char.isdigit() for char in text[start:end]):
+        return True
+    return (start > 0 and text[start - 1].isdigit()) or (end < len(text) and text[end].isdigit())
+
+
+def expand_numeric_value_range(text: str, start: int, end: int, highlight_type: str) -> TextRange:
+    while start > 0 and is_number_context_char(text[start - 1]):
+        start -= 1
+    while end < len(text) and is_number_context_char(text[end]):
+        end += 1
+    return TextRange(start=start, end=end, highlight_type=highlight_type)
 
 
 def expand_numeric_unit_range(text: str, start: int, end: int, highlight_type: str) -> TextRange:

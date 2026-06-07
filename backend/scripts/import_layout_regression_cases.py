@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.evaluate_layout_quality import _actual_payload
+from scripts.evaluate_layout_quality import _actual_payload, _clause_order_summary
 from app.models import Document
 from app.services.clause_splitter import ClauseSplitter
 
@@ -74,10 +74,7 @@ def import_cases(
         candidate_path = case_dir / ("expected.json" if promote_current else "candidate_expected.json")
         candidate_path.write_text(json.dumps(candidate, ensure_ascii=False, indent=2), encoding="utf-8")
         clauses = ClauseSplitter().split(Document.model_validate(candidate), "L")
-        clause_payload = [
-            {"clause_no": clause.clause_no, "title": clause.title, "normalized_text": clause.normalized_text}
-            for clause in clauses
-        ]
+        clause_payload = [_clause_order_summary(clause) for clause in clauses]
         clause_path = case_dir / ("expected_clauses.json" if promote_current else "candidate_expected_clauses.json")
         clause_path.write_text(json.dumps(clause_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         imported.append(case_id)

@@ -17,7 +17,9 @@ from app.services.compare_debug import CompareDebugWriter
 from app.services.clause_splitter import ClauseSplitter
 from app.services.cover_metadata import CoverMetadataComparator
 from app.services.diff_engine import DiffEngine
+from app.services.diff_quality import DiffQualityProcessor
 from app.services.document_profiler import DocumentProfiler
+from app.services.document_preparation import DocumentPreparer
 from app.services.evidence_locator import EvidenceLocator
 from app.services.extractors import build_compare_document_extractor, build_document_extractor
 from app.services.extractors.base import (
@@ -267,6 +269,32 @@ class ExtractionStage:
         return "\n".join(path for path in [original, compare] if path)
 
 
+class DocumentPreparationStage:
+    name = "文档准备中"
+    start_progress = 35
+    progress = 36
+
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.preparer = DocumentPreparer()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+
+    def execute(self, ctx: PipelineContext) -> None:
+        extractions = ctx.require_extractions()
+        result = self.preparer.prepare_pair(
+            extractions.original.document,
+            extractions.compare.document,
+        )
+        _write_debug_artifact(
+            ctx.task,
+            "document_preparation",
+            lambda: self.debug_writer.write_document_preparation(
+                ctx.task.task_id,
+                result.to_debug_payload(),
+            ),
+        )
+        _emit_progress(ctx, 36, self.name, "document_preparation_done")
+
+
 class PreClauseDiffStage:
     name = "差异识别中"
     start_progress = 36
@@ -472,6 +500,29 @@ class EvidenceStage:
         self.evidence_locator.assign_evidence_confidence(ctx.diffs)
         ctx.diffs = DiffEngine().deduplicate_overlaps(ctx.diffs)
         _emit_progress(ctx, 82, self.name, "evidence_confidence_done")
+
+
+class DiffQualityStage:
+    name = "差异质量评估中"
+    start_progress = 84
+    progress = 85
+
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.processor = DiffQualityProcessor()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+
+    def execute(self, ctx: PipelineContext) -> None:
+        result = self.processor.process(ctx.require_diffs())
+        ctx.diffs = result.diffs
+        _write_debug_artifact(
+            ctx.task,
+            "diff_quality",
+            lambda: self.debug_writer.write_diff_quality(
+                ctx.task.task_id,
+                result.to_debug_payload(),
+            ),
+        )
+        _emit_progress(ctx, 85, self.name, "diff_quality_done")
 
 
 class VisualizationStage:

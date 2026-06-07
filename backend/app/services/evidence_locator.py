@@ -72,10 +72,23 @@ class EvidenceLocator:
         evidences: list[EvidenceBox] = []
         for segment in segments:
             evidences.extend(
-                EvidenceBox(page_no=page_no, bbox=bbox, method=method, text=text, highlight_type=text_range.highlight_type)
+                EvidenceBox(
+                    page_no=page_no,
+                    bbox=bbox,
+                    method=method,
+                    text=text,
+                    highlight_type=text_range.highlight_type,
+                    text_confidence=self._segment_text_confidence(segment),
+                )
                 for page_no, bbox, text in self._merge_char_boxes(segment)
             )
         return evidences
+
+    def _segment_text_confidence(self, char_boxes: list[CharBox]) -> float | None:
+        confidences = [char_box.confidence for char_box in char_boxes if char_box.confidence is not None]
+        if not confidences:
+            return None
+        return min(confidences)
 
     def _non_whitespace_segments(self, char_boxes: list[CharBox | None]) -> list[list[CharBox]]:
         segments: list[list[CharBox]] = []

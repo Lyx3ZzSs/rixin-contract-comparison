@@ -34,6 +34,8 @@ class CompareService:
     def _build_pipeline(self) -> ComparePipeline:
         from app.services.pipeline_stages import (
             ClauseDiffStage,
+            DocumentPreparationStage,
+            DiffQualityStage,
             EvidenceStage,
             MatchStage,
             PreClauseDiffStage,
@@ -50,11 +52,13 @@ class CompareService:
         return ComparePipeline(
             stages=[
                 extraction,
+                DocumentPreparationStage(artifact_store=self.artifact_store),
                 PreClauseDiffStage(artifact_store=self.artifact_store),
                 SplitStage(artifact_store=self.artifact_store),
                 MatchStage(artifact_store=self.artifact_store),
                 ClauseDiffStage(artifact_store=self.artifact_store),
                 EvidenceStage(),
+                DiffQualityStage(artifact_store=self.artifact_store),
                 VisualizationStage(artifact_store=self.artifact_store),
                 SummaryStage(),
             ],

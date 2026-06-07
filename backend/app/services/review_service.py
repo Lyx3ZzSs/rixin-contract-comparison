@@ -122,6 +122,7 @@ class CompareQualityService:
         review_service = CompareReviewService()
         review_service.refresh_review_stats(task)
         source_counts = Counter(diff.source_type or "clause" for diff in task.diffs)
+        review_flag_counts = Counter(flag for diff in task.diffs for flag in diff.review_flags)
         evidence_counts = Counter()
         low_confidence_diffs: list[dict[str, Any]] = []
         low_similarity_diffs: list[dict[str, Any]] = []
@@ -147,6 +148,9 @@ class CompareQualityService:
                 "ignored_count": task.ignored_count,
             },
             "source_counts": dict(source_counts),
+            "needs_review_count": len([diff for diff in task.diffs if diff.quality_status == "NEEDS_REVIEW"]),
+            "review_flag_counts": dict(review_flag_counts),
+            "cross_source_merged_count": review_flag_counts["CROSS_SOURCE_MERGED"],
             "evidence_quality_counts": {
                 "HIGH": evidence_counts["HIGH"],
                 "MEDIUM": evidence_counts["MEDIUM"],
@@ -183,6 +187,9 @@ class CompareQualityService:
             "match_score": diff.match_score,
             "match_method": diff.match_method,
             "review_flags": diff.review_flags,
+            "quality_status": diff.quality_status,
+            "text_confidence": diff.text_confidence,
+            "merged_sources": diff.merged_sources,
             "review_status": diff.review_status,
         }
 

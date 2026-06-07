@@ -101,8 +101,6 @@ class FlatTextComparator:
         rows by overall text similarity. Produces simpler DiffItems that
         indicate which rows differ without cell-level detail.
         """
-        from app.services.table_compare.types import _LogicalTable
-
         orig_rows = self._extract_row_units(original_tables)
         comp_rows = self._extract_row_units(compare_tables)
         if not orig_rows and not comp_rows:

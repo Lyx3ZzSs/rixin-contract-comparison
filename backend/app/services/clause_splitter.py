@@ -75,6 +75,8 @@ class ClauseSplitter:
             for block in page.blocks:
                 if block.flow_role in {"margin", "noise", "non_text"}:
                     continue
+                if (block.block_role or "").lower() == "signature_area":
+                    continue
                 block_type = (block.block_type or "").lower()
                 if block_type in self.skip_block_types:
                     continue
@@ -402,7 +404,8 @@ class ClauseSplitter:
                     clause_no=item["clause_no"],
                     title=item["title"] or self._title_from_text(text),
                     text=text,
-                    normalized_text=self.normalizer.normalize_for_match(text),
+                    normalized_text=self.normalizer.normalize_for_diff(text),
+                    match_text=self.normalizer.normalize_for_match(text),
                     page_numbers=sorted(set(item["page_numbers"])),
                     bboxes=item["bboxes"],
                     source_block_ids=list(dict.fromkeys(item["source_block_ids"])),

@@ -305,12 +305,17 @@ def _clause_order_metrics(case_dir: Path, actual_payload: dict[str, Any]) -> tup
         return 0, 0
     expected = _read_json_any(expected_path)
     clauses = ClauseSplitter().split(Document.model_validate(actual_payload), "L")
-    actual = [
-        {"clause_no": clause.clause_no, "title": clause.title, "normalized_text": clause.normalized_text}
-        for clause in clauses
-    ]
+    actual = [_clause_order_summary(clause) for clause in clauses]
     hits = sum(left == right for left, right in zip(expected, actual, strict=False))
     return hits, len(expected)
+
+
+def _clause_order_summary(clause: Any) -> dict[str, str]:
+    return {
+        "clause_no": clause.clause_no,
+        "title": clause.title,
+        "normalized_text": clause.match_text or clause.normalized_text,
+    }
 
 
 def _label_counts(

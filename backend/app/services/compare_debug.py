@@ -52,6 +52,12 @@ class CompareDebugWriter:
             )
         )
 
+    def write_document_preparation(self, task_id: str, decisions: list[dict[str, Any]]) -> str:
+        return str(self._write_json(task_id, "document_preparation.json", {"decisions": decisions}))
+
+    def write_diff_quality(self, task_id: str, decisions: list[dict[str, Any]]) -> str:
+        return str(self._write_json(task_id, "diff_quality.json", {"decisions": decisions}))
+
     def write_matches(self, task_id: str, pairs: list[ClausePair]) -> str:
         payload = []
         for pair in pairs:
@@ -83,6 +89,9 @@ class CompareDebugWriter:
                     "match_method": diff.match_method,
                     "match_score_details": diff.match_score_details,
                     "review_flags": diff.review_flags,
+                    "quality_status": diff.quality_status,
+                    "text_confidence": diff.text_confidence,
+                    "merged_sources": diff.merged_sources,
                     "original_snippet": diff.original_snippet,
                     "compare_snippet": diff.compare_snippet,
                     "original_evidence": [self._evidence_summary(item) for item in diff.original_evidence],
@@ -125,5 +134,6 @@ class CompareDebugWriter:
             "highlight_type": evidence.highlight_type,
             "confidence": evidence.confidence,
             "evidence_quality": evidence.evidence_quality,
+            "text_confidence": evidence.text_confidence,
             "text": evidence.text[:160],
         }

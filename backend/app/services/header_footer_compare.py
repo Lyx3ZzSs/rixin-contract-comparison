@@ -25,6 +25,7 @@ class HeaderFooterCandidate:
     bbox: BBox
     block_id: str
     is_page_number: bool = False
+    explicit: bool = False
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,7 @@ class HeaderFooterComparator:
             bbox=block.bbox,
             block_id=block.block_id,
             is_page_number=is_page_number,
+            explicit=block_type in self.header_types or block_type in self.footer_types,
         )
 
     def _non_page_number_entries(
@@ -144,6 +146,8 @@ class HeaderFooterComparator:
 
         entries: list[HeaderFooterEntry] = []
         for key, group in sorted(grouped.items(), key=lambda item: self._entry_sort_key(item[1])):
+            if not any(candidate.explicit for candidate in group) and len({candidate.page_no for candidate in group}) < 2:
+                continue
             sample = group[0]
             entries.append(
                 HeaderFooterEntry(

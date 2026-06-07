@@ -213,9 +213,9 @@ class LocalJsonTaskRepository:
             return None
         path = Path(str(value))
         if not path.is_absolute():
-            return str(path)
+            return path.as_posix()
         try:
-            return str(path.resolve().relative_to(self.task_dir(task_id).resolve()))
+            return path.resolve().relative_to(self.task_dir(task_id).resolve()).as_posix()
         except ValueError:
             return str(path)
 

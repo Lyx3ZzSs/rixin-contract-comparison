@@ -140,6 +140,10 @@ class Settings(BaseSettings):
     match_threshold: int = Field(default=85, ge=0, le=100)
     match_use_prefilter: bool = True
 
+    # -- Diff (flat env vars) ---------------------------------------------
+
+    diff_engine: str = "diff_match_patch"
+
     # -- Report (flat env vars) -------------------------------------------
 
     report_font_path: str = ""
@@ -188,6 +192,14 @@ class Settings(BaseSettings):
         if mode not in {"legacy", "shadow", "v2", "v3_shadow", "v3"}:
             raise ValueError("LAYOUT_ANALYSIS_MODE must be one of: legacy, shadow, v2, v3_shadow, v3")
         return mode
+
+    @field_validator("diff_engine", mode="before")
+    @classmethod
+    def validate_diff_engine(cls, value: Any) -> str:
+        engine = str(value or "diff_match_patch").strip().lower().replace("-", "_")
+        if engine not in {"diff_match_patch", "difflib"}:
+            raise ValueError("DIFF_ENGINE must be one of: diff_match_patch, difflib")
+        return engine
 
     @field_validator("ppocrv5_url", "ppstructure_url", "ai_llm_base_url")
     @classmethod

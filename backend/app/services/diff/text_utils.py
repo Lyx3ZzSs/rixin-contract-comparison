@@ -4,8 +4,6 @@ import re
 
 from app.models import TextRange
 
-sentence_pattern = re.compile(r"(?<=[。！？!?；;])\s*")
-
 
 def build_diff_text(text: str) -> tuple[str, list[tuple[int, int]]]:
     result_chars: list[str] = []
@@ -72,11 +70,6 @@ def merge_ranges(ranges: list[TextRange]) -> list[TextRange]:
         else:
             merged.append(item)
     return merged
-
-
-def split_sentences(text: str) -> list[str]:
-    sentences = [part for part in sentence_pattern.split(text) if part.strip()]
-    return sentences or [text]
 
 
 def shorten(text: str, max_len: int = 220) -> str:

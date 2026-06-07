@@ -3957,7 +3957,7 @@ h2 {
 }
 
 .audit-diff-card.ignored .audit-diff-main strong,
-.audit-diff-card.ignored .audit-diff-main > span:not(.audit-type-badge) {
+.audit-diff-card.ignored .audit-diff-main > span:not(.audit-card-badges) {
   color: #778385;
 }
 
@@ -3982,7 +3982,7 @@ h2 {
   white-space: nowrap;
 }
 
-.audit-diff-main > span:not(.audit-type-badge) {
+.audit-diff-main > span:not(.audit-card-badges) {
   display: -webkit-box;
   overflow: hidden;
   color: #5c6a6d;
@@ -3990,6 +3990,12 @@ h2 {
   line-height: 1.56;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.audit-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .audit-type-badge {
@@ -4014,6 +4020,29 @@ h2 {
 .audit-type-badge.modify {
   background: var(--diff-modify-soft);
   color: var(--diff-modify-text);
+}
+
+.audit-quality-badge {
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 0.78rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.audit-quality-badge.critical {
+  background: #ffe4e1;
+  color: #b42318;
+}
+
+.audit-quality-badge.needs-review {
+  background: #eef2ff;
+  color: #444ce7;
+}
+
+.audit-quality-badge.merged {
+  background: #e7f6f4;
+  color: #28756f;
 }
 
 .audit-empty {

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-import unicodedata
 
 from app.models import BBox, TextBlock
 from app.models_table import StructuredTable, TableRow
@@ -17,8 +16,6 @@ from app.services.table_compare.types import (
     _LogicalCell,
     _LogicalRow,
     _LogicalTable,
-    _SummaryPair,
-    _SummaryTransition,
 )
 from app.services.table_compare.html_parser import parse_html_tables
 from app.services.table_compare import utils

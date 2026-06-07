@@ -46,17 +46,32 @@ def test_header_footer_compares_labeled_ocr_header_as_modify() -> None:
     assert diffs[0].compare_evidence[0].highlight_type == "MODIFY"
 
 
-def test_header_footer_detects_pymupdf_margin_text_blocks() -> None:
-    original = _document([[_block("o1", "合同编号：A-001", y0=22, y1=38)]])
-    compare = _document([[_block("c1", "合同编号：B-002", y0=22, y1=38)]])
+def test_header_footer_detects_repeated_pymupdf_margin_text_blocks() -> None:
+    original = _document([
+        [_block("o1", "CONFIDENTIAL-A", y0=22, y1=38, page_no=1)],
+        [_block("o2", "CONFIDENTIAL-A", y0=22, y1=38, page_no=2)],
+    ])
+    compare = _document([
+        [_block("c1", "CONFIDENTIAL-B", y0=22, y1=38, page_no=1)],
+        [_block("c2", "CONFIDENTIAL-B", y0=22, y1=38, page_no=2)],
+    ])
 
     diffs = HeaderFooterComparator().build_diffs(original, compare)
 
     assert len(diffs) == 1
     assert diffs[0].diff_type == "MODIFY"
     assert diffs[0].title == "页眉"
-    assert diffs[0].original_text == "合同编号：A-001"
-    assert diffs[0].compare_text == "合同编号：B-002"
+    assert diffs[0].original_text == "CONFIDENTIAL-A"
+    assert diffs[0].compare_text == "CONFIDENTIAL-B"
+
+
+def test_header_footer_does_not_treat_one_off_top_text_as_header() -> None:
+    original = _document([[_block("o1", "合同编号：A-001", y0=22, y1=38)]])
+    compare = _document([[_block("c1", "合同编号：B-002", y0=22, y1=38)]])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
 
 
 def test_header_footer_deduplicates_repeated_headers() -> None:

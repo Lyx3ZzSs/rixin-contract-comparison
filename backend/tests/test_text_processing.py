@@ -1610,6 +1610,24 @@ def test_diff_engine_reports_percent_to_per_mille_as_modify_with_number_context(
     assert [item.highlight_type for item in diff.compare_change_ranges] == ["MODIFY"]
 
 
+def test_diff_engine_refines_composite_numeric_and_party_changes_separately() -> None:
+    left = Clause(
+        clause_id="O001",
+        text="金额100元，甲方负责",
+        normalized_text="金额100元甲方负责",
+    )
+    right = Clause(
+        clause_id="N001",
+        text="金额200元，乙方负责",
+        normalized_text="金额200元乙方负责",
+    )
+
+    diff = DiffEngine().build_diffs([ClausePair(original=left, compare=right)])[0]
+
+    assert [left.text[item.start:item.end] for item in diff.original_change_ranges] == ["100", "甲"]
+    assert [right.text[item.start:item.end] for item in diff.compare_change_ranges] == ["200", "乙"]
+
+
 def test_diff_engine_marks_added_colon_without_deleting_shared_date_label() -> None:
     diff = DiffEngine().build_diffs(
         [
@@ -2187,6 +2205,59 @@ def test_deduplicate_overlaps_shrinks_delete_title_only() -> None:
     delete_result = next(d for d in result if d.diff_id == "D003")
     assert delete_result.diff_type == "DELETE"
     assert "缺失编号" in delete_result.readable_change
+
+    modify_result = next(d for d in result if d.diff_id == "D004")
+    assert modify_result.compare_evidence == []
+    assert modify_result.compare_change_ranges == []
+    assert modify_result.compare_snippet == ""
+    assert "系统开放性与可配置性要求" not in modify_result.readable_change
+
+
+def test_deduplicate_overlaps_keeps_modify_when_other_side_still_has_change() -> None:
+    engine = DiffEngine()
+    delete_diff = DiffItem(
+        diff_id="D007",
+        diff_type="DELETE",
+        title="系统开放性与可配置性要求",
+        original_text="一、系统开放性与可配置性要求",
+        original_snippet="一、系统开放性与可配置性要求",
+        original_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=80, y0=100, x1=500, y1=140),
+                method="clause_fallback",
+                text="一、系统开放性与可配置性要求",
+                highlight_type="DELETE",
+            ),
+        ],
+        original_change_ranges=[TextRange(start=0, end=14, highlight_type="DELETE")],
+    )
+    modify_diff = DiffItem(
+        diff_id="D008",
+        diff_type="MODIFY",
+        original_text="七、其他条款\n内容A",
+        compare_text="七、其他条款\n系统开放性与可配置性要求\n内容B",
+        original_snippet="内容A",
+        compare_snippet="系统开放性与可配置性要求",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=80, y0=200, x1=500, y1=240),
+                method="clause_fallback",
+                text="系统开放性与可配置性要求",
+                highlight_type="MODIFY",
+            ),
+        ],
+        compare_change_ranges=[TextRange(start=6, end=20, highlight_type="MODIFY")],
+        original_change_ranges=[TextRange(start=6, end=10, highlight_type="MODIFY")],
+    )
+
+    result = engine.deduplicate_overlaps([delete_diff, modify_diff])
+
+    modify_result = next(d for d in result if d.diff_id == "D008")
+    assert modify_result.compare_change_ranges == []
+    assert modify_result.original_change_ranges
+    assert modify_result.original_snippet == "内容A"
 
 
 def test_deduplicate_overlaps_no_overlap_returns_unchanged() -> None:

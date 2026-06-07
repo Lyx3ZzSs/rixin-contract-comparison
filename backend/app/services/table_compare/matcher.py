@@ -6,10 +6,6 @@ import re
 from difflib import SequenceMatcher
 
 from app.models_table import StructuredTable
-from app.services.table_compare.types import (
-    _LogicalCell,
-    _LogicalRow,
-)
 from app.services.table_compare import utils
 
 

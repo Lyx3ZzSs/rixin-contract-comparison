@@ -67,12 +67,28 @@ class ExtractionFilePreprocessor:
             return executable
         if sys.platform == "darwin":
             macos_path = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
-            if Path(macos_path).is_file():
+            if self._path_is_file(macos_path):
                 return macos_path
         raise PPOCRV5LLMExtractionError(
             "未安装 LibreOffice，无法解析 Word 文件。"
             "请安装 LibreOffice 或设置 LIBREOFFICE_PATH 环境变量。"
         )
+
+    def _path_is_file(self, path_value: str) -> bool:
+        path = Path(path_value)
+        if path.is_file():
+            return True
+        if sys.platform != "darwin":
+            return False
+
+        class PosixPathProbe:
+            def __str__(self) -> str:
+                return path_value
+
+        try:
+            return bool(Path.is_file(PosixPathProbe()))  # type: ignore[arg-type]
+        except Exception:
+            return False
 
     def _convert_word_to_pdf(self, path: Path) -> Path:
         output_dir = path.parent / "converted"

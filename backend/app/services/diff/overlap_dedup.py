@@ -55,7 +55,7 @@ def deduplicate_overlaps(diffs: list[DiffItem]) -> list[DiffItem]:
                     continue
                 if diff.diff_id in add_overlap_map:
                     diff = remove_delete_overlap(diff, add_overlap_map[diff.diff_id], add_by_id, add_bodies)
-                    if not diff.original_change_ranges:
+                    if not has_change_ranges(diff):
                         continue
                 result.append(diff)
 
@@ -260,12 +260,12 @@ def remove_delete_overlap(
 
     remaining_ranges = [
         r for r in diff.original_change_ranges
-        if r.highlight_type != "DELETE" or not range_text_in_set(diff.original_text, r, delete_texts)
+        if r.highlight_type not in ("DELETE", "MODIFY") or not range_text_in_set(diff.original_text, r, delete_texts)
     ]
 
     return diff.model_copy(update={
         "original_evidence": filtered_evidence,
-        "original_change_ranges": remaining_ranges or rebuild_ranges_from_evidence(filtered_evidence, diff.original_text),
+        "original_change_ranges": remaining_ranges,
         "original_snippet": rebuild_snippet(diff.original_text, remaining_ranges),
         "readable_change": rebuild_readable(diff.original_text, diff.compare_text, remaining_ranges, diff.compare_change_ranges),
     })
@@ -296,12 +296,12 @@ def remove_compare_overlap(
 
     remaining_ranges = [
         r for r in diff.compare_change_ranges
-        if r.highlight_type != "ADD" or not range_text_in_set(diff.compare_text, r, overlap_texts)
+        if r.highlight_type not in ("ADD", "MODIFY") or not range_text_in_set(diff.compare_text, r, overlap_texts)
     ]
 
     return diff.model_copy(update={
         "compare_evidence": filtered_evidence,
-        "compare_change_ranges": remaining_ranges or rebuild_ranges_from_evidence(filtered_evidence, diff.compare_text),
+        "compare_change_ranges": remaining_ranges,
         "compare_snippet": rebuild_snippet(diff.compare_text, remaining_ranges),
         "readable_change": rebuild_readable(diff.original_text, diff.compare_text, diff.original_change_ranges, remaining_ranges),
     })
@@ -324,19 +324,16 @@ def range_text_in_set(text: str, range_: TextRange, delete_texts: set[str]) -> b
     if not fragment:
         return False
     for dt in delete_texts:
-        if dt and len(fragment) >= 10 and (fragment in dt or dt in fragment):
+        if dt and (
+            len(fragment) >= 10 and (fragment in dt or dt in fragment)
+            or text_overlap_score(fragment, dt) >= 80
+        ):
             return True
     return False
 
 
-def rebuild_ranges_from_evidence(evidence: list[EvidenceBox], text: str) -> list[TextRange]:
-    ranges: list[TextRange] = []
-    for e in evidence:
-        if e.highlight_type is not None:
-            idx = text.find(e.text[:20]) if len(e.text) >= 20 else text.find(e.text)
-            if idx >= 0:
-                ranges.append(TextRange(start=idx, end=idx + len(e.text), highlight_type=e.highlight_type))
-    return ranges
+def has_change_ranges(diff: DiffItem) -> bool:
+    return bool(diff.original_change_ranges or diff.compare_change_ranges)
 
 
 def rebuild_snippet(text: str, ranges: list[TextRange]) -> str:

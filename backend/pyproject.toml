@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn",
     "python-multipart",
     "pymupdf",
+    "diff-match-patch",
     "rapidfuzz",
     "reportlab",
     "pydantic>=2",

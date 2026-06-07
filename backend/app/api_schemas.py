@@ -9,6 +9,7 @@ TaskExecutionStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCE
 TaskExecutionType = Literal["compare", "extraction"]
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
+DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
 ExtractionFieldStatus = Literal["found", "not_found", "error"]
 ExtractionMethod = Literal["explicit", "semantic"]
@@ -29,6 +30,7 @@ class EvidenceBoxResponse(BaseModel):
     highlight_type: DiffType | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     evidence_quality: EvidenceQuality = "MEDIUM"
+    text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class TextRangeResponse(BaseModel):
@@ -119,6 +121,9 @@ class CompareDiffResponse(BaseModel):
     match_score_details: dict[str, float] = Field(default_factory=dict)
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
+    quality_status: DiffQualityStatus = "NORMAL"
+    text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    merged_sources: list[str] = Field(default_factory=list)
     review_status: ReviewStatus = "UNREVIEWED"
     review_comment: str = ""
     reviewed_by: str = ""

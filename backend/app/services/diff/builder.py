@@ -108,6 +108,8 @@ def review_flags(pair: ClausePair) -> list[str]:
         flags.append("SAME_CLAUSE_NO_LOW_SIMILARITY")
     if pair.match_method == "renumbered_similarity":
         flags.append("POSSIBLE_RENUMBERED_CLAUSE")
+    if pair.score_details.get("business_token_mismatch", 0.0) >= 1:
+        flags.append("BUSINESS_TOKEN_MISMATCH_REVIEW")
     if body_score < 60 and pair.score < LOW_CONFIDENCE_MATCH_THRESHOLD:
         flags.append("LOW_CONFIDENCE_MATCH")
     return flags

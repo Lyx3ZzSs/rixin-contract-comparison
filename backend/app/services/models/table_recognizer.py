@@ -4,8 +4,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.models import BBox
-from app.services.models.base import ModelProtocol
 from app.services.models.layout_detector import LayoutRegion, LayoutResult
 
 logger = logging.getLogger(__name__)

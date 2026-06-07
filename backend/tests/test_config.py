@@ -71,3 +71,17 @@ def test_layout_analysis_mode_rejects_unknown_value() -> None:
 def test_layout_analysis_mode_accepts_v3_rollout_modes() -> None:
     assert Settings(layout_analysis_mode="v3_shadow").layout_analysis_mode == "v3_shadow"
     assert Settings(layout_analysis_mode="v3").layout_analysis_mode == "v3"
+
+
+def test_diff_engine_defaults_to_diff_match_patch() -> None:
+    assert Settings().diff_engine == "diff_match_patch"
+
+
+def test_diff_engine_accepts_difflib_fallback_mode() -> None:
+    assert Settings(diff_engine="difflib").diff_engine == "difflib"
+    assert Settings(diff_engine="diff-match-patch").diff_engine == "diff_match_patch"
+
+
+def test_diff_engine_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError, match="DIFF_ENGINE"):
+        Settings(diff_engine="unknown")

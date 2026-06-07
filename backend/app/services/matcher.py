@@ -22,13 +22,22 @@ class MatchCandidate:
     score: float
     method: str
     details: dict[str, float]
+    sources: tuple[str, ...] = ()
 
 
 class ClauseMatcher:
-    def __init__(self, threshold: int = 85, use_prefilter: bool = True) -> None:
+    def __init__(
+        self,
+        threshold: int = 85,
+        use_prefilter: bool = True,
+        body_top_k: int = 8,
+        title_top_k: int = 5,
+    ) -> None:
         self.threshold = threshold
         self.normalizer = TextNormalizer()
         self._use_prefilter = use_prefilter
+        self.body_top_k = body_top_k
+        self.title_top_k = title_top_k
 
     def match(self, original: list[Clause], compare: list[Clause]) -> list[ClausePair]:
         pairs: list[ClausePair] = []
@@ -104,7 +113,7 @@ class ClauseMatcher:
                 details = self._score_details(left, right, original_index, compare_index, original, compare, original_count, compare_count)
                 score = self._weighted_score(details)
                 method = self._match_method(left, right, details, score)
-                candidates.append(MatchCandidate(left, right, score, method, details))
+                candidates.append(MatchCandidate(left, right, score, method, details, ("exhaustive",)))
         candidates.sort(
             key=lambda item: (
                 item.score,
@@ -120,36 +129,64 @@ class ClauseMatcher:
         compare_no_index = self._build_clause_no_index(compare)
         original_count = max(1, len(original) - 1)
         compare_count = max(1, len(compare) - 1)
-        compare_indices_by_id = {id(c): i for i, c in enumerate(compare)}
         position_window = 0.15
         index_window = 3
 
         candidates: list[MatchCandidate] = []
+        compare_body_choices = {index: self._match_text(clause) for index, clause in enumerate(compare)}
+        compare_title_choices = {index: clause.title for index, clause in enumerate(compare) if clause.title}
         for original_index, left in enumerate(original):
-            candidate_compare_indices: set[int] = set()
+            candidate_sources: dict[int, set[str]] = {}
+
+            def add_candidate(index: int, source: str) -> None:
+                if 0 <= index < len(compare):
+                    candidate_sources.setdefault(index, set()).add(source)
 
             left_norm = self._normalize_clause_no(left.clause_no)
             if left_norm and left_norm in compare_no_index:
-                candidate_compare_indices.update(compare_no_index[left_norm])
+                for ci in compare_no_index[left_norm]:
+                    add_candidate(ci, "clause_no")
 
             orig_ratio = original_index / original_count
             for ci, right in enumerate(compare):
                 if abs(ci / compare_count - orig_ratio) <= position_window:
-                    candidate_compare_indices.add(ci)
+                    add_candidate(ci, "position")
 
             approx_ci = round(orig_ratio * compare_count)
             for ci in range(max(0, approx_ci - index_window), min(len(compare), approx_ci + index_window + 1)):
-                candidate_compare_indices.add(ci)
+                add_candidate(ci, "index_window")
 
-            if not candidate_compare_indices:
-                candidate_compare_indices = set(range(len(compare)))
+            for ci in self._top_k_indices(
+                self._match_text(left),
+                compare_body_choices,
+                limit=self.body_top_k,
+                score_cutoff=55.0,
+                scorer=self._ratio_score,
+            ):
+                add_candidate(ci, "body_top_k")
 
-            for compare_index in candidate_compare_indices:
+            if left.title:
+                for ci in self._top_k_indices(
+                    left.title,
+                    compare_title_choices,
+                    limit=self.title_top_k,
+                    score_cutoff=70.0,
+                    scorer=self._token_score,
+                ):
+                    add_candidate(ci, "title_top_k")
+
+            if not candidate_sources:
+                for ci in range(len(compare)):
+                    add_candidate(ci, "fallback_all")
+
+            for compare_index, sources in candidate_sources.items():
                 right = compare[compare_index]
                 details = self._score_details(left, right, original_index, compare_index, original, compare, original_count, compare_count)
+                for source in sources:
+                    details[f"candidate_source_{source}"] = 1.0
                 score = self._weighted_score(details)
                 method = self._match_method(left, right, details, score)
-                candidates.append(MatchCandidate(left, right, score, method, details))
+                candidates.append(MatchCandidate(left, right, score, method, details, tuple(sorted(sources))))
 
         candidates.sort(
             key=lambda item: (
@@ -181,29 +218,43 @@ class ClauseMatcher:
         original_count: int,
         compare_count: int,
     ) -> dict[str, float]:
-        title_score = self._score(left.title, right.title) if left.title and right.title else 0.0
-        body_score = self._score(left.normalized_text, right.normalized_text)
+        title_score = self._token_score(left.title, right.title) if left.title and right.title else 0.0
+        body_details = self._body_score_details(self._match_text(left), self._match_text(right))
         clause_no_score = self._clause_no_score(left.clause_no, right.clause_no)
         position_score = self._position_score(original_index / original_count, compare_index / compare_count)
         neighbor_score = self._neighbor_score(original, compare, original_index, compare_index)
-        return {
+        business_token_score, business_mismatch = self._business_token_score(left.text, right.text, body_details["body_score"])
+        details = {
             "clause_no_score": round(clause_no_score, 2),
             "title_score": round(title_score, 2),
-            "body_score": round(body_score, 2),
             "position_score": round(position_score, 2),
             "neighbor_score": round(neighbor_score, 2),
+            "business_token_score": round(business_token_score, 2),
+            "business_token_mismatch": 1.0 if business_mismatch else 0.0,
         }
+        details.update({key: round(value, 2) for key, value in body_details.items()})
+        return details
 
     def _weighted_score(self, details: dict[str, float]) -> float:
         weighted = (
             details["clause_no_score"] * 0.25
-            + details["title_score"] * 0.20
-            + details["body_score"] * 0.40
-            + details["position_score"] * 0.10
+            + details["title_score"] * 0.18
+            + details["body_score"] * 0.37
+            + details["business_token_score"] * 0.07
+            + details["position_score"] * 0.08
             + details["neighbor_score"] * 0.05
         )
-        if details["body_score"] >= self.threshold:
-            weighted = max(weighted, details["body_score"])
+        if details["clause_no_score"] == 100 and details["title_score"] >= 90:
+            weighted = max(weighted, 100.0)
+        elif details["clause_no_score"] == 100:
+            weighted = max(weighted, min(100.0, 70.0 + details["body_score"] * 0.20 + details["title_score"] * 0.10))
+        elif details["body_score"] >= self.threshold:
+            if details["business_token_score"] < 45:
+                weighted = max(weighted, details["body_score"] * 0.90)
+            else:
+                weighted = max(weighted, details["body_score"])
+        elif details["body_score"] >= min(self.threshold, 78):
+            weighted = max(weighted, details["body_score"] * 0.92)
         return round(weighted, 2)
 
     def _candidate_acceptable(self, candidate: MatchCandidate) -> bool:
@@ -215,7 +266,13 @@ class ClauseMatcher:
             return True
         if candidate.score >= min(self.threshold, 78) and details["body_score"] >= 55:
             return True
-        return bool(details["title_score"] >= 92 and details["body_score"] >= 60)
+        if details["title_score"] >= 92 and details["body_score"] >= 55:
+            return True
+        return bool(
+            details.get("body_partial_score", 0.0) >= 90
+            and details.get("body_length_coverage", 0.0) >= 0.70
+            and min(len(self._match_text(candidate.original)), len(self._match_text(candidate.compare))) >= 20
+        )
 
     def _match_method(self, left: Clause, right: Clause, details: dict[str, float], score: float) -> str:
         same_clause_no = self._same_clause_no(left.clause_no, right.clause_no)
@@ -225,6 +282,8 @@ class ClauseMatcher:
             return "same_clause_no_weighted"
         if left.clause_no and right.clause_no and details["body_score"] >= 70:
             return "renumbered_similarity"
+        if details.get("body_partial_score", 0.0) >= 90 and details.get("body_length_coverage", 0.0) >= 0.70:
+            return "partial_body_similarity"
         if details["title_score"] > details["body_score"] and score >= min(self.threshold, 78):
             return "title_weighted_similarity"
         return "body_weighted_similarity"
@@ -307,6 +366,9 @@ class ClauseMatcher:
         return sum(scores) / len(scores) if scores else 0.0
 
     def _score(self, left: str, right: str) -> float:
+        return self._token_score(left, right)
+
+    def _token_score(self, left: str, right: str) -> float:
         if not left and not right:
             return 100.0
         if not left or not right:
@@ -314,6 +376,111 @@ class ClauseMatcher:
         if fuzz is not None:
             return float(fuzz.token_set_ratio(left, right))
         return SequenceMatcher(None, left, right).ratio() * 100
+
+    def _ratio_score(self, left: str, right: str) -> float:
+        if not left and not right:
+            return 100.0
+        if not left or not right:
+            return 0.0
+        if fuzz is not None:
+            return float(fuzz.ratio(left, right))
+        return SequenceMatcher(None, left, right).ratio() * 100
+
+    def _partial_score(self, left: str, right: str) -> float:
+        if not left and not right:
+            return 100.0
+        if not left or not right:
+            return 0.0
+        if fuzz is not None:
+            return float(fuzz.partial_ratio(left, right))
+        return SequenceMatcher(None, left, right).ratio() * 100
+
+    def _body_score_details(self, left: str, right: str) -> dict[str, float]:
+        ratio_score = self._ratio_score(left, right)
+        token_score = self._token_score(left, right)
+        partial_score = self._partial_score(left, right)
+        min_len = min(len(left or ""), len(right or ""))
+        max_len = max(len(left or ""), len(right or ""))
+        length_coverage = (min_len / max_len) if max_len else 1.0
+        capped_token = token_score
+        capped_partial = partial_score
+        if min_len < 8:
+            capped_token = min(capped_token, 70.0)
+            capped_partial = min(capped_partial, 70.0)
+        elif length_coverage < 0.50:
+            capped_token = min(capped_token, 76.0)
+            capped_partial = min(capped_partial, 72.0)
+        elif length_coverage < 0.70:
+            capped_token = min(capped_token, 86.0)
+            capped_partial = min(capped_partial, 82.0)
+        elif length_coverage < 0.85:
+            capped_partial = min(capped_partial, 92.0)
+        body_score = max(ratio_score, capped_token, capped_partial)
+        return {
+            "body_ratio_score": ratio_score,
+            "body_token_score": token_score,
+            "body_token_capped_score": capped_token,
+            "body_partial_score": partial_score,
+            "body_length_coverage": length_coverage,
+            "body_score": body_score,
+        }
+
+    def _top_k_indices(
+        self,
+        query: str,
+        choices: dict[int, str],
+        limit: int,
+        score_cutoff: float,
+        scorer,
+    ) -> list[int]:
+        if not query or limit <= 0:
+            return []
+        scored: list[tuple[float, int]] = []
+        for index, choice in choices.items():
+            if not choice:
+                continue
+            score = scorer(query, choice)
+            if score >= score_cutoff:
+                scored.append((score, index))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [index for _, index in scored[:limit]]
+
+    def _business_token_score(self, left: str, right: str, body_score: float) -> tuple[float, bool]:
+        left_tokens = self._business_tokens(left)
+        right_tokens = self._business_tokens(right)
+        if not left_tokens and not right_tokens:
+            return 100.0, False
+        if not left_tokens or not right_tokens:
+            return 70.0, body_score >= 80
+        intersection = len(left_tokens & right_tokens)
+        union = len(left_tokens | right_tokens)
+        score = (intersection / union) * 100 if union else 100.0
+        return score, bool(score < 45 and body_score >= 70)
+
+    def _business_tokens(self, text: str) -> set[str]:
+        normalized = unicodedata.normalize("NFKC", text or "").lower()
+        tokens: set[str] = set()
+        token_patterns = [
+            r"\bv\s*\d+(?:\.\d+)*\b",
+            r"\d+(?:,\d{3})*(?:\.\d+)?\s*(?:%|‰)",
+            r"\d+(?:,\d{3})*(?:\.\d+)?\s*(?:元|万元|亿元|usd|rmb|cny|人民币|美元)",
+            r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日?",
+            r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}",
+            r"\d+(?:,\d{3})*(?:\.\d+)?",
+            r"\bparty\s+[ab]\b",
+            r"\bcompany\b",
+            r"\bbank\b",
+            r"\baccount\b",
+        ]
+        for pattern in token_patterns:
+            tokens.update(re.sub(r"\s+", "", match.group(0)) for match in re.finditer(pattern, normalized))
+        for keyword in ("甲方", "乙方", "丙方", "公司", "银行", "账号", "合同金额", "违约金", "质保期", "付款", "交货", "期限"):
+            if keyword in normalized:
+                tokens.add(keyword)
+        return tokens
+
+    def _match_text(self, clause: Clause) -> str:
+        return clause.match_text or clause.normalized_text
 
     def _match_contained_numbered_clauses(
         self,
@@ -443,7 +610,8 @@ class ClauseMatcher:
             clause_no="",
             title=self._title_from_text(text),
             text=text,
-            normalized_text=self.normalizer.normalize_for_match(text),
+            normalized_text=self.normalizer.normalize_for_diff(text),
+            match_text=self.normalizer.normalize_for_match(text),
             page_numbers=clause.page_numbers,
             bboxes=clause.bboxes,
             source_block_ids=clause.source_block_ids,
@@ -479,7 +647,8 @@ class ClauseMatcher:
         return clause.model_copy(
             update={
                 "text": text,
-                "normalized_text": self.normalizer.normalize_for_match(text),
+                "normalized_text": self.normalizer.normalize_for_diff(text),
+                "match_text": self.normalizer.normalize_for_match(text),
                 "title": clause.title if text.startswith(clause.title) else self._title_from_text(text),
                 "char_boxes": kept_boxes if kept_boxes is not None else [],
             }
