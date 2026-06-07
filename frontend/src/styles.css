@@ -21,6 +21,15 @@
   --red: #c9362c;
   --blue: #2367c8;
   --blue-strong: #174f9f;
+  --diff-add-fill: #43b883;
+  --diff-add-soft: #e3f5ec;
+  --diff-add-text: #0b6b3d;
+  --diff-delete-fill: #e45d54;
+  --diff-delete-soft: #fae9e7;
+  --diff-delete-text: #a52820;
+  --diff-modify-fill: #f6c440;
+  --diff-modify-soft: #fff2cf;
+  --diff-modify-text: #7a4700;
   --shadow: 0 8px 28px rgba(33, 61, 64, 0.1);
 }
 
@@ -3473,36 +3482,40 @@ h2 {
 }
 
 .pdf-highlight-mark.modify rect {
-  fill: #f6c440;
+  fill: var(--diff-modify-fill);
 }
 
 .pdf-highlight-mark.add rect {
-  fill: #43b883;
+  fill: var(--diff-add-fill);
 }
 
 .pdf-highlight-mark.delete rect {
-  fill: #e45d54;
+  fill: var(--diff-delete-fill);
 }
 
 .pdf-highlight-mark.active rect,
-.pdf-highlight-mark:hover rect {
+.pdf-highlight-mark:hover rect,
+.pdf-highlight-mark:focus-visible rect {
   fill-opacity: 0.42;
   stroke-width: 1.8;
   filter: drop-shadow(0 0 3px rgba(18, 41, 34, 0.2));
 }
 
 .pdf-highlight-mark.active.modify rect,
-.pdf-highlight-mark.modify:hover rect {
+.pdf-highlight-mark.modify:hover rect,
+.pdf-highlight-mark.modify:focus-visible rect {
   stroke: rgba(174, 118, 14, 0.92);
 }
 
 .pdf-highlight-mark.active.add rect,
-.pdf-highlight-mark.add:hover rect {
+.pdf-highlight-mark.add:hover rect,
+.pdf-highlight-mark.add:focus-visible rect {
   stroke: rgba(27, 126, 88, 0.92);
 }
 
 .pdf-highlight-mark.active.delete rect,
-.pdf-highlight-mark.delete:hover rect {
+.pdf-highlight-mark.delete:hover rect,
+.pdf-highlight-mark.delete:focus-visible rect {
   stroke: rgba(179, 54, 45, 0.95);
 }
 
@@ -3546,35 +3559,58 @@ h2 {
   --axis-color: var(--teal);
   --axis-fill: #ffffff;
   position: absolute;
-  width: 14px;
-  height: 14px;
+  display: grid;
+  width: 18px;
+  height: 18px;
   padding: 0;
-  border: 3px solid var(--axis-color);
+  place-items: center;
+  border: 2px solid var(--axis-color);
   border-radius: 50%;
   background: var(--axis-fill);
+  color: var(--axis-color);
   cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
   transform: translateY(-50%);
 }
 
 .axis-marker:hover,
-.axis-marker.active {
+.axis-marker.active,
+.axis-marker:focus-visible {
   outline: 2px solid #1d2b2f;
   outline-offset: 3px;
 }
 
+.axis-marker::after {
+  content: "";
+}
+
 .axis-marker.add {
-  --axis-color: var(--green);
-  --axis-fill: #e3f5ec;
+  --axis-color: var(--diff-add-text);
+  --axis-fill: var(--diff-add-soft);
+}
+
+.axis-marker.add::after {
+  content: "+";
 }
 
 .axis-marker.delete {
-  --axis-color: var(--red);
-  --axis-fill: #fae9e7;
+  --axis-color: var(--diff-delete-text);
+  --axis-fill: var(--diff-delete-soft);
+}
+
+.axis-marker.delete::after {
+  content: "-";
 }
 
 .axis-marker.modify {
-  --axis-color: #e7b845;
-  --axis-fill: #fff2cf;
+  --axis-color: var(--diff-modify-text);
+  --axis-fill: var(--diff-modify-soft);
+}
+
+.axis-marker.modify::after {
+  content: "~";
 }
 
 .axis-marker.teal {
@@ -3583,7 +3619,7 @@ h2 {
 
 .axis-marker.amber {
   top: calc(50% + 108px);
-  border-color: #e7b845;
+  border-color: var(--diff-modify-fill);
 }
 
 .pdf-floating-tools {
@@ -3897,9 +3933,9 @@ h2 {
 }
 
 .audit-diff-card.active {
-  border-color: #e6b43f;
-  background: #fffdf7;
-  box-shadow: 0 0 0 1px rgba(230, 180, 63, 0.34);
+  border-color: var(--teal-strong);
+  background: #f3fbfa;
+  box-shadow: 0 0 0 1px rgba(45, 149, 140, 0.26);
 }
 
 .audit-diff-card.ignored,
@@ -3966,18 +4002,18 @@ h2 {
 }
 
 .audit-type-badge.add {
-  background: #e3f5ec;
-  color: var(--green);
+  background: var(--diff-add-soft);
+  color: var(--diff-add-text);
 }
 
 .audit-type-badge.delete {
-  background: #fae9e7;
-  color: var(--red);
+  background: var(--diff-delete-soft);
+  color: var(--diff-delete-text);
 }
 
 .audit-type-badge.modify {
-  background: #fff2cf;
-  color: var(--amber);
+  background: var(--diff-modify-soft);
+  color: var(--diff-modify-text);
 }
 
 .audit-empty {
