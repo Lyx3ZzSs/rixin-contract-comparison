@@ -549,6 +549,8 @@ class PPStructureOCRHybridExtractor:
             return "header"
         if value in {"footer", "page_footer"}:
             return "footer"
+        if value in {"footnote", "vision_footnote"}:
+            return "footnote"
         if value in {"doc_title", "title"}:
             return value
         if value in {"paragraph", "text", "content", "list", "reference"}:

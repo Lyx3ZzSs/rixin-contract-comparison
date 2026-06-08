@@ -41,6 +41,7 @@ class DiffQualityProcessor:
         working = self._dedupe_cross_source(working, decisions)
         self._classify(working, decisions)
         self._flag_boundary_drift(working, decisions)
+        self._flag_cross_source_structural_misclassification(working, decisions)
         self._propagate_text_confidence(working)
         return DiffQualityResult(diffs=working, decisions=decisions)
 
@@ -134,6 +135,39 @@ class DiffQualityProcessor:
                     )
                 )
 
+    def _flag_cross_source_structural_misclassification(
+        self,
+        diffs: list[DiffItem],
+        decisions: list[DiffQualityDecision],
+    ) -> None:
+        non_clause = [diff for diff in diffs if diff.source_type != "clause"]
+        for diff in diffs:
+            if diff.source_type != "clause" or diff.diff_type not in {"ADD", "DELETE"}:
+                continue
+            clause_text = self._structural_key(diff.compare_text or diff.compare_snippet)
+            if not clause_text:
+                continue
+            for other in non_clause:
+                opposite_text = (
+                    other.original_text or other.original_snippet
+                    if diff.diff_type == "ADD"
+                    else other.compare_text or other.compare_snippet
+                )
+                other_key = self._structural_key(opposite_text)
+                if not other_key:
+                    continue
+                if clause_text.startswith(other_key) or other_key.startswith(clause_text[: max(8, len(other_key))]):
+                    self._add_flag(diff, "POSSIBLE_STRUCTURAL_MISCLASSIFICATION")
+                    diff.quality_status = "NEEDS_REVIEW"
+                    decisions.append(
+                        DiffQualityDecision(
+                            action="possible_structural_misclassification",
+                            diff_id=diff.diff_id,
+                            detail={"paired_diff_id": other.diff_id, "source_type": other.source_type},
+                        )
+                    )
+                    break
+
     def _propagate_text_confidence(self, diffs: list[DiffItem]) -> None:
         for diff in diffs:
             confidences = [
@@ -180,6 +214,11 @@ class DiffQualityProcessor:
     def _compact(self, text: str) -> str:
         normalized = unicodedata.normalize("NFKC", text or "")
         return self.style_punct_pattern.sub("", normalized).lower()
+
+    def _structural_key(self, text: str) -> str:
+        compact = self._compact(text)
+        compact = re.sub(r"^[一二三四五六七八九十]+", "", compact)
+        return compact
 
     def _merge_evidence(self, left: list[EvidenceBox], right: list[EvidenceBox]) -> list[EvidenceBox]:
         result = list(left)

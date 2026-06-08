@@ -7,8 +7,10 @@ from dataclasses import dataclass, field
 def get_process_memory_mb() -> float:
     """Return peak process memory usage in MB, or zero when metrics are unavailable."""
     try:
-        import resource
+        if sys.platform == "win32":
+            raise ImportError("resource is not available on Windows")
 
+        import resource
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         if sys.platform == "darwin":
             return rss / (1024 * 1024)

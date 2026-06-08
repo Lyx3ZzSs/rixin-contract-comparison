@@ -14455,7 +14455,7 @@
             "y1": 764.5,
             "normalized": null
           },
-          "block_type": "footer",
+          "block_type": "footnote",
           "confidence": 0.9997065663337708,
           "layout_block_id": "p3_ppstructure_b6",
           "layout_order": 6,
@@ -14472,7 +14472,7 @@
           "source": "ppocrv5_layout_matched",
           "reading_order": 7,
           "block_role": "vision_footnote",
-          "flow_role": "margin",
+          "flow_role": "note",
           "layout_match_score": 0.7236,
           "layout_match_status": "matched",
           "layout_match_reason": "coverage=0.659, iou=0.659, center=True, text_similarity=1.000",

@@ -95,6 +95,24 @@ def test_layout_adapter_preserves_semantic_labels_and_non_text_regions() -> None
     assert result.quality.label_counts["paragraph_title"] == 1
 
 
+def test_layout_adapter_keeps_vision_footnote_as_footnote() -> None:
+    payload = _payload()
+    payload["result"]["layoutParsingResults"][0]["prunedResult"]["parsing_res_list"].append(
+        {
+            "block_label": "vision_footnote",
+            "block_content": "单位：元（人民币）",
+            "block_bbox": [100, 300, 400, 350],
+        }
+    )
+
+    result = PPStructureLayoutAdapter(mode="v3").parse(payload, [(500, 1000)])
+    document = PPStructureLayoutAdapter(mode="v3").to_document(result, "sample.pdf")
+
+    footnote = next(block for block in document.pages[0].blocks if block.text == "单位：元（人民币）")
+    assert footnote.block_type == "footnote"
+    assert footnote.flow_role == "note"
+
+
 def test_layout_adapter_matches_multiple_table_cell_results_one_to_one() -> None:
     result = PPStructureLayoutAdapter().parse(_payload(), [(500, 1000)])
     tables = [region for region in result.regions if region.region_type == "table"]

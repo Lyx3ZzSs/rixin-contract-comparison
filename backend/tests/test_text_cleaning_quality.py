@@ -202,3 +202,28 @@ def test_diff_quality_dedupes_exact_cross_source_duplicates() -> None:
     assert [diff.diff_id for diff in result.diffs] == ["D002"]
     assert "CROSS_SOURCE_MERGED" in result.diffs[0].review_flags
     assert result.diffs[0].merged_sources == ["table"]
+
+
+def test_diff_quality_flags_clause_add_matching_opposite_cross_source_text() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D001",
+            diff_type="MODIFY",
+            source_type="header_footer",
+            original_text="一、产品名称、型号、数量、金额、供货时间：",
+            compare_text="单位：元（人民币）",
+        ),
+        DiffItem(
+            diff_id="D002",
+            diff_type="ADD",
+            source_type="clause",
+            compare_text="一、产品名称、型号、数量、金额、供货时间：\n合同编号：",
+            compare_snippet="一、产品名称、型号、数量、金额、供货时间： 合同编号：",
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+    clause = next(diff for diff in result.diffs if diff.diff_id == "D002")
+
+    assert clause.quality_status == "NEEDS_REVIEW"
+    assert "POSSIBLE_STRUCTURAL_MISCLASSIFICATION" in clause.review_flags

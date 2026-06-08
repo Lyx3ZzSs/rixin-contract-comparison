@@ -95,5 +95,6 @@ def test_get_process_memory_mb_returns_zero_when_psutil_sampling_fails(monkeypat
     fake_psutil = SimpleNamespace(Process=FailingProcess)
     monkeypatch.delitem(sys.modules, "resource", raising=False)
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(sys, "platform", "win32")
 
     assert get_process_memory_mb() == 0.0

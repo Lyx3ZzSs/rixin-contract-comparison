@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.models import BBox, CharBox, Clause, Document, EvidenceBox, TextBlock
 from app.services.table_compare import TableComparator
@@ -21,6 +21,7 @@ class ClauseUnit:
     layout_block_id: str = ""
     layout_order: int | None = None
     reading_order: int | None = None
+    order_reason: str = "source"
 
 
 class ClauseSplitter:
@@ -32,6 +33,8 @@ class ClauseSplitter:
         "header",
         "page_footer",
         "page_header",
+        "footnote",
+        "vision_footnote",
         "image",
         "figure",
         "seal",
@@ -45,8 +48,18 @@ class ClauseSplitter:
     mask_block_types = {"formula", "chart", "image", "figure"}
     mask_overlap_threshold = 0.5
     min_content_density = 0.15
+    reading_order_same_line_x_backtrack = 8.0
     table_block_types = {"table", "table_title"}
     cover_block_types = {"doc_title", "title"}
+    excluded_block_roles = {
+        "cover_metadata",
+        "table_caption",
+        "table_note",
+        "page_footer",
+        "body_footnote",
+        "signature_area",
+        "noise",
+    }
 
     def __init__(self, text_normalizer: TextNormalizer | None = None) -> None:
         self.normalizer = text_normalizer or TextNormalizer()
@@ -75,7 +88,7 @@ class ClauseSplitter:
             for block in page.blocks:
                 if block.flow_role in {"margin", "noise", "non_text"}:
                     continue
-                if (block.block_role or "").lower() == "signature_area":
+                if (block.block_role or "").lower() in self.excluded_block_roles:
                     continue
                 block_type = (block.block_type or "").lower()
                 if block_type in self.skip_block_types:
@@ -254,7 +267,7 @@ class ClauseSplitter:
         pages = sorted({unit.page_no for unit in units})
         for page_no in pages:
             page_units = [unit for unit in units if unit.page_no == page_no]
-            if self._can_trust_reading_order(page_units):
+            if self._has_complete_unique_reading_order(page_units):
                 page_units.sort(
                     key=lambda unit: (
                         unit.reading_order or 0,
@@ -263,18 +276,85 @@ class ClauseSplitter:
                         unit.block_id,
                     )
                 )
+                if self._reading_order_matches_geometry(page_units):
+                    page_units = self._mark_order_reason(page_units, "reading_order")
+                else:
+                    page_units = self._mark_order_reason(
+                        self._repair_reading_order_geometry(page_units),
+                        "reading_order_geometry_repair",
+                    )
             elif self._can_trust_layout_order(page_units):
                 snapped = self._snap_y_by_layout_group(page_units)
                 page_units.sort(key=lambda unit: (unit.layout_order or 0, snapped[unit.block_id], unit.bbox.x0, unit.block_id))
+                page_units = self._mark_order_reason(page_units, self._fallback_order_reason(page_units, "layout_order_geometry"))
             else:
                 snapped = self._snap_y_coordinates(page_units)
                 page_units.sort(key=lambda unit: (snapped[unit.block_id], unit.bbox.x0, unit.layout_order or 0, unit.block_id))
+                page_units = self._mark_order_reason(page_units, self._fallback_order_reason(page_units, "geometry"))
             ordered.extend(page_units)
         return ordered
 
-    def _can_trust_reading_order(self, units: list[ClauseUnit]) -> bool:
+    def _mark_order_reason(self, units: list[ClauseUnit], reason: str) -> list[ClauseUnit]:
+        return [replace(unit, order_reason=reason) for unit in units]
+
+    def _fallback_order_reason(self, units: list[ClauseUnit], fallback: str) -> str:
+        orders = [unit.reading_order for unit in units]
+        if orders and all(order is not None for order in orders) and len(set(orders)) == len(orders):
+            return f"reading_order_{fallback}_fallback"
+        return fallback
+
+    def _has_complete_unique_reading_order(self, units: list[ClauseUnit]) -> bool:
         orders = [unit.reading_order for unit in units]
         return bool(orders) and all(order is not None for order in orders) and len(set(orders)) == len(orders)
+
+    def _reading_order_matches_geometry(self, units: list[ClauseUnit]) -> bool:
+        return not any(self._line_group_needs_repair(group) for group in self._line_groups(units))
+
+    def _repair_reading_order_geometry(self, units: list[ClauseUnit]) -> list[ClauseUnit]:
+        repaired = list(units)
+        conflict_groups = [group for group in self._line_groups(units) if self._line_group_needs_repair(group)]
+        for group in conflict_groups:
+            orders = {unit.reading_order for unit in group}
+            positions = [index for index, unit in enumerate(repaired) if unit.reading_order in orders]
+            if not positions:
+                continue
+            insert_at = min(positions)
+            repaired = [unit for unit in repaired if unit.reading_order not in orders]
+            left_to_right = sorted(group, key=lambda unit: (unit.bbox.x0, unit.reading_order or 0, unit.block_id))
+            repaired[insert_at:insert_at] = left_to_right
+        return repaired
+
+    def _line_group_needs_repair(self, group: list[ClauseUnit]) -> bool:
+        markers = [unit for unit in group if self._starts_clause_unit(unit)]
+        if not markers:
+            return False
+        return any(
+            marker.bbox.x0 + self.reading_order_same_line_x_backtrack < other.bbox.x0
+            and (marker.reading_order or 0) > (other.reading_order or 0)
+            for marker in markers
+            for other in group
+            if marker is not other
+        )
+
+    def _line_groups(self, units: list[ClauseUnit]) -> list[list[ClauseUnit]]:
+        if not units:
+            return []
+        heights = [unit.bbox.y1 - unit.bbox.y0 for unit in units]
+        median_height = sorted(heights)[len(heights) // 2]
+        threshold = max(median_height * 0.5, 2.0)
+        sorted_by_y = sorted(units, key=lambda unit: (unit.bbox.y0, unit.bbox.x0, unit.reading_order or 0, unit.block_id))
+        groups: list[list[ClauseUnit]] = []
+        current: list[ClauseUnit] = [sorted_by_y[0]]
+        current_y = sorted_by_y[0].bbox.y0
+        for unit in sorted_by_y[1:]:
+            if unit.bbox.y0 - current_y <= threshold:
+                current.append(unit)
+            else:
+                groups.append(current)
+                current = [unit]
+                current_y = unit.bbox.y0
+        groups.append(current)
+        return sorted(groups, key=lambda group: min(unit.reading_order or 0 for unit in group))
 
     def _snap_y_coordinates(self, units: list[ClauseUnit]) -> dict[str, float]:
         if not units:
@@ -339,14 +419,7 @@ class ClauseSplitter:
                 self._is_unnumbered_section_title(unit, marker)
                 and not self._current_is_bare_marker(current)
             )
-            starts_clause = (
-                (
-                    marker is not None
-                    and block_type not in self.table_block_types
-                    and not self._is_quantity_or_amount_marker(unit.text, marker)
-                )
-                or starts_unnumbered_title
-            )
+            starts_clause = self._starts_clause_unit(unit, marker) or starts_unnumbered_title
             if starts_clause:
                 saw_marker = True
                 entered_body = True
@@ -364,7 +437,10 @@ class ClauseSplitter:
                     "page_numbers": [unit.page_no],
                     "bboxes": [unit.evidence],
                     "source_block_ids": [unit.block_id],
-                    "segmentation_reason": f"marker:{clause_no}" if marker else "initial_unit_without_marker",
+                    "segmentation_reason": self._segmentation_reason(
+                        f"marker:{clause_no}" if marker else "initial_unit_without_marker",
+                        unit,
+                    ),
                     "segmentation_confidence": 0.95 if marker else 0.55,
                 }
             else:
@@ -376,6 +452,17 @@ class ClauseSplitter:
         if current is not None:
             clauses.append(current)
         return clauses, saw_marker
+
+    def _starts_clause_unit(self, unit: ClauseUnit, marker: tuple[str, str] | None = None) -> bool:
+        marker = marker if marker is not None else self._parse_marker(unit.text)
+        if marker is None:
+            return False
+        return unit.block_type not in self.table_block_types and not self._is_quantity_or_amount_marker(unit.text, marker)
+
+    def _segmentation_reason(self, base_reason: str, unit: ClauseUnit) -> str:
+        if unit.order_reason in {"", "source", "reading_order"}:
+            return base_reason
+        return f"{base_reason}|order:{unit.order_reason}"
 
     def _single_unit_items(self, units: list[ClauseUnit]) -> list[dict]:
         return [

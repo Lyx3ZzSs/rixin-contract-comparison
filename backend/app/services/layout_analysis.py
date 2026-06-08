@@ -17,7 +17,7 @@ LAYOUT_PARSER_VERSION = "v2"
 LABEL_ALIASES = {
     "page_header": "header",
     "page_footer": "footer",
-    "vision_footnote": "footer",
+    "vision_footnote": "footnote",
     "stamp": "seal",
     "signature": "seal",
     "paragraph": "text",
@@ -456,6 +456,8 @@ def flow_role_for_region(region_type: str) -> str:
         return "heading"
     if value in {"header", "footer"}:
         return "margin"
+    if value == "footnote":
+        return "note"
     if value == "aside_text":
         return "aside"
     if value in {"table", "table_cell"}:

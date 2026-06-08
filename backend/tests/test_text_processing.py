@@ -4,10 +4,159 @@ from app.models import BBox, CharBox, Clause, ClausePair, DiffItem, Document, Ev
 from app.services.clause_splitter import ClauseSplitter
 from app.services.cover_metadata import CoverMetadataComparator
 from app.services.diff_engine import DiffEngine
+from app.services.document_preparation import DocumentPreparer
 from app.services.evidence_locator import EvidenceLocator
 from app.services.matcher import ClauseMatcher
 from app.services.normalizer import TextNormalizer
 from app.services.table_compare import TableComparator
+
+
+def test_document_preparation_prevents_cover_and_table_context_from_becoming_clause() -> None:
+    document = Document(
+        filename="contract.pdf",
+        path="contract.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="contract_no",
+                        page_no=1,
+                        text="合同编号：",
+                        bbox=BBox(x0=380, y0=120, x1=450, y1=140),
+                    ),
+                    TextBlock(
+                        block_id="sign_place",
+                        page_no=1,
+                        text="签订地点：青海西宁",
+                        bbox=BBox(x0=380, y0=145, x1=520, y1=165),
+                    ),
+                    TextBlock(
+                        block_id="table_caption",
+                        page_no=1,
+                        text="一、产品名称、型号、数量、金额、供货时间：",
+                        bbox=BBox(x0=60, y0=215, x1=315, y1=230),
+                        block_type="footnote",
+                    ),
+                    TextBlock(
+                        block_id="table_note",
+                        page_no=1,
+                        text="单位：元（人民币）",
+                        bbox=BBox(x0=440, y0=215, x1=540, y1=230),
+                        block_type="footnote",
+                    ),
+                    TextBlock(
+                        block_id="table",
+                        page_no=1,
+                        text="序号 名称 型号规格 单位 数量 单价 总金额",
+                        bbox=BBox(x0=55, y0=240, x1=545, y1=360),
+                        block_type="table",
+                    ),
+                    TextBlock(
+                        block_id="clause_two",
+                        page_no=1,
+                        text="二、质量要求：符合国家标准。",
+                        bbox=BBox(x0=60, y0=390, x1=500, y1=415),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    DocumentPreparer().prepare(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+    roles = {block.block_id: block.block_role for block in document.pages[0].blocks}
+
+    assert roles["contract_no"] == "cover_metadata"
+    assert roles["sign_place"] == "cover_metadata"
+    assert roles["table_caption"] == "table_caption"
+    assert roles["table_note"] == "table_note"
+    assert [clause.clause_no for clause in clauses] == ["二"]
+    assert "合同编号" not in clauses[0].text
+
+
+def test_document_preparation_uses_generic_table_header_context() -> None:
+    document = Document(
+        filename="contract.pdf",
+        path="contract.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="service_caption",
+                        page_no=1,
+                        text="一、服务内容、服务期限、报价、税率、备注：",
+                        bbox=BBox(x0=60, y0=180, x1=350, y1=200),
+                        block_type="footnote",
+                    ),
+                    TextBlock(
+                        block_id="service_table",
+                        page_no=1,
+                        text="序号 服务内容 服务期限 报价 税率 备注",
+                        bbox=BBox(x0=55, y0=210, x1=545, y1=330),
+                        block_type="table",
+                    ),
+                    TextBlock(
+                        block_id="clause_two",
+                        page_no=1,
+                        text="二、付款方式：按验收结果支付。",
+                        bbox=BBox(x0=60, y0=360, x1=500, y1=385),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    DocumentPreparer().prepare(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+    roles = {block.block_id: block.block_role for block in document.pages[0].blocks}
+
+    assert roles["service_caption"] == "table_caption"
+    assert [clause.clause_no for clause in clauses] == ["二"]
+
+
+def test_document_preparation_keeps_real_clause_near_table() -> None:
+    document = Document(
+        filename="contract.pdf",
+        path="contract.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="real_clause",
+                        page_no=1,
+                        text="一、产品名称及供货时间由双方确认。",
+                        bbox=BBox(x0=60, y0=180, x1=420, y1=200),
+                    ),
+                    TextBlock(
+                        block_id="near_table",
+                        page_no=1,
+                        text="序号 名称 时间 数量 金额",
+                        bbox=BBox(x0=55, y0=210, x1=545, y1=330),
+                        block_type="table",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    DocumentPreparer().prepare(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+    roles = {block.block_id: block.block_role for block in document.pages[0].blocks}
+
+    assert roles["real_clause"] == ""
+    assert [clause.clause_no for clause in clauses] == ["一"]
 
 
 def test_text_normalizer_removes_page_number_and_compacts_text() -> None:
@@ -43,6 +192,151 @@ def test_clause_splitter_detects_numbered_clauses() -> None:
     assert len(clauses) == 2
     assert clauses[0].clause_no == "1"
     assert "Buyer shall pay" in clauses[0].text
+
+
+def test_clause_splitter_reorders_same_line_marker_before_right_hand_text() -> None:
+    document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="quality_title",
+                        page_no=1,
+                        text="二、质量要求，技术标准：符合国家标准",
+                        bbox=BBox(x0=62, y0=409, x1=532, y1=421),
+                        reading_order=1,
+                    ),
+                    TextBlock(
+                        block_id="quality_body",
+                        page_no=1,
+                        text="准，供方对所提供的产品制造质量负责.",
+                        bbox=BBox(x0=85, y0=431, x1=294, y1=445),
+                        reading_order=2,
+                    ),
+                    TextBlock(
+                        block_id="delivery_right_text",
+                        page_no=1,
+                        text="2026年月日前黄河水电海西公司德令",
+                        bbox=BBox(x0=268, y0=454, x1=534, y1=470),
+                        reading_order=3,
+                    ),
+                    TextBlock(
+                        block_id="delivery_marker",
+                        page_no=1,
+                        text="三、交（提）货日期、地点、方式：",
+                        bbox=BBox(x0=62, y0=457, x1=254, y1=469),
+                        reading_order=4,
+                    ),
+                    TextBlock(
+                        block_id="delivery_place",
+                        page_no=1,
+                        text="哈蓄积光伏电站",
+                        bbox=BBox(x0=85, y0=480, x1=174, y1=492),
+                        reading_order=5,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["二", "三"]
+    assert "黄河水电海西公司德令" not in clauses[0].text
+    assert clauses[1].source_block_ids == ["delivery_marker", "delivery_right_text", "delivery_place"]
+    assert "2026年月日前黄河水电海西公司德令" in clauses[1].text
+
+
+def test_clause_splitter_reorders_same_line_text_before_later_clause() -> None:
+    document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="quality_title",
+                        page_no=1,
+                        text="二、质量要求，技术标准：符合国家标准",
+                        bbox=BBox(x0=69, y0=388, x1=540, y1=402),
+                        reading_order=1,
+                    ),
+                    TextBlock(
+                        block_id="quality_body",
+                        page_no=1,
+                        text="准，供方对所提供的产品制造质量负责.",
+                        bbox=BBox(x0=92, y0=411, x1=300, y1=425),
+                        reading_order=2,
+                    ),
+                    TextBlock(
+                        block_id="delivery_date",
+                        page_no=1,
+                        text="2026年月日前",
+                        bbox=BBox(x0=276, y0=433, x1=405, y1=449),
+                        reading_order=3,
+                    ),
+                    TextBlock(
+                        block_id="delivery_marker",
+                        page_no=1,
+                        text="三、交（提）货日期、地点、方式：",
+                        bbox=BBox(x0=69, y0=435, x1=253, y1=447),
+                        reading_order=4,
+                    ),
+                    TextBlock(
+                        block_id="delivery_place",
+                        page_no=1,
+                        text="哈蓄积光伏电站",
+                        bbox=BBox(x0=92, y0=457, x1=183, y1=471),
+                        reading_order=5,
+                    ),
+                    TextBlock(
+                        block_id="transport",
+                        page_no=1,
+                        text="四、运输方式及到达站港和费用负担：整车。",
+                        bbox=BBox(x0=69, y0=479, x1=400, y1=493),
+                        reading_order=6,
+                    ),
+                    TextBlock(
+                        block_id="packaging",
+                        page_no=1,
+                        text="五、包装标准，包装物的供应与回收：原厂包装。",
+                        bbox=BBox(x0=69, y0=501, x1=422, y1=516),
+                        reading_order=7,
+                    ),
+                    TextBlock(
+                        block_id="delivery_company",
+                        page_no=1,
+                        text="黄河水电海西公司德令",
+                        bbox=BBox(x0=418, y0=435, x1=537, y1=447),
+                        reading_order=8,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert [clause.clause_no for clause in clauses] == ["二", "三", "四", "五"]
+    assert clauses[1].source_block_ids == [
+        "delivery_marker",
+        "delivery_date",
+        "delivery_company",
+        "delivery_place",
+    ]
+    assert "2026年月日前" in clauses[1].text
+    assert "黄河水电海西公司德令" in clauses[1].text
+    assert "黄河水电海西公司德令" not in clauses[3].text
 
 
 def test_clause_splitter_keeps_amount_numbered_clause_separate() -> None:
@@ -502,7 +796,7 @@ def test_clause_splitter_filters_right_edge_single_ocr_fragment() -> None:
     clauses = ClauseSplitter().split(document, "N")
 
     subject = next(clause for clause in clauses if clause.clause_no == "一")
-    assert "单位:元(人民币)" in subject.text
+    assert "单位:元(人民币)" not in subject.text
     assert "合" not in subject.text
 
 

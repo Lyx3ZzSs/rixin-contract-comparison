@@ -101,6 +101,19 @@ def test_header_footer_does_not_treat_top_clause_as_header() -> None:
     assert diffs == []
 
 
+def test_header_footer_does_not_trust_mid_page_footer_clause_label() -> None:
+    original = _document([
+        [_block("o1", "一、产品名称、型号、数量、金额、供货时间：", y0=215, y1=228, block_type="footer")]
+    ])
+    compare = _document([
+        [_block("c1", "单位：元（人民币）", y0=215, y1=228, block_type="footnote")]
+    ])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
 def test_header_footer_summarizes_page_numbers_without_per_page_noise() -> None:
     original = _document([
         [_block("o1", "第 1 页", y0=810, y1=826, page_no=1)],
