@@ -69,7 +69,7 @@ def test_diff_engine_reports_decimal_and_version_changes() -> None:
     assert "V10" in diffs[0].compare_text
 
 
-def test_document_preparation_marks_final_signature_area_and_splitter_skips_it() -> None:
+def test_document_preparation_does_not_exclude_signature_keyword_text_from_clause_flow() -> None:
     document = Document(
         filename="sample.pdf",
         path="sample.pdf",
@@ -103,9 +103,11 @@ def test_document_preparation_marks_final_signature_area_and_splitter_skips_it()
     result = DocumentPreparer().prepare(document, "original")
     clauses = ClauseSplitter().split(document, "O")
 
-    assert {decision.block_id for decision in result.decisions} == {"sig1", "sig2"}
+    assert result.decisions == []
     assert len(clauses) == 1
-    assert clauses[0].source_block_ids == ["body"]
+    assert clauses[0].source_block_ids == ["body", "sig1", "sig2"]
+    assert "签字页 此页无正文" in clauses[0].text
+    assert "甲方(盖章) 乙方(盖章) 日期" in clauses[0].text
 
 
 def test_diff_quality_flags_critical_changes_and_minor_ocr_noise() -> None:

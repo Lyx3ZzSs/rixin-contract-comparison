@@ -57,7 +57,6 @@ class ClauseSplitter:
         "table_note",
         "page_footer",
         "body_footnote",
-        "signature_area",
         "noise",
     }
 
@@ -77,6 +76,8 @@ class ClauseSplitter:
         clauses, saw_marker = self._detect_clause_items(units)
         if not saw_marker:
             clauses = self._single_unit_items(units)
+        else:
+            clauses = self._repair_adjacent_clause_boundary(clauses)
 
         return self._build_clauses(clauses, prefix)
 
@@ -308,11 +309,11 @@ class ClauseSplitter:
         return bool(orders) and all(order is not None for order in orders) and len(set(orders)) == len(orders)
 
     def _reading_order_matches_geometry(self, units: list[ClauseUnit]) -> bool:
-        return not any(self._line_group_needs_repair(group) for group in self._line_groups(units))
+        return not any(self._line_group_needs_repair(group, units) for group in self._line_groups(units))
 
     def _repair_reading_order_geometry(self, units: list[ClauseUnit]) -> list[ClauseUnit]:
         repaired = list(units)
-        conflict_groups = [group for group in self._line_groups(units) if self._line_group_needs_repair(group)]
+        conflict_groups = [group for group in self._line_groups(units) if self._line_group_needs_repair(group, units)]
         for group in conflict_groups:
             orders = {unit.reading_order for unit in group}
             positions = [index for index, unit in enumerate(repaired) if unit.reading_order in orders]
@@ -324,23 +325,60 @@ class ClauseSplitter:
             repaired[insert_at:insert_at] = left_to_right
         return repaired
 
-    def _line_group_needs_repair(self, group: list[ClauseUnit]) -> bool:
+    def _line_group_needs_repair(self, group: list[ClauseUnit], units: list[ClauseUnit]) -> bool:
         markers = [unit for unit in group if self._starts_clause_unit(unit)]
-        if not markers:
-            return False
-        return any(
+        if any(
             marker.bbox.x0 + self.reading_order_same_line_x_backtrack < other.bbox.x0
             and (marker.reading_order or 0) > (other.reading_order or 0)
             for marker in markers
             for other in group
             if marker is not other
+        ):
+            return True
+        if len(group) < 2 or not self._same_layout_line_group(group):
+            return False
+        if self._line_group_x_order_disagrees_with_reading_order(group):
+            return True
+        return self._line_group_is_split_by_later_geometry(group, units)
+
+    def _same_layout_line_group(self, group: list[ClauseUnit]) -> bool:
+        layout_orders = {unit.layout_order for unit in group}
+        if len(layout_orders) != 1 or None in layout_orders:
+            return False
+        layout_block_ids = {unit.layout_block_id for unit in group if unit.layout_block_id}
+        return len(layout_block_ids) <= 1
+
+    def _line_group_x_order_disagrees_with_reading_order(self, group: list[ClauseUnit]) -> bool:
+        x_sorted = sorted(group, key=lambda unit: (unit.bbox.x0, unit.reading_order or 0, unit.block_id))
+        orders = [unit.reading_order for unit in x_sorted]
+        if any(order is None for order in orders):
+            return False
+        return any((left or 0) > (right or 0) for left, right in zip(orders, orders[1:], strict=False))
+
+    def _line_group_is_split_by_later_geometry(self, group: list[ClauseUnit], units: list[ClauseUnit]) -> bool:
+        orders = [unit.reading_order for unit in group]
+        if any(order is None for order in orders):
+            return False
+        min_order = min(order or 0 for order in orders)
+        max_order = max(order or 0 for order in orders)
+        if max_order - min_order <= len(group) - 1:
+            return False
+        group_ids = {id(unit) for unit in group}
+        line_y0 = min(unit.bbox.y0 for unit in group)
+        line_height = self._median_height(group)
+        next_line_threshold = max(line_height * 0.8, 4.0)
+        return any(
+            other.reading_order is not None
+            and min_order < other.reading_order < max_order
+            and id(other) not in group_ids
+            and other.bbox.y0 > line_y0 + next_line_threshold
+            for other in units
         )
 
     def _line_groups(self, units: list[ClauseUnit]) -> list[list[ClauseUnit]]:
         if not units:
             return []
-        heights = [unit.bbox.y1 - unit.bbox.y0 for unit in units]
-        median_height = sorted(heights)[len(heights) // 2]
+        median_height = self._median_height(units)
         threshold = max(median_height * 0.5, 2.0)
         sorted_by_y = sorted(units, key=lambda unit: (unit.bbox.y0, unit.bbox.x0, unit.reading_order or 0, unit.block_id))
         groups: list[list[ClauseUnit]] = []
@@ -359,8 +397,7 @@ class ClauseSplitter:
     def _snap_y_coordinates(self, units: list[ClauseUnit]) -> dict[str, float]:
         if not units:
             return {}
-        heights = [unit.bbox.y1 - unit.bbox.y0 for unit in units]
-        median_height = sorted(heights)[len(heights) // 2]
+        median_height = self._median_height(units)
         threshold = max(median_height * 0.5, 2.0)
 
         sorted_by_y = sorted(units, key=lambda u: u.bbox.y0)
@@ -380,6 +417,10 @@ class ClauseSplitter:
             for unit in group:
                 snapped[unit.block_id] = min_y
         return snapped
+
+    def _median_height(self, units: list[ClauseUnit]) -> float:
+        heights = [max(0.0, unit.bbox.y1 - unit.bbox.y0) for unit in units]
+        return sorted(heights)[len(heights) // 2] if heights else 0.0
 
     def _snap_y_by_layout_group(self, units: list[ClauseUnit]) -> dict[str, float]:
         groups: dict[int, list[ClauseUnit]] = {}
@@ -452,6 +493,75 @@ class ClauseSplitter:
         if current is not None:
             clauses.append(current)
         return clauses, saw_marker
+
+    def _repair_adjacent_clause_boundary(self, clauses: list[dict]) -> list[dict]:
+        for index in range(1, len(clauses)):
+            previous = clauses[index - 1]
+            current = clauses[index]
+            item_index = 1
+            while item_index < len(current["texts"]):
+                if not self._is_upward_boundary_fragment(current, item_index):
+                    item_index += 1
+                    continue
+                item = self._pop_clause_item(current, item_index)
+                self._insert_clause_item_by_geometry(previous, item)
+                previous["segmentation_reason"] = self._append_order_reason(
+                    previous.get("segmentation_reason", ""),
+                    "adjacent_boundary_geometry_repair",
+                )
+            if not current["texts"]:
+                clauses.pop(index)
+                break
+        return clauses
+
+    def _is_upward_boundary_fragment(self, clause: dict, item_index: int) -> bool:
+        text = clause["texts"][item_index]
+        compact = re.sub(r"\s+", "", text or "")
+        if not 2 <= len(compact) <= 40:
+            return False
+        marker = self._parse_marker(text)
+        if marker is not None:
+            return False
+        anchor = clause["bboxes"][0]
+        evidence = clause["bboxes"][item_index]
+        if evidence.page_no != anchor.page_no:
+            return False
+        height = max(0.0, anchor.bbox.y1 - anchor.bbox.y0)
+        return evidence.bbox.y0 + max(height * 0.5, 3.0) < anchor.bbox.y0
+
+    def _pop_clause_item(self, clause: dict, index: int) -> dict:
+        return {
+            "text": clause["texts"].pop(index),
+            "char_boxes": clause["char_boxes"].pop(index),
+            "page_number": clause["page_numbers"].pop(index),
+            "bbox": clause["bboxes"].pop(index),
+            "source_block_id": clause["source_block_ids"].pop(index),
+        }
+
+    def _insert_clause_item_by_geometry(self, clause: dict, item: dict) -> None:
+        insert_at = len(clause["texts"])
+        item_key = self._clause_item_geometry_key(item["page_number"], item["bbox"])
+        for index, (page_no, evidence) in enumerate(zip(clause["page_numbers"], clause["bboxes"], strict=False)):
+            if index == 0:
+                continue
+            if self._clause_item_geometry_key(page_no, evidence) > item_key:
+                insert_at = index
+                break
+        clause["texts"].insert(insert_at, item["text"])
+        clause["char_boxes"].insert(insert_at, item["char_boxes"])
+        clause["page_numbers"].insert(insert_at, item["page_number"])
+        clause["bboxes"].insert(insert_at, item["bbox"])
+        clause["source_block_ids"].insert(insert_at, item["source_block_id"])
+
+    def _clause_item_geometry_key(self, page_no: int, evidence: EvidenceBox) -> tuple[int, float, float]:
+        return page_no, evidence.bbox.y0, evidence.bbox.x0
+
+    def _append_order_reason(self, reason: str, addition: str) -> str:
+        if not reason:
+            return f"order:{addition}"
+        if addition in reason:
+            return reason
+        return f"{reason}|order:{addition}"
 
     def _starts_clause_unit(self, unit: ClauseUnit, marker: tuple[str, str] | None = None) -> bool:
         marker = marker if marker is not None else self._parse_marker(unit.text)

@@ -339,6 +339,236 @@ def test_clause_splitter_reorders_same_line_text_before_later_clause() -> None:
     assert "黄河水电海西公司德令" not in clauses[3].text
 
 
+def test_clause_splitter_keeps_split_same_line_fragment_before_later_clause() -> None:
+    document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="delivery_title",
+                        page_no=1,
+                        text="六、交货地点及交货方式",
+                        bbox=BBox(x0=58.5, y0=486.5, x1=208.0, y1=499.5),
+                        block_type="paragraph_title",
+                        reading_order=19,
+                        layout_order=17,
+                        layout_block_id="layout_17",
+                    ),
+                    TextBlock(
+                        block_id="delivery_method",
+                        page_no=1,
+                        text="交货方式：设备到货后，我司实施人员到场与客户一起验收，客户签署设备到货签收",
+                        bbox=BBox(x0=81.5, y0=515.5, x1=514.5, y1=527.0),
+                        reading_order=20,
+                        layout_order=18,
+                        layout_block_id="layout_18",
+                    ),
+                    TextBlock(
+                        block_id="delivery_method_tail",
+                        page_no=1,
+                        text="单。",
+                        bbox=BBox(x0=55.0, y0=535.5, x1=76.5, y1=552.5),
+                        reading_order=21,
+                        layout_order=18,
+                        layout_block_id="layout_18",
+                    ),
+                    TextBlock(
+                        block_id="delivery_date",
+                        page_no=1,
+                        text="交货日期：2026年月",
+                        bbox=BBox(x0=80.5, y0=558.0, x1=227.0, y1=572.5),
+                        reading_order=22,
+                        layout_order=19,
+                        layout_block_id="layout_19",
+                    ),
+                    TextBlock(
+                        block_id="delivery_place",
+                        page_no=1,
+                        text="交货地点：",
+                        bbox=BBox(x0=80.5, y0=581.0, x1=133.5, y1=595.5),
+                        reading_order=23,
+                        layout_order=20,
+                        layout_block_id="layout_20",
+                    ),
+                    TextBlock(
+                        block_id="delivery_contact",
+                        page_no=1,
+                        text="收货人及联系电话：",
+                        bbox=BBox(x0=81.0, y0=603.5, x1=179.5, y1=617.0),
+                        reading_order=24,
+                        layout_order=21,
+                        layout_block_id="layout_21",
+                    ),
+                    TextBlock(
+                        block_id="acceptance_title",
+                        page_no=1,
+                        text="七、验收标准及品质保证",
+                        bbox=BBox(x0=58.5, y0=623.0, x1=208.0, y1=637.0),
+                        block_type="paragraph_title",
+                        reading_order=25,
+                        layout_order=22,
+                        layout_block_id="layout_22",
+                    ),
+                    TextBlock(
+                        block_id="delivery_date_tail",
+                        page_no=1,
+                        text="日交货",
+                        bbox=BBox(x0=240.0, y0=558.0, x1=278.0, y1=572.5),
+                        reading_order=26,
+                        layout_order=19,
+                        layout_block_id="layout_19",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert [clause.clause_no for clause in clauses] == ["六", "七"]
+    assert clauses[0].source_block_ids == [
+        "delivery_title",
+        "delivery_method",
+        "delivery_method_tail",
+        "delivery_date",
+        "delivery_date_tail",
+        "delivery_place",
+        "delivery_contact",
+    ]
+    assert "交货日期:2026年月\n日交货" in clauses[0].text
+    assert "日交货" not in clauses[1].text
+
+
+def test_clause_splitter_does_not_repair_same_line_fragment_across_layout_regions() -> None:
+    document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="left_title",
+                        page_no=1,
+                        text="一、左栏条款",
+                        bbox=BBox(x0=60, y0=100, x1=160, y1=114),
+                        block_type="paragraph_title",
+                        reading_order=1,
+                        layout_order=1,
+                        layout_block_id="left_layout",
+                    ),
+                    TextBlock(
+                        block_id="left_body",
+                        page_no=1,
+                        text="左栏正文",
+                        bbox=BBox(x0=60, y0=124, x1=130, y1=138),
+                        reading_order=2,
+                        layout_order=2,
+                        layout_block_id="left_layout_body",
+                    ),
+                    TextBlock(
+                        block_id="right_title",
+                        page_no=1,
+                        text="二、右栏条款",
+                        bbox=BBox(x0=320, y0=100, x1=420, y1=114),
+                        block_type="paragraph_title",
+                        reading_order=3,
+                        layout_order=3,
+                        layout_block_id="right_layout",
+                    ),
+                    TextBlock(
+                        block_id="right_body",
+                        page_no=1,
+                        text="右栏正文",
+                        bbox=BBox(x0=320, y0=124, x1=390, y1=138),
+                        reading_order=4,
+                        layout_order=4,
+                        layout_block_id="right_layout_body",
+                    ),
+                    TextBlock(
+                        block_id="right_same_line_tail",
+                        page_no=1,
+                        text="右栏补充",
+                        bbox=BBox(x0=430, y0=100, x1=500, y1=114),
+                        reading_order=5,
+                        layout_order=5,
+                        layout_block_id="right_tail_layout",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert [clause.clause_no for clause in clauses] == ["一", "二"]
+    assert "右栏补充" not in clauses[0].text
+    assert "右栏补充" in clauses[1].text
+
+
+def test_clause_splitter_moves_upward_boundary_fragment_to_previous_clause() -> None:
+    document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="delivery_title",
+                        page_no=1,
+                        text="六、交货地点及交货方式",
+                        bbox=BBox(x0=58.5, y0=486.5, x1=208.0, y1=499.5),
+                        block_type="paragraph_title",
+                        reading_order=19,
+                    ),
+                    TextBlock(
+                        block_id="delivery_date",
+                        page_no=1,
+                        text="交货日期：2026年月",
+                        bbox=BBox(x0=80.5, y0=558.0, x1=227.0, y1=572.5),
+                        reading_order=20,
+                    ),
+                    TextBlock(
+                        block_id="acceptance_title",
+                        page_no=1,
+                        text="七、验收标准及品质保证",
+                        bbox=BBox(x0=58.5, y0=623.0, x1=208.0, y1=637.0),
+                        block_type="paragraph_title",
+                        reading_order=21,
+                    ),
+                    TextBlock(
+                        block_id="delivery_date_tail",
+                        page_no=1,
+                        text="日交货",
+                        bbox=BBox(x0=240.0, y0=558.0, x1=278.0, y1=572.5),
+                        reading_order=22,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert [clause.clause_no for clause in clauses] == ["六", "七"]
+    assert clauses[0].source_block_ids == ["delivery_title", "delivery_date", "delivery_date_tail"]
+    assert "日交货" in clauses[0].text
+    assert "日交货" not in clauses[1].text
+
+
 def test_clause_splitter_keeps_amount_numbered_clause_separate() -> None:
     document = Document(
         filename="scan.pdf",
@@ -1959,6 +2189,67 @@ def test_diff_engine_refines_repeated_date_label_in_large_modify_hunk() -> None:
     assert ":" in compare_fragments
 
 
+def test_diff_engine_repairs_reordered_duplicate_stamp_placeholders() -> None:
+    left = clause_with_line_boxes(
+        "O001",
+        [
+            ("14.2甲方补充采购条款。", 60, 90),
+            ("甲方:南京瑞尚电力科技有限公司", 60, 120),
+            ("(盖章)", 110, 148),
+            ("乙方:国能日新科技股份有限公司", 300, 120),
+            ("(盖章)", 340, 148),
+            ("地址:北京市海淀区西三旗建材城中", 300, 180),
+        ],
+    )
+    right = clause_with_line_boxes(
+        "N001",
+        [
+            ("14.2甲方补充采购条款。", 60, 90),
+            ("甲方:南京瑞尚电力科技有限公司", 60, 120),
+            ("乙方:国能日新科技股份右限公司", 300, 120),
+            ("(盖章)", 110, 148),
+            ("(盖章)", 340, 148),
+            ("地址:北京市", 300, 180),
+        ],
+    )
+
+    diff = DiffEngine().build_diffs([ClausePair(original=left, compare=right)])[0]
+    original_fragments = [diff.original_text[item.start : item.end] for item in diff.original_change_ranges]
+    compare_fragments = [diff.compare_text[item.start : item.end] for item in diff.compare_change_ranges]
+
+    assert "(盖章)" not in original_fragments
+    assert "(盖章)" not in compare_fragments
+    assert "SPATIAL_DUPLICATE_TOKEN_REPAIRED" in diff.review_flags
+    assert "有" in original_fragments
+    assert "右" in compare_fragments
+
+
+def test_diff_engine_keeps_real_added_duplicate_stamp_placeholder() -> None:
+    left = clause_with_line_boxes(
+        "O001",
+        [
+            ("甲方:南京瑞尚电力科技有限公司", 60, 120),
+            ("乙方:国能日新科技股份有限公司", 300, 120),
+            ("(盖章)", 110, 148),
+        ],
+    )
+    right = clause_with_line_boxes(
+        "N001",
+        [
+            ("甲方:南京瑞尚电力科技有限公司", 60, 120),
+            ("乙方:国能日新科技股份有限公司", 300, 120),
+            ("(盖章)", 110, 148),
+            ("(盖章)", 340, 148),
+        ],
+    )
+
+    diff = DiffEngine().build_diffs([ClausePair(original=left, compare=right)])[0]
+    compare_fragments = [diff.compare_text[item.start : item.end] for item in diff.compare_change_ranges]
+
+    assert "(盖章)" in compare_fragments
+    assert "SPATIAL_DUPLICATE_TOKEN_REPAIRED" not in diff.review_flags
+
+
 def test_diff_engine_classifies_insert_and_delete_ranges() -> None:
     inserted = DiffEngine().build_diffs(
         [
@@ -2312,6 +2603,33 @@ def clause_with_boxes(clause_id: str, text: str) -> Clause:
             )
             for index, char in enumerate(text)
         ],
+    )
+
+
+def clause_with_line_boxes(clause_id: str, lines: list[tuple[str, float, float]]) -> Clause:
+    text_parts: list[str] = []
+    char_boxes: list[CharBox | None] = []
+    for line_index, (line, x0, y0) in enumerate(lines):
+        if line_index:
+            text_parts.append("\n")
+            char_boxes.append(None)
+        text_parts.append(line)
+        for char_index, char in enumerate(line):
+            char_x0 = x0 + char_index * 8
+            char_boxes.append(
+                CharBox(
+                    char=char,
+                    page_no=1,
+                    bbox=BBox(x0=char_x0, y0=y0, x1=char_x0 + 7, y1=y0 + 14),
+                    text_index=len(char_boxes),
+                )
+            )
+    text = "".join(text_parts)
+    return Clause(
+        clause_id=clause_id,
+        text=text,
+        normalized_text=text,
+        char_boxes=char_boxes,
     )
 
 

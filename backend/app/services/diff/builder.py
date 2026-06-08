@@ -4,6 +4,7 @@ from app.models import ClausePair, DiffItem, TextRange
 from app.utils.id_utils import generate_diff_id
 
 from app.services.diff.range_refiner import changed_snippets
+from app.services.diff.spatial_repair import rebuild_change_text, repair_spatial_duplicate_ranges
 from app.services.diff.text_utils import shorten
 
 LOW_CONFIDENCE_MATCH_THRESHOLD = 75.0
@@ -22,8 +23,10 @@ def build_diffs(pairs: list[ClausePair], start_index: int = 1) -> list[DiffItem]
         elif pair.original is not None and pair.compare is not None:
             if pair.original.normalized_text == pair.compare.normalized_text:
                 continue
-            diffs.append(build_modify(pair, next_index))
-            next_index += 1
+            diff = build_modify(pair, next_index)
+            if diff is not None:
+                diffs.append(diff)
+                next_index += 1
     return diffs
 
 
@@ -71,11 +74,31 @@ def build_delete(pair: ClausePair, index: int) -> DiffItem:
     )
 
 
-def build_modify(pair: ClausePair, index: int) -> DiffItem:
+def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
     left = pair.original
     right = pair.compare
     assert left is not None and right is not None
     original_snippet, compare_snippet, original_ranges, compare_ranges = changed_snippets(left.text, right.text)
+    original_ranges, compare_ranges, repair_reasons = repair_spatial_duplicate_ranges(
+        left,
+        right,
+        original_ranges,
+        compare_ranges,
+    )
+    if not original_ranges and not compare_ranges:
+        return None
+    if repair_reasons:
+        original_snippet, compare_snippet, readable_change = rebuild_change_text(
+            left.text,
+            right.text,
+            original_ranges,
+            compare_ranges,
+        )
+    else:
+        readable_change = f"原文：{original_snippet}\n修改后：{compare_snippet}"
+    flags = review_flags(pair)
+    if repair_reasons:
+        flags.append("SPATIAL_DUPLICATE_TOKEN_REPAIRED")
     return DiffItem(
         diff_id=generate_diff_id(index),
         diff_type="MODIFY",
@@ -87,13 +110,13 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem:
         compare_text=right.text,
         original_snippet=original_snippet,
         compare_snippet=compare_snippet,
-        readable_change=f"原文：{original_snippet}\n修改后：{compare_snippet}",
+        readable_change=readable_change,
         source_type="clause",
         match_score=pair.score,
         match_method=pair.match_method,
         match_score_details=pair.score_details,
         match_candidates=pair.match_candidates,
-        review_flags=review_flags(pair),
+        review_flags=flags,
         original_evidence=left.bboxes,
         compare_evidence=right.bboxes,
         original_change_ranges=original_ranges,
