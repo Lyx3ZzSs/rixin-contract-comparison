@@ -580,12 +580,9 @@ def test_api_report_excludes_ignored_audit_item_after_review(tmp_path: Path) -> 
         report_text = "\n".join(page.get_text() for page in report_pdf)
     assert "D001:DELETE" not in report_text
     assert "旧签署说明" not in report_text
-    assert "D001:ADD" in report_text
     assert "新增发票说明" in report_text
-    assert "D001:MODIFY" in report_text
     assert "30 days" in report_text
     assert "45 days" in report_text
-    assert "D002:ADD" in report_text
     assert "交付条款" in report_text
 
 

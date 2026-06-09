@@ -88,6 +88,23 @@ const fallbackDiff: DiffItem = {
   compare_evidence: [],
 };
 
+const sealDiff: DiffItem = {
+  ...diff,
+  diff_id: "diff-seal",
+  diff_type: "ADD",
+  source_type: "seal",
+  compare_evidence: [
+    {
+      page_no: 1,
+      bbox: { x0: 200, y0: 500, x1: 300, y1: 600 },
+      method: "seal_region",
+      text: "合同专用章",
+      highlight_type: "ADD",
+    },
+  ],
+  original_evidence: [],
+};
+
 describe("PDF diff highlights", () => {
   it("filters evidence by side and page", () => {
     const originalHighlights = getPageHighlights([diff], "original", 1);
@@ -195,5 +212,26 @@ describe("PDF diff highlights", () => {
     expect(rect).toHaveAttribute("y", "100");
     expect(rect).toHaveAttribute("width", "470");
     expect(rect).toHaveAttribute("height", "80");
+  });
+
+  it("renders seal region evidence with the muted seal mark kind", () => {
+    const highlight = getPageHighlights([sealDiff], "compare", 1)[0];
+
+    render(
+      <PdfHighlightLayer
+        activeDiffId="diff-seal"
+        highlights={[highlight]}
+        pageSize={{ width: 595, height: 842 }}
+        zoom={1}
+        onActivateDiff={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "定位差异 diff-seal" })).toHaveClass(
+      "pdf-highlight-mark",
+      "add",
+      "seal",
+      "active",
+    );
   });
 });

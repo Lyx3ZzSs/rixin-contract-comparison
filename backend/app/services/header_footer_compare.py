@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -37,6 +38,17 @@ class HeaderFooterEntry:
     is_page_number: bool = False
 
 
+@dataclass(frozen=True)
+class HeaderFooterFuzzyMatch:
+    left_index: int
+    right_index: int
+    score: float
+    text_score: float
+    position_score: float
+    page_overlap_score: float
+    supplemental: bool = False
+
+
 class HeaderFooterComparator:
     """Builds audit diffs for document headers and footers."""
 
@@ -55,12 +67,9 @@ class HeaderFooterComparator:
         "vertical_text",
         "watermark",
     }
-    page_number_pattern = re.compile(
-        r"^(?:第?\s*\d+\s*页?|共\s*\d+\s*页\s*第\s*\d+\s*页)$"
-    )
-    page_number_with_total_pattern = re.compile(
-        r"^共\s*(?P<total>\d+)\s*页\s*第\s*(?P<page>\d+)\s*页$"
-    )
+    page_number_pattern = re.compile(r"^(?:第?\s*\d+\s*页?|共\s*\d+\s*页\s*第\s*\d+\s*页)$")
+    page_number_with_total_pattern = re.compile(r"^共\s*(?P<total>\d+)\s*页\s*第\s*(?P<page>\d+)\s*页$")
+    fuzzy_match_flag = "FUZZY_HEADER_FOOTER_MATCH"
 
     def build_diffs(self, original: Document, compare: Document, start_index: int = 1) -> list[DiffItem]:
         original_entries = self._entries_by_slot(original)
@@ -149,7 +158,10 @@ class HeaderFooterComparator:
 
         entries: list[HeaderFooterEntry] = []
         for key, group in sorted(grouped.items(), key=lambda item: self._entry_sort_key(item[1])):
-            if not any(candidate.explicit for candidate in group) and len({candidate.page_no for candidate in group}) < 2:
+            if (
+                not any(candidate.explicit for candidate in group)
+                and len({candidate.page_no for candidate in group}) < 2
+            ):
                 continue
             sample = group[0]
             entries.append(
@@ -201,8 +213,62 @@ class HeaderFooterComparator:
 
         unmatched_original = [entry for entry in original_regular if entry.key not in matched_original]
         unmatched_compare = [entry for entry in compare_regular if entry.key not in matched_compare]
+        unmatched_original_indexes = {
+            index for index, entry in enumerate(original_regular) if entry.key not in matched_original
+        }
+        unmatched_compare_indexes = {
+            index for index, entry in enumerate(compare_regular) if entry.key not in matched_compare
+        }
 
-        if len(unmatched_original) == 1 and len(unmatched_compare) == 1:
+        fuzzy_matches = self._fuzzy_matches(
+            original_regular,
+            compare_regular,
+            unmatched_original,
+            unmatched_compare,
+        )
+        for match in fuzzy_matches:
+            left = original_regular[match.left_index]
+            right = compare_regular[match.right_index]
+            aligned_left, aligned_right = self._aligned_fuzzy_entries(left, right)
+            diffs.append(
+                self._modify_diff(
+                    aligned_left,
+                    aligned_right,
+                    next_index,
+                    match_method="fuzzy_position_header_footer",
+                    match_score=round(match.score, 2),
+                    match_score_details={
+                        "text_score": round(match.text_score, 2),
+                        "position_score": round(match.position_score, 2),
+                        "page_overlap_score": round(match.page_overlap_score, 2),
+                    },
+                    review_flags=[self.fuzzy_match_flag],
+                )
+            )
+            next_index += 1
+
+        fuzzy_original_keys = {
+            match.left_index for match in fuzzy_matches if match.left_index in unmatched_original_indexes
+        }
+        fuzzy_compare_keys = {
+            match.right_index for match in fuzzy_matches if match.right_index in unmatched_compare_indexes
+        }
+        unmatched_original = [
+            entry
+            for index, entry in enumerate(original_regular)
+            if index in unmatched_original_indexes - fuzzy_original_keys
+        ]
+        unmatched_compare = [
+            entry
+            for index, entry in enumerate(compare_regular)
+            if index in unmatched_compare_indexes - fuzzy_compare_keys
+        ]
+
+        if (
+            len(unmatched_original) == 1
+            and len(unmatched_compare) == 1
+            and self._can_fallback_modify(unmatched_original[0], unmatched_compare[0])
+        ):
             diffs.append(self._modify_diff(unmatched_original[0], unmatched_compare[0], next_index))
             next_index += 1
         else:
@@ -237,7 +303,196 @@ class HeaderFooterComparator:
         assert left is not None
         return self._one_sided_diff(left, "DELETE", index)
 
-    def _modify_diff(self, left: HeaderFooterEntry, right: HeaderFooterEntry, index: int) -> DiffItem:
+    def _fuzzy_matches(
+        self,
+        original: list[HeaderFooterEntry],
+        compare: list[HeaderFooterEntry],
+        unmatched_original: list[HeaderFooterEntry],
+        unmatched_compare: list[HeaderFooterEntry],
+    ) -> list[HeaderFooterFuzzyMatch]:
+        original_indexes = {id(entry): index for index, entry in enumerate(original)}
+        compare_indexes = {id(entry): index for index, entry in enumerate(compare)}
+        candidates: list[HeaderFooterFuzzyMatch] = []
+
+        unmatched_original_indexes = [original_indexes[id(entry)] for entry in unmatched_original]
+        unmatched_compare_indexes = [compare_indexes[id(entry)] for entry in unmatched_compare]
+        for left_index in unmatched_original_indexes:
+            for right_index in unmatched_compare_indexes:
+                match = self._score_fuzzy_match(original[left_index], compare[right_index], left_index, right_index)
+                if match is not None:
+                    candidates.append(match)
+
+        # A one-page OCR variant can be left unmatched while the corresponding
+        # right-side repeated header was already consumed by an exact match.
+        for left_index in unmatched_original_indexes:
+            for right_index, right in enumerate(compare):
+                if right_index in unmatched_compare_indexes:
+                    continue
+                match = self._score_fuzzy_match(
+                    original[left_index],
+                    right,
+                    left_index,
+                    right_index,
+                    supplemental=True,
+                )
+                if match is not None:
+                    candidates.append(match)
+
+        for right_index in unmatched_compare_indexes:
+            for left_index, left in enumerate(original):
+                if left_index in unmatched_original_indexes:
+                    continue
+                match = self._score_fuzzy_match(
+                    left,
+                    compare[right_index],
+                    left_index,
+                    right_index,
+                    supplemental=True,
+                )
+                if match is not None:
+                    candidates.append(match)
+
+        matches: list[HeaderFooterFuzzyMatch] = []
+        used_original: set[int] = set()
+        used_unmatched_compare: set[int] = set()
+        unmatched_compare_index_set = set(unmatched_compare_indexes)
+        for match in sorted(candidates, key=lambda item: item.score, reverse=True):
+            if match.left_index in used_original:
+                continue
+            if match.right_index in unmatched_compare_index_set and match.right_index in used_unmatched_compare:
+                continue
+            matches.append(match)
+            used_original.add(match.left_index)
+            if match.right_index in unmatched_compare_index_set:
+                used_unmatched_compare.add(match.right_index)
+        return matches
+
+    def _score_fuzzy_match(
+        self,
+        left: HeaderFooterEntry,
+        right: HeaderFooterEntry,
+        left_index: int,
+        right_index: int,
+        *,
+        supplemental: bool = False,
+    ) -> HeaderFooterFuzzyMatch | None:
+        if left.slot != right.slot:
+            return None
+        if not self._is_fuzzy_matchable(left) or not self._is_fuzzy_matchable(right):
+            return None
+
+        text_score = self._text_similarity(left.key, right.key)
+        if text_score < 88.0:
+            return None
+
+        position_score = self._position_similarity(left.evidences, right.evidences)
+        page_overlap_score = self._page_overlap_score(left.evidences, right.evidences)
+        score = text_score * 0.62 + position_score * 0.28 + page_overlap_score * 0.10
+        strict_match = text_score >= 88.0 and position_score >= 70.0 and page_overlap_score >= 40.0 and score >= 82.0
+        high_text_match = text_score >= 94.0 and position_score >= 85.0 and score >= 88.0
+        if not strict_match and not high_text_match:
+            return None
+
+        return HeaderFooterFuzzyMatch(
+            left_index=left_index,
+            right_index=right_index,
+            score=score,
+            text_score=text_score,
+            position_score=position_score,
+            page_overlap_score=page_overlap_score,
+            supplemental=supplemental,
+        )
+
+    def _is_fuzzy_matchable(self, entry: HeaderFooterEntry) -> bool:
+        if entry.is_page_number:
+            return False
+        return len(entry.key) >= 4
+
+    def _can_fallback_modify(self, left: HeaderFooterEntry, right: HeaderFooterEntry) -> bool:
+        return self._is_fuzzy_matchable(left) or self._is_fuzzy_matchable(right)
+
+    def _text_similarity(self, left: str, right: str) -> float:
+        return SequenceMatcher(None, left, right).ratio() * 100.0
+
+    def _page_overlap_score(self, left: list[EvidenceBox], right: list[EvidenceBox]) -> float:
+        left_pages = {evidence.page_no for evidence in left}
+        right_pages = {evidence.page_no for evidence in right}
+        if not left_pages or not right_pages:
+            return 0.0
+        overlap = left_pages & right_pages
+        if not overlap:
+            return 0.0
+        return len(overlap) / min(len(left_pages), len(right_pages)) * 100.0
+
+    def _position_similarity(self, left: list[EvidenceBox], right: list[EvidenceBox]) -> float:
+        left_by_page = {evidence.page_no: evidence for evidence in left}
+        right_by_page = {evidence.page_no: evidence for evidence in right}
+        common_pages = sorted(set(left_by_page) & set(right_by_page))
+        if not common_pages:
+            return 0.0
+        scores = [
+            self._bbox_similarity(left_by_page[page_no].bbox, right_by_page[page_no].bbox) for page_no in common_pages
+        ]
+        return max(scores)
+
+    def _bbox_similarity(self, left: BBox, right: BBox) -> float:
+        left_width = max(1.0, left.x1 - left.x0)
+        right_width = max(1.0, right.x1 - right.x0)
+        left_height = max(1.0, left.y1 - left.y0)
+        right_height = max(1.0, right.y1 - right.y0)
+        left_center_x = (left.x0 + left.x1) / 2
+        right_center_x = (right.x0 + right.x1) / 2
+        left_center_y = (left.y0 + left.y1) / 2
+        right_center_y = (right.y0 + right.y1) / 2
+
+        y_score = self._distance_score(abs(left_center_y - right_center_y), 40.0)
+        x_score = self._distance_score(abs(left_center_x - right_center_x), 120.0)
+        height_score = self._distance_score(abs(left_height - right_height), 40.0)
+        width_score = self._distance_score(abs(left_width - right_width), 180.0)
+        return y_score * 0.45 + x_score * 0.25 + height_score * 0.15 + width_score * 0.15
+
+    def _distance_score(self, distance: float, tolerance: float) -> float:
+        return max(0.0, 100.0 - min(distance / tolerance, 1.0) * 100.0)
+
+    def _aligned_fuzzy_entries(
+        self,
+        left: HeaderFooterEntry,
+        right: HeaderFooterEntry,
+    ) -> tuple[HeaderFooterEntry, HeaderFooterEntry]:
+        left_by_page = {evidence.page_no: evidence for evidence in left.evidences}
+        right_by_page = {evidence.page_no: evidence for evidence in right.evidences}
+        common_pages = sorted(set(left_by_page) & set(right_by_page))
+        if not common_pages:
+            return left, right
+        return (
+            self._entry_with_evidences(left, [left_by_page[page_no] for page_no in common_pages]),
+            self._entry_with_evidences(right, [right_by_page[page_no] for page_no in common_pages]),
+        )
+
+    def _entry_with_evidences(
+        self,
+        entry: HeaderFooterEntry,
+        evidences: list[EvidenceBox],
+    ) -> HeaderFooterEntry:
+        return HeaderFooterEntry(
+            slot=entry.slot,
+            text=entry.text,
+            key=entry.key,
+            evidences=evidences,
+            is_page_number=entry.is_page_number,
+        )
+
+    def _modify_diff(
+        self,
+        left: HeaderFooterEntry,
+        right: HeaderFooterEntry,
+        index: int,
+        *,
+        match_method: str = "",
+        match_score: float | None = None,
+        match_score_details: dict[str, float] | None = None,
+        review_flags: list[str] | None = None,
+    ) -> DiffItem:
         original_snippet, compare_snippet, original_ranges, compare_ranges = DiffEngine()._changed_snippets(
             left.text,
             right.text,
@@ -256,6 +511,10 @@ class HeaderFooterComparator:
             compare_snippet=compare_snippet or right.text,
             readable_change=f"{self._slot_label(left.slot)}变更：{left.text} -> {right.text}",
             source_type="header_footer",
+            match_score=match_score,
+            match_method=match_method,
+            match_score_details=match_score_details or {},
+            review_flags=review_flags or [],
             original_evidence=self._mark_evidences(left.evidences, "MODIFY"),
             compare_evidence=self._mark_evidences(right.evidences, "MODIFY"),
             original_change_ranges=original_ranges,

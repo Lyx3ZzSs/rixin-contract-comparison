@@ -14,6 +14,16 @@ def _make_table_block(block_id: str, page_no: int, html: str, bbox: BBox | None 
     )
 
 
+def _make_text_block(block_id: str, page_no: int, text: str, bbox: BBox) -> TextBlock:
+    return TextBlock(
+        block_id=block_id,
+        page_no=page_no,
+        text=text,
+        bbox=bbox,
+        block_type="text",
+    )
+
+
 def _make_raw_table_block(
     block_id: str,
     page_no: int,
@@ -319,10 +329,44 @@ class TestStructuredTableComparison:
 
     def test_table_only_in_compare_produces_add(self):
         html = '<table><tr><td>A</td><td>B</td></tr></table>'
+        bbox = BBox(x0=50, y0=120, x1=540, y1=300)
         orig = _make_doc([])
-        comp = _make_doc([_make_table_block("c1", 1, html)])
+        comp = _make_doc([_make_table_block("c1", 1, html, bbox)])
         diffs, warnings = TableComparator().build_diffs(orig, comp)
-        assert any(d.diff_type == "ADD" for d in diffs)
+        add_diff = next(d for d in diffs if d.diff_type == "ADD")
+        assert add_diff.compare_evidence
+        assert add_diff.compare_evidence[0].bbox == bbox
+
+    def test_compare_only_stitched_table_has_multi_page_table_evidence_without_context_text(self):
+        page8_table_bbox = BBox(x0=60, y0=146, x1=544, y1=522)
+        page9_table_bbox = BBox(x0=55, y0=144, x1=542, y1=526)
+        page8_context_bbox = BBox(x0=60, y0=50, x1=360, y1=125)
+        page9_context_bbox = BBox(x0=55, y0=58, x1=360, y1=126)
+        page8_table = _product_table([
+            _product_row("1", "预测服务器"),
+            _product_row("2", "气象服务器"),
+        ])
+        page9_table = _product_table([
+            _product_row("3", "工作站"),
+            _product_row("4", "网络设备"),
+        ])
+        original = _make_doc([])
+        compare = _make_doc([
+            _make_text_block("c8_context", 8, "国能日新科技股份有限公司 24小时服务热线 报价标题", page8_context_bbox),
+            _make_table_block("c8_table", 8, page8_table, page8_table_bbox),
+            _make_text_block("c9_context", 9, "国能日新科技股份有限公司 报价单位 联系人", page9_context_bbox),
+            _make_table_block("c9_table", 9, page9_table, page9_table_bbox),
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(original, compare)
+
+        add_diffs = [diff for diff in diffs if diff.diff_type == "ADD" and diff.source_type == "table"]
+        assert warnings == []
+        assert len(add_diffs) == 1
+        evidence_bboxes = [evidence.bbox for evidence in add_diffs[0].compare_evidence]
+        assert evidence_bboxes == [page8_table_bbox, page9_table_bbox]
+        assert page8_context_bbox not in evidence_bboxes
+        assert page9_context_bbox not in evidence_bboxes
 
     def test_colspan_table_comparison(self):
         orig_html = (

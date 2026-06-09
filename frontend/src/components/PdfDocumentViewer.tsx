@@ -23,6 +23,7 @@ interface PageHighlight {
   type: "ADD" | "DELETE" | "MODIFY";
   evidence: EvidenceBox;
   fallback: boolean;
+  markKind: "fallback" | "seal" | "table" | "text";
 }
 
 export interface PdfDocumentViewerHandle {
@@ -313,15 +314,30 @@ export function getPageHighlights(
     for (const evidence of evidences) {
       const type = evidence.highlight_type ?? diff.diff_type;
       const fallback = evidence.method === "block_fallback";
+      const markKind = highlightMarkKind(evidence, fallback);
       const previous = highlights[highlights.length - 1];
-      if (previous && canMergeHighlight(previous, diff.diff_id, type, evidence, fallback)) {
+      if (previous && canMergeHighlight(previous, diff.diff_id, type, evidence, fallback, markKind)) {
         previous.evidence = mergeEvidence(previous.evidence, evidence);
         continue;
       }
-      highlights.push({ diffId: diff.diff_id, type, evidence, fallback });
+      highlights.push({ diffId: diff.diff_id, type, evidence, fallback, markKind });
     }
   }
   return highlights;
+}
+
+function highlightMarkKind(evidence: EvidenceBox, fallback: boolean): PageHighlight["markKind"] {
+  const method = evidence.method || "";
+  if (fallback) {
+    return "fallback";
+  }
+  if (method === "seal_region") {
+    return "seal";
+  }
+  if (method.startsWith("table")) {
+    return "table";
+  }
+  return "text";
 }
 
 function canMergeHighlight(
@@ -330,8 +346,9 @@ function canMergeHighlight(
   type: PageHighlight["type"],
   next: EvidenceBox,
   fallback: boolean,
+  markKind: PageHighlight["markKind"],
 ): boolean {
-  if (current.diffId !== diffId || current.type !== type || current.fallback || fallback) {
+  if (current.diffId !== diffId || current.type !== type || current.fallback || fallback || current.markKind !== markKind) {
     return false;
   }
   const currentBox = current.evidence.bbox;
@@ -387,11 +404,7 @@ export function PdfHighlightLayer({
     >
       {highlights.map((highlight, index) => {
         const rect = highlightRect(highlight, zoom);
-        const markKind = highlight.fallback
-          ? "fallback"
-          : (highlight.evidence.method || "").startsWith("table")
-            ? "table"
-            : "text";
+        const markKind = highlight.markKind;
         const isActive = activeDiffId === highlight.diffId;
         return (
           <g

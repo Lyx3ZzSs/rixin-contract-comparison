@@ -3493,6 +3493,12 @@ h2 {
   fill: var(--diff-delete-fill);
 }
 
+.pdf-highlight-mark.seal rect {
+  fill-opacity: 0.08;
+  stroke: rgba(116, 130, 132, 0.62);
+  stroke-dasharray: 5 4;
+}
+
 .pdf-highlight-mark.active rect,
 .pdf-highlight-mark:hover rect,
 .pdf-highlight-mark:focus-visible rect {
@@ -3517,6 +3523,15 @@ h2 {
 .pdf-highlight-mark.delete:hover rect,
 .pdf-highlight-mark.delete:focus-visible rect {
   stroke: rgba(179, 54, 45, 0.95);
+}
+
+.pdf-highlight-mark.active.seal rect,
+.pdf-highlight-mark.seal:hover rect,
+.pdf-highlight-mark.seal:focus-visible rect {
+  fill-opacity: 0.16;
+  stroke: rgba(116, 130, 132, 0.9);
+  stroke-width: 1.4;
+  filter: none;
 }
 
 .empty-pane {

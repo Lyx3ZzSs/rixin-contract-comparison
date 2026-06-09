@@ -213,7 +213,7 @@ frontend/vite.config.d.ts
 backend/.layout-report*/
 
 # 本地运行产物
-/storage/
+#/storage/
 backend/app/storage/
 
 # PyPI 配置文件

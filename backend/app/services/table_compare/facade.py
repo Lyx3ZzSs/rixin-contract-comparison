@@ -178,13 +178,13 @@ class TableComparator:
         # Unmatched tables: whole-table ADD / DELETE
         for idx in range(len(original_tables)):
             if idx not in used_original:
-                block = self._diff_builder.find_block(original_blocks, original_tables[idx])
-                diffs.append(self._diff_builder.whole_table_diff(original_tables[idx], "DELETE", next_index, block, None))
+                blocks = self._diff_builder.find_blocks(original_blocks, original_tables[idx])
+                diffs.append(self._diff_builder.whole_table_diff(original_tables[idx], "DELETE", next_index, blocks, None))
                 next_index += 1
         for idx in range(len(compare_tables)):
             if idx not in used_compare:
-                block = self._diff_builder.find_block(compare_blocks, compare_tables[idx])
-                diffs.append(self._diff_builder.whole_table_diff(compare_tables[idx], "ADD", next_index, None, block))
+                blocks = self._diff_builder.find_blocks(compare_blocks, compare_tables[idx])
+                diffs.append(self._diff_builder.whole_table_diff(compare_tables[idx], "ADD", next_index, None, blocks))
                 next_index += 1
 
         diffs = self._reconcile_quote_remark_diffs(diffs)

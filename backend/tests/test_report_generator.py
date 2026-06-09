@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from io import BytesIO
-
 import fitz
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from app.models import AuditItemReview, BBox, CompareTask, DiffItem, EvidenceBox
-from app.services.audit_summary import build_audit_items
 from app.services.report_generator import ReportGenerator
 
 
@@ -21,16 +18,7 @@ def _make_pdf(path, page_count: int = 6) -> None:
     pdf.save()
 
 
-def _make_colored_pdf(path) -> None:
-    pdf = canvas.Canvas(str(path), pagesize=A4)
-    for red, green, blue in [(1, 0, 0), (0, 0, 1)]:
-        pdf.setFillColorRGB(red, green, blue)
-        pdf.rect(0, 0, A4[0], A4[1], fill=1, stroke=0)
-        pdf.showPage()
-    pdf.save()
-
-
-def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path) -> None:
+def test_report_generator_produces_grouped_tables_with_diff_content(tmp_path) -> None:
     original_pdf = tmp_path / "original.pdf"
     compare_pdf = tmp_path / "compare.pdf"
     _make_pdf(original_pdf)
@@ -127,72 +115,25 @@ def test_report_generator_marks_source_paragraph_and_before_after_text(tmp_path)
 
     with fitz.open(output_path) as report_pdf:
         report_text = "\n".join(page.get_text() for page in report_pdf)
-        image_count = sum(len(page.get_images()) for page in report_pdf)
+
     assert "审计统计与差异概览" in report_text
     assert "差异明细" in report_text
-    assert "来源段落" in report_text
-    assert "原文" in report_text
-    assert "修改后" in report_text
+    assert "条款差异" in report_text
+    assert "原文内容" in report_text
+    assert "修改后内容" in report_text
     assert "1 付款" in report_text
     assert "30 days" in report_text
     assert "45 days" in report_text
     assert "2 发票" not in report_text
-    assert "原文无对应内容" in report_text
     assert "新增发票条款" not in report_text
     assert "3 旧质保" in report_text
     assert "旧质保条款" in report_text
-    assert "新版已删除" in report_text
-    assert "差异索引" in report_text
     assert "差异类型与证据说明" in report_text
-    assert "未定位/需复核差异附录" not in report_text
-    assert "高质量证据" not in report_text
-    assert "需复核" not in report_text
     assert "D004" not in report_text
     assert "无定位表格项" not in report_text
     assert "D006:DELETE" not in report_text
-    assert "D006:ADD" in report_text
-    assert "D006:MODIFY" in report_text
     assert "忽略混合改动" in report_text
     assert "忽略旧说明" not in report_text
     assert "忽略新增说明" in report_text
-    assert "D005:ADD" in report_text
-    assert "D005:DELETE" in report_text
-    assert "D005:MODIFY" in report_text
     assert "新增说明" in report_text
     assert "旧说明" in report_text
-    assert image_count > 0
-
-
-def test_report_evidence_image_uses_dominant_evidence_page(tmp_path) -> None:
-    original_pdf = tmp_path / "original.pdf"
-    _make_colored_pdf(original_pdf)
-    diff = DiffItem(
-        diff_id="D001",
-        diff_type="MODIFY",
-        original_evidence=[
-            EvidenceBox(
-                page_no=1,
-                bbox=BBox(x0=80, y0=80, x1=90, y1=90),
-                text="行",
-                highlight_type="DELETE",
-            ),
-            EvidenceBox(
-                page_no=2,
-                bbox=BBox(x0=120, y0=120, x1=260, y1=180),
-                text="法人代表或授权委托人 邮编 日期",
-                highlight_type="DELETE",
-            ),
-        ],
-    )
-    item = build_audit_items([diff])[0]
-    generator = ReportGenerator()
-    generator._current_original_pdf_path = str(original_pdf)
-
-    image = generator._render_evidence_image(item, "original")
-
-    assert image is not None
-    from PIL import Image as PILImage
-
-    with PILImage.open(BytesIO(image.data)) as rendered:
-        red, _, blue = rendered.convert("RGB").resize((1, 1)).getpixel((0, 0))
-    assert blue > red

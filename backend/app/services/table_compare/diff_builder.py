@@ -482,11 +482,16 @@ class TableDiffBuilder:
         return " ".join(part for part in parts if part)
 
     def whole_table_diff(
-        self, table: StructuredTable, diff_type: str, index: int, block: tuple[TextBlock, str] | None, other_block: tuple[TextBlock, str] | None
+        self,
+        table: StructuredTable,
+        diff_type: str,
+        index: int,
+        blocks: list[tuple[TextBlock, str]] | tuple[TextBlock, str] | None,
+        other_blocks: list[tuple[TextBlock, str]] | tuple[TextBlock, str] | None,
     ) -> DiffItem:
         all_text = table.all_cell_text()[:300]
-        orig_block = block if diff_type == "DELETE" else None
-        comp_block = block if diff_type == "ADD" else None
+        orig_blocks = self._as_block_list(blocks) if diff_type == "DELETE" else []
+        comp_blocks = self._as_block_list(other_blocks) if diff_type == "ADD" else []
         caption = getattr(table, "caption", "") or ""
         caption_prefix = f"「{caption}」" if caption else ""
         return DiffItem(
@@ -499,21 +504,61 @@ class TableDiffBuilder:
             compare_snippet=all_text if diff_type == "ADD" else "",
             readable_change=f"整表{'删除' if diff_type == 'DELETE' else '新增'}",
             source_type="table",
-            original_evidence=self._evidence_from_block(orig_block, diff_type) if orig_block else [],
-            compare_evidence=self._evidence_from_block(comp_block, diff_type) if comp_block else [],
+            original_evidence=self._evidence_from_blocks(orig_blocks, diff_type),
+            compare_evidence=self._evidence_from_blocks(comp_blocks, diff_type),
         )
 
     def find_block(self, blocks: list[tuple[TextBlock, str]], table: StructuredTable) -> tuple[TextBlock, str] | None:
+        found = self.find_blocks(blocks, table)
+        return found[0] if found else None
+
+    def find_blocks(self, blocks: list[tuple[TextBlock, str]], table: StructuredTable) -> list[tuple[TextBlock, str]]:
+        source_block_ids = self._table_source_block_ids(table)
+        found: list[tuple[TextBlock, str]] = []
+        seen: set[str] = set()
         for block, text in blocks:
-            if table.source_block_id and block.block_id == table.source_block_id:
-                return (block, text)
+            if source_block_ids and block.block_id in source_block_ids:
+                found.append((block, text))
+                seen.add(block.block_id)
+        if found:
+            return found
+        for block, text in blocks:
             if block.page_no == table.page_no:
                 table_text = table.all_cell_text()
                 block_clean = utils.normalize(utils.strip_html(text))
                 table_clean = utils.normalize(table_text)
                 if table_clean and block_clean and SequenceMatcher(None, block_clean[:200], table_clean[:200]).ratio() > 0.5:
-                    return (block, text)
-        return None
+                    if block.block_id not in seen:
+                        found.append((block, text))
+                        seen.add(block.block_id)
+                    break
+        return found
+
+    @staticmethod
+    def _table_source_block_ids(table: StructuredTable) -> set[str]:
+        source_block_ids: set[str] = set()
+        table_source = getattr(table, "source_block_id", "") or ""
+        if table_source:
+            source_block_ids.add(table_source)
+        for row in getattr(table, "rows", []):
+            row_source = getattr(row, "source_block_id", "") or ""
+            if row_source:
+                source_block_ids.add(row_source)
+            for cell in getattr(row, "cells", []):
+                cell_source = getattr(cell, "source_block_id", "") or ""
+                if cell_source:
+                    source_block_ids.add(cell_source)
+        return source_block_ids
+
+    @staticmethod
+    def _as_block_list(
+        blocks: list[tuple[TextBlock, str]] | tuple[TextBlock, str] | None,
+    ) -> list[tuple[TextBlock, str]]:
+        if blocks is None:
+            return []
+        if isinstance(blocks, tuple):
+            return [blocks]
+        return blocks
 
     @staticmethod
     def _resolve_caption(orig_table, comp_table) -> str:
@@ -670,6 +715,30 @@ class TableDiffBuilder:
         return same_leading_identifier or row_score >= 0.72 or off_column_matches >= 2
 
     # --- Evidence methods ---
+
+    def _evidence_from_blocks(
+        self,
+        blocks: list[tuple[TextBlock, str]],
+        highlight_type: str,
+    ) -> list[EvidenceBox]:
+        evidences: list[EvidenceBox] = []
+        seen: set[tuple[str, int, float, float, float, float]] = set()
+        for block_and_text in blocks:
+            for evidence in self._evidence_from_block(block_and_text, highlight_type):
+                bbox = evidence.bbox
+                key = (
+                    block_and_text[0].block_id,
+                    evidence.page_no,
+                    bbox.x0,
+                    bbox.y0,
+                    bbox.x1,
+                    bbox.y1,
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                evidences.append(evidence)
+        return evidences
 
     def _evidence_from_block(self, block_and_text: tuple[TextBlock, str] | None, highlight_type: str, bbox_override: BBox | None = None, max_height: float | None = None) -> list[EvidenceBox]:
         if block_and_text is None:
