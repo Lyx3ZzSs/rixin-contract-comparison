@@ -54,7 +54,13 @@ class TextCoordinateLocator:
     def _should_refine(self, existing: list[EvidenceBox]) -> bool:
         if not existing:
             return True
-        precise_methods = {"char_exact", "table_cell", "cover_metadata", "text_exact"}
+        precise_methods = {
+            "char_exact",
+            "table_cell",
+            "cover_metadata",
+            "seal_region",
+            "text_exact",
+        }
         return not any((evidence.method or "").lower() in precise_methods for evidence in existing)
 
     def _locate_snippet(

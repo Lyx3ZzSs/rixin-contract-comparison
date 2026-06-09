@@ -89,10 +89,11 @@ class ClauseSplitter:
             for block in page.blocks:
                 if block.flow_role in {"margin", "noise", "non_text"}:
                     continue
-                if (block.block_role or "").lower() in self.excluded_block_roles:
+                block_role = (block.block_role or "").lower()
+                if block_role in self.excluded_block_roles:
                     continue
                 block_type = (block.block_type or "").lower()
-                if block_type in self.skip_block_types:
+                if block_type in self.skip_block_types and block_role != "quote_metadata":
                     continue
                 if self.table_detector.is_table_block(block):
                     continue

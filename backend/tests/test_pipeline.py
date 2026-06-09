@@ -357,6 +357,7 @@ class TestPreClauseDiffStage:
         assert any(block.block_type == "seal" for block in ctx.compare_extraction.document.pages[0].blocks)
 
 
+
 class TestSummaryStage:
     def test_refreshes_diff_count_and_writes_debug_artifact(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
