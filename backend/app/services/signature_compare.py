@@ -133,7 +133,11 @@ class SignatureComparator:
 
         diffs: list[DiffItem] = []
         next_index = start_index
-        for match in self._match_fields(original_fields, compare_fields):
+        for match in self._match_fields(
+            original_fields, compare_fields,
+            orig_page_count=len(original.pages),
+            comp_page_count=len(compare.pages),
+        ):
             diff = self._build_diff(match, next_index)
             if diff is None:
                 continue
@@ -367,12 +371,15 @@ class SignatureComparator:
         self,
         original: list[SignatureField],
         compare: list[SignatureField],
+        *,
+        orig_page_count: int,
+        comp_page_count: int,
     ) -> list[SignatureMatch]:
         groups: dict[tuple[int, str], tuple[list[SignatureField], list[SignatureField]]] = {}
         for field in original:
-            groups.setdefault(self._field_group_key(field), ([], []))[0].append(field)
+            groups.setdefault(self._normalized_group_key(field, orig_page_count), ([], []))[0].append(field)
         for field in compare:
-            groups.setdefault(self._field_group_key(field), ([], []))[1].append(field)
+            groups.setdefault(self._normalized_group_key(field, comp_page_count), ([], []))[1].append(field)
 
         matches: list[SignatureMatch] = []
         for key in sorted(groups):
@@ -626,6 +633,9 @@ class SignatureComparator:
 
     def _field_group_key(self, field: SignatureField) -> tuple[int, str]:
         return field.page_no, field.column
+
+    def _normalized_group_key(self, field: SignatureField, total_pages: int) -> tuple[int, str]:
+        return total_pages - field.page_no, field.column
 
     def _build_diff(
         self,

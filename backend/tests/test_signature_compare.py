@@ -12,12 +12,13 @@ def _block(
     x1: float,
     y1: float,
     *,
+    page_no: int = 1,
     role: str = "signature_field",
     block_type: str = "text",
 ) -> TextBlock:
     return TextBlock(
         block_id=block_id,
-        page_no=1,
+        page_no=page_no,
         text=text,
         bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1),
         block_role=role,
@@ -371,3 +372,70 @@ def test_signature_compare_multi_label_block_single_label_falls_through() -> Non
     fields = SignatureComparator()._collect_fields(document)
     assert len(fields) == 1
     assert fields[0].text == "532658192135"
+
+
+def _multi_page_document(
+    page_count: int,
+    signature_page_no: int,
+    blocks: list[TextBlock],
+) -> Document:
+    """Build a document with empty pages except the signature page."""
+    pages = []
+    for i in range(1, page_count + 1):
+        if i == signature_page_no:
+            pages.append(Page(page_no=i, width=595, height=842, blocks=blocks))
+        else:
+            pages.append(Page(page_no=i, width=595, height=842, blocks=[]))
+    return Document(
+        filename="contract.pdf",
+        path="contract.pdf",
+        page_count=page_count,
+        pages=pages,
+    )
+
+
+def test_cross_page_signature_matching_uses_normalized_page() -> None:
+    """When signatures are on different pages due to page offset, they should still match."""
+    # Original: 14 pages, signature on page 10
+    original = _multi_page_document(14, 10, [
+        _block("o_party_a", "甲方：江苏东大金智信息系统有限公司", 65, 622, 265, 636, page_no=10),
+        _block("o_party_b", "乙方：国能日新科技股份有限公司", 300, 622, 455, 636, page_no=10),
+    ])
+    # Compare: 15 pages, signature on page 11
+    compare = _multi_page_document(15, 11, [
+        _block("c_party_a", "甲方：江苏东达徐智信息系统有限公司", 95, 60, 270, 79, page_no=11),
+        _block("c_party_b", "乙方：国能日新科技股份有限公司", 311, 60, 460, 79, page_no=11),
+    ])
+
+    diffs = SignatureComparator().build_diffs(original, compare)
+
+    deleted_titles = [d.title for d in diffs if d.diff_type == "DELETE"]
+    added_titles = [d.title for d in diffs if d.diff_type == "ADD"]
+    modified = [d for d in diffs if d.diff_type == "MODIFY"]
+
+    # 甲方 should be MODIFY (text changed), not DELETE+ADD
+    assert "签署栏字段：左栏甲方" not in deleted_titles
+    assert "签署栏字段：左栏甲方" not in added_titles
+    assert any("甲方" in d.title for d in modified)
+
+    # 乙方 should be equal (same text) — no diff at all
+    assert "签署栏字段：右栏乙方" not in deleted_titles
+    assert "签署栏字段：右栏乙方" not in added_titles
+    assert "签署栏字段：右栏乙方" not in [d.title for d in modified]
+
+
+def test_same_page_matching_unchanged_with_normalization() -> None:
+    """When both docs have same page count and same signature page, behavior is identical."""
+    blocks_orig = [
+        _block("o_account", "账号：532658192135", 65, 450, 185, 470),
+        _block("o_date", "日期：", 65, 500, 105, 520),
+    ]
+    blocks_comp = [
+        _block("c_account", "账号：532658192135", 65, 450, 185, 470),
+        _block("c_date", "日期：", 65, 500, 105, 520),
+    ]
+    original = _multi_page_document(10, 5, [_block(b.block_id, b.text, b.bbox.x0, b.bbox.y0, b.bbox.x1, b.bbox.y1, page_no=5) for b in blocks_orig])
+    compare = _multi_page_document(10, 5, [_block(b.block_id, b.text, b.bbox.x0, b.bbox.y0, b.bbox.x1, b.bbox.y1, page_no=5) for b in blocks_comp])
+
+    diffs = SignatureComparator().build_diffs(original, compare)
+    assert diffs == []
