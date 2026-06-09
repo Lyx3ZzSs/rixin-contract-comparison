@@ -16,7 +16,6 @@ REGION_MODEL_MAP: dict[str, str] = {
     "table_caption": "table_recognizer",
     "seal": "seal_detector",
     "stamp": "seal_detector",
-    "signature": "seal_detector",
 }
 
 

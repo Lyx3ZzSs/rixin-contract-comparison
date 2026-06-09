@@ -760,6 +760,8 @@ class ClauseSplitter:
             return True
         if re.match(r"^\s*\d{4}\s*年", first_line):
             return True
+        if re.fullmatch(r"(?:19|20)\d{2}(?:\.\d{1,2}){1,2}", clause_no):
+            return True
         return False
 
     def _title_from_text(self, text: str) -> str:

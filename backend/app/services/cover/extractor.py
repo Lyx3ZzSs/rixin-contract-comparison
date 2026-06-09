@@ -91,7 +91,7 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
 
 def _cover_blocks(document: Document) -> list[TextBlock]:
     blocks: list[TextBlock] = []
-    skip_types = {"attachment_header", "signature_area", "seal_region", "edge_noise"}
+    skip_types = {"attachment_header", "seal_region", "edge_noise"}
     for page in document.pages:
         for block in page.blocks:
             if (block.block_type or "").lower() in skip_types:

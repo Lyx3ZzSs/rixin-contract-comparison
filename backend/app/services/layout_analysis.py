@@ -19,7 +19,6 @@ LABEL_ALIASES = {
     "page_footer": "footer",
     "vision_footnote": "footnote",
     "stamp": "seal",
-    "signature": "seal",
     "paragraph": "text",
     "content": "text",
 }

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SealRegion:
-    """Detected seal / signature region."""
+    """Detected seal region."""
 
     bbox: BBox
     page_number: int
@@ -22,7 +22,7 @@ class SealRegion:
 
 
 class SealDetector:
-    """Extracts seal / signature regions from layout detection results.
+    """Extracts seal regions from layout detection results.
 
     Does NOT make additional API calls — filters seal regions already
     identified by ``LayoutDetector``.
@@ -31,7 +31,7 @@ class SealDetector:
     name = "seal_detector"
     device = "cpu"
 
-    SEAL_LABELS = {"seal", "stamp", "signature"}
+    SEAL_LABELS = {"seal", "stamp"}
 
     def predict(self, input: Any) -> list[SealRegion]:
         """Extract seal regions.

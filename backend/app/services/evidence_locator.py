@@ -271,7 +271,7 @@ class EvidenceLocator:
 
     def _confidence_for_method(self, method: str) -> float:
         method = (method or "").lower()
-        if method in {"char_exact", "text_exact", "signature_char_exact"}:
+        if method in {"char_exact", "text_exact"}:
             return 0.98
         if method in {"table_cell", "cover_metadata"}:
             return 0.9

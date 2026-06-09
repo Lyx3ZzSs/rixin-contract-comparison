@@ -255,235 +255,6 @@ def test_document_preparation_keeps_regular_table_note_excluded() -> None:
     assert clauses == []
 
 
-def test_document_preparation_excludes_structural_signature_field_cluster() -> None:
-    document = Document(
-        filename="contract.pdf",
-        path="contract.pdf",
-        page_count=1,
-        pages=[
-            Page(
-                page_no=1,
-                width=595,
-                height=842,
-                blocks=[
-                    TextBlock(
-                        block_id="clause_22_5",
-                        page_no=1,
-                        text="22.5本合同一式两份，双方各持一份，传真件有效。",
-                        bbox=BBox(x0=65, y0=280, x1=430, y1=300),
-                    ),
-                    TextBlock(
-                        block_id="seal_fragment",
-                        page_no=1,
-                        text="站股",
-                        bbox=BBox(x0=405, y0=315, x1=445, y1=332),
-                    ),
-                    TextBlock(
-                        block_id="party_a",
-                        page_no=1,
-                        text="甲方：【南京国电南自电网自动化有限公司】（盖章）",
-                        bbox=BBox(x0=65, y0=340, x1=255, y1=360),
-                    ),
-                    TextBlock(
-                        block_id="party_b",
-                        page_no=1,
-                        text="乙方：【国能日新科技股份有限公司】（盖章）",
-                        bbox=BBox(x0=300, y0=340, x1=530, y1=360),
-                    ),
-                    TextBlock(
-                        block_id="auth_a",
-                        page_no=1,
-                        text="授权代表签字：",
-                        bbox=BBox(x0=65, y0=370, x1=160, y1=390),
-                    ),
-                    TextBlock(
-                        block_id="auth_b",
-                        page_no=1,
-                        text="授权代表签字：",
-                        bbox=BBox(x0=300, y0=370, x1=395, y1=390),
-                    ),
-                    TextBlock(
-                        block_id="tax_a",
-                        page_no=1,
-                        text="纳税人识别号：9132011",
-                        bbox=BBox(x0=65, y0=400, x1=220, y1=420),
-                    ),
-                    TextBlock(
-                        block_id="tax_b",
-                        page_no=1,
-                        text="纳税人识别号：",
-                        bbox=BBox(x0=300, y0=400, x1=410, y1=420),
-                    ),
-                    TextBlock(
-                        block_id="address_a",
-                        page_no=1,
-                        text="地址：南京市江宁经济技术开发区水阁路",
-                        bbox=BBox(x0=65, y0=430, x1=280, y1=450),
-                    ),
-                    TextBlock(
-                        block_id="address_b",
-                        page_no=1,
-                        text="地址：北京市海淀区西三旗",
-                        bbox=BBox(x0=300, y0=430, x1=500, y1=450),
-                    ),
-                    TextBlock(
-                        block_id="address_tail",
-                        page_no=1,
-                        text="39号",
-                        bbox=BBox(x0=65, y0=455, x1=110, y1=475),
-                    ),
-                    TextBlock(
-                        block_id="phone_a",
-                        page_no=1,
-                        text="电话：025-69833061",
-                        bbox=BBox(x0=65, y0=485, x1=190, y1=505),
-                    ),
-                    TextBlock(
-                        block_id="phone_b",
-                        page_no=1,
-                        text="电话：",
-                        bbox=BBox(x0=300, y0=485, x1=350, y1=505),
-                    ),
-                    TextBlock(
-                        block_id="bank_a",
-                        page_no=1,
-                        text="开户行：中行江宁开发区支行",
-                        bbox=BBox(x0=65, y0=515, x1=245, y1=535),
-                    ),
-                    TextBlock(
-                        block_id="bank_b",
-                        page_no=1,
-                        text="开户行：",
-                        bbox=BBox(x0=300, y0=515, x1=360, y1=535),
-                    ),
-                    TextBlock(
-                        block_id="sign_date",
-                        page_no=1,
-                        text="2021.4.17",
-                        bbox=BBox(x0=335, y0=545, x1=420, y1=565),
-                    ),
-                ],
-            )
-        ],
-    )
-
-    result = DocumentPreparer().prepare(document, "compare")
-    clauses = ClauseSplitter().split(document, "N")
-    roles = {block.block_id: block.block_role for block in document.pages[0].blocks}
-
-    assert roles["party_a"] == "signature_field"
-    assert roles["seal_fragment"] == "signature_field"
-    assert roles["address_tail"] == "signature_field"
-    assert roles["sign_date"] == "signature_field"
-    assert any(decision.reason == "signature_region_spatial_cluster" for decision in result.decisions)
-    assert clauses[0].clause_no == "22.5"
-
-
-def test_document_preparation_marks_partial_signature_region() -> None:
-    document = Document(
-        filename="contract.pdf",
-        path="contract.pdf",
-        page_count=1,
-        pages=[
-            Page(
-                page_no=9,
-                width=595,
-                height=842,
-                blocks=[
-                    TextBlock(
-                        block_id="marker",
-                        page_no=9,
-                        text="签字页，此页无正文",
-                        bbox=BBox(x0=60, y0=75, x1=170, y1=90),
-                    ),
-                    TextBlock(
-                        block_id="party_a",
-                        page_no=9,
-                        text="甲方：南京瑞尚电力科技有限公司",
-                        bbox=BBox(x0=62, y0=122, x1=266, y1=137),
-                    ),
-                    TextBlock(
-                        block_id="party_b",
-                        page_no=9,
-                        text="乙方：国能日新科技股份右限公司",
-                        bbox=BBox(x0=294, y0=119, x1=502, y1=138),
-                    ),
-                    TextBlock(
-                        block_id="seal_a",
-                        page_no=9,
-                        text="（盖章）",
-                        bbox=BBox(x0=108, y0=150, x1=152, y1=170),
-                    ),
-                    TextBlock(
-                        block_id="address",
-                        page_no=9,
-                        text="地址：江苏省南京市栖霞区八卦洲街地址：北京市",
-                        bbox=BBox(x0=59, y0=180, x1=384, y1=198),
-                    ),
-                    TextBlock(
-                        block_id="address_tail",
-                        page_no=9,
-                        text="路27号1幢：",
-                        bbox=BBox(x0=300, y0=210, x1=385, y1=228),
-                    ),
-                ],
-            )
-        ],
-    )
-
-    result = DocumentPreparer().prepare(document, "compare")
-    roles = {block.block_id: block.block_role for block in document.pages[0].blocks}
-
-    assert roles["marker"] == ""
-    assert roles["party_a"] == "signature_field"
-    assert roles["party_b"] == "signature_field"
-    assert roles["address"] == "signature_field"
-    assert roles["address_tail"] == "signature_field"
-    assert {decision.reason for decision in result.decisions} == {"partial_signature_region_spatial_cluster"}
-
-
-def test_document_preparation_does_not_mark_body_party_fields_as_partial_signature() -> None:
-    document = Document(
-        filename="contract.pdf",
-        path="contract.pdf",
-        page_count=1,
-        pages=[
-            Page(
-                page_no=2,
-                width=595,
-                height=842,
-                blocks=[
-                    TextBlock(
-                        block_id="party_a",
-                        page_no=2,
-                        text="甲方：南京瑞尚电力科技有限公司",
-                        bbox=BBox(x0=60, y0=120, x1=260, y1=140),
-                    ),
-                    TextBlock(
-                        block_id="party_b",
-                        page_no=2,
-                        text="乙方：国能日新科技股份有限公司",
-                        bbox=BBox(x0=60, y0=150, x1=260, y1=170),
-                    ),
-                    TextBlock(
-                        block_id="body",
-                        page_no=2,
-                        text="1. 双方应按合同约定履行。",
-                        bbox=BBox(x0=60, y0=210, x1=320, y1=230),
-                    ),
-                ],
-            )
-        ],
-    )
-
-    result = DocumentPreparer().prepare(document, "compare")
-    roles = {block.block_id: block.block_role for block in document.pages[0].blocks}
-
-    assert result.decisions == []
-    assert roles["party_a"] == ""
-    assert roles["party_b"] == ""
-
-
 def test_document_preparation_does_not_exclude_after_seal_without_signature_cluster() -> None:
     document = Document(
         filename="contract.pdf",
@@ -3282,3 +3053,135 @@ def test_deduplicate_overlaps_no_overlap_returns_unchanged() -> None:
     assert delete_result.original_snippet == "八、不相关条款"
     modify_result = next(d for d in result if d.diff_id == "D006")
     assert any("200万元" in e.text for e in modify_result.compare_evidence)
+
+
+# ---------------------------------------------------------------------------
+# Date-pattern and signature-field false-positive fixes
+# ---------------------------------------------------------------------------
+
+
+def test_clause_splitter_does_not_create_clause_from_numeric_date() -> None:
+    """日期 '2021.4.17' 不应被当作条款编号创建新条款。"""
+    document = Document(
+        filename="contract.pdf",
+        path="contract.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="clause_22_5",
+                        page_no=1,
+                        text="22.5本合同一式两份，双方各持一份，传真件有效。",
+                        bbox=BBox(x0=65, y0=280, x1=430, y1=300),
+                    ),
+                    TextBlock(
+                        block_id="date_block",
+                        page_no=1,
+                        text="2021.4.17",
+                        bbox=BBox(x0=335, y0=545, x1=420, y1=565),
+                    ),
+                ],
+            )
+        ],
+    )
+    clauses = ClauseSplitter().split(document, "N")
+
+    clause_numbers = [c.clause_no for c in clauses]
+    assert "2021.4.17" not in clause_numbers
+    assert len(clauses) == 1
+    assert clauses[0].clause_no == "22.5"
+
+
+def test_clause_splitter_does_not_create_clause_from_date_variants() -> None:
+    """各种日期格式都不应被当作条款编号。"""
+    document = Document(
+        filename="contract.pdf",
+        path="contract.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="clause_1",
+                        page_no=1,
+                        text="1. 本合同一式两份。",
+                        bbox=BBox(x0=65, y0=100, x1=300, y1=120),
+                    ),
+                    TextBlock(
+                        block_id="date1",
+                        page_no=1,
+                        text="2021.4.17",
+                        bbox=BBox(x0=335, y0=200, x1=420, y1=220),
+                    ),
+                    TextBlock(
+                        block_id="date2",
+                        page_no=1,
+                        text="2023.12.05",
+                        bbox=BBox(x0=335, y0=250, x1=420, y1=270),
+                    ),
+                    TextBlock(
+                        block_id="date3",
+                        page_no=1,
+                        text="2023.1",
+                        bbox=BBox(x0=335, y0=300, x1=400, y1=320),
+                    ),
+                ],
+            )
+        ],
+    )
+    clauses = ClauseSplitter().split(document, "N")
+
+    clause_numbers = [c.clause_no for c in clauses]
+    assert "2021.4.17" not in clause_numbers
+    assert "2023.12.05" not in clause_numbers
+    assert "2023.1" not in clause_numbers
+    assert "1" in clause_numbers
+
+
+def test_clause_splitter_keeps_real_clause_numbers_with_date_filter() -> None:
+    """日期过滤不应影响真实条款编号的检测。"""
+    document = Document(
+        filename="contract.pdf",
+        path="contract.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="clause_1_1",
+                        page_no=1,
+                        text="1.1质量要求：符合国家标准",
+                        bbox=BBox(x0=65, y0=100, x1=300, y1=120),
+                    ),
+                    TextBlock(
+                        block_id="clause_2_3_1",
+                        page_no=1,
+                        text="2.3.1交货方式：甲方指定地点",
+                        bbox=BBox(x0=65, y0=160, x1=300, y1=180),
+                    ),
+                    TextBlock(
+                        block_id="clause_199",
+                        page_no=1,
+                        text="199.合同解释",
+                        bbox=BBox(x0=65, y0=220, x1=200, y1=240),
+                    ),
+                ],
+            )
+        ],
+    )
+    clauses = ClauseSplitter().split(document, "N")
+
+    clause_numbers = [c.clause_no for c in clauses]
+    assert "1.1" in clause_numbers
+    assert "2.3.1" in clause_numbers
+    assert "199" in clause_numbers

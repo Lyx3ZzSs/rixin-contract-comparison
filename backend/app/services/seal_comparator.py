@@ -11,7 +11,7 @@ from app.models import BBox, DiffItem, Document, EvidenceBox, TextBlock, TextRan
 from app.utils.id_utils import generate_diff_id
 
 
-SEAL_BLOCK_TYPES = {"seal", "stamp", "signature"}
+SEAL_BLOCK_TYPES = {"seal", "stamp"}
 
 
 @dataclass(frozen=True)

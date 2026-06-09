@@ -35,7 +35,6 @@ def is_title_candidate(normalizer: TextNormalizer, block: TextBlock) -> bool:
         "seal",
         "seal_region",
         "attachment_header",
-        "signature_area",
         "edge_noise",
     }:
         return False
@@ -71,7 +70,6 @@ def skip_extra_block(block: TextBlock) -> bool:
         "seal",
         "seal_region",
         "attachment_header",
-        "signature_area",
         "edge_noise",
     }
 
