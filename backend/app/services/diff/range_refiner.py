@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 
 def changed_snippets(left: str, right: str) -> tuple[str, str, list[TextRange], list[TextRange]]:
+    if _should_use_line_first(left, right):
+        return changed_snippets_line_first(left, right)
     if configured_diff_engine() == "diff_match_patch":
         try:
             return changed_snippets_diff_match_patch(left, right)
@@ -211,12 +213,9 @@ def refine_changed_ranges(
     if multiline_ranges is not None:
         return multiline_ranges
 
-    if should_refine_inline(left[left_start:left_end], right[right_start:right_end]):
-        return refine_inline_changed_ranges(
-            left, left_start, left_end, right, right_start, right_end,
-        )
-
-    return coarse_modify_ranges(left, left_start, left_end, right, right_start, right_end)
+    return refine_inline_changed_ranges(
+        left, left_start, left_end, right, right_start, right_end,
+    )
 
 
 def coarse_modify_ranges(
@@ -514,3 +513,89 @@ def expand_numeric_unit_range(text: str, start: int, end: int, highlight_type: s
 
 def is_number_context_char(char: str) -> bool:
     return char.isdigit() or char in ".,"
+
+
+def _should_use_line_first(left: str, right: str) -> bool:
+    left_lines = [line.strip() for line in left.splitlines() if line.strip()]
+    right_lines = [line.strip() for line in right.splitlines() if line.strip()]
+    if len(left_lines) < 2 or len(right_lines) < 2:
+        return False
+    # Only use line-first for short-line content (form fields, labels).
+    # Prose paragraphs with long wrapped lines should use character-first
+    # so word-wrap boundaries don't create false line-level diffs.
+    all_lengths = [len(line) for line in left_lines + right_lines]
+    median_len = sorted(all_lengths)[len(all_lengths) // 2]
+    return median_len <= 25
+
+
+def _match_lines_by_content(
+    left_lines: list[tuple[str, int, int]],
+    right_lines: list[tuple[str, int, int]],
+    threshold: float = 0.5,
+) -> list[tuple[int, int]]:
+    candidates: list[tuple[float, int, int]] = []
+    for li, (left_text, _, _) in enumerate(left_lines):
+        for ri, (right_text, _, _) in enumerate(right_lines):
+            score = line_similarity(left_text, right_text)
+            if score >= threshold:
+                candidates.append((score, li, ri))
+    candidates.sort(key=lambda c: (-c[0], c[1], c[2]))
+    used_left: set[int] = set()
+    used_right: set[int] = set()
+    pairs: list[tuple[int, int]] = []
+    for _, li, ri in candidates:
+        if li in used_left or ri in used_right:
+            continue
+        pairs.append((li, ri))
+        used_left.add(li)
+        used_right.add(ri)
+    pairs.sort(key=lambda p: p[0])
+    return pairs
+
+
+def changed_snippets_line_first(
+    left: str, right: str,
+) -> tuple[str, str, list[TextRange], list[TextRange]]:
+    left_lines = line_ranges(left, 0, len(left))
+    right_lines = line_ranges(right, 0, len(right))
+
+    if not left_lines or not right_lines:
+        return changed_snippets_difflib(left, right)
+
+    pairs = _match_lines_by_content(left_lines, right_lines)
+
+    matched_left = {li for li, _ in pairs}
+    matched_right = {ri for _, ri in pairs}
+
+    left_ranges: list[TextRange] = []
+    right_ranges: list[TextRange] = []
+
+    for li, ri in pairs:
+        left_text = left_lines[li][0]
+        right_text = right_lines[ri][0]
+        if left_text == right_text:
+            continue
+        line_lr, line_rr = refine_inline_changed_ranges(
+            left, left_lines[li][1], left_lines[li][2],
+            right, right_lines[ri][1], right_lines[ri][2],
+        )
+        left_ranges.extend(line_lr)
+        right_ranges.extend(line_rr)
+
+    for i, (_, start, end) in enumerate(left_lines):
+        if i not in matched_left:
+            left_ranges.append(expand_token_range(left, start, end, "DELETE"))
+
+    for i, (_, start, end) in enumerate(right_lines):
+        if i not in matched_right:
+            right_ranges.append(expand_token_range(right, start, end, "ADD"))
+
+    left_ranges = merge_ranges(left_ranges)
+    right_ranges = merge_ranges(right_ranges)
+    return (
+        shorten("".join(left[item.start : item.end] for item in left_ranges)),
+        shorten("".join(right[item.start : item.end] for item in right_ranges)),
+        left_ranges,
+        right_ranges,
+    )
+
