@@ -105,6 +105,27 @@ class TableRepairService:
                 per_col_parts[cell.col_index] = parts
                 split_cols.add(cell.col_index)
 
+        # When a name column (typically col 1) cannot be split but a
+        # continuation row has a product-name-like token in its col 0,
+        # use that token as the missing name for part 1+.
+        name_col = None
+        consumed_cont_text: str | None = None
+        for cell in row.cells:
+            if cell.col_index == sequence_col:
+                 continue
+            if cell.col_index not in per_col_parts and cell.col_index == 1:
+                name_col = cell.col_index
+                break
+        if name_col is not None and continuation_rows:
+            for cont in continuation_rows:
+                cont_col0 = self._cell_text_from_row(cont, 0)
+                if cont_col0 and self._is_product_name_like(cont_col0):
+                    orig_text = self._cell_text_from_row(row, name_col)
+                    per_col_parts[name_col] = [orig_text, cont_col0]
+                    split_cols.add(name_col)
+                    consumed_cont_text = cont_col0
+                    break
+
         if len(split_cols) <= 1 and not continuation_rows:
             return None
 
@@ -124,6 +145,9 @@ class TableRepairService:
                 continuation_cell = self._cell_at_col(continuation, col - continuation_shift) if continuation else None
                 if continuation_cell is not None and utils.normalize(continuation_cell.text):
                     cont_text = continuation_cell.text
+                    # Skip if this continuation text was already used as a name column split part
+                    if consumed_cont_text and utils.normalize(cont_text) == utils.normalize(consumed_cont_text):
+                        continue
                     if col not in per_col_parts or not utils.normalize(text) or utils.normalize(text) == utils.normalize(cont_text):
                         text = cont_text
                         source_cell = continuation_cell
@@ -341,6 +365,308 @@ class TableRepairService:
             ),
         ]
 
+    def repair_phantom_merged_name_rows(
+        self,
+        rows: list[_LogicalRow],
+        col_count: int,
+    ) -> list[_LogicalRow]:
+        """Repair rows where OCR merged two product rows into one and left a phantom row."""
+        if col_count < 6:
+            return rows
+
+        repaired: list[_LogicalRow] = []
+        index = 0
+        while index < len(rows):
+            row = rows[index]
+            current_seq = self._row_sequence_int(row)
+
+            if current_seq is None or index + 1 >= len(rows):
+                repaired.append(row)
+                index += 1
+                continue
+
+            next_row = rows[index + 1]
+            next_seq = self._row_sequence_int(next_row)
+
+            # Only trigger when seq is consecutive (no gap)
+            if next_seq != current_seq + 1:
+                repaired.append(row)
+                index += 1
+                continue
+
+            split_rows = self._try_split_phantom_merged_name_pair(
+                row, next_row, current_seq, col_count,
+            )
+            if split_rows is not None:
+                repaired.extend(split_rows)
+                index += 2  # consume both original rows
+            else:
+                repaired.append(row)
+                index += 1
+
+        return self._reindex_logical_rows(repaired)
+
+    def _try_split_phantom_merged_name_pair(
+        self,
+        row: _LogicalRow,
+        next_row: _LogicalRow,
+        current_seq: int,
+        col_count: int,
+    ) -> list[_LogicalRow] | None:
+        # Signal 1: col 1 of current row contains space-separated tokens
+        name_text = self._cell_text_from_row(row, 1)
+        name_tokens = self._split_name_tokens(name_text)
+        if len(name_tokens) < 2:
+            return None
+
+        # Signal 2: next row shows column shift (brand/unit in wrong columns)
+        # In a phantom row, OCR puts content shifted left:
+        #   col 1 = detail text, col 2 = brand, col 3 = unit, col 4 = qty
+        # In a normal row: col 1 = name, col 2 = detail, col 3 = brand, col 4 = unit
+        next_brand = self._cell_text_from_row(next_row, 3)
+        next_unit_col3 = self._cell_text_from_row(next_row, 3)
+
+        # A phantom row has columns shifted left by one position:
+        #   col 1 = detail text, col 2 = brand, col 3 = unit, col 4 = qty
+        # A normal row has:
+        #   col 1 = name, col 2 = detail, col 3 = brand, col 4 = unit
+        # Detect phantom by checking if col 3 contains a unit token (shifted left)
+        # instead of a brand name.
+        next_unit_at_col3 = bool(next_unit_col3 and utils.first_unit_token([next_unit_col3]))
+        next_brand_is_real = bool(next_brand and not utils.first_unit_token([next_brand]))
+        if next_brand_is_real:
+            # col 3 has a real brand name -> not a phantom row
+            return None
+        if not next_unit_at_col3:
+            # col 3 doesn't have a unit either -> can't confirm phantom pattern
+            return None
+
+        # Signal 3: find the missing name in source_text near the seq number
+        missing_seq = current_seq + 1
+        first_name = name_tokens[0]
+        candidate = self._extract_phantom_candidate_from_source(
+            row.source_text, missing_seq, name_tokens,
+        )
+        if candidate is None:
+            candidate = self._extract_phantom_candidate_from_source(
+                next_row.source_text, missing_seq, name_tokens,
+            )
+        if candidate is None:
+            return None
+
+        # Build the repaired rows
+        kept_cells: list[_LogicalCell] = []
+        missing_cells: list[_LogicalCell] = []
+
+        for col in range(col_count):
+            source_cell = self._cell_at_col(row, col) or row.cells[0]
+            kept_text = self._cell_text_from_row(row, col)
+            missing_text = ""
+            if col == 0:
+                kept_text = str(current_seq)
+                missing_text = str(missing_seq)
+            elif col == 1:
+                kept_text = first_name
+                missing_text = candidate["name"]
+            elif col == 2:
+                missing_text = candidate["detail"]
+            elif col == 3:
+                missing_text = candidate["brand"]
+            elif col == 4:
+                missing_text = candidate["unit"]
+            elif col == 5:
+                missing_text = candidate["quantity"]
+
+            if kept_text or self._cell_at_col(row, col) is not None:
+                kept_cells.append(
+                    self._clone_logical_cell(source_cell, row_index=0, col_index=col, text=kept_text)
+                )
+            if missing_text:
+                missing_cells.append(
+                    self._clone_logical_cell(source_cell, row_index=1, col_index=col, text=missing_text)
+                )
+
+        if len([cell for cell in missing_cells if utils.normalize(cell.text)]) < 4:
+            return None
+
+        return [
+            _LogicalRow(
+                row_index=0,
+                cells=kept_cells,
+                page_no=row.page_no,
+                source_block_id=row.source_block_id,
+                source_row=row.source_row,
+                section_title=row.section_title,
+                source_text=row.source_text,
+            ),
+            _LogicalRow(
+                row_index=1,
+                cells=missing_cells,
+                page_no=row.page_no,
+                source_block_id=row.source_block_id,
+                source_row=row.source_row,
+                section_title=row.section_title,
+                source_text=row.source_text,
+            ),
+        ]
+
+    def _extract_phantom_candidate_from_source(
+        self,
+        source_text: str,
+        missing_seq: int,
+        name_tokens: list[str],
+    ) -> dict[str, str] | None:
+        """Find the missing row info by scanning source_text for a name token near the seq number."""
+        if not source_text:
+            return None
+
+        tokens = self._source_line_tokens(source_text)
+        target_seq = str(missing_seq)
+
+        for index, token in enumerate(tokens):
+            if utils.normalize(token) != target_seq:
+                continue
+
+            # Scan backwards (up to 8 tokens) for a name token match
+            matched_name = ""
+            matched_index = -1
+            for back in range(1, min(9, index + 1)):
+                candidate_token = tokens[index - back]
+                candidate_norm = utils.normalize(candidate_token)
+                for name_tok in name_tokens[1:]:
+                    if utils.normalize(name_tok) == candidate_norm:
+                        matched_name = candidate_token
+                        matched_index = index - back
+                        break
+                if matched_name:
+                    break
+
+            if not matched_name:
+                continue
+
+            # Guard: the matched name token must be a real product name, not an OCR fragment.
+            # It should appear as a standalone line in the source text.
+            matched_name_standalone = False
+            for t in tokens:
+                if utils.normalize(t) == utils.normalize(matched_name):
+                    matched_name_standalone = True
+                    break
+            if not matched_name_standalone:
+                continue
+
+            # Guard: there must be a brand-like token between the matched name and the seq
+            gap_tokens = tokens[matched_index + 1:index]
+            has_brand_in_gap = any(
+                not self._is_source_row_field_noise(utils.normalize(t))
+                and 2 <= len(utils.normalize(t)) <= 12
+                for t in gap_tokens
+            )
+            if not has_brand_in_gap:
+                continue
+
+            # Extract detail from tokens between matched_name and the seq number
+            detail = ""
+            if matched_index > 0:
+                detail_candidate = tokens[matched_index - 1]
+                detail_norm = utils.normalize(detail_candidate)
+            if len(detail_norm) >= 4 and not self._is_source_row_field_noise(detail_norm):
+                    detail = detail_candidate
+
+            # Extract brand: scan backward between name and seq, then forward after seq
+            brand = ""
+            for back in range(1, min(4, index - matched_index)):
+                back_token = tokens[index - back]
+                back_norm = utils.normalize(back_token)
+                if self._is_source_row_field_noise(back_norm):
+                    continue
+                if 2 <= len(back_norm) <= 12:
+                    brand = back_token
+                    break
+            if not brand:
+                for fwd in range(1, min(4, len(tokens) - index)):
+                    fwd_token = tokens[index + fwd] if index + fwd < len(tokens) else ""
+                    fwd_norm = utils.normalize(fwd_token)
+                    if self._is_source_row_field_noise(fwd_norm):
+                        continue
+                    if 2 <= len(fwd_norm) <= 12:
+                        brand = fwd_token
+                        break
+
+            # Extract unit: next unit-like token after seq
+            unit = ""
+            search_start = index + 1
+            for fwd in range(search_start, min(search_start + 5, len(tokens))):
+                if utils.first_unit_token([tokens[fwd]]):
+                    unit = tokens[fwd]
+                    break
+
+            # Extract quantity: first number after unit
+            quantity = ""
+            if unit:
+                try:
+                    unit_index = tokens.index(unit, search_start)
+                except ValueError:
+                    unit_index = -1
+                if unit_index >= 0:
+                    for fwd in range(unit_index + 1, min(unit_index + 3, len(tokens))):
+                        fwd_norm = utils.normalize(tokens[fwd])
+                        if re.fullmatch(r"\d{1,3}(?:\.\d+)?", fwd_norm):
+                           quantity = tokens[fwd]
+                           break
+
+            # Look for detail continuation after quantity
+            if quantity and detail:
+                try:
+                    qty_idx = tokens.index(quantity, index)
+                except ValueError:
+                    qty_idx = -1
+                if qty_idx >= 0 and qty_idx + 1 < len(tokens):
+                    cont = tokens[qty_idx + 1]
+                    cont_norm = utils.normalize(cont)
+                    if cont_norm and not self._is_source_row_field_noise(cont_norm) and len(cont_norm) >= 2:
+                        detail = detail + " " + cont
+
+            return {
+                "name": matched_name,
+                "detail": detail or matched_name,
+                "brand": brand,
+                "unit": unit,
+                "quantity": quantity,
+            }
+
+        return None
+
+    def _split_name_tokens(self, text: str) -> list[str]:
+        """Split a cell text into candidate name tokens."""
+        raw = unicodedata.normalize("NFKC", text or "").strip()
+        if not raw:
+            return []
+        parts = [p.strip() for p in re.split(r"\s+", raw) if p.strip()]
+        return [p for p in parts if self._is_product_name_like(p)]
+
+    def _is_product_name_like(self, text: str) -> bool:
+        norm = utils.normalize(text)
+        if len(norm) < 2 or len(norm) > 20:
+            return False
+        if not re.search(r"[一-鿿]", text):
+            return False
+        if norm.endswith(("。", "；", ";", "，", ",")):
+            return False
+        return True
+
+    def _looks_like_detail_not_name(self, text: str) -> bool:
+        """Check if text looks like detail/description text rather than a product name."""
+        norm = utils.normalize(text)
+        if not norm or len(norm) < 2:
+            return False
+        if norm.endswith(("。", ".")):
+            return True
+        detail_markers = ("开发", "计算", "模型开发", "预报", "预测", "维护", "服务", "建立")
+        if any(marker in norm for marker in detail_markers):
+            if len(norm) > 6:
+                return True
+        return False
+
     def _split_adjacent_sequence_detail_merged_row(
         self,
         row: _LogicalRow,
@@ -387,6 +713,7 @@ class TableRepairService:
                 kept_text = current_detail
                 missing_text = missing_detail
             elif col == 1:
+                kept_text = self._remove_merged_name_suffix(kept_text, candidate["name"] or missing_detail)
                 missing_text = candidate["name"] or missing_detail
             elif col == 3:
                 kept_text = current_brand

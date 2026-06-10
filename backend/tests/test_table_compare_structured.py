@@ -290,7 +290,125 @@ class TestStructuredTableComparison:
         doc = _make_doc([_make_table_block("t1", 1, CONTRACT_TABLE_HTML)])
         diffs, warnings = TableComparator().build_diffs(doc, doc)
         assert diffs == []
+
+    def test_detail_merge_path_cleans_name_column(self):
+        """Bug A: _split_adjacent_sequence_detail_merged_row should clean col 1 (name)."""
+        source_text = (
+            "6\n理论可用功率计算\n国能日新\n套\n1\n"
+            "7\n接口开放及系统开发\n国能日新\n年\n1\n"
+            "8\n技术维护服务费\n国能日新\n年\n1"
+        )
+        original_html = _product_table([
+            "<tr><td>6</td><td>理论可用功率计算</td><td>理论可用功率计算</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>7</td><td>接口开放及系统开发</td><td>接口开放及系统开发</td><td>国能日新</td>"
+            "<td>年</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>8</td><td>技术维护服务费</td><td>数值天气预报服务。</td><td>国能日新</td>"
+            "<td>年</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>6</td><td>理论可用功 率计算 接口开放及 系统开发</td>"
+            "<td>理论可用功率计算 接口开放及系统开发</td><td>国能日新 国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>8</td><td>技术维护服务费</td><td>数值天气预报服务。</td><td>国能日新</td>"
+            "<td>年</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_raw_table_block("c1", 1, compare_html, source_text)]),
+        )
+
         assert warnings == []
+        assert diffs == []
+
+    def test_phantom_merged_name_row_is_repaired(self):
+        """Bug B: merged name + phantom row should be split when source_text is available."""
+        source_text = (
+            "风电场中期功率预报\n中期模型\n国能日新\n2\n套\n1\n模型开发。\n"
+            "风电场短期功率预报\n短期模型\n国能日新\n3\n套\n1\n模型开发。\n"
+            "风电场超短期\n超短期模型\n4\n国能日新\n套\n1\n预测模型开发。"
+        )
+        original_html = _product_table([
+            "<tr><td>2</td><td>中期模型</td><td>风电场中期功率预报 模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>3</td><td>短期模型</td><td>风电场短期功率预报 模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>4</td><td>超短期模型</td><td>风电场超短期功率预测模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>2</td><td>中期模型 短期模型</td><td>风电场中期功率预报 模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>3</td><td>风电场短期功率预报 模型开发。</td><td>国能日新</td><td>套</td><td>1</td>"
+            "<td></td><td></td><td></td><td></td></tr>",
+            "<tr><td>4</td><td>超短期模型</td><td>风电场超短期功率预测模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_raw_table_block("c1", 1, compare_html, source_text)]),
+        )
+
+        assert warnings == []
+        assert diffs == []
+
+    def test_phantom_merged_name_row_preserves_real_change(self):
+        """Bug B: real quantity change should still be detected after phantom repair."""
+        source_text = (
+            "风电场中期功率预报\n中期模型\n国能日新\n2\n套\n1\n模型开发。\n"
+            "风电场短期功率预报\n短期模型\n国能日新\n3\n套\n2\n模型开发。"
+        )
+        original_html = _product_table([
+            "<tr><td>2</td><td>中期模型</td><td>风电场中期功率预报 模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>3</td><td>短期模型</td><td>风电场短期功率预报 模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>2</td><td>中期模型 短期模型</td><td>风电场中期功率预报 模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>3</td><td>风电场短期功率预报 模型开发。</td><td>国能日新</td><td>套</td><td>2</td>"
+            "<td></td><td></td><td></td><td></td></tr>",
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_raw_table_block("c1", 1, compare_html, source_text)]),
+        )
+
+        assert warnings == []
+        assert len(diffs) == 1
+        assert "2" in diffs[0].compare_text
+        assert warnings == []
+
+    def test_merged_sequence_with_single_name_and_phantom_continuation(self):
+        """OCR merges seq+detail but puts only first name in col 1, pushing
+        the second name into phantom row col 0 (e.g. '2 3' | '中期模型' | ... then '短期模型' | '')."""
+        original_html = _product_table([
+            "<tr><td>2</td><td>中期模型</td><td>光伏场中期功率预报 模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>3</td><td>短期模型</td><td>光伏场短期功率预报 模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>4</td><td>超短期模型</td><td>光伏场超短期功率预测模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>2 3</td><td>中期模型</td><td>光伏场中期功率预报 模型开发。 光伏场短期功率预报 模型开发。</td>"
+            "<td>国能日新 国能日新</td><td>套 套</td><td>1 1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>短期模型</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>",
+            "<tr><td>4</td><td>超短期模型</td><td>光伏场超短期功率预测模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings == []
+        assert diffs == []
 
     def test_single_cell_change_detected(self):
         original_html = (

@@ -351,6 +351,7 @@ class LogicalTableParser:
 
         rows = repair_service.normalize_merged_sequence_rows(rows, col_count)
         rows = repair_service.repair_merged_adjacent_sequence_rows(rows, col_count)
+        rows = repair_service.repair_phantom_merged_name_rows(rows, col_count)
         rows = repair_service.repair_product_continuation_rows(rows, col_count)
         rows = repair_service.repair_shifted_product_field_rows(rows, col_count)
         rows = repair_service.repair_embedded_summary_transitions(rows, col_count)
