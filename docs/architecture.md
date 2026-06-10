@@ -19,7 +19,7 @@ HTTP responses are built through presenter functions and API schemas. Public JSO
 ## Migration Direction
 
 - Keep public API paths compatible while keeping storage and execution behind interfaces.
-- Persist task metadata, execution metadata, and artifacts in the task directory. The current phase intentionally does not use PostgreSQL, SQLite, or another database.
+- Persist task metadata, execution metadata, and artifacts in the task directory.
 - Keep uploaded PDFs, OCR raw output, debug files, and reports behind the `ArtifactStore` interface.
 - Keep task execution behind `QueuedTaskRunner`; production can replace the local JSON job repository with a broker-backed adapter without changing API or service code.
 - Split large comparison modules incrementally. Table comparison now keeps the public `TableComparator` entrypoint while moving constants and internal row/cell/diff support types into separate modules; future algorithm changes should continue that pattern by moving cohesive logic behind narrow helpers.

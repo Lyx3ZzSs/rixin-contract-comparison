@@ -12,7 +12,6 @@ Current structure:
 - `backend/app/services/` for document extraction, comparison, risk analysis, PDF artifacts, and report generation.
 - `backend/tests/` for backend tests.
 - `backend/scripts/` for repeatable utilities such as quality evaluation.
-- `backend/migrations/` for Alembic database migrations.
 - `frontend/src/` for React pages, components, API client, and shared types.
 - `frontend/src/**/*.test.*` for frontend tests.
 - `docs/` for architecture notes, user-facing documentation, and examples.
@@ -26,8 +25,6 @@ Keep generated files, virtual environments, caches, build output, and local secr
 - `cd backend && python -m pytest` runs the backend test suite.
 - `cd backend && python -m ruff check .` runs backend lint checks.
 - `cd backend && python -m ruff format .` formats Python files.
-- `cd backend && alembic upgrade head` applies database migrations when `TASK_REPOSITORY_BACKEND=postgres`.
-- `cd backend && python scripts/import_tasks_to_db.py --dry-run` validates local JSON task import before PostgreSQL migration.
 - `cd frontend && npm test` runs frontend tests.
 - `cd frontend && npm run build` runs TypeScript and production build checks.
 
@@ -42,8 +39,6 @@ Prefer type hints for public functions and cross-module data structures. Use sho
 Place backend tests under `backend/tests/`. Name test files `test_<module>.py` and test functions `test_<behavior>()`. Keep tests deterministic and avoid relying on local files outside the repository.
 
 Prioritize contract comparison parsing, normalization, diff logic, task repository behavior, API compatibility, and edge cases around missing or malformed input.
-
-PostgreSQL-specific tests should be written so the default local JSON workflow still runs without a live database. Prefer repository-level tests with isolated session factories where possible.
 
 ## Commit & Pull Request Guidelines
 

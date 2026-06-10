@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
         close_clients()
 
 
-app = FastAPI(title="合同差异审查系统", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="国能日新 · 合同智能审查平台", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

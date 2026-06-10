@@ -1,0 +1,42 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: rixin-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Override host/port for container networking
+      - HOST=0.0.0.0
+      - PORT=8000
+      - STORAGE_DIR=/data/storage
+      - RELOAD=false
+      - FRONTEND_CORS_ORIGINS=http://localhost,http://127.0.0.1
+    ports:
+      - "8000:8000"
+    volumes:
+      - storage_data:/data/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: rixin-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  storage_data:
+    driver: local

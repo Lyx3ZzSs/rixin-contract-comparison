@@ -65,7 +65,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
             登录系统
           </button>
           <p className={error ? "status-line error" : "status-line"} role="status">
-            {error || "测试账号：admin / 123456"}
+            {error || "\u00A0"}
           </p>
         </form>
       </section>

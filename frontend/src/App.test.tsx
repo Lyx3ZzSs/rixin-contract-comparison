@@ -80,13 +80,13 @@ describe("App", () => {
 
   it("shows the signed-in user and logs out from the expanded sidebar", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.localStorage.setItem("rixin_contract_auth_user", "testuser");
 
     render(<AppProvider><App /></AppProvider>);
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
 
-    expect(screen.getByLabelText("当前用户")).toHaveTextContent("admin");
+    expect(screen.getByLabelText("当前用户")).toHaveTextContent("testuser");
     await user.click(screen.getByRole("button", { name: "退出登录" }));
 
     expect(window.localStorage.getItem("rixin_contract_auth_user")).toBeNull();
@@ -95,7 +95,7 @@ describe("App", () => {
 
   it("opens comparison records as a standalone page from the expanded contract menu", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.localStorage.setItem("rixin_contract_auth_user", "testuser");
 
     render(<AppProvider><App /></AppProvider>);
 
@@ -113,7 +113,7 @@ describe("App", () => {
 
   it("opens a task from the standalone comparison records page", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.localStorage.setItem("rixin_contract_auth_user", "testuser");
     window.history.replaceState({}, "", "/compare/records");
 
     render(<AppProvider><App /></AppProvider>);
@@ -126,7 +126,7 @@ describe("App", () => {
 
   it("shows extraction tools as a sibling dropdown", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.localStorage.setItem("rixin_contract_auth_user", "testuser");
 
     render(<AppProvider><App /></AppProvider>);
 
@@ -141,7 +141,7 @@ describe("App", () => {
 
   it("opens the contract extraction page from the extraction menu", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.localStorage.setItem("rixin_contract_auth_user", "testuser");
 
     render(<AppProvider><App /></AppProvider>);
 
@@ -157,7 +157,7 @@ describe("App", () => {
 
   it("opens extraction records from the extraction menu", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.localStorage.setItem("rixin_contract_auth_user", "testuser");
 
     render(<AppProvider><App /></AppProvider>);
 
@@ -171,7 +171,7 @@ describe("App", () => {
 
   it("opens extraction field management from the extraction menu", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.localStorage.setItem("rixin_contract_auth_user", "testuser");
 
     render(<AppProvider><App /></AppProvider>);
 
@@ -185,7 +185,7 @@ describe("App", () => {
 
   it("starts a new extraction from the extraction records page", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.localStorage.setItem("rixin_contract_auth_user", "testuser");
     window.history.replaceState({}, "", "/extract/records");
 
     render(<AppProvider><App /></AppProvider>);
@@ -198,7 +198,7 @@ describe("App", () => {
 
   it("opens field setup after selecting a file", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.localStorage.setItem("rixin_contract_auth_user", "testuser");
 
     render(<AppProvider><App /></AppProvider>);
 
@@ -216,7 +216,7 @@ describe("App", () => {
 
   it("keeps a newly created task on the comparison page without writing sidebar history", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.localStorage.setItem("rixin_contract_auth_user", "testuser");
 
     render(<AppProvider><App /></AppProvider>);
 
@@ -228,7 +228,7 @@ describe("App", () => {
 
   it("opens comparison records from the upload success action", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("rixin_contract_auth_user", "admin");
+    window.localStorage.setItem("rixin_contract_auth_user", "testuser");
 
     render(<AppProvider><App /></AppProvider>);
 

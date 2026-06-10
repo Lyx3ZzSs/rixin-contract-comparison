@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { isExtractionEnabled } from "./lib/features";
 
 import { LoginPage } from "./pages/LoginPage";
 import { ExtractionFieldsPage } from "./pages/ExtractionFieldsPage";
@@ -22,7 +23,7 @@ export function App() {
   const { currentUser, route, isSidebarExpanded, isComparisonMenuOpen, isExtractionMenuOpen } = state;
 
   function handleLogin(username: string, password: string): boolean {
-    if (username === "admin" && password === "123456") {
+    if (username.trim() !== "" && password.trim() !== "") {
       dispatch({ type: "LOGIN", username });
       return true;
     }
@@ -60,14 +61,16 @@ export function App() {
     if (route.name === "task") {
       return <ResultPage taskId={route.taskId} onBack={() => navigateHome()} />;
     }
-    if (route.name === "extract") {
-      return <ExtractionPage />;
-    }
-    if (route.name === "extractRecords") {
-      return <ExtractionRecordsPage onCreateExtraction={navigateToExtraction} />;
-    }
-    if (route.name === "extractFields") {
-      return <ExtractionFieldsPage />;
+    if (isExtractionEnabled) {
+      if (route.name === "extract") {
+        return <ExtractionPage />;
+      }
+      if (route.name === "extractRecords") {
+        return <ExtractionRecordsPage onCreateExtraction={navigateToExtraction} />;
+      }
+      if (route.name === "extractFields") {
+        return <ExtractionFieldsPage />;
+      }
     }
     if (route.name === "records") {
       return <ComparisonRecordsPage onOpenTask={navigateToTask} onCreateComparison={navigateHome} />;
@@ -115,6 +118,7 @@ export function App() {
               </div>
             )}
           </div>
+          {isExtractionEnabled && (
           <div className={isExtractionMenuOpen ? "oa-nav-group open" : "oa-nav-group"}>
             <button
               className={
@@ -157,6 +161,7 @@ export function App() {
               </div>
             )}
           </div>
+          )}
         </nav>
         {isSidebarExpanded && (
           <div className="oa-user-panel" aria-label="当前用户">

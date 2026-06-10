@@ -1,6 +1,6 @@
-# 合同差异审查系统
+# 国能日新 · 合同智能审查平台
 
-这是一个前后端分离的合同差异审查 MVP。后端 FastAPI 负责上传两份 PDF 合同、通过可插拔文档识别器提取结构化文本和坐标、按条款识别差异、生成 PDF 报告；前端 React 工作台负责上传、原始 PDF 在线预览、差异高亮渲染和产物下载。它面向合同审查流程，不是普通逐字 Diff 工具。
+这是一个前后端分离的国能日新 · 合同智能审查平台 MVP。后端 FastAPI 负责上传两份 PDF 合同、通过可插拔文档识别器提取结构化文本和坐标、按条款识别差异、生成 PDF 报告；前端 React 工作台负责上传、原始 PDF 在线预览、差异高亮渲染和产物下载。它面向合同审查流程，不是普通逐字 Diff 工具。
 
 ## 功能
 
@@ -23,13 +23,6 @@ cp .env.example .env
 
 `.env.example` 使用安全占位值；接入扫描件 OCR、结构化版面识别或合同字段提取时，再按实际环境填写 `PPOCRV5_URL`、`PPSTRUCTURE_URL` 和 `AI_LLM_*`。
 
-任务元数据和执行元数据默认保存在 PostgreSQL：
-
-```bash
-TASK_REPOSITORY_BACKEND=postgres
-DATABASE_URL=postgresql+psycopg://contract:contract@127.0.0.1:5432/contract_compare
-```
-
 安装后端依赖：
 
 ```bash
@@ -51,21 +44,6 @@ cd backend
 python -m uvicorn app.main:app --reload --port 8000
 ```
 
-首次启用 PostgreSQL 前执行数据库迁移：
-
-```bash
-cd backend
-alembic upgrade head
-```
-
-如需导入历史本地 JSON 任务：
-
-```bash
-cd backend
-python scripts/import_tasks_to_db.py --dry-run
-python scripts/import_tasks_to_db.py
-```
-
 准备并启动前端：
 
 ```bash
@@ -80,11 +58,6 @@ npm run dev
 - 前端工作台：`http://127.0.0.1:5173/`
 - 后端健康检查：`http://127.0.0.1:8000/health`
 - 后端 API 文档：`http://127.0.0.1:8000/docs`
-
-前端当前使用本地写死的测试账号：
-
-- 用户名：`admin`
-- 密码：`123456`
 
 如果 `8000` 端口已被占用，可换一个端口：
 
@@ -236,11 +209,11 @@ cd frontend && npm test && npm run build
 - 合同比对必须同时配置可用的 `PPOCRV5_URL` 和 `PPSTRUCTURE_URL`；任一服务不可用都会使比对任务失败。
 - 合同字段提取的 Word 支持依赖 LibreOffice；合同对比仍暂不支持 Word、Excel 和复杂表格深度 diff。
 - MVP 使用同步任务；任务元数据支持本地 JSON 或 PostgreSQL，文件产物仍使用本地文件存储。
+- MVP 使用同步任务，任务元数据和文件产物均使用本地文件存储。
 - 报告导出不会在导出时重新调用大模型；风险统计基于任务已有的差异分析结果。
 
 ## 后续扩展
 
 - 增强表格、金额、日期、主体信息等合同要素结构化抽取。
 - 引入异步任务队列和任务进度。
-- 用数据库替代本地 JSON。
 - 增加规则风险引擎或按需接入大模型审查总结。

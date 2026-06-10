@@ -1,3 +1,5 @@
+import { isExtractionEnabled } from "./features";
+
 export type AppRoute =
   | { name: "home" }
   | { name: "records" }
@@ -14,14 +16,16 @@ export function readRoute(pathname = window.location.pathname): AppRoute {
   if (pathname === "/compare/records") {
     return { name: "records" };
   }
-  if (pathname === "/extract") {
-    return { name: "extract" };
-  }
-  if (pathname === "/extract/records") {
-    return { name: "extractRecords" };
-  }
-  if (pathname === "/extract/fields") {
-    return { name: "extractFields" };
+  if (isExtractionEnabled) {
+    if (pathname === "/extract") {
+      return { name: "extract" };
+    }
+    if (pathname === "/extract/records") {
+      return { name: "extractRecords" };
+    }
+    if (pathname === "/extract/fields") {
+      return { name: "extractFields" };
+    }
   }
   return { name: "home" };
 }
