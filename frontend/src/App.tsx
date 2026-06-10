@@ -1,26 +1,19 @@
 import { useMemo } from "react";
-import { isExtractionEnabled } from "./lib/features";
 
 import { LoginPage } from "./pages/LoginPage";
-import { ExtractionFieldsPage } from "./pages/ExtractionFieldsPage";
-import { ExtractionPage } from "./pages/ExtractionPage";
-import { ExtractionRecordsPage } from "./pages/ExtractionRecordsPage";
 import { ComparisonRecordsPage } from "./pages/ComparisonRecordsPage";
 import { ResultPage } from "./pages/ResultPage";
 import { UploadPage } from "./pages/UploadPage";
 import {
   navigateHome,
   navigateToComparisonRecords,
-  navigateToExtraction,
-  navigateToExtractionFields,
-  navigateToExtractionRecords,
   navigateToTask,
 } from "./lib/routes";
 import { useApp } from "./lib/state";
 
 export function App() {
   const { state, dispatch } = useApp();
-  const { currentUser, route, isSidebarExpanded, isComparisonMenuOpen, isExtractionMenuOpen } = state;
+  const { currentUser, route, isSidebarExpanded, isComparisonMenuOpen } = state;
 
   function handleLogin(username: string, password: string): boolean {
     if (username.trim() !== "" && password.trim() !== "") {
@@ -47,30 +40,9 @@ export function App() {
     dispatch({ type: "TOGGLE_COMPARISON_MENU" });
   }
 
-  function handleExtractionMenuClick() {
-    if (!isSidebarExpanded) {
-      dispatch({ type: "TOGGLE_SIDEBAR" });
-      // Also ensure extraction menu opens
-      if (!isExtractionMenuOpen) dispatch({ type: "TOGGLE_EXTRACTION_MENU" });
-      return;
-    }
-    dispatch({ type: "TOGGLE_EXTRACTION_MENU" });
-  }
-
   const content = useMemo(() => {
     if (route.name === "task") {
       return <ResultPage taskId={route.taskId} onBack={() => navigateHome()} />;
-    }
-    if (isExtractionEnabled) {
-      if (route.name === "extract") {
-        return <ExtractionPage />;
-      }
-      if (route.name === "extractRecords") {
-        return <ExtractionRecordsPage onCreateExtraction={navigateToExtraction} />;
-      }
-      if (route.name === "extractFields") {
-        return <ExtractionFieldsPage />;
-      }
     }
     if (route.name === "records") {
       return <ComparisonRecordsPage onOpenTask={navigateToTask} onCreateComparison={navigateHome} />;
@@ -118,50 +90,6 @@ export function App() {
               </div>
             )}
           </div>
-          {isExtractionEnabled && (
-          <div className={isExtractionMenuOpen ? "oa-nav-group open" : "oa-nav-group"}>
-            <button
-              className={
-                route.name === "extract" || route.name === "extractRecords" || route.name === "extractFields"
-                  ? "active"
-                  : ""
-              }
-              type="button"
-              onClick={handleExtractionMenuClick}
-              aria-expanded={isSidebarExpanded ? isExtractionMenuOpen : undefined}
-            >
-              <span className="oa-extract-icon" aria-hidden="true" />
-              <span>{isSidebarExpanded ? "合同智能提取" : "提取"}</span>
-              {isSidebarExpanded && <span className="oa-menu-chevron" aria-hidden="true" />}
-            </button>
-            {isSidebarExpanded && isExtractionMenuOpen && (
-              <div className="oa-subnav" aria-label="合同智能提取菜单">
-                <button className={route.name === "extract" ? "active" : ""} type="button" onClick={navigateToExtraction}>
-                  <span className="oa-subnav-dot" aria-hidden="true" />
-                  <span>合同提取</span>
-                </button>
-                <button
-                  className={route.name === "extractRecords" ? "active" : ""}
-                  type="button"
-                  onClick={navigateToExtractionRecords}
-                  aria-current={route.name === "extractRecords" ? "page" : undefined}
-                >
-                  <span className="oa-history-icon" aria-hidden="true" />
-                  <span>提取记录</span>
-                </button>
-                <button
-                  className={route.name === "extractFields" ? "active" : ""}
-                  type="button"
-                  onClick={navigateToExtractionFields}
-                  aria-current={route.name === "extractFields" ? "page" : undefined}
-                >
-                  <span className="oa-field-icon" aria-hidden="true" />
-                  <span>提取字段管理</span>
-                </button>
-              </div>
-            )}
-          </div>
-          )}
         </nav>
         {isSidebarExpanded && (
           <div className="oa-user-panel" aria-label="当前用户">

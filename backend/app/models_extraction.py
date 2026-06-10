@@ -1,3 +1,6 @@
+# DEPRECATED: This module exists only to keep comparison infrastructure imports working.
+# Extraction-specific models (ExtractionFieldDef, ExtractionFieldValue) are kept
+# as stubs for backward compat with test imports. Remove once tests are updated.
 from __future__ import annotations
 
 from datetime import UTC, datetime

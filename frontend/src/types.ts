@@ -146,33 +146,7 @@ export interface ExtractionFieldValue {
   extraction_method?: "explicit" | "semantic" | null;
 }
 
-export interface ExtractionTaskResponse {
-  task_id: string;
-  task_type: string;
-  status: TaskStatus;
-  stage: string;
-  filename: string;
-  file_url: string;
-  extractor_used: string;
-  fields: { id: string; name: string; type: string; description: string; semantic_extraction: boolean }[];
-  results: ExtractionFieldValue[];
-  errors: string[];
-}
 
-export interface ExtractionRecordSummary {
-  task_id: string;
-  task_type: string;
-  status: TaskStatus;
-  created_at: string;
-  updated_at: string;
-  filename: string;
-  file_url: string;
-  extractor_used: string;
-  field_count: number;
-  found_count: number;
-  not_found_count: number;
-  error_count: number;
-}
 
 export interface DiffReviewPayload {
   review_status: ReviewStatus;

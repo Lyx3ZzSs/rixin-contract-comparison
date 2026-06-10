@@ -9,7 +9,6 @@ export interface AppState {
   route: AppRoute;
   isSidebarExpanded: boolean;
   isComparisonMenuOpen: boolean;
-  isExtractionMenuOpen: boolean;
 }
 
 export type Action =
@@ -26,7 +25,6 @@ function getInitialState(): AppState {
     route: readRoute(),
     isSidebarExpanded: false,
     isComparisonMenuOpen: true,
-    isExtractionMenuOpen: true,
   };
 }
 
@@ -44,8 +42,6 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, isSidebarExpanded: !state.isSidebarExpanded };
     case "TOGGLE_COMPARISON_MENU":
       return { ...state, isComparisonMenuOpen: !state.isComparisonMenuOpen };
-    case "TOGGLE_EXTRACTION_MENU":
-      return { ...state, isExtractionMenuOpen: !state.isExtractionMenuOpen };
     default:
       return state;
   }

@@ -13,9 +13,8 @@
 
 | 服务 | 配置项 | 说明 |
 |------|-------|------|
-| PP-OCRv5 | `PPOCRV5_URL` | 文字识别服务，用于扫描件和字段提取 |
+| PP-OCRv5 | `PPOCRV5_URL` | 文字识别服务，用于扫描件 OCR |
 | PP-Structure | `PPSTRUCTURE_URL` | 版面分析服务，合同比对必需 |
-| LLM API | `AI_LLM_BASE_URL` | OpenAI 兼容接口，仅字段提取需要 |
 
 > 合同比对强制依赖 PP-OCRv5 和 PP-Structure 同时可用，任一不可用比对任务会失败。
 
@@ -27,7 +26,6 @@
                         dist/ (SPA)              ┌──────┴──────┐
                                                  │ PP-OCRv5    │
                                                  │ PP-Structure│
-                                                 │ LLM API     │
                                                  └─────────────┘
                                                         │
                                                  storage_data 卷
@@ -82,15 +80,6 @@ PPSTRUCTURE_URL=https://your-ppstructure-host/
 PPSTRUCTURE_TIMEOUT_SECONDS=600
 PPSTRUCTURE_USE_TABLE_RECOGNITION=true
 PPSTRUCTURE_USE_SEAL_RECOGNITION=true
-```
-
-### 4.2 可选：LLM 字段提取
-
-```
-AI_LLM_BASE_URL=https://api.siliconflow.cn/v1/
-AI_LLM_API_KEY=sk-your-api-key-here
-AI_LLM_MODEL=Pro/moonshotai/Kimi-K2.6
-AI_EXTRACTION_TIMEOUT_SECONDS=120
 ```
 
 ### 4.3 上传限制
@@ -215,7 +204,7 @@ docker run --rm -v rixin-contract-comparison_storage_data:/data -v $(pwd):/backu
 
 ## 7. 功能开关
 
-如需隐藏「合同智能提取」菜单，在 `frontend/.env` 中设置：
+如需控制功能开关（如隐藏菜单），在 `frontend/.env` 中设置环境变量：
 
 ```
 VITE_ENABLE_EXTRACTION=false
@@ -373,7 +362,7 @@ services:
 - 不要将 `.env` 提交到 Git（已在 `.gitignore` 中排除）
 - 生产环境替换前端测试账号，接入真实认证
 - 配置 HTTPS（Let's Encrypt 或企业证书）
-- 限制 PP-OCRv5 / PP-Structure / LLM API 的网络访问范围
+- 限制 PP-OCRv5 / PP-Structure 的网络访问范围
 - 不要在公网暴露后端 8000 端口（移除 `docker-compose.yml` 中 `ports: "8000:8000"`）
 - 定期备份 `storage_data` 卷
 - 不要在 `.env` 中设置 `RELOAD=true`

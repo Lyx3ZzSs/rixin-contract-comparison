@@ -77,38 +77,9 @@ class PPStructureSettings(BaseModel):
     format_block_content: bool = True
 
 
-class ExtractionSettings(BaseModel):
-    """Extraction domain: OCR + layout + hybrid settings."""
-
-    backend: str = "auto"
-    pymupdf_min_text_chars: int = Field(default=1, ge=0)
-    align_structured: bool = True
-    save_raw_result: bool = True
-    max_document_size_mb: int = Field(default=60, ge=1)
-    max_image_size_mb: int = Field(default=5, ge=1)
-    cache_enabled: bool = False
-    cache_ttl_hours: int = Field(default=72, ge=1)
-    window_size: int = Field(default=0, ge=0)
-    window_overlap: int = Field(default=1, ge=0)
-    layout_analysis_mode: str = "v2"
-
-    ppocrv5: PPOCRV5Settings = Field(default_factory=PPOCRV5Settings)
-    ppstructure: PPStructureSettings = Field(default_factory=PPStructureSettings)
-    hybrid: HybridSettings = Field(default_factory=HybridSettings)
-
-
 # ---------------------------------------------------------------------------
 # AI / LLM domain
 # ---------------------------------------------------------------------------
-
-class AILLMSettings(BaseModel):
-    """AI LLM (GLM) settings for structured extraction."""
-
-    base_url: str = ""
-    api_key: str = ""
-    model: str = ""
-    timeout_seconds: int = Field(default=120, ge=1)
-
 
 # ---------------------------------------------------------------------------
 # Matching domain

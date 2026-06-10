@@ -7,8 +7,6 @@ import type {
   DiffReviewPayload,
   DiffReviewResponse,
   DiffItem,
-  ExtractionRecordSummary,
-  ExtractionTaskResponse,
 } from "../types";
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
@@ -69,11 +67,7 @@ export async function getCompareRecords(): Promise<CompareRecordSummary[]> {
   return payload.records;
 }
 
-export async function getExtractionRecords(): Promise<ExtractionRecordSummary[]> {
-  const response = await fetch(toApiUrl("/api/extract/records"));
-  const payload = await parseJsonResponse<{ records: ExtractionRecordSummary[] }>(response);
-  return payload.records;
-}
+
 
 export async function getDiffs(taskId: string): Promise<DiffItem[]> {
   const response = await fetch(toApiUrl(`/api/compare/${taskId}/diffs`));
@@ -111,54 +105,8 @@ export async function getCompareQuality(taskId: string): Promise<CompareQualityS
   return parseJsonResponse<CompareQualitySummary>(response);
 }
 
-export async function extractFields(
-  file: File,
-  fields: { id: string; name: string; type: string; description: string; semanticExtraction: boolean }[],
-): Promise<ExtractionTaskResponse> {
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append(
-    "fields",
-    JSON.stringify(
-      fields.map((field) => ({
-        id: field.id,
-        name: field.name,
-        type: "文本",
-        description: field.description,
-        semantic_extraction: field.semanticExtraction,
-      })),
-    ),
-  );
-  const response = await fetch(toApiUrl("/api/extract"), {
-    method: "POST",
-    body: formData,
-  });
-  return parseJsonResponse<ExtractionTaskResponse>(response);
-}
 
-export async function createExtractionPreview(file: File): Promise<Blob> {
-  const formData = new FormData();
-  formData.append("file", file);
-  const response = await fetch(toApiUrl("/api/extract/preview"), {
-    method: "POST",
-    body: formData,
-  });
-  if (!response.ok) {
-    let message = `预览失败 (${response.status})`;
-    try {
-      const payload = (await response.json()) as { detail?: string };
-      if (payload.detail) {
-        message = payload.detail;
-      }
-    } catch {
-      // Keep the status based message when the server does not return JSON.
-    }
-    throw new Error(message);
-  }
-  return response.blob();
-}
 
-export async function getExtractionTask(taskId: string): Promise<ExtractionTaskResponse> {
-  const response = await fetch(toApiUrl(`/api/extract/${taskId}`));
-  return parseJsonResponse<ExtractionTaskResponse>(response);
-}
+
+
+
