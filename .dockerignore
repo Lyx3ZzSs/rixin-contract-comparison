@@ -1,0 +1,52 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Frontend
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# IDE / Editor
+.idea/
+.vscode/
+.DS_Store
+
+# Environment (copied via docker-compose env_file)
+.env
+.envrc
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Local storage (mounted as volume at runtime)
+storage/
+
+# Docs / misc
+docs/
+*.md
+LICENSE
+skills-lock.json
+CLAUDE.md
+.agents/
+.claude/
+.codex/
+
+# Tests
+**/tests/
+**/test/
+**/*.test.*
+**/__pycache__/

@@ -1,0 +1,47 @@
+{
+  "task_id": "EVAL_SIMPLE_TEXT",
+  "status": "COMPLETED",
+  "stage": "已完成",
+  "progress_percent": 100,
+  "original_filename": "original.pdf",
+  "compare_filename": "compare.pdf",
+  "diff_count": 1,
+  "diffs": [
+    {
+      "diff_id": "D001",
+      "diff_type": "MODIFY",
+      "clause_no": "1",
+      "title": "付款",
+      "original_text": "Buyer shall pay within 30 days.",
+      "compare_text": "Buyer shall pay within 45 days.",
+      "original_snippet": "30 days",
+      "compare_snippet": "45 days",
+      "readable_change": "付款期限由 30 天调整为 45 天。",
+      "source_type": "clause",
+      "match_score": 91.2,
+      "match_method": "same_clause_no_weighted",
+      "original_evidence": [
+        {
+          "page_no": 1,
+          "bbox": { "x0": 72, "y0": 120, "x1": 240, "y1": 146 },
+          "method": "char_exact",
+          "text": "30 days",
+          "highlight_type": "MODIFY",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH"
+        }
+      ],
+      "compare_evidence": [
+        {
+          "page_no": 1,
+          "bbox": { "x0": 72, "y0": 120, "x1": 240, "y1": 146 },
+          "method": "char_exact",
+          "text": "45 days",
+          "highlight_type": "MODIFY",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH"
+        }
+      ]
+    }
+  ]
+}

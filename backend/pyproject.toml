@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rixin-contract-comparison"
+version = "0.1.0"
+description = "Contract comparison and extraction service."
+readme = "../README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    "pymupdf",
+    "diff-match-patch",
+    "rapidfuzz",
+    "reportlab",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "python-dotenv",
+    "httpx",
+    "psutil",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"

@@ -1,14 +1,65 @@
 export type TaskStatus = "PROCESSING" | "COMPLETED" | "FAILED";
 export type DiffType = "ADD" | "DELETE" | "MODIFY";
-export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
+export type EvidenceQuality = "LOW" | "MEDIUM" | "HIGH";
+export type DiffQualityStatus = "NORMAL" | "NEEDS_REVIEW";
+export type ReviewStatus = "UNREVIEWED" | "CONFIRMED" | "FALSE_POSITIVE" | "NEEDS_REVIEW" | "IGNORED";
+
+export interface ParseWarningDetail {
+  code: string;
+  message: string;
+  severity: "INFO" | "WARNING" | "ERROR";
+  page_no?: number | null;
+  source: string;
+}
+
+export interface PageProfile {
+  page_no: number;
+  width: number;
+  height: number;
+  text_block_count: number;
+  table_block_count: number;
+  image_block_count: number;
+  char_count: number;
+  avg_confidence?: number | null;
+  table_area_ratio: number;
+  image_area_ratio: number;
+  page_role: string;
+  extraction_strategy: string;
+  low_text: boolean;
+  table_heavy: boolean;
+}
+
+export interface DocumentProfile {
+  filename: string;
+  page_count: number;
+  extractor_used: string;
+  total_text_chars: number;
+  table_block_count: number;
+  image_block_count: number;
+  scanned_page_count: number;
+  table_heavy_page_count: number;
+  page_profiles: PageProfile[];
+  recommended_strategy: string;
+  warnings: ParseWarningDetail[];
+}
 
 export interface CompareResponse {
   task_id: string;
   status: TaskStatus;
+  stage: string;
+  progress_percent: number;
   diff_count: number;
-  high_risk_count: number;
-  medium_risk_count: number;
-  low_risk_count: number;
+  reviewed_count?: number;
+  confirmed_count?: number;
+  false_positive_count?: number;
+  manual_review_count?: number;
+  ignored_count?: number;
+  audit_item_reviews?: Record<string, AuditItemReview>;
+  extractor_used?: string;
+  parse_warnings?: string[];
+  parse_warning_details?: ParseWarningDetail[];
+  document_profiles?: Record<string, DocumentProfile>;
+  debug_artifact_paths?: Record<string, string>;
   report_url: string;
   report_filename: string;
   original_pdf_url: string;
@@ -23,26 +74,19 @@ export interface CompareTask extends CompareResponse {
   updated_at: string;
   original_filename: string;
   compare_filename: string;
-  ai_summary: string;
-  report_ai_analysis?: ReportAIAnalysis | null;
-  original_page_screenshots?: string[];
-  compare_page_screenshots?: string[];
 }
 
-export interface AIAnalysis {
-  risk_level: RiskLevel;
-  risk_score: number;
-  contract_element: string;
-  change_summary: string;
-  risk_explanation: string;
-  review_suggestion: string;
-}
-
-export interface ReportAIAnalysis {
-  risk_level: RiskLevel;
-  summary: string;
-  major_risks: string[];
-  review_suggestions: string[];
+export interface CompareRecordSummary {
+  task_id: string;
+  status: TaskStatus;
+  stage: string;
+  progress_percent: number;
+  created_at: string;
+  updated_at: string;
+  original_filename: string;
+  compare_filename: string;
+  diff_count: number;
+  report_url: string;
 }
 
 export interface BBox {
@@ -58,6 +102,9 @@ export interface EvidenceBox {
   method: string;
   text: string;
   highlight_type?: DiffType;
+  confidence?: number;
+  evidence_quality?: EvidenceQuality;
+  text_confidence?: number | null;
 }
 
 export interface DiffItem {
@@ -70,11 +117,105 @@ export interface DiffItem {
   original_snippet: string;
   compare_snippet: string;
   readable_change: string;
-  ai_analysis: AIAnalysis | null;
-  original_screenshot: string;
-  compare_screenshot: string;
-  original_screenshot_url?: string;
-  compare_screenshot_url?: string;
+  source_type?: string;
+  match_score?: number | null;
+  match_method?: string;
+  match_score_details?: Record<string, number>;
+  match_candidates?: Record<string, unknown>[];
+  review_flags?: string[];
+  quality_status?: DiffQualityStatus;
+  text_confidence?: number | null;
+  merged_sources?: string[];
+  review_status?: ReviewStatus;
+  review_comment?: string;
+  reviewed_by?: string;
+  reviewed_at?: string;
   original_evidence?: EvidenceBox[];
   compare_evidence?: EvidenceBox[];
+}
+
+export type ExtractionFieldStatus = "found" | "not_found" | "error";
+
+export interface ExtractionFieldValue {
+  field_id: string;
+  field_name: string;
+  value: string;
+  confidence: number;
+  source_snippet: string;
+  status: ExtractionFieldStatus;
+  extraction_method?: "explicit" | "semantic" | null;
+}
+
+
+
+export interface DiffReviewPayload {
+  review_status: ReviewStatus;
+  review_comment?: string;
+  reviewed_by?: string;
+}
+
+export interface AuditItemReview {
+  audit_item_id?: string;
+  review_status: ReviewStatus;
+  review_comment?: string;
+  reviewed_by?: string;
+  reviewed_at?: string;
+}
+
+export interface DiffReviewResponse {
+  task_id: string;
+  diff: DiffItem;
+  review_stats: {
+    reviewed_count: number;
+    confirmed_count: number;
+    false_positive_count: number;
+    manual_review_count: number;
+    ignored_count: number;
+  };
+}
+
+export interface AuditItemReviewResponse {
+  task_id: string;
+  audit_item_id: string;
+  audit_item_review: AuditItemReview;
+  review_stats: DiffReviewResponse["review_stats"];
+}
+
+export interface QualityDiffItem {
+  diff_id: string;
+  title: string;
+  diff_type: DiffType;
+  source_type: string;
+  match_score?: number | null;
+  match_method: string;
+  review_flags: string[];
+  quality_status?: DiffQualityStatus;
+  text_confidence?: number | null;
+  merged_sources?: string[];
+  review_status: ReviewStatus;
+}
+
+export interface CompareQualitySummary {
+  task_id: string;
+  status: TaskStatus;
+  diff_count: number;
+  review_stats: DiffReviewResponse["review_stats"];
+  source_counts: Record<string, number>;
+  needs_review_count?: number;
+  review_flag_counts?: Record<string, number>;
+  cross_source_merged_count?: number;
+  evidence_quality_counts: Record<EvidenceQuality, number>;
+  document_profile_summary: Record<string, {
+    filename: string;
+    page_count: number;
+    extractor_used: string;
+    recommended_strategy: string;
+    total_text_chars: number;
+    scanned_page_count: number;
+    table_heavy_page_count: number;
+  }>;
+  parse_warning_details: ParseWarningDetail[];
+  low_confidence_diffs: QualityDiffItem[];
+  low_similarity_diffs: QualityDiffItem[];
+  debug_artifacts: Record<string, string>;
 }

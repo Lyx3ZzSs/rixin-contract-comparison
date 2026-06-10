@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-multipart
+pymupdf
+diff-match-patch
+rapidfuzz
+reportlab
+pydantic>=2
+pydantic-settings>=2
+python-dotenv
+pytest
+httpx
+psutil

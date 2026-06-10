@@ -1,0 +1,11 @@
+{
+  "case_id": "compare_GNXNYN-20260522-00041-CGHT-b18f5f1bf1",
+  "source_name": "compare_GNXNYN-20260522-00041-CGHT.pdf",
+  "source_sha256": "b18f5f1bf18d06139bcbcb15ea4e2803776dc053319396adce6b063a75f70eda",
+  "approved_by": "user-confirmed",
+  "approved_at": "2026-06-07T02:28:27.672630+00:00",
+  "pdf": "source.pdf",
+  "ppstructure": "ppstructure.json.gz",
+  "ppocrv5": "ppocrv5.json.gz",
+  "mode": "v3"
+}

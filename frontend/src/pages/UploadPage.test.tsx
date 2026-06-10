@@ -1,22 +1,38 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { compareContracts } from "../lib/api";
 import { UploadPage } from "./UploadPage";
 
 vi.mock("../lib/api", () => ({
-  compareContracts: vi.fn(async () => ({ task_id: "task-1", diff_count: 1 })),
+  compareContracts: vi.fn(async () => ({
+    task_id: "task-1",
+    status: "PROCESSING",
+    stage: "文档解析中",
+    progress_percent: 8,
+    diff_count: 0,
+  })),
 }));
 
+const defaultProps = {
+  onTaskCreated: vi.fn(),
+  onOpenRecords: vi.fn(),
+};
+
 describe("UploadPage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("renders the contract comparison workspace and keeps upload controls", () => {
-    render(<UploadPage onTaskCreated={vi.fn()} />);
+    render(<UploadPage {...defaultProps} />);
 
     expect(screen.getByText("智能合同对比")).toBeInTheDocument();
     expect(screen.getByLabelText("原版文件")).toBeInTheDocument();
     expect(screen.getByLabelText("新版文件")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始对比" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "使用示例" })).not.toBeInTheDocument();
     expect(screen.queryByText("等待上传两份 PDF 合同")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "排除对比项" })).not.toBeInTheDocument();
   });
@@ -24,20 +40,56 @@ describe("UploadPage", () => {
   it("submits basic comparison without blocking on AI analysis", async () => {
     const user = userEvent.setup();
     const onTaskCreated = vi.fn();
-    render(<UploadPage onTaskCreated={onTaskCreated} />);
+    render(<UploadPage onTaskCreated={onTaskCreated} onOpenRecords={vi.fn()} />);
 
     await user.upload(screen.getByLabelText("原版文件"), new File(["original"], "original.pdf", { type: "application/pdf" }));
     await user.upload(screen.getByLabelText("新版文件"), new File(["compare"], "compare.pdf", { type: "application/pdf" }));
     await user.click(screen.getByRole("button", { name: "开始对比" }));
 
     await waitFor(() => expect(compareContracts).toHaveBeenCalled());
-    expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File), false);
+    expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File));
     expect(onTaskCreated).toHaveBeenCalledWith("task-1");
+    const taskNotice = screen.getByRole("status", { name: "后台对比任务通知" });
+    expect(taskNotice).toHaveTextContent("后台比对已开始");
+    expect(taskNotice).toHaveTextContent("任务编号：task-1");
+    expect(taskNotice).toHaveTextContent("文档解析中");
+    expect(taskNotice).not.toHaveTextContent("8%");
+    expect(screen.getByRole("progressbar", { name: /文档解析中/ })).toHaveAttribute("aria-valuenow", "8");
+    expect(screen.queryByText("original.pdf")).not.toBeInTheDocument();
+    expect(screen.queryByText("compare.pdf")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始对比" })).toBeDisabled();
+  });
+
+  it("opens comparison records from the background task notice", async () => {
+    const user = userEvent.setup();
+    const onOpenRecords = vi.fn();
+    render(<UploadPage onTaskCreated={vi.fn()} onOpenRecords={onOpenRecords} />);
+
+    await user.upload(screen.getByLabelText("原版文件"), new File(["original"], "original.pdf", { type: "application/pdf" }));
+    await user.upload(screen.getByLabelText("新版文件"), new File(["compare"], "compare.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "开始对比" }));
+
+    await user.click(await screen.findByRole("button", { name: "查看对比记录" }));
+
+    expect(onOpenRecords).toHaveBeenCalled();
+  });
+
+  it("hides the background task notice after a few seconds", async () => {
+    const user = userEvent.setup();
+    render(<UploadPage onTaskCreated={vi.fn()} onOpenRecords={vi.fn()} taskToastDurationMs={10} />);
+
+    await user.upload(screen.getByLabelText("原版文件"), new File(["original"], "original.pdf", { type: "application/pdf" }));
+    await user.upload(screen.getByLabelText("新版文件"), new File(["compare"], "compare.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "开始对比" }));
+
+    expect(await screen.findByRole("status", { name: "后台对比任务通知" })).toBeInTheDocument();
+
+    await waitFor(() => expect(screen.queryByRole("status", { name: "后台对比任务通知" })).not.toBeInTheDocument());
   });
 
   it("shows uploaded file actions and clears a selected file", async () => {
     const user = userEvent.setup();
-    render(<UploadPage onTaskCreated={vi.fn()} />);
+    render(<UploadPage {...defaultProps} />);
 
     await user.upload(screen.getByLabelText("原版文件"), new File(["original"], "original.pdf", { type: "application/pdf" }));
     await user.upload(screen.getByLabelText("新版文件"), new File(["compare"], "compare.pdf", { type: "application/pdf" }));
@@ -57,7 +109,7 @@ describe("UploadPage", () => {
 
   it("reuploads and replaces a selected file", async () => {
     const user = userEvent.setup();
-    render(<UploadPage onTaskCreated={vi.fn()} />);
+    render(<UploadPage {...defaultProps} />);
 
     await user.upload(screen.getByLabelText("新版文件"), new File(["compare"], "compare.pdf", { type: "application/pdf" }));
     await user.click(screen.getByRole("button", { name: "重新上传新版文件" }));

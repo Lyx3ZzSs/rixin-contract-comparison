@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { getDiffs, getTask, updateAuditItemReview } from "../lib/api";
 import type { CompareTask, DiffItem } from "../types";
 import { ResultPage } from "./ResultPage";
 
@@ -38,27 +39,64 @@ vi.mock("../components/PdfDocumentViewer", async () => {
 vi.mock("../lib/api", () => ({
   getTask: vi.fn(async () => mockTask),
   getDiffs: vi.fn(async () => mockDiffs),
+  getCompareQuality: vi.fn(async () => mockQuality),
+  updateAuditItemReview: vi.fn(async (
+    _taskId: string,
+    auditItemId: string,
+    payload: { review_status: string; review_comment?: string },
+  ) => ({
+    task_id: "task-1",
+    audit_item_id: auditItemId,
+    audit_item_review: {
+      audit_item_id: auditItemId,
+      review_status: payload.review_status,
+      review_comment: payload.review_comment ?? "",
+      reviewed_by: "local_reviewer",
+      reviewed_at: "2026-05-12T00:00:20Z",
+    },
+    review_stats: {
+      reviewed_count: 1,
+      confirmed_count: payload.review_status === "CONFIRMED" ? 1 : 0,
+      false_positive_count: payload.review_status === "FALSE_POSITIVE" ? 1 : 0,
+      manual_review_count: payload.review_status === "NEEDS_REVIEW" ? 1 : 0,
+      ignored_count: payload.review_status === "IGNORED" ? 1 : 0,
+    },
+  })),
   toApiUrl: (path: string) => `http://api.test${path}`,
+}));
+
+const mockEventSource = {
+  onmessage: null as ((e: MessageEvent) => void) | null,
+  onerror: null as (() => void) | null,
+  close: vi.fn(),
+};
+
+vi.mock("../lib/api_sse", () => ({
+  createProgressEventSource: vi.fn(() => mockEventSource),
 }));
 
 const mockTask: CompareTask = {
   task_id: "task-1",
   status: "COMPLETED",
+  stage: "已完成",
+  progress_percent: 100,
   created_at: "2026-05-12T00:00:00Z",
   updated_at: "2026-05-12T00:00:10Z",
   original_filename: "original.pdf",
   compare_filename: "compare.pdf",
   diff_count: 3,
-  high_risk_count: 1,
-  medium_risk_count: 1,
-  low_risk_count: 1,
-  ai_summary: "付款期限延长，需关注回款风险。",
+  reviewed_count: 0,
+  confirmed_count: 0,
+  false_positive_count: 0,
+  manual_review_count: 0,
+  ignored_count: 0,
+  audit_item_reviews: {},
   report_url: "/api/compare/task-1/report",
   report_filename: "销售合同差异分析报告.pdf",
   original_pdf_url: "/api/compare/task-1/original",
   compare_pdf_url: "/api/compare/task-1/compare",
-  original_highlight_pdf_url: "/api/compare/task-1/highlight/original",
-  compare_highlight_pdf_url: "/api/compare/task-1/highlight/compare",
+  original_highlight_pdf_url: "",
+  compare_highlight_pdf_url: "",
   errors: [],
 };
 
@@ -73,10 +111,12 @@ const mockDiffs: DiffItem[] = [
     original_snippet: "30 days",
     compare_snippet: "45 days",
     readable_change: "付款期限由 30 天调整为 45 天。",
-    original_screenshot: "",
-    compare_screenshot: "",
-    original_screenshot_url: "/api/compare/task-1/screenshot/original.png",
-    compare_screenshot_url: "/api/compare/task-1/screenshot/compare.png",
+    source_type: "clause",
+    match_score: 62,
+    match_method: "same_clause_no_low_similarity",
+    review_flags: ["SAME_CLAUSE_NO_LOW_SIMILARITY"],
+    review_status: "UNREVIEWED",
+    review_comment: "",
     original_evidence: [
       {
         page_no: 1,
@@ -84,6 +124,8 @@ const mockDiffs: DiffItem[] = [
         method: "block",
         text: "30 days",
         highlight_type: "MODIFY",
+        confidence: 0.46,
+        evidence_quality: "LOW",
       },
     ],
     compare_evidence: [
@@ -93,6 +135,8 @@ const mockDiffs: DiffItem[] = [
         method: "block",
         text: "45 days",
         highlight_type: "MODIFY",
+        confidence: 0.98,
+        evidence_quality: "HIGH",
       },
       {
         page_no: 1,
@@ -100,16 +144,10 @@ const mockDiffs: DiffItem[] = [
         method: "block",
         text: "新增付款说明",
         highlight_type: "ADD",
+        confidence: 0.98,
+        evidence_quality: "HIGH",
       },
     ],
-    ai_analysis: {
-      risk_level: "HIGH",
-      risk_score: 86,
-      contract_element: "付款条款",
-      change_summary: "付款期限延长。",
-      risk_explanation: "可能影响现金流。",
-      review_suggestion: "建议业务确认授信周期。",
-    },
   },
   {
     diff_id: "diff-2",
@@ -121,8 +159,8 @@ const mockDiffs: DiffItem[] = [
     original_snippet: "",
     compare_snippet: "新增发票条款",
     readable_change: "新增发票条款。",
-    original_screenshot: "",
-    compare_screenshot: "",
+    source_type: "metadata",
+    review_status: "UNREVIEWED",
     original_evidence: [],
     compare_evidence: [
       {
@@ -133,7 +171,6 @@ const mockDiffs: DiffItem[] = [
         highlight_type: "ADD",
       },
     ],
-    ai_analysis: null,
   },
   {
     diff_id: "diff-3",
@@ -145,8 +182,8 @@ const mockDiffs: DiffItem[] = [
     original_snippet: "12 months",
     compare_snippet: "",
     readable_change: "删除旧质保约定。",
-    original_screenshot: "",
-    compare_screenshot: "",
+    source_type: "clause",
+    review_status: "UNREVIEWED",
     original_evidence: [
       {
         page_no: 1,
@@ -157,17 +194,171 @@ const mockDiffs: DiffItem[] = [
       },
     ],
     compare_evidence: [],
-    ai_analysis: null,
+  },
+  {
+    diff_id: "diff-4",
+    diff_type: "DELETE",
+    clause_no: "4",
+    title: "无定位表格项",
+    original_text: "3 | 短期模型 | 光伏场短期功率预报 模型开发。 | 国能日新 | 套 | 1",
+    compare_text: "",
+    original_snippet: "3 | 短期模型 | 光伏场短期功率预报 模型开发。 | 国能日新 | 套 | 1",
+    compare_snippet: "",
+    readable_change: "表格行38: 删除 '3', 删除 '短期模型'",
+    source_type: "table",
+    review_flags: ["LOW_CONFIDENCE_ORIGINAL_TABLE_EVIDENCE"],
+    review_status: "UNREVIEWED",
+    original_evidence: [],
+    compare_evidence: [],
   },
 ];
 
+const mockQuality = {
+  task_id: "task-1",
+  status: "COMPLETED" as const,
+  diff_count: 3,
+  review_stats: {
+    reviewed_count: 0,
+    confirmed_count: 0,
+    false_positive_count: 0,
+    manual_review_count: 0,
+    ignored_count: 0,
+  },
+  source_counts: { clause: 3 },
+  evidence_quality_counts: { HIGH: 2, MEDIUM: 0, LOW: 1 },
+  document_profile_summary: {},
+  parse_warning_details: [
+    { code: "LOW_TEXT_PAGE", message: "文本量较低", severity: "WARNING" as const, source: "document_profiler" },
+  ],
+  low_confidence_diffs: [
+    {
+      diff_id: "diff-1",
+      title: "付款",
+      diff_type: "MODIFY" as const,
+      source_type: "clause",
+      match_score: 62,
+      match_method: "same_clause_no_low_similarity",
+      review_flags: ["SAME_CLAUSE_NO_LOW_SIMILARITY"],
+      review_status: "UNREVIEWED" as const,
+    },
+  ],
+  low_similarity_diffs: [
+    {
+      diff_id: "diff-1",
+      title: "付款",
+      diff_type: "MODIFY" as const,
+      source_type: "clause",
+      match_score: 62,
+      match_method: "same_clause_no_low_similarity",
+      review_flags: ["SAME_CLAUSE_NO_LOW_SIMILARITY"],
+      review_status: "UNREVIEWED" as const,
+    },
+  ],
+  debug_artifacts: { clause_matches: "clause_matches.json" },
+};
+
+function makeBottomAxisDiff(index: number): DiffItem {
+  return {
+    diff_id: `bottom-${index}`,
+    diff_type: "ADD",
+    clause_no: `${index + 1}`,
+    title: `底部差异 ${index + 1}`,
+    original_text: "",
+    compare_text: `新增底部差异 ${index + 1}`,
+    original_snippet: "",
+    compare_snippet: `新增底部差异 ${index + 1}`,
+    readable_change: `新增底部差异 ${index + 1}`,
+    source_type: "clause",
+    review_status: "UNREVIEWED",
+    original_evidence: [],
+    compare_evidence: [
+      {
+        page_no: 1,
+        bbox: { x0: 72, y0: 812 + index * 5, x1: 240, y1: 830 + index * 5 },
+        method: "block",
+        text: `新增底部差异 ${index + 1}`,
+        highlight_type: "ADD",
+      },
+    ],
+  };
+}
+
 describe("ResultPage", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+    mockEventSource.onmessage = null;
+    mockEventSource.onerror = null;
+    mockEventSource.close.mockClear();
+  });
+
+  it("renders processing state as a progress ring without visible percent text", async () => {
+    vi.mocked(getTask).mockResolvedValueOnce({
+      ...mockTask,
+      status: "PROCESSING",
+      stage: "证据定位中",
+      progress_percent: 66,
+      report_url: "",
+    });
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await screen.findByText("证据定位中");
+    expect(screen.getByRole("progressbar", { name: /证据定位中/ })).toHaveAttribute("aria-valuenow", "66");
+    expect(screen.queryByText("66%")).not.toBeInTheDocument();
+  });
+
+  it("keeps the progress ring visible briefly when SSE completes before rendering results", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getTask)
+      .mockResolvedValueOnce({
+        ...mockTask,
+        status: "PROCESSING",
+        stage: "证据定位中",
+        progress_percent: 66,
+        report_url: "",
+      })
+      .mockResolvedValueOnce(mockTask);
+    vi.mocked(getDiffs).mockResolvedValueOnce(mockDiffs);
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("证据定位中")).toBeInTheDocument();
+
+    await act(async () => {
+      mockEventSource.onmessage?.({
+        data: JSON.stringify({
+          task_id: "task-1",
+          stage: "已完成",
+          progress_percent: 100,
+          status: "COMPLETED",
+        }),
+      } as MessageEvent);
+    });
+
+    expect(screen.getByText("收尾完成中")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: /收尾完成中/ })).toHaveAttribute("aria-valuenow", "100");
+    expect(screen.queryByLabelText("原版PDF 在线预览")).not.toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1200);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument();
+  });
+
   it("renders only the PDF.js comparison workspace", async () => {
     const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument());
-    expect(screen.getByLabelText("原版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/highlight/original");
-    expect(screen.getByLabelText("新版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/highlight/compare");
+    expect(screen.getByLabelText("原版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/original");
+    expect(screen.getByLabelText("新版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/compare");
     expect(screen.getByRole("button", { name: "下载原版文件" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "下载新版文件" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导出报告" })).toBeInTheDocument();
@@ -247,6 +438,7 @@ describe("ResultPage", () => {
     const markers = Array.from(container.querySelectorAll(".compare-axis .axis-marker"));
 
     expect(markers).toHaveLength(4);
+    expect(screen.queryByRole("button", { name: "定位删除改动 diff-4:DELETE" })).not.toBeInTheDocument();
     expect(topAddMarker).toHaveClass("add");
     expect(mixedAddMarker).toHaveClass("add");
     expect(mixedModifyMarker).toHaveClass("modify");
@@ -260,6 +452,23 @@ describe("ResultPage", () => {
     expect(mixedModifyMarker).toHaveClass("active");
   });
 
+  it("spreads clustered comparison axis markers away from the bottom boundary", async () => {
+    vi.mocked(getDiffs).mockResolvedValueOnce(Array.from({ length: 6 }, (_, index) => makeBottomAxisDiff(index)));
+    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "定位新增改动 bottom-0:ADD" })).toBeInTheDocument());
+
+    const tops = Array.from(container.querySelectorAll<HTMLButtonElement>(".compare-axis .axis-marker"))
+      .map((marker) => parseFloat(marker.style.top));
+
+    expect(tops).toHaveLength(6);
+    expect(Math.min(...tops)).toBeGreaterThanOrEqual(3);
+    expect(Math.max(...tops)).toBeLessThanOrEqual(97);
+    for (let index = 1; index < tops.length; index += 1) {
+      expect(tops[index] - tops[index - 1]).toBeGreaterThanOrEqual(3.99);
+    }
+  });
+
   it("filters audit panel items and marks the selected diff", async () => {
     const user = userEvent.setup();
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
@@ -271,6 +480,7 @@ describe("ResultPage", () => {
     expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("1");
     expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("2");
     expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
+    expect(screen.queryByRole("button", { name: "审计定位改动 diff-4:DELETE" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
 
     expect(screen.getByRole("button", { name: "审计定位改动 diff-1:ADD" })).toBeInTheDocument();
@@ -281,7 +491,7 @@ describe("ResultPage", () => {
     const addCard = screen.getByRole("button", { name: "审计定位改动 diff-2:ADD" });
     await user.click(addCard);
 
-    expect(addCard).toHaveClass("active");
+    expect(addCard.closest(".audit-diff-card")).toHaveClass("active");
 
     await user.click(screen.getByRole("button", { name: "筛选修改差异" }));
 
@@ -292,6 +502,49 @@ describe("ResultPage", () => {
 
     expect(screen.getByRole("button", { name: "审计定位改动 diff-3:DELETE" })).toHaveTextContent("删除");
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
+  });
+
+  it("submits an ignored review decision from the audit panel", async () => {
+    const user = userEvent.setup();
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    expect(screen.queryByLabelText("质量诊断摘要")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("复核意见 diff-1")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "确认 diff-1" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "误报 diff-1" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "待确认 diff-1" })).not.toBeInTheDocument();
+    expect(screen.queryByText("封面")).not.toBeInTheDocument();
+    expect(screen.queryByText(/证据高/)).not.toBeInTheDocument();
+    expect(screen.queryByText("未复核")).not.toBeInTheDocument();
+    expect(screen.queryByText("同编号低相似")).not.toBeInTheDocument();
+
+    const ignoreButton = screen.getByRole("button", { name: "忽略 diff-1:ADD" });
+    const auditCard = ignoreButton.closest(".audit-diff-card");
+    await user.click(ignoreButton);
+
+    await waitFor(() => expect(updateAuditItemReview).toHaveBeenCalled());
+    expect(updateAuditItemReview).toHaveBeenCalledWith("task-1", "diff-1:ADD", {
+      review_status: "IGNORED",
+      review_comment: "",
+      reviewed_by: "local_reviewer",
+    });
+    await waitFor(() => expect(auditCard).toHaveClass("ignored"));
+    expect(screen.getByRole("button", { name: "恢复 diff-1:ADD" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "恢复 diff-1:ADD" }));
+
+    await waitFor(() =>
+      expect(updateAuditItemReview).toHaveBeenLastCalledWith("task-1", "diff-1:ADD", {
+        review_status: "UNREVIEWED",
+        review_comment: "",
+        reviewed_by: "local_reviewer",
+      }),
+    );
+    await waitFor(() => expect(auditCard).not.toHaveClass("ignored"));
+    expect(screen.getByRole("button", { name: "忽略 diff-1:ADD" })).toBeInTheDocument();
   });
 
   it("collapses and reopens the audit panel", async () => {

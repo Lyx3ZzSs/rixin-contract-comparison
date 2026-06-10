@@ -1,0 +1,24 @@
+{
+  "pages": [
+    {
+      "page_no": 1,
+      "blocks": [
+        {
+          "block_role": "paragraph_title",
+          "bbox": {"x0": 40, "y0": 20, "x1": 560, "y1": 60},
+          "reading_order": 1
+        },
+        {
+          "block_role": "text",
+          "bbox": {"x0": 42, "y0": 101, "x1": 258, "y1": 129},
+          "reading_order": 2
+        },
+        {
+          "block_role": "text",
+          "bbox": {"x0": 342, "y0": 101, "x1": 558, "y1": 129},
+          "reading_order": 3
+        }
+      ]
+    }
+  ]
+}

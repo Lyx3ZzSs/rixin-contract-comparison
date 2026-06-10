@@ -2,29 +2,31 @@
 
 ## Project Structure & Module Organization
 
-This repository currently contains only repository metadata: `LICENSE`, `.gitignore`, and this guide. The `.gitignore` is Python-oriented, so new code should follow a conventional Python layout unless the project direction changes.
+This repository is a contract comparison and field extraction MVP with a FastAPI backend and a Vite/React frontend. Keep backend behavior compatible with the existing `/api/compare/*` and `/api/extract/*` routes unless a change explicitly calls for an API migration.
 
-Recommended structure:
+Current structure:
 
-- `src/rixin_contract_comparison/` for application or library code.
-- `tests/` for automated tests, mirroring source modules where practical.
-- `docs/` for design notes, user-facing documentation, and examples.
-- `scripts/` for repeatable utilities such as data setup or report generation.
+- `backend/app/api*.py` for HTTP adapters only: request parsing, HTTP errors, and response wiring.
+- `backend/app/application/` for use-case orchestration such as task creation and background submission.
+- `backend/app/infrastructure/` for replaceable adapters such as task persistence, artifact storage, and task execution.
+- `backend/app/services/` for document extraction, comparison, risk analysis, PDF artifacts, and report generation.
+- `backend/tests/` for backend tests.
+- `backend/scripts/` for repeatable utilities such as quality evaluation.
+- `frontend/src/` for React pages, components, API client, and shared types.
+- `frontend/src/**/*.test.*` for frontend tests.
+- `docs/` for architecture notes, user-facing documentation, and examples.
 
 Keep generated files, virtual environments, caches, build output, and local secrets out of version control.
 
 ## Build, Test, and Development Commands
 
-No package manager or test runner is configured yet. Until one is added, use these basic checks:
-
 - `git status --short` shows pending changes.
-- `python -m compileall src tests` checks Python syntax once `src/` and `tests/` exist.
-
-When adding Python project metadata, prefer `pyproject.toml` and document the final commands here:
-
-- `python -m pytest` runs the test suite.
-- `python -m ruff check .` runs lint checks.
-- `python -m ruff format .` formats Python files.
+- `cd backend && python -m compileall app tests` checks backend Python syntax.
+- `cd backend && python -m pytest` runs the backend test suite.
+- `cd backend && python -m ruff check .` runs backend lint checks.
+- `cd backend && python -m ruff format .` formats Python files.
+- `cd frontend && npm test` runs frontend tests.
+- `cd frontend && npm run build` runs TypeScript and production build checks.
 
 ## Coding Style & Naming Conventions
 
@@ -34,9 +36,9 @@ Prefer type hints for public functions and cross-module data structures. Use sho
 
 ## Testing Guidelines
 
-Place tests under `tests/`. Name test files `test_<module>.py` and test functions `test_<behavior>()`. Keep tests deterministic and avoid relying on local files outside the repository.
+Place backend tests under `backend/tests/`. Name test files `test_<module>.py` and test functions `test_<behavior>()`. Keep tests deterministic and avoid relying on local files outside the repository.
 
-For future coverage, prioritize contract comparison parsing, normalization, diff logic, and edge cases around missing or malformed input.
+Prioritize contract comparison parsing, normalization, diff logic, task repository behavior, API compatibility, and edge cases around missing or malformed input.
 
 ## Commit & Pull Request Guidelines
 

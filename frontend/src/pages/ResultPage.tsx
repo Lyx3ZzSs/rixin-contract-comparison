@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, Download, Eye, EyeOff, PanelRightOpen, ZoomIn, ZoomOut } from "lucide-react";
+import { Ban, ChevronRight, Download, Eye, EyeOff, PanelRightOpen, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 
 import { PdfDocumentViewer, type PdfDocumentViewerHandle } from "../components/PdfDocumentViewer";
-import { getDiffs, getTask, toApiUrl } from "../lib/api";
-import type { CompareTask, DiffItem, DiffType } from "../types";
+import { ProgressRing } from "../components/ProgressRing";
+import { toApiUrl, updateAuditItemReview } from "../lib/api";
+import { useTaskProgress } from "../lib/hooks";
+import { navigateToComparisonRecords } from "../lib/routes";
+import type { CompareTask, DiffItem, DiffType, ReviewStatus } from "../types";
 
 interface ResultPageProps {
   taskId: string;
@@ -11,10 +14,7 @@ interface ResultPageProps {
 }
 
 export function ResultPage({ taskId, onBack }: ResultPageProps) {
-  const [task, setTask] = useState<CompareTask | null>(null);
-  const [diffs, setDiffs] = useState<DiffItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { task, diffs, isLoading, error, setTask } = useTaskProgress(taskId);
   const [isOriginalVisible, setIsOriginalVisible] = useState(true);
   const [isSyncScroll, setIsSyncScroll] = useState(true);
   const [isAuditPanelOpen, setIsAuditPanelOpen] = useState(false);
@@ -24,43 +24,19 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
   const [zoom, setZoom] = useState(1);
   const [activeDiffId, setActiveDiffId] = useState("");
   const [activeAuditItemId, setActiveAuditItemId] = useState("");
+  const [reviewSavingAuditItemId, setReviewSavingAuditItemId] = useState("");
+  const [reviewError, setReviewError] = useState("");
   const originalViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
   const compareViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
 
-  useEffect(() => {
-    let isMounted = true;
-    setIsLoading(true);
-    setError("");
-
-    Promise.all([getTask(taskId), getDiffs(taskId)])
-      .then(([taskPayload, diffPayload]) => {
-        if (!isMounted) {
-          return;
-        }
-        setTask(taskPayload);
-        setDiffs(diffPayload);
-      })
-      .catch((err) => {
-        if (isMounted) {
-          setError(err instanceof Error ? err.message : "读取任务失败。");
-        }
-      })
-      .finally(() => {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [taskId]);
-
-  const auditItems = useMemo(() => buildAuditItems(diffs), [diffs]);
+  const auditItems = useMemo(
+    () => buildAuditItems(diffs, task?.audit_item_reviews ?? {}),
+    [diffs, task?.audit_item_reviews],
+  );
   const axisMarkers = useMemo(() => buildAxisMarkers(auditItems), [auditItems]);
   const auditStats = useMemo(() => buildAuditStats(auditItems), [auditItems]);
   const filteredAuditItems = useMemo(
-    () => (diffFilter === "ALL" ? auditItems : auditItems.filter((item) => item.type === diffFilter)),
+    () => sortAuditItems(diffFilter === "ALL" ? auditItems : auditItems.filter((item) => item.type === diffFilter)),
     [auditItems, diffFilter],
   );
 
@@ -109,6 +85,38 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
     focusDiff(item.diffId, item.id);
   }
 
+  async function handleReview(item: AuditChangeItem, status: ReviewStatus) {
+    setReviewSavingAuditItemId(item.id);
+    setReviewError("");
+    try {
+      const payload = await updateAuditItemReview(taskId, item.id, {
+        review_status: status,
+        review_comment: item.reviewComment ?? "",
+        reviewed_by: "local_reviewer",
+      });
+      setTask((currentTask) =>
+        currentTask
+          ? {
+              ...currentTask,
+              audit_item_reviews: {
+                ...(currentTask.audit_item_reviews ?? {}),
+                [payload.audit_item_id]: payload.audit_item_review,
+              },
+              reviewed_count: payload.review_stats.reviewed_count,
+              confirmed_count: payload.review_stats.confirmed_count,
+              false_positive_count: payload.review_stats.false_positive_count,
+              manual_review_count: payload.review_stats.manual_review_count,
+              ignored_count: payload.review_stats.ignored_count,
+            }
+          : currentTask,
+      );
+    } catch (err) {
+      setReviewError(err instanceof Error ? err.message : "复核提交失败。");
+    } finally {
+      setReviewSavingAuditItemId("");
+    }
+  }
+
   async function downloadPdfFile(url: string, filename: string) {
     if (!url) {
       return;
@@ -150,6 +158,30 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
 
   if (error || !task) {
     return <StateScreen title="无法打开审查结果" detail={error || "任务不存在。"} onBack={onBack} />;
+  }
+
+  if (task.status === "PROCESSING") {
+    const progressPercent = Math.max(0, Math.min(100, task.progress_percent || 0));
+    return (
+      <section className="state-screen">
+        <p className="eyebrow">合同审查系统</p>
+        <h1>{task.stage || "处理中"}</h1>
+        <div className="progress-ring-panel">
+          <ProgressRing value={progressPercent} label={task.stage || "处理中"} size="large" />
+        </div>
+        <p>{`任务 ${taskId}`}</p>
+      </section>
+    );
+  }
+
+  if (task.status === "FAILED") {
+    return (
+      <StateScreen
+        title="合同对比失败"
+        detail={task.errors.length > 0 ? task.errors.join("；") : task.stage || "处理失败。"}
+        onBack={onBack}
+      />
+    );
   }
 
   return (
@@ -223,7 +255,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
             ref={originalViewerRef}
             side="original"
             title="原版"
-            src={toApiUrl(task.original_highlight_pdf_url || task.original_pdf_url)}
+            src={toApiUrl(task.original_pdf_url)}
             diffs={diffs}
             zoom={zoom}
             activeDiffId={activeDiffId}
@@ -254,7 +286,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
             ref={compareViewerRef}
             side="compare"
             title="新版"
-            src={toApiUrl(task.compare_highlight_pdf_url || task.compare_pdf_url)}
+            src={toApiUrl(task.compare_pdf_url)}
             diffs={diffs}
             zoom={zoom}
             activeDiffId={activeDiffId}
@@ -288,10 +320,13 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
           filter={diffFilter}
           items={filteredAuditItems}
           isOpen={isAuditPanelOpen}
+          reviewSavingAuditItemId={reviewSavingAuditItemId}
+          reviewError={reviewError}
           stats={auditStats}
           onClose={() => setIsAuditPanelOpen(false)}
           onFilterChange={setDiffFilter}
           onSelectItem={focusAuditItem}
+          onReview={handleReview}
         />
         <button
           className="audit-panel-rail"
@@ -336,6 +371,10 @@ interface AuditChangeItem {
   summary: string;
   pageNo: number | null;
   y0: number | null;
+  reviewStatus: ReviewStatus;
+  reviewComment: string;
+  qualityStatus: DiffItem["quality_status"];
+  reviewFlags: string[];
 }
 
 interface EvidenceLocation {
@@ -346,7 +385,7 @@ interface EvidenceLocation {
 const ESTIMATED_PAGE_HEIGHT = 842;
 const AXIS_MIN_TOP = 3;
 const AXIS_MAX_TOP = 97;
-const AXIS_MIN_GAP = 2.5;
+const AXIS_MIN_GAP = 4;
 
 function buildAxisMarkers(items: AuditChangeItem[]): AxisMarkerItem[] {
   const candidates = items
@@ -384,36 +423,66 @@ function axisTypePriority(type: DiffType): number {
 }
 
 function enforceAxisSpacing(markers: AxisMarkerItem[]): AxisMarkerItem[] {
+  if (markers.length <= 1) {
+    return markers.map((marker) => ({ ...marker, positionPercent: clampAxisPercent(marker.positionPercent) }));
+  }
+
+  const availableRange = AXIS_MAX_TOP - AXIS_MIN_TOP;
+  const effectiveGap = Math.min(AXIS_MIN_GAP, availableRange / (markers.length - 1));
   const spaced: AxisMarkerItem[] = [];
   for (const marker of markers) {
     const previous = spaced.at(-1);
+    const rawPosition = clampAxisPercent(marker.positionPercent);
     if (!previous) {
-      spaced.push(marker);
+      spaced.push({ ...marker, positionPercent: Math.max(AXIS_MIN_TOP, rawPosition) });
     } else {
       spaced.push({
         ...marker,
-        positionPercent: Math.min(AXIS_MAX_TOP, Math.max(marker.positionPercent, previous.positionPercent + AXIS_MIN_GAP)),
+        positionPercent: Math.max(rawPosition, previous.positionPercent + effectiveGap),
       });
     }
   }
-  return spaced;
+
+  const lastIndex = spaced.length - 1;
+  if (spaced[lastIndex].positionPercent > AXIS_MAX_TOP) {
+    spaced[lastIndex] = { ...spaced[lastIndex], positionPercent: AXIS_MAX_TOP };
+    for (let index = lastIndex - 1; index >= 0; index -= 1) {
+      const next = spaced[index + 1];
+      const current = spaced[index];
+      spaced[index] = {
+        ...current,
+        positionPercent: Math.max(AXIS_MIN_TOP, Math.min(current.positionPercent, next.positionPercent - effectiveGap)),
+      };
+    }
+  }
+
+  return spaced.map((marker) => ({
+    ...marker,
+    positionPercent: Number(marker.positionPercent.toFixed(2)),
+  }));
 }
 
 function clampAxisPercent(value: number): number {
   return Math.min(AXIS_MAX_TOP, Math.max(AXIS_MIN_TOP, Number(value.toFixed(2))));
 }
 
-function buildAuditItems(diffs: DiffItem[]): AuditChangeItem[] {
-  return diffs.flatMap((diff) => auditItemsForDiff(diff));
+function buildAuditItems(
+  diffs: DiffItem[],
+  auditItemReviews: NonNullable<CompareTask["audit_item_reviews"]>,
+): AuditChangeItem[] {
+  return diffs.flatMap((diff) => auditItemsForDiff(diff, auditItemReviews));
 }
 
-function auditItemsForDiff(diff: DiffItem): AuditChangeItem[] {
+function auditItemsForDiff(
+  diff: DiffItem,
+  auditItemReviews: NonNullable<CompareTask["audit_item_reviews"]>,
+): AuditChangeItem[] {
   const originalEvidence = diff.original_evidence ?? [];
   const compareEvidence = diff.compare_evidence ?? [];
   const hasTypedEvidence = [...originalEvidence, ...compareEvidence].some((evidence) => Boolean(evidence.highlight_type));
 
   if (!hasTypedEvidence) {
-    return [auditItem(diff, diff.diff_type, diffSummary(diff), [...originalEvidence, ...compareEvidence])];
+    return [];
   }
 
   const items: AuditChangeItem[] = [];
@@ -426,15 +495,25 @@ function auditItemsForDiff(diff: DiffItem): AuditChangeItem[] {
   const originalModifyText = evidenceText(originalModifyEvidence);
   const compareModifyText = evidenceText(compareModifyEvidence);
   if (addEvidence.length > 0) {
-    items.push(auditItem(diff, "ADD", addText, addEvidence));
+    items.push(auditItem(diff, "ADD", addText, addEvidence, auditItemReviews));
   }
   if (deleteEvidence.length > 0) {
-    items.push(auditItem(diff, "DELETE", deleteText, deleteEvidence));
+    items.push(auditItem(diff, "DELETE", deleteText, deleteEvidence, auditItemReviews));
   }
   if (originalModifyEvidence.length > 0 || compareModifyEvidence.length > 0) {
-    items.push(auditItem(diff, "MODIFY", modifySummary(originalModifyText, compareModifyText), [...originalModifyEvidence, ...compareModifyEvidence]));
+    items.push(
+      auditItem(
+        diff,
+        "MODIFY",
+        modifySummary(originalModifyText, compareModifyText),
+        [...originalModifyEvidence, ...compareModifyEvidence],
+        auditItemReviews,
+      ),
+    );
   }
-  return items.length > 0 ? items : [auditItem(diff, diff.diff_type, diffSummary(diff), [...originalEvidence, ...compareEvidence])];
+  return items.length > 0
+    ? items
+    : [auditItem(diff, diff.diff_type, diffSummary(diff), [...originalEvidence, ...compareEvidence], auditItemReviews)];
 }
 
 function auditItem(
@@ -442,17 +521,44 @@ function auditItem(
   type: DiffType,
   summary: string,
   evidenceList: NonNullable<DiffItem["compare_evidence"]>,
+  auditItemReviews: NonNullable<CompareTask["audit_item_reviews"]>,
 ): AuditChangeItem {
   const location = evidenceLocation(evidenceList);
+  const id = `${diff.diff_id}:${type}`;
+  const review = auditItemReviews[id];
   return {
-    id: `${diff.diff_id}:${type}`,
+    id,
     diffId: diff.diff_id,
     type,
     title: diff.title || diff.clause_no || diff.diff_id,
     summary: compactText(summary || diffSummary(diff)),
     pageNo: location?.pageNo ?? null,
     y0: location?.y0 ?? null,
+    reviewStatus: review?.review_status ?? "UNREVIEWED",
+    reviewComment: review?.review_comment ?? "",
+    qualityStatus: diff.quality_status ?? "NORMAL",
+    reviewFlags: diff.review_flags ?? [],
   };
+}
+
+function sortAuditItems(items: AuditChangeItem[]): AuditChangeItem[] {
+  return [...items].sort((left, right) => {
+    const qualityDiff = auditQualityPriority(left) - auditQualityPriority(right);
+    if (qualityDiff !== 0) {
+      return qualityDiff;
+    }
+    return (left.pageNo ?? 9999) - (right.pageNo ?? 9999) || (left.y0 ?? 999999) - (right.y0 ?? 999999) || left.id.localeCompare(right.id);
+  });
+}
+
+function auditQualityPriority(item: AuditChangeItem): number {
+  if (item.reviewFlags.includes("CRITICAL_VALUE_CHANGE")) {
+    return 0;
+  }
+  if (item.qualityStatus === "NEEDS_REVIEW") {
+    return 2;
+  }
+  return 1;
 }
 
 function buildAuditStats(items: AuditChangeItem[]): DiffStats {
@@ -506,19 +612,25 @@ function AuditPanel({
   filter,
   items,
   isOpen,
+  reviewSavingAuditItemId,
+  reviewError,
   stats,
   onClose,
   onFilterChange,
   onSelectItem,
+  onReview,
 }: {
   activeAuditItemId: string;
   filter: DiffFilter;
   items: AuditChangeItem[];
   isOpen: boolean;
+  reviewSavingAuditItemId: string;
+  reviewError: string;
   stats: DiffStats;
   onClose: () => void;
   onFilterChange: (filter: DiffFilter) => void;
   onSelectItem: (item: AuditChangeItem) => void;
+  onReview: (item: AuditChangeItem, status: ReviewStatus) => Promise<void>;
 }) {
   const statItems: Array<{ filter: DiffFilter; label: string; value: number }> = [
     { filter: "ALL", label: "全部", value: stats.all },
@@ -562,6 +674,12 @@ function AuditPanel({
         <span>{filter === "ALL" ? "全部类型" : diffTypeLabel(filter)}</span>
       </div>
 
+      {reviewError && (
+        <p className="review-error" role="alert">
+          {reviewError}
+        </p>
+      )}
+
       <div className="audit-diff-list">
         {items.length === 0 ? (
           <div className="audit-empty">未发现改动点。</div>
@@ -572,7 +690,9 @@ function AuditPanel({
               active={item.id === activeAuditItemId}
               item={item}
               tabIndex={hiddenTabIndex}
+              isSaving={reviewSavingAuditItemId === item.id}
               onSelect={onSelectItem}
+              onReview={onReview}
             />
           ))
         )}
@@ -585,26 +705,75 @@ function AuditDiffCard({
   active,
   item,
   tabIndex,
+  isSaving,
   onSelect,
+  onReview,
 }: {
   active: boolean;
   item: AuditChangeItem;
   tabIndex: number | undefined;
+  isSaving: boolean;
   onSelect: (item: AuditChangeItem) => void;
+  onReview: (item: AuditChangeItem, status: ReviewStatus) => Promise<void>;
 }) {
+  const isIgnored = item.reviewStatus === "IGNORED";
+  const reviewActionLabel = isIgnored ? "恢复" : "忽略";
+  const reviewActionStatus: ReviewStatus = isIgnored ? "UNREVIEWED" : "IGNORED";
+  const ReviewActionIcon = isIgnored ? RotateCcw : Ban;
+  const qualityBadges = auditQualityBadges(item);
+  const cardClassName = ["audit-diff-card", active ? "active" : "", isIgnored ? "ignored" : ""]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <button
-      className={active ? "audit-diff-card active" : "audit-diff-card"}
-      type="button"
-      aria-label={`审计定位改动 ${item.id}`}
-      tabIndex={tabIndex}
-      onClick={() => onSelect(item)}
-    >
-      <span className={`audit-type-badge ${item.type.toLowerCase()}`}>{diffTypeLabel(item.type)}</span>
-      <strong>{item.title}</strong>
-      <span>{item.summary}</span>
-    </button>
+    <article className={cardClassName}>
+      <button
+        className="audit-diff-main"
+        type="button"
+        aria-label={`审计定位改动 ${item.id}`}
+        tabIndex={tabIndex}
+        onClick={() => onSelect(item)}
+      >
+        <span className="audit-card-badges">
+          <span className={`audit-type-badge ${item.type.toLowerCase()}`}>{diffTypeLabel(item.type)}</span>
+          {qualityBadges.map((badge) => (
+            <span key={badge.className} className={`audit-quality-badge ${badge.className}`}>
+              {badge.label}
+            </span>
+          ))}
+        </span>
+        <strong>{item.title}</strong>
+        <span>{item.summary}</span>
+      </button>
+      <div className="review-action-row">
+        <button
+          className={isIgnored ? "review-action restore" : "review-action"}
+          type="button"
+          aria-label={`${reviewActionLabel} ${item.id}`}
+          disabled={isSaving}
+          tabIndex={tabIndex}
+          onClick={() => void onReview(item, reviewActionStatus)}
+        >
+          <ReviewActionIcon aria-hidden="true" />
+          <span>{isSaving ? "保存" : reviewActionLabel}</span>
+        </button>
+      </div>
+    </article>
   );
+}
+
+function auditQualityBadges(item: AuditChangeItem): Array<{ className: string; label: string }> {
+  const badges: Array<{ className: string; label: string }> = [];
+  if (item.reviewFlags.includes("CRITICAL_VALUE_CHANGE")) {
+    badges.push({ className: "critical", label: "关键差异" });
+  }
+  if (item.qualityStatus === "NEEDS_REVIEW") {
+    badges.push({ className: "needs-review", label: "待复核" });
+  }
+  if (item.reviewFlags.includes("CROSS_SOURCE_MERGED")) {
+    badges.push({ className: "merged", label: "已合并" });
+  }
+  return badges;
 }
 
 function diffTypeLabel(type: DiffFilter): string {
