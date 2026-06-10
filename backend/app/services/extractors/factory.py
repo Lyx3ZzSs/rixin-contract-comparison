@@ -107,25 +107,17 @@ def build_document_extractor(
         except ValueError:
             raise DocumentExtractionError(f"不支持的文档识别器: {extractor_name}")
 
-    if settings.extraction_cache_enabled:
+    if False:  # extraction cache disabled (extraction feature removed)
         from app.infrastructure.extraction_cache import CachedExtractor, FileExtractionCache
         cache = FileExtractionCache(
             cache_dir=settings.cache_dir,
-            default_ttl_hours=settings.extraction_cache_ttl_hours,
+            default_ttl_hours=24,
         )
         fingerprint = _extractor_config_fingerprint(
             extractor_name,
             require_structured_ocr=require_structured_ocr,
         )
         extractor = CachedExtractor(extractor, cache, fingerprint)
-
-    if settings.extraction.window_size > 0:
-        from app.services.extractors.windowed import WindowedExtractionWrapper
-        extractor = WindowedExtractionWrapper(
-            extractor,
-            window_size=settings.extraction.window_size,
-            overlap=settings.extraction.window_overlap,
-        )
 
     return extractor
 
@@ -154,17 +146,17 @@ def _extractor_config_fingerprint(extractor_name: str, *, require_structured_ocr
         "layout_parser_version": "v3" if settings.layout_analysis_mode in {"v3", "v3_shadow"} else "v2",
         "layout_analysis_mode": settings.layout_analysis_mode,
     }
-    ext = settings.extraction
+
     if extractor_name in {"ppocrv5", "paddleocr", "paddle_ocr", "paddle", "pp_ocrv5"}:
-        parts["ppocrv5"] = ext.ppocrv5.model_dump_json()
+        parts["ppocrv5"] = settings.ppocrv5.model_dump_json()
     elif extractor_name in {"ppstructure_ocr_hybrid", "ppstructure", "structure_ocr", "ppstructure_ppocrv5"}:
-        parts["ppstructure"] = ext.ppstructure.model_dump_json()
-        parts["ppocrv5"] = ext.ppocrv5.model_dump_json()
-        parts["hybrid"] = ext.hybrid.model_dump_json()
+        parts["ppstructure"] = settings.ppstructure.model_dump_json()
+        parts["ppocrv5"] = settings.ppocrv5.model_dump_json()
+        parts["hybrid"] = settings.hybrid.model_dump_json()
     elif extractor_name in {"auto", "default"}:
-        parts["pymupdf_min"] = str(ext.pymupdf_min_text_chars)
-        parts["ppstructure"] = ext.ppstructure.model_dump_json()
-        parts["ppocrv5"] = ext.ppocrv5.model_dump_json()
+        parts["pymupdf_min"] = str(settings.pymupdf_min_text_chars)
+        parts["ppstructure"] = settings.ppstructure.model_dump_json()
+        parts["ppocrv5"] = settings.ppocrv5.model_dump_json()
 
     payload = json.dumps(parts, sort_keys=True)
     return hashlib.md5(payload.encode()).hexdigest()[:12]

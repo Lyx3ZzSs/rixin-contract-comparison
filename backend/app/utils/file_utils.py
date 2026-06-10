@@ -76,11 +76,7 @@ def validate_extraction_upload_bytes(content: bytes, filename: str) -> None:
     if extension not in EXTRACTION_SUPPORTED_EXTENSIONS:
         raise FileValidationError("仅支持 PDF、Word、PNG、JPG、JPEG、BMP 文件。")
 
-    max_mb = (
-        settings.extraction_max_image_size_mb
-        if extension in EXTRACTION_IMAGE_EXTENSIONS
-        else settings.extraction_max_document_size_mb
-    )
+    max_mb = settings.max_upload_size_mb
     if len(content) > max_mb * 1024 * 1024:
         raise FileValidationError(f"文件超过 {max_mb}MB 限制。")
 

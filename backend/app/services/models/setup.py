@@ -22,11 +22,11 @@ def register_default_models(
 
     Args:
         extraction_ppstructure: PP-Structure config. Falls back to
-            ``settings.extraction.ppstructure`` if not provided.
+            ``settings.ppstructure`` if not provided.
         registry_config: Registry config. Falls back to
             ``settings.registry`` if not provided.
     """
-    cfg = extraction_ppstructure or settings.extraction.ppstructure
+    cfg = extraction_ppstructure or settings.ppstructure
     reg = registry_config or settings.registry
     registry = ModelRegistry.get_instance()
 

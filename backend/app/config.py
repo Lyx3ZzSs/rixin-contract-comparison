@@ -6,15 +6,7 @@ from typing import Any
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.config_defaults import (
-    DEFAULT_EXTRACTION_FEW_SHOT_DEMO,
-    DEFAULT_EXTRACTION_OUTPUT_FORMAT,
-    DEFAULT_EXTRACTION_RULES_STR,
-    DEFAULT_EXTRACTION_TASK_DESCRIPTION,
-)
 from app.config_models import (
-    AILLMSettings,
-    ExtractionSettings,
     HybridSettings,
     MatchingSettings,
     PipelineSettings,
@@ -114,26 +106,12 @@ class Settings(BaseSettings):
     hybrid_layout_center_fallback: bool = True
     hybrid_save_merged_raw: bool = True
 
-    extraction_max_document_size_mb: int = Field(default=60, ge=1)
-    extraction_max_image_size_mb: int = Field(default=5, ge=1)
-    save_extraction_raw_result: bool = True
-    extraction_cache_enabled: bool = False
-    extraction_cache_ttl_hours: int = Field(default=72, ge=1)
-    extraction_window_size: int = Field(default=0, ge=0)
-    extraction_window_overlap: int = Field(default=1, ge=0)
     layout_analysis_mode: str = "v2"
+
 
     # -- AI / LLM (flat env vars) ----------------------------------------
 
-    ai_llm_base_url: str = ""
-    ai_llm_api_key: str = ""
-    ai_llm_model: str = ""
-    ai_extraction_timeout_seconds: int = Field(default=120, ge=1)
 
-    extraction_task_description: str = DEFAULT_EXTRACTION_TASK_DESCRIPTION
-    extraction_output_format: str = DEFAULT_EXTRACTION_OUTPUT_FORMAT
-    extraction_rules_str: str = DEFAULT_EXTRACTION_RULES_STR
-    extraction_few_shot_demo: str = DEFAULT_EXTRACTION_FEW_SHOT_DEMO
 
     # -- Matching (flat env vars) -----------------------------------------
 
@@ -167,12 +145,14 @@ class Settings(BaseSettings):
 
     # -- Nested models (populated by model_validator) --------------------
 
-    extraction: ExtractionSettings = Field(default_factory=ExtractionSettings, exclude=True)
-    ai_llm: AILLMSettings = Field(default_factory=AILLMSettings, exclude=True)
     matching: MatchingSettings = Field(default_factory=MatchingSettings, exclude=True)
     report: ReportSettings = Field(default_factory=ReportSettings, exclude=True)
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings, exclude=True)
     registry: RegistrySettings = Field(default_factory=RegistrySettings, exclude=True)
+
+    ppstructure: PPStructureSettings = Field(default_factory=PPStructureSettings, exclude=True)
+    ppocrv5: PPOCRV5Settings = Field(default_factory=PPOCRV5Settings, exclude=True)
+    hybrid: HybridSettings = Field(default_factory=HybridSettings, exclude=True)
 
     # -- Validators (flat env var validation, unchanged) -----------------
 
@@ -185,14 +165,6 @@ class Settings(BaseSettings):
             raise ValueError(f"DOCUMENT_EXTRACTOR must be one of: {allowed}")
         return extractor
 
-    @field_validator("layout_analysis_mode", mode="before")
-    @classmethod
-    def validate_layout_analysis_mode(cls, value: Any) -> str:
-        mode = str(value or "v2").strip().lower()
-        if mode not in {"legacy", "shadow", "v2", "v3_shadow", "v3"}:
-            raise ValueError("LAYOUT_ANALYSIS_MODE must be one of: legacy, shadow, v2, v3_shadow, v3")
-        return mode
-
     @field_validator("diff_engine", mode="before")
     @classmethod
     def validate_diff_engine(cls, value: Any) -> str:
@@ -201,7 +173,7 @@ class Settings(BaseSettings):
             raise ValueError("DIFF_ENGINE must be one of: diff_match_patch, difflib")
         return engine
 
-    @field_validator("ppocrv5_url", "ppstructure_url", "ai_llm_base_url")
+    @field_validator("ppocrv5_url", "ppstructure_url")
     @classmethod
     def validate_optional_http_url(cls, value: str) -> str:
         url = value.strip()
@@ -209,21 +181,12 @@ class Settings(BaseSettings):
             raise ValueError("URL values must start with http:// or https://")
         return url
 
-    @field_validator(
-        "extraction_task_description",
-        "extraction_output_format",
-        "extraction_rules_str",
-        "extraction_few_shot_demo",
-    )
+    @field_validator("layout_analysis_mode")
     @classmethod
-    def use_default_for_empty_prompt_values(cls, value: str, info: Any) -> str:
-        defaults = {
-            "extraction_task_description": DEFAULT_EXTRACTION_TASK_DESCRIPTION,
-            "extraction_output_format": DEFAULT_EXTRACTION_OUTPUT_FORMAT,
-            "extraction_rules_str": DEFAULT_EXTRACTION_RULES_STR,
-            "extraction_few_shot_demo": DEFAULT_EXTRACTION_FEW_SHOT_DEMO,
-        }
-        return value if value.strip() else defaults[info.field_name]
+    def validate_layout_analysis_mode(cls, value: str) -> str:
+        if value not in {"v2", "v3", "v3_shadow", "shadow"}:
+            raise ValueError("LAYOUT_ANALYSIS_MODE must be one of: v2, v3, v3_shadow, shadow")
+        return value
 
     # -- Model validator: populate nested + storage subdirs --------------
 
@@ -240,57 +203,6 @@ class Settings(BaseSettings):
             )
 
         # Populate nested models from flat fields
-        self.extraction = ExtractionSettings(
-            backend=self.document_extractor,
-            pymupdf_min_text_chars=self.pymupdf_min_text_chars,
-            align_structured=self.align_structured_extraction,
-            save_raw_result=self.save_ocr_raw_result,
-            max_document_size_mb=self.extraction_max_document_size_mb,
-            max_image_size_mb=self.extraction_max_image_size_mb,
-            cache_enabled=self.extraction_cache_enabled,
-            cache_ttl_hours=self.extraction_cache_ttl_hours,
-            window_size=self.extraction_window_size,
-            window_overlap=self.extraction_window_overlap,
-            layout_analysis_mode=self.layout_analysis_mode,
-            ppocrv5=PPOCRV5Settings(
-                url=self.ppocrv5_url,
-                access_token=self.ppocrv5_access_token,
-                timeout_seconds=self.ppocrv5_timeout_seconds,
-                return_word_box=self.ppocrv5_return_word_box,
-                text_rec_score_thresh=self.ppocrv5_text_rec_score_thresh,
-                edge_noise_score_thresh=self.ppocrv5_edge_noise_score_thresh,
-                edge_noise_margin_ratio=self.ppocrv5_edge_noise_margin_ratio,
-                edge_noise_max_chars=self.ppocrv5_edge_noise_max_chars,
-                use_doc_orientation_classify=self.ppocrv5_use_doc_orientation_classify,
-                use_doc_unwarping=self.ppocrv5_use_doc_unwarping,
-                use_textline_orientation=self.ppocrv5_use_textline_orientation,
-            ),
-            ppstructure=PPStructureSettings(
-                url=self.ppstructure_url,
-                access_token=self.ppstructure_access_token,
-                timeout_seconds=self.ppstructure_timeout_seconds,
-                use_doc_orientation_classify=self.ppstructure_use_doc_orientation_classify,
-                use_doc_unwarping=self.ppstructure_use_doc_unwarping,
-                use_textline_orientation=self.ppstructure_use_textline_orientation,
-                use_table_recognition=self.ppstructure_use_table_recognition,
-                use_seal_recognition=self.ppstructure_use_seal_recognition,
-                use_region_detection=self.ppstructure_use_region_detection,
-                format_block_content=self.ppstructure_format_block_content,
-            ),
-            hybrid=HybridSettings(
-                layout_overlap_threshold=self.hybrid_layout_overlap_threshold,
-                center_fallback=self.hybrid_layout_center_fallback,
-                save_merged_raw=self.hybrid_save_merged_raw,
-            ),
-        )
-
-        self.ai_llm = AILLMSettings(
-            base_url=self.ai_llm_base_url,
-            api_key=self.ai_llm_api_key,
-            model=self.ai_llm_model,
-            timeout_seconds=self.ai_extraction_timeout_seconds,
-        )
-
         self.matching = MatchingSettings(threshold=self.match_threshold, use_prefilter=self.match_use_prefilter)
 
         self.report = ReportSettings(
@@ -313,6 +225,39 @@ class Settings(BaseSettings):
         self.registry = RegistrySettings(
             max_loaded_models=self.model_registry_max_loaded,
             preload_models=preload_list,
+        )
+
+        self.ppstructure = PPStructureSettings(
+            url=self.ppstructure_url,
+            access_token=self.ppstructure_access_token,
+            timeout_seconds=self.ppstructure_timeout_seconds,
+            use_doc_orientation_classify=self.ppstructure_use_doc_orientation_classify,
+            use_doc_unwarping=self.ppstructure_use_doc_unwarping,
+            use_textline_orientation=self.ppstructure_use_textline_orientation,
+            use_table_recognition=self.ppstructure_use_table_recognition,
+            use_seal_recognition=self.ppstructure_use_seal_recognition,
+            use_region_detection=self.ppstructure_use_region_detection,
+            format_block_content=self.ppstructure_format_block_content,
+        )
+
+        self.ppocrv5 = PPOCRV5Settings(
+            url=self.ppocrv5_url,
+            access_token=self.ppocrv5_access_token,
+            timeout_seconds=self.ppocrv5_timeout_seconds,
+            return_word_box=self.ppocrv5_return_word_box,
+            text_rec_score_thresh=self.ppocrv5_text_rec_score_thresh,
+            edge_noise_score_thresh=self.ppocrv5_edge_noise_score_thresh,
+            edge_noise_margin_ratio=self.ppocrv5_edge_noise_margin_ratio,
+            edge_noise_max_chars=self.ppocrv5_edge_noise_max_chars,
+            use_doc_orientation_classify=self.ppocrv5_use_doc_orientation_classify,
+            use_doc_unwarping=self.ppocrv5_use_doc_unwarping,
+            use_textline_orientation=self.ppocrv5_use_textline_orientation,
+        )
+
+        self.hybrid = HybridSettings(
+            layout_overlap_threshold=self.hybrid_layout_overlap_threshold,
+            center_fallback=self.hybrid_layout_center_fallback,
+            save_merged_raw=self.hybrid_save_merged_raw,
         )
 
         # Resolve storage paths
