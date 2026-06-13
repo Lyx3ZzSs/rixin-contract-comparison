@@ -26,4 +26,4 @@ COPY --from=builder /build/dist /usr/share/nginx/html
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD wget -qO- http://localhost:8081/ > /dev/null || exit 1
+    CMD wget -q -O - http://localhost:8080/ > /dev/null || exit 1
