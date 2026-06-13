@@ -48,6 +48,10 @@ class DocumentPreparer:
         r"24小时服务热线|服务热线|联系人|电话)[:：]"
     )
     quote_title_pattern = re.compile(r"(?:报价明细|报价单|报价表|报价清单)$")
+    appendix_title_pattern = re.compile(r"^(?:附件|附录|附表)\s*[一二三四五六七八九十0-9]*[:：、.．]?\s*")
+    safety_title_pattern = re.compile(r"(?:安全协议|安全管理协议|安全生产协议|安全责任协议)")
+    signature_page_pattern = re.compile(r"(?:签字页|签署页|此页无正文|盖章|法定代表人|授权代表)")
+    quote_page_pattern = re.compile(r"(?:报价明细|报价单|报价表|报价清单|分项报价表|报价汇总表)")
     generic_table_terms = TABLE_HEADERS | {
         "名称",
         "项目",
@@ -124,9 +128,18 @@ class DocumentPreparer:
             if (block.block_type or "").lower() in self.table_block_types
         ]
 
+        active_section_role: str | None = None
         for block in page.blocks:
             compact = re.sub(r"\s+", "", block.text or "")
             if not compact:
+                continue
+            section_role = self._section_role(block, compact)
+            if section_role:
+                active_section_role = section_role
+                self._mark_role(block, side, section_role, "section_classifier", result)
+                continue
+            if active_section_role and not self._looks_like_main_contract_restart(compact):
+                self._mark_role(block, side, active_section_role, "section_classifier_continuation", result)
                 continue
             if self._is_quote_page_metadata(block, table_blocks, compact):
                 self._mark_role(block, side, "quote_metadata", "nearby_quote_page_metadata", result)
@@ -155,6 +168,29 @@ class DocumentPreparer:
             return len(decimal_match.group(2).strip("、.．:：")) >= 4
         integer_match = self.integer_clause_heading_pattern.match(compact)
         return bool(integer_match and len(integer_match.group(1).strip("、.．:：")) >= 4)
+
+    def _section_role(self, block: TextBlock, compact: str) -> str | None:
+        block_type = (block.block_type or "").lower()
+        if self.signature_page_pattern.search(compact) and len(compact) <= 120:
+            return "signature"
+        if self.quote_page_pattern.search(compact):
+            return "quote_section"
+        if self.safety_title_pattern.search(compact):
+            return "safety_section"
+        if self.appendix_title_pattern.match(compact):
+            if self.safety_title_pattern.search(compact):
+                return "safety_section"
+            if self.quote_page_pattern.search(compact):
+                return "quote_section"
+            return "appendix_section"
+        if block_type == "doc_title" and self.quote_page_pattern.search(compact):
+            return "quote_section"
+        return None
+
+    def _looks_like_main_contract_restart(self, compact: str) -> bool:
+        if self.appendix_title_pattern.match(compact):
+            return False
+        return bool(re.search(r"(?:^正文$|达成合同如下|合同正文)", compact))
 
     def _median_block_height(self, blocks: list[TextBlock]) -> float:
         heights = sorted(max(0.0, block.bbox.y1 - block.bbox.y0) for block in blocks)

@@ -90,6 +90,10 @@ class MatchingSettings(BaseModel):
 
     threshold: int = Field(default=85, ge=0, le=100)
     use_prefilter: bool = True
+    enable_semantic_match: bool = False
+    semantic_model_path: str = ""
+    semantic_weight: float = Field(default=0.08, ge=0.0, le=0.3)
+    low_confidence_review_threshold: float = Field(default=78.0, ge=0.0, le=100.0)
 
 
 # ---------------------------------------------------------------------------

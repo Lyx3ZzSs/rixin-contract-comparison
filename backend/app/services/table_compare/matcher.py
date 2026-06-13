@@ -15,6 +15,9 @@ class TableMatcher:
     row_similarity_threshold: float = 0.55
     table_similarity_threshold: float = 0.3
 
+    _split_merged_cell_text = staticmethod(utils.split_merged_cell_text)
+    _cell_merge_similarity = staticmethod(utils.cell_merge_similarity)
+
     def match_tables(self, original: list, compare: list) -> list[tuple[int, int, float]]:
         n = len(original)
         m = len(compare)

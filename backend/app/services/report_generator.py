@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from dataclasses import dataclass
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -15,7 +14,7 @@ from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Flowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.config import settings
 from app.models import CompareTask, DiffItem, DiffType, TextRange

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from app.models import TextRange
 from app.services.diff.range_refiner import (
     changed_snippets,
     refine_changed_ranges,

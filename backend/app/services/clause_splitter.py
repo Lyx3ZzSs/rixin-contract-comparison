@@ -22,6 +22,8 @@ class ClauseUnit:
     layout_order: int | None = None
     reading_order: int | None = None
     order_reason: str = "source"
+    section_type: str = "main_contract"
+    split_flags: tuple[str, ...] = ()
 
 
 class ClauseSplitter:
@@ -59,6 +61,14 @@ class ClauseSplitter:
         "body_footnote",
         "noise",
     }
+    section_role_map = {
+        "appendix_section": "appendix",
+        "quote_section": "quote",
+        "quote_metadata": "quote",
+        "safety_section": "safety_agreement",
+        "signature": "signature",
+    }
+    weak_numeric_marker_pattern = re.compile(r"^\d+$")
 
     def __init__(self, text_normalizer: TextNormalizer | None = None) -> None:
         self.normalizer = text_normalizer or TextNormalizer()
@@ -132,9 +142,14 @@ class ClauseSplitter:
                             layout_block_id=block.layout_block_id,
                             layout_order=block.layout_order,
                             reading_order=block.reading_order,
+                            section_type=self._section_type_for_block(block),
                         )
                     )
         return units
+
+    def _section_type_for_block(self, block: TextBlock) -> str:
+        block_role = (block.block_role or "").lower()
+        return self.section_role_map.get(block_role, "main_contract")
 
     def _is_low_confidence(self, block: TextBlock) -> bool:
         if block.confidence is None:
@@ -452,6 +467,7 @@ class ClauseSplitter:
         current: dict | None = None
         saw_marker = False
         entered_body = False
+        section_paths: dict[str, list[str]] = {}
         for unit in units:
             marker = self._parse_marker(unit.text)
             block_type = unit.block_type
@@ -467,13 +483,18 @@ class ClauseSplitter:
                 entered_body = True
             elif block_type not in self.cover_block_types and current is not None:
                 entered_body = True
-            if starts_clause or current is None:
+            section_changed = current is not None and current.get("section_type") != unit.section_type
+            if starts_clause or current is None or section_changed:
                 if current is not None:
                     clauses.append(current)
                 clause_no, title = marker if marker else ("", self._title_from_text(unit.text))
+                section_path = self._section_path(section_paths, unit.section_type, clause_no, title)
+                split_flags = self._split_flags(unit, marker)
                 current = {
                     "clause_no": clause_no,
                     "title": title,
+                    "section_type": unit.section_type,
+                    "section_path": section_path,
                     "texts": [unit.text],
                     "char_boxes": [unit.char_boxes],
                     "page_numbers": [unit.page_no],
@@ -484,6 +505,7 @@ class ClauseSplitter:
                         unit,
                     ),
                     "segmentation_confidence": 0.95 if marker else 0.55,
+                    "split_flags": split_flags,
                 }
             else:
                 current["texts"].append(unit.text)
@@ -491,6 +513,7 @@ class ClauseSplitter:
                 current["page_numbers"].append(unit.page_no)
                 current["bboxes"].append(unit.evidence)
                 current["source_block_ids"].append(unit.block_id)
+                current["split_flags"].extend(flag for flag in unit.split_flags if flag not in current["split_flags"])
         if current is not None:
             clauses.append(current)
         return clauses, saw_marker
@@ -568,7 +591,11 @@ class ClauseSplitter:
         marker = marker if marker is not None else self._parse_marker(unit.text)
         if marker is None:
             return False
-        return unit.block_type not in self.table_block_types and not self._is_quantity_or_amount_marker(unit.text, marker)
+        if unit.block_type in self.table_block_types:
+            return False
+        if self._is_quantity_or_amount_marker(unit.text, marker):
+            return False
+        return True
 
     def _segmentation_reason(self, base_reason: str, unit: ClauseUnit) -> str:
         if unit.order_reason in {"", "source", "reading_order"}:
@@ -580,6 +607,8 @@ class ClauseSplitter:
             {
                 "clause_no": "",
                 "title": self._title_from_text(unit.text),
+                "section_type": unit.section_type,
+                "section_path": [self._title_from_text(unit.text)] if unit.section_type != "main_contract" else [],
                 "texts": [unit.text],
                 "char_boxes": [unit.char_boxes],
                 "page_numbers": [unit.page_no],
@@ -587,6 +616,7 @@ class ClauseSplitter:
                 "source_block_ids": [unit.block_id],
                 "segmentation_reason": "fallback_single_unit",
                 "segmentation_confidence": 0.45,
+                "split_flags": self._split_flags(unit, None),
             }
             for unit in units
         ]
@@ -610,9 +640,61 @@ class ClauseSplitter:
                     char_boxes=char_boxes,
                     segmentation_reason=item.get("segmentation_reason", ""),
                     segmentation_confidence=item.get("segmentation_confidence", 0.8),
+                    section_type=item.get("section_type", "main_contract"),
+                    section_path=item.get("section_path", []),
+                    clause_key=self._clause_key(item.get("section_type", "main_contract"), item.get("section_path", []), item["clause_no"], text),
+                    order_index=index,
+                    split_flags=list(dict.fromkeys(item.get("split_flags", []))),
                 )
             )
         return result
+
+    def _section_path(
+        self,
+        section_paths: dict[str, list[str]],
+        section_type: str,
+        clause_no: str,
+        title: str,
+    ) -> list[str]:
+        current = list(section_paths.get(section_type, []))
+        label = self._path_label(clause_no, title)
+        if not label:
+            return current
+        level = self._marker_level(clause_no)
+        if level <= 1:
+            current = [label]
+        else:
+            current = current[: level - 1]
+            current.append(label)
+        section_paths[section_type] = current
+        return list(current)
+
+    def _path_label(self, clause_no: str, title: str) -> str:
+        compact_title = re.sub(r"\s+", "", title or "")[:24]
+        if clause_no and compact_title:
+            return f"{clause_no} {compact_title}"
+        return clause_no or compact_title
+
+    def _marker_level(self, clause_no: str) -> int:
+        value = (clause_no or "").strip()
+        if not value:
+            return 1
+        if re.fullmatch(r"\d+(?:\.\d+)+", value):
+            return min(6, value.count(".") + 1)
+        if re.fullmatch(r"[（(][一二三四五六七八九十0-9]+[)）]", value):
+            return 2
+        return 1
+
+    def _clause_key(self, section_type: str, section_path: list[str], clause_no: str, text: str) -> str:
+        parts = [section_type or "main_contract"]
+        path = [self.normalizer.normalize_for_match(item) for item in section_path if item]
+        if path:
+            parts.extend(path)
+        elif clause_no:
+            parts.append(self.normalizer.normalize_for_match(clause_no))
+        else:
+            parts.append(self.normalizer.normalize_for_match(self._title_from_text(text))[:32])
+        return "/".join(part for part in parts if part)
 
     def _is_pre_body_noise(self, unit: ClauseUnit, marker: tuple[str, str] | None) -> bool:
         block_type = unit.block_type
@@ -726,7 +808,7 @@ class ClauseSplitter:
         current: list[tuple[str, int, int]] = []
         for line, start, end in lines:
             marker = self._parse_marker(line)
-            if marker and current:
+            if marker and not self._is_quantity_or_amount_marker(line, marker) and current:
                 pieces.append(self._join_line_ranges(current))
                 current = [(line, start, end)]
             else:
@@ -756,6 +838,12 @@ class ClauseSplitter:
         compact = re.sub(r"\s+", "", first_line)
         if re.fullmatch(r"\d{1,3}", compact):
             return True
+        if re.fullmatch(r"\d{3,}", clause_no or ""):
+            return True
+        if re.match(r"^\s*\d+(?:[~～—-]\d+)?\s*(元|万元|亿元|usd|rmb|cny|人民币|美元)", first_line, re.IGNORECASE):
+            return True
+        if re.match(r"^\s*\d+\s*[~～—-]\s*\d+", first_line):
+            return True
         if re.match(r"^\s*\d+\s*(套|台|个|项|批|份|万元|元|天|月|个月|年|%)", first_line):
             return True
         if re.match(r"^\s*\d{4}\s*年", first_line):
@@ -763,6 +851,26 @@ class ClauseSplitter:
         if re.fullmatch(r"(?:19|20)\d{2}(?:\.\d{1,2}){1,2}", clause_no):
             return True
         return False
+
+    def _split_flags(self, unit: ClauseUnit, marker: tuple[str, str] | None) -> list[str]:
+        flags = list(unit.split_flags)
+        if unit.section_type != "main_contract":
+            flags.append(f"SECTION_{unit.section_type.upper()}")
+        if marker is not None and self._is_weak_numeric_marker(unit.text, marker):
+            flags.append("WEAK_NUMERIC_MARKER")
+        if "geometry_repair" in (unit.order_reason or ""):
+            flags.append("READING_ORDER_REPAIRED")
+        return list(dict.fromkeys(flags))
+
+    def _is_weak_numeric_marker(self, text: str, marker: tuple[str, str]) -> bool:
+        clause_no, title = marker
+        if not self.weak_numeric_marker_pattern.fullmatch(clause_no or ""):
+            return False
+        compact_title = re.sub(r"\s+", "", title or "")
+        if len(compact_title) < 4:
+            return True
+        first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+        return bool(re.search(r"(元|万元|数量|单价|总价|报价|合计|税率|服务费|费用)", first_line))
 
     def _title_from_text(self, text: str) -> str:
         first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""

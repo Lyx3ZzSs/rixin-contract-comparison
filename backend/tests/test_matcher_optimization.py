@@ -9,7 +9,16 @@ from app.services.normalizer import TextNormalizer
 normalizer = TextNormalizer()
 
 
-def clause(clause_id: str, clause_no: str, title: str, body: str) -> Clause:
+def clause(
+    clause_id: str,
+    clause_no: str,
+    title: str,
+    body: str,
+    *,
+    section_type: str = "main_contract",
+    clause_key: str = "",
+    split_flags: list[str] | None = None,
+) -> Clause:
     text = f"{clause_no}. {title}\n{body}" if clause_no else f"{title}\n{body}"
     return Clause(
         clause_id=clause_id,
@@ -18,6 +27,9 @@ def clause(clause_id: str, clause_no: str, title: str, body: str) -> Clause:
         text=text,
         normalized_text=normalizer.normalize_for_diff(text),
         match_text=normalizer.normalize_for_match(text),
+        section_type=section_type,
+        clause_key=clause_key,
+        split_flags=split_flags or [],
     )
 
 
@@ -150,4 +162,56 @@ def test_short_partial_overlap_does_not_create_false_match() -> None:
     pairs = ClauseMatcher().match(original, compare)
 
     assert len(pairs) == 2
+    assert {pair.match_method for pair in pairs} == {"delete", "add"}
+
+
+def test_weak_numeric_same_clause_number_does_not_override_unrelated_body() -> None:
+    original = [
+        clause(
+            "O001",
+            "2",
+            "2.",
+            "Party A shall provide daily weather forecast data to the project control center.",
+            split_flags=["WEAK_NUMERIC_MARKER"],
+        )
+    ]
+    compare = [
+        clause(
+            "N001",
+            "2",
+            "2.",
+            "The supplier shall submit invoice copies and bank account records before payment.",
+            split_flags=["WEAK_NUMERIC_MARKER"],
+        )
+    ]
+
+    pairs = ClauseMatcher().match(original, compare)
+
+    assert {pair.match_method for pair in pairs} == {"delete", "add"}
+
+
+def test_matcher_does_not_match_different_document_sections_by_same_number() -> None:
+    original = [
+        clause(
+            "O001",
+            "1",
+            "Service scope",
+            "The service scope covers power forecast platform maintenance.",
+            section_type="main_contract",
+            clause_key="main_contract/1服务范围",
+        )
+    ]
+    compare = [
+        clause(
+            "N001",
+            "1",
+            "Service scope",
+            "The service scope covers power forecast platform maintenance.",
+            section_type="quote",
+            clause_key="quote/1服务范围",
+        )
+    ]
+
+    pairs = ClauseMatcher().match(original, compare)
+
     assert {pair.match_method for pair in pairs} == {"delete", "add"}

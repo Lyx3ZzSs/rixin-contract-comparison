@@ -69,7 +69,7 @@ def test_diff_engine_reports_decimal_and_version_changes() -> None:
     assert "V10" in diffs[0].compare_text
 
 
-def test_document_preparation_does_not_exclude_signature_keyword_text_from_clause_flow() -> None:
+def test_document_preparation_keeps_signature_text_in_separate_section() -> None:
     document = Document(
         filename="sample.pdf",
         path="sample.pdf",
@@ -103,11 +103,82 @@ def test_document_preparation_does_not_exclude_signature_keyword_text_from_claus
     result = DocumentPreparer().prepare(document, "original")
     clauses = ClauseSplitter().split(document, "O")
 
-    assert result.decisions == []
-    assert len(clauses) == 1
-    assert clauses[0].source_block_ids == ["body", "sig1", "sig2"]
-    assert "签字页 此页无正文" in clauses[0].text
-    assert "甲方(盖章) 乙方(盖章) 日期" in clauses[0].text
+    assert [decision.reason for decision in result.decisions] == ["section_classifier", "section_classifier"]
+    assert len(clauses) == 2
+    assert clauses[0].source_block_ids == ["body"]
+    assert clauses[1].section_type == "signature"
+    assert clauses[1].source_block_ids == ["sig1", "sig2"]
+    assert "签字页 此页无正文" in clauses[1].text
+    assert "甲方(盖章) 乙方(盖章) 日期" in clauses[1].text
+
+
+def test_clause_splitter_does_not_treat_amount_range_as_clause_number() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="body",
+                        page_no=1,
+                        text="11.2.4 未经审批擅自作业,每次考核。\n1000~5000元,拒不整改加倍处罚并清退人员。",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=140),
+                    )
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["11.2.4"]
+    assert "1000~5000元" in clauses[0].text
+
+
+def test_quote_section_is_split_from_main_contract_clause_flow() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="body",
+                        page_no=1,
+                        text="1. 正文服务范围",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                    ),
+                    TextBlock(
+                        block_id="quote-title",
+                        page_no=1,
+                        text="报价表格式",
+                        bbox=BBox(x0=50, y0=150, x1=500, y1=180),
+                    ),
+                    TextBlock(
+                        block_id="quote-body",
+                        page_no=1,
+                        text="项目名称：风功率预测服务",
+                        bbox=BBox(x0=50, y0=190, x1=500, y1=220),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    DocumentPreparer().prepare(document, "compare")
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert [clause.section_type for clause in clauses] == ["main_contract", "quote"]
+    assert "SECTION_QUOTE" in clauses[1].split_flags
 
 
 def test_diff_quality_flags_critical_changes_and_minor_ocr_noise() -> None:

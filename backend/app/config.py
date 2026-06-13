@@ -111,12 +111,19 @@ class Settings(BaseSettings):
 
     # -- AI / LLM (flat env vars) ----------------------------------------
 
+    ai_llm_base_url: str = ""
+    ai_llm_api_key: str = ""
+    ai_llm_model: str = ""
 
 
     # -- Matching (flat env vars) -----------------------------------------
 
     match_threshold: int = Field(default=85, ge=0, le=100)
     match_use_prefilter: bool = True
+    match_enable_semantic_match: bool = False
+    match_semantic_model_path: str = ""
+    match_semantic_weight: float = Field(default=0.08, ge=0.0, le=0.3)
+    match_low_confidence_review_threshold: float = Field(default=78.0, ge=0.0, le=100.0)
 
     # -- Diff (flat env vars) ---------------------------------------------
 
@@ -203,7 +210,14 @@ class Settings(BaseSettings):
             )
 
         # Populate nested models from flat fields
-        self.matching = MatchingSettings(threshold=self.match_threshold, use_prefilter=self.match_use_prefilter)
+        self.matching = MatchingSettings(
+            threshold=self.match_threshold,
+            use_prefilter=self.match_use_prefilter,
+            enable_semantic_match=self.match_enable_semantic_match,
+            semantic_model_path=self.match_semantic_model_path,
+            semantic_weight=self.match_semantic_weight,
+            low_confidence_review_threshold=self.match_low_confidence_review_threshold,
+        )
 
         self.report = ReportSettings(
             font_path=self.report_font_path,

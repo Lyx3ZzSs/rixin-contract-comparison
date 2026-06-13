@@ -43,10 +43,15 @@ def build_add(pair: ClausePair, index: int) -> DiffItem:
         compare_snippet=shorten(clause.text),
         readable_change=f"新增条款：{shorten(clause.text)}",
         source_type="clause",
+        section_type=clause.section_type,
+        section_path=clause.section_path,
         match_method=pair.match_method,
         match_score=pair.score or None,
         match_score_details=pair.score_details,
         match_candidates=pair.match_candidates,
+        match_confidence=pair.match_confidence,
+        structural_flags=clause.split_flags,
+        review_flags=structural_review_flags(clause),
         compare_evidence=clause.bboxes,
         compare_change_ranges=[TextRange(start=0, end=len(clause.text), highlight_type="ADD")],
     )
@@ -65,10 +70,15 @@ def build_delete(pair: ClausePair, index: int) -> DiffItem:
         original_snippet=shorten(clause.text),
         readable_change=f"删除条款：{shorten(clause.text)}",
         source_type="clause",
+        section_type=clause.section_type,
+        section_path=clause.section_path,
         match_method=pair.match_method,
         match_score=pair.score or None,
         match_score_details=pair.score_details,
         match_candidates=pair.match_candidates,
+        match_confidence=pair.match_confidence,
+        structural_flags=clause.split_flags,
+        review_flags=structural_review_flags(clause),
         original_evidence=clause.bboxes,
         original_change_ranges=[TextRange(start=0, end=len(clause.text), highlight_type="DELETE")],
     )
@@ -112,10 +122,14 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
         compare_snippet=compare_snippet,
         readable_change=readable_change,
         source_type="clause",
+        section_type=right.section_type or left.section_type,
+        section_path=right.section_path or left.section_path,
         match_score=pair.score,
         match_method=pair.match_method,
         match_score_details=pair.score_details,
         match_candidates=pair.match_candidates,
+        match_confidence=pair.match_confidence,
+        structural_flags=list(dict.fromkeys([*left.split_flags, *right.split_flags])),
         review_flags=flags,
         original_evidence=left.bboxes,
         compare_evidence=right.bboxes,
@@ -131,8 +145,27 @@ def review_flags(pair: ClausePair) -> list[str]:
         flags.append("SAME_CLAUSE_NO_LOW_SIMILARITY")
     if pair.match_method == "renumbered_similarity":
         flags.append("POSSIBLE_RENUMBERED_CLAUSE")
+    if pair.match_confidence == "LOW":
+        flags.append("LOW_CONFIDENCE_MATCH")
+    if pair.match_method in {"section_mismatch_blocked", "same_clause_no_low_similarity"}:
+        flags.append("POSSIBLE_CLAUSE_MISMATCH")
     if pair.score_details.get("business_token_mismatch", 0.0) >= 1:
         flags.append("BUSINESS_TOKEN_MISMATCH_REVIEW")
     if body_score < 60 and pair.score < LOW_CONFIDENCE_MATCH_THRESHOLD:
         flags.append("LOW_CONFIDENCE_MATCH")
+    if pair.original is not None:
+        flags.extend(structural_review_flags(pair.original))
+    if pair.compare is not None:
+        flags.extend(structural_review_flags(pair.compare))
+    return list(dict.fromkeys(flags))
+
+
+def structural_review_flags(clause) -> list[str]:
+    flags: list[str] = []
+    if getattr(clause, "section_type", "main_contract") != "main_contract":
+        flags.append("NON_MAIN_CONTRACT_SECTION")
+    if "WEAK_NUMERIC_MARKER" in getattr(clause, "split_flags", []):
+        flags.append("POSSIBLE_SPLIT_DRIFT")
+    if "READING_ORDER_REPAIRED" in getattr(clause, "split_flags", []):
+        flags.append("READING_ORDER_REPAIRED")
     return flags

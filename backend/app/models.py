@@ -196,6 +196,11 @@ class Clause(BaseModel):
     char_boxes: list[CharBox | None] = Field(default_factory=list)
     segmentation_reason: str = ""
     segmentation_confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    section_type: str = "main_contract"
+    section_path: list[str] = Field(default_factory=list)
+    clause_key: str = ""
+    order_index: int = 0
+    split_flags: list[str] = Field(default_factory=list)
 
 
 class TextRange(BaseModel):
@@ -211,6 +216,7 @@ class ClausePair(BaseModel):
     match_method: str = "unmatched"
     score_details: dict[str, float] = Field(default_factory=dict)
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    match_confidence: str = "NORMAL"
 
 
 class DiffItem(BaseModel):
@@ -226,10 +232,14 @@ class DiffItem(BaseModel):
     compare_snippet: str = ""
     readable_change: str = ""
     source_type: DiffSourceType = "clause"
+    section_type: str = ""
+    section_path: list[str] = Field(default_factory=list)
     match_score: float | None = None
     match_method: str = ""
     match_score_details: dict[str, float] = Field(default_factory=dict)
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    match_confidence: str = ""
+    structural_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     quality_status: DiffQualityStatus = "NORMAL"
     text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)

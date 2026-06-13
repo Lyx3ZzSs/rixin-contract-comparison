@@ -407,6 +407,15 @@ class SplitStage:
             "compare_clauses",
             lambda: self.debug_writer.write_clauses(ctx.task.task_id, "compare", clauses.compare_clauses),
         )
+        _write_debug_artifact(
+            ctx.task,
+            "section_outline",
+            lambda: self.debug_writer.write_section_outline(
+                ctx.task.task_id,
+                clauses.original_clauses,
+                clauses.compare_clauses,
+            ),
+        )
         _emit_progress(ctx, 44, self.name, "clause_debug_artifacts_done")
 
 
@@ -423,6 +432,10 @@ class MatchStage:
         self.matcher = ClauseMatcher(
             threshold if threshold is not None else settings.match_threshold,
             use_prefilter=settings.matching.use_prefilter,
+            enable_semantic_match=settings.matching.enable_semantic_match,
+            semantic_model_path=settings.matching.semantic_model_path,
+            semantic_weight=settings.matching.semantic_weight,
+            low_confidence_review_threshold=settings.matching.low_confidence_review_threshold,
         )
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
@@ -434,6 +447,11 @@ class MatchStage:
             ctx.task,
             "clause_matches",
             lambda: self.debug_writer.write_matches(ctx.task.task_id, matches.pairs),
+        )
+        _write_debug_artifact(
+            ctx.task,
+            "match_matrix_summary",
+            lambda: self.debug_writer.write_match_matrix_summary(ctx.task.task_id, matches.pairs),
         )
         _emit_progress(ctx, 54, self.name, "match_debug_artifact_done")
 

@@ -365,6 +365,65 @@ def anchor_cell(table, row: int, col: int):
     return cell
 
 
+def split_merged_cell_text(text: str) -> list[str]:
+    raw = unicodedata.normalize("NFKC", text or "").strip()
+    if not raw:
+        return []
+    newline_parts = [part.strip() for part in raw.splitlines() if part.strip()]
+    if len(newline_parts) > 1:
+        return newline_parts if _parts_have_compatible_lengths(newline_parts) else [raw]
+    space_parts = [part.strip() for part in re.split(r"\s+", raw) if part.strip()]
+    if len(space_parts) > 1 and all(len(part) <= 6 for part in space_parts):
+        return space_parts
+    return [raw]
+
+
+def cell_merge_similarity(left: str, right: str) -> float:
+    left_norm = normalize(left)
+    right_norm = normalize(right)
+    if not left_norm or not right_norm:
+        return 0.0
+    if left_norm == right_norm:
+        return 1.0
+    if is_subset_match(left, right):
+        return 0.95
+    left_tokens = set(_merge_tokens(left))
+    right_tokens = set(_merge_tokens(right))
+    shared = {token for token in left_tokens & right_tokens if len(token) >= 4}
+    if shared:
+        return 0.9
+    return 0.0
+
+
+def is_subset_match(left: str, right: str) -> bool:
+    left_tokens = set(_merge_tokens(left))
+    right_tokens = set(_merge_tokens(right))
+    if not left_tokens or not right_tokens:
+        return False
+    return left_tokens <= right_tokens or right_tokens <= left_tokens
+
+
+def _merge_tokens(text: str) -> list[str]:
+    raw = unicodedata.normalize("NFKC", text or "")
+    tokens = [
+        normalize(part)
+        for part in re.split(r"[|\n\r\t ]+", raw)
+        if normalize(part) and not is_noise(normalize(part))
+    ]
+    return list(dict.fromkeys(tokens))
+
+
+def _parts_have_compatible_lengths(parts: list[str]) -> bool:
+    lengths = [len(part) for part in parts if part]
+    if len(lengths) <= 1:
+        return False
+    shortest = min(lengths)
+    longest = max(lengths)
+    if shortest <= 0:
+        return False
+    return longest / shortest <= 3.0
+
+
 # ---------------------------------------------------------------------------
 # Continuation marker detection (inspired by MinerU table_continuation.py)
 # ---------------------------------------------------------------------------

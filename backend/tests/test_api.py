@@ -13,8 +13,8 @@ from app.config import settings
 from app.infrastructure.task_runner import TaskJob, default_task_runner
 from app.main import app
 from app.models import BBox, CompareTask, DiffItem, EvidenceBox
-from app.models_extraction import ExtractionFieldDef, ExtractionFieldValue, ExtractionTask
-from app.utils.json_utils import load_extraction_task, load_task, save_extraction_task, save_task
+from app.models_extraction import ExtractionTask
+from app.utils.json_utils import load_task, save_extraction_task, save_task
 
 
 def make_pdf(path: Path, lines: list[str]) -> None:
@@ -598,7 +598,6 @@ def test_cors_allows_frontend_dev_origin() -> None:
     )
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
-
 
 
 

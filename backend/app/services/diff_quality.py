@@ -40,6 +40,7 @@ class DiffQualityProcessor:
         decisions: list[DiffQualityDecision] = []
         working = self._dedupe_cross_source(working, decisions)
         self._classify(working, decisions)
+        self._flag_structural_risks(working, decisions)
         self._flag_boundary_drift(working, decisions)
         self._flag_cross_source_structural_misclassification(working, decisions)
         self._propagate_text_confidence(working)
@@ -132,6 +133,30 @@ class DiffQualityProcessor:
                         action="possible_boundary_drift",
                         diff_id=delete.diff_id,
                         detail={"paired_diff_id": add.diff_id, "fragment": delete_text[:80]},
+                    )
+                )
+
+    def _flag_structural_risks(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
+        for diff in diffs:
+            if diff.source_type != "clause":
+                continue
+            if diff.section_type and diff.section_type != "main_contract":
+                self._add_flag(diff, "NON_MAIN_CONTRACT_SECTION")
+                decisions.append(
+                    DiffQualityDecision(
+                        action="non_main_contract_section",
+                        diff_id=diff.diff_id,
+                        detail={"section_type": diff.section_type, "section_path": diff.section_path},
+                    )
+                )
+            risk_flags = set(diff.structural_flags) | set(diff.review_flags)
+            if "POSSIBLE_SPLIT_DRIFT" in risk_flags or "LOW_CONFIDENCE_MATCH" in risk_flags:
+                diff.quality_status = "NEEDS_REVIEW"
+                decisions.append(
+                    DiffQualityDecision(
+                        action="structural_risk_review",
+                        diff_id=diff.diff_id,
+                        detail={"flags": sorted(risk_flags)},
                     )
                 )
 

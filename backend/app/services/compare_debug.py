@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from collections import Counter
 
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.models import Clause, ClausePair, DiffItem, DocumentProfile, LayoutQualityReport
@@ -55,6 +56,18 @@ class CompareDebugWriter:
     def write_document_preparation(self, task_id: str, decisions: list[dict[str, Any]]) -> str:
         return str(self._write_json(task_id, "document_preparation.json", {"decisions": decisions}))
 
+    def write_section_outline(self, task_id: str, original: list[Clause], compare: list[Clause]) -> str:
+        return str(
+            self._write_json(
+                task_id,
+                "section_outline.json",
+                {
+                    "original": self._section_outline(original),
+                    "compare": self._section_outline(compare),
+                },
+            )
+        )
+
     def write_diff_quality(self, task_id: str, decisions: list[dict[str, Any]]) -> str:
         return str(self._write_json(task_id, "diff_quality.json", {"decisions": decisions}))
 
@@ -67,13 +80,57 @@ class CompareDebugWriter:
                     "compare_clause_id": pair.compare.clause_id if pair.compare else None,
                     "original_clause_no": pair.original.clause_no if pair.original else "",
                     "compare_clause_no": pair.compare.clause_no if pair.compare else "",
+                    "original_clause_key": pair.original.clause_key if pair.original else "",
+                    "compare_clause_key": pair.compare.clause_key if pair.compare else "",
+                    "original_section_type": pair.original.section_type if pair.original else "",
+                    "compare_section_type": pair.compare.section_type if pair.compare else "",
+                    "original_section_path": pair.original.section_path if pair.original else [],
+                    "compare_section_path": pair.compare.section_path if pair.compare else [],
                     "score": round(pair.score, 2),
                     "match_method": pair.match_method,
+                    "match_confidence": pair.match_confidence,
                     "score_details": pair.score_details,
                     "match_candidates": pair.match_candidates[:5],
                 }
             )
         return str(self._write_json(task_id, "clause_matches.json", payload))
+
+    def write_match_matrix_summary(self, task_id: str, pairs: list[ClausePair]) -> str:
+        method_counts: Counter[str] = Counter(pair.match_method for pair in pairs)
+        confidence_counts: Counter[str] = Counter(pair.match_confidence for pair in pairs if pair.match_confidence)
+        section_counts: Counter[str] = Counter()
+        low_confidence = []
+        for pair in pairs:
+            section_type = (
+                pair.compare.section_type
+                if pair.compare is not None
+                else pair.original.section_type if pair.original is not None else ""
+            )
+            if section_type:
+                section_counts[section_type] += 1
+            if pair.match_confidence == "LOW":
+                low_confidence.append(
+                    {
+                        "original_clause_id": pair.original.clause_id if pair.original else None,
+                        "compare_clause_id": pair.compare.clause_id if pair.compare else None,
+                        "score": round(pair.score, 2),
+                        "match_method": pair.match_method,
+                        "score_details": pair.score_details,
+                    }
+                )
+        return str(
+            self._write_json(
+                task_id,
+                "match_matrix_summary.json",
+                {
+                    "pair_count": len(pairs),
+                    "method_counts": dict(method_counts),
+                    "confidence_counts": dict(confidence_counts),
+                    "section_counts": dict(section_counts),
+                    "low_confidence_pairs": low_confidence[:50],
+                },
+            )
+        )
 
     def write_diffs(self, task_id: str, diffs: list[DiffItem]) -> str:
         payload = []
@@ -83,12 +140,16 @@ class CompareDebugWriter:
                     "diff_id": diff.diff_id,
                     "diff_type": diff.diff_type,
                     "source_type": diff.source_type,
+                    "section_type": diff.section_type,
+                    "section_path": diff.section_path,
                     "title": diff.title,
                     "clause_no": diff.clause_no,
                     "match_score": diff.match_score,
                     "match_method": diff.match_method,
+                    "match_confidence": diff.match_confidence,
                     "match_score_details": diff.match_score_details,
                     "review_flags": diff.review_flags,
+                    "structural_flags": diff.structural_flags,
                     "quality_status": diff.quality_status,
                     "text_confidence": diff.text_confidence,
                     "merged_sources": diff.merged_sources,
@@ -117,6 +178,11 @@ class CompareDebugWriter:
             "clause_id": clause.clause_id,
             "clause_no": clause.clause_no,
             "title": clause.title,
+            "section_type": clause.section_type,
+            "section_path": clause.section_path,
+            "clause_key": clause.clause_key,
+            "order_index": clause.order_index,
+            "split_flags": clause.split_flags,
             "page_numbers": clause.page_numbers,
             "source_block_ids": clause.source_block_ids,
             "segmentation_reason": clause.segmentation_reason,
@@ -125,6 +191,24 @@ class CompareDebugWriter:
             "normalized_length": len(clause.normalized_text),
             "text_preview": clause.text[:500],
         }
+
+    def _section_outline(self, clauses: list[Clause]) -> list[dict[str, Any]]:
+        outline = []
+        seen: set[tuple[str, tuple[str, ...]]] = set()
+        for clause in clauses:
+            key = (clause.section_type, tuple(clause.section_path))
+            if key in seen:
+                continue
+            seen.add(key)
+            outline.append(
+                {
+                    "section_type": clause.section_type,
+                    "section_path": clause.section_path,
+                    "first_clause_id": clause.clause_id,
+                    "page_numbers": clause.page_numbers,
+                }
+            )
+        return outline
 
     def _evidence_summary(self, evidence: Any) -> dict[str, Any]:
         return {
