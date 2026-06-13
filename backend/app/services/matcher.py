@@ -556,7 +556,7 @@ class ClauseMatcher:
             weighted = max(weighted, details["body_score"] * 0.92)
         if details["weak_numeric_marker"] >= 1 and details["body_score"] < 80 and details["title_score"] < 75:
             weighted = min(weighted, 68.0)
-        return round(weighted, 2)
+        return round(max(0.0, min(100.0, weighted)), 2)
 
     def _candidate_acceptable(self, candidate: MatchCandidate) -> bool:
         details = candidate.details
@@ -639,8 +639,14 @@ class ClauseMatcher:
         details = candidate.details
         if candidate.score < self.low_confidence_review_threshold:
             return "LOW"
+        if details.get("body_length_coverage", 1.0) < 0.50:
+            return "LOW"
+        if details.get("body_length_coverage", 1.0) < 0.70:
+            return "MEDIUM"
         if details.get("weak_numeric_marker", 0.0) >= 1:
             return "LOW" if details["body_score"] < 88 else "MEDIUM"
+        if (candidate.original.section_type or "main_contract") != "main_contract" or (candidate.compare.section_type or "main_contract") != "main_contract":
+            return "MEDIUM" if details["body_score"] >= 70 else "LOW"
         if candidate.method in {"same_clause_no_low_similarity", "section_mismatch_blocked"}:
             return "LOW"
         if details["body_score"] < 65 and details["title_score"] < 75:

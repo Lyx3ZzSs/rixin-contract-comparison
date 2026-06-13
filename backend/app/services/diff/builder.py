@@ -147,6 +147,8 @@ def review_flags(pair: ClausePair) -> list[str]:
         flags.append("POSSIBLE_RENUMBERED_CLAUSE")
     if pair.match_confidence == "LOW":
         flags.append("LOW_CONFIDENCE_MATCH")
+    if pair.match_method == "same_clause_key_weighted" and pair.score_details.get("body_length_coverage", 1.0) < 0.70:
+        flags.append("LOW_COVERAGE_CLAUSE_KEY_MATCH")
     if pair.match_method in {"section_mismatch_blocked", "same_clause_no_low_similarity"}:
         flags.append("POSSIBLE_CLAUSE_MISMATCH")
     if pair.score_details.get("business_token_mismatch", 0.0) >= 1:

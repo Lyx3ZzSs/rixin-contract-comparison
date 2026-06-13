@@ -160,6 +160,11 @@ class TextBlock(BaseModel):
     reading_order: int | None = None
     block_role: str = ""
     flow_role: str = ""
+    semantic_role: str = ""
+    semantic_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    semantic_reasons: list[str] = Field(default_factory=list)
+    enter_clause_compare: bool | None = None
+    ocr_correction_suggestions: list[dict[str, Any]] = Field(default_factory=list)
     layout_match_score: float | None = Field(default=None, ge=0.0, le=1.0)
     layout_match_status: LayoutMatchStatus = "not_applicable"
     layout_match_reason: str = ""
@@ -173,6 +178,9 @@ class Page(BaseModel):
     width: float
     height: float
     blocks: list[TextBlock] = Field(default_factory=list)
+    semantic_role: str = "unknown"
+    semantic_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    semantic_reasons: list[str] = Field(default_factory=list)
 
 
 class Document(BaseModel):

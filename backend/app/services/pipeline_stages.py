@@ -20,6 +20,7 @@ from app.services.diff_engine import DiffEngine
 from app.services.diff_quality import DiffQualityProcessor
 from app.services.document_profiler import DocumentProfiler
 from app.services.document_preparation import DocumentPreparer
+from app.services.document_understanding import DocumentUnderstandingService
 from app.services.evidence_locator import EvidenceLocator
 from app.services.extractors import build_compare_document_extractor, build_document_extractor
 from app.services.extractors.base import (
@@ -293,6 +294,34 @@ class DocumentPreparationStage:
             ),
         )
         _emit_progress(ctx, 36, self.name, "document_preparation_done")
+
+
+class DocumentUnderstandingStage:
+    name = "文档语义清洗中"
+    start_progress = 34
+    progress = 35
+
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.service = DocumentUnderstandingService(settings.document_understanding)
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+
+    def execute(self, ctx: PipelineContext) -> None:
+        extractions = ctx.require_extractions()
+        result = self.service.understand_pair(
+            extractions.original.document,
+            extractions.compare.document,
+        )
+        _append_warning_details(ctx.task, result.original.warnings)
+        _append_warning_details(ctx.task, result.compare.warnings)
+        _write_debug_artifact(
+            ctx.task,
+            "document_understanding",
+            lambda: self.debug_writer.write_document_understanding(
+                ctx.task.task_id,
+                result.to_debug_payload(),
+            ),
+        )
+        _emit_progress(ctx, 35, self.name, "document_understanding_done")
 
 
 class PreClauseDiffStage:

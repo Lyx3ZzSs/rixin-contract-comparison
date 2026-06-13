@@ -33,13 +33,21 @@ class DiffQualityProcessor:
     critical_pattern = re.compile(
         r"(\d|%|‰|元|万元|v\d|V\d|公司|甲方|乙方|不得|不承担|违约|免责|终止|不可抗力)"
     )
+    business_token_pattern = re.compile(
+        r"(%|‰|元|万元|亿元|v\d|V\d|公司|甲方|乙方|不得|不承担|违约|免责|终止|不可抗力|"
+        r"\d+(?:\.\d+)?\s*(?:%|‰|元|万元|亿元|天|日|月|年|个月)|"
+        r"\d+(?:\.\d+)?\s*(?:days?|months?|years?)|"
+        r"\d{4}\s*年|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|pay|payment|invoice|buyer|supplier)"
+    )
     style_punct_pattern = re.compile(r"[\s，。；：、”“‘’（）()\[\]【】《》!?:;\"']+")
+    low_value_symbol_pattern = re.compile(r"^[\d/\\∠_.,，。·•\-—~～…\sLIl|]+$", re.IGNORECASE)
 
     def process(self, diffs: list[DiffItem]) -> DiffQualityResult:
         working = [diff.model_copy(deep=True) for diff in diffs]
         decisions: list[DiffQualityDecision] = []
         working = self._dedupe_cross_source(working, decisions)
         self._classify(working, decisions)
+        working = self._suppress_low_value_noise(working, decisions)
         self._flag_structural_risks(working, decisions)
         self._flag_boundary_drift(working, decisions)
         self._flag_cross_source_structural_misclassification(working, decisions)
@@ -98,18 +106,48 @@ class DiffQualityProcessor:
 
     def _classify(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         for diff in diffs:
+            if self._looks_like_minor_ocr_noise(diff) or self._looks_like_short_symbol_noise(diff):
+                self._add_flag(diff, "POSSIBLE_OCR_NOISE")
+                diff.quality_status = "NEEDS_REVIEW"
+                decisions.append(DiffQualityDecision(action="possible_ocr_noise", diff_id=diff.diff_id))
+                continue
             if self._is_critical_change(diff):
                 self._add_flag(diff, "CRITICAL_VALUE_CHANGE")
                 decisions.append(DiffQualityDecision(action="critical_change", diff_id=diff.diff_id))
                 continue
-            if self._looks_like_minor_ocr_noise(diff):
-                self._add_flag(diff, "POSSIBLE_OCR_NOISE")
-                diff.quality_status = "NEEDS_REVIEW"
-                decisions.append(DiffQualityDecision(action="possible_ocr_noise", diff_id=diff.diff_id))
-            elif self._looks_like_cover_fragment(diff):
+            if self._looks_like_cover_fragment(diff):
                 self._add_flag(diff, "POSSIBLE_COVER_OCR_FRAGMENT")
                 diff.quality_status = "NEEDS_REVIEW"
                 decisions.append(DiffQualityDecision(action="possible_cover_ocr_fragment", diff_id=diff.diff_id))
+
+    def _suppress_low_value_noise(
+        self,
+        diffs: list[DiffItem],
+        decisions: list[DiffQualityDecision],
+    ) -> list[DiffItem]:
+        kept: list[DiffItem] = []
+        for diff in diffs:
+            reason = self._suppression_reason(diff)
+            if reason:
+                decisions.append(DiffQualityDecision(action="suppressed_low_value_noise", diff_id=diff.diff_id, detail={"reason": reason}))
+                continue
+            kept.append(diff)
+        return kept
+
+    def _suppression_reason(self, diff: DiffItem) -> str:
+        if self._has_business_token(diff):
+            return ""
+        changed = self._changed_text(diff)
+        compact = self._compact(changed)
+        if not compact:
+            return "empty_change"
+        if diff.source_type == "clause" and "POSSIBLE_OCR_NOISE" in diff.review_flags and self._looks_like_short_symbol_noise(diff):
+            return "clause_ocr_noise"
+        if diff.source_type in {"header_footer", "metadata"} and len(compact) <= 4:
+            return "short_non_body_fragment"
+        if diff.source_type == "clause" and self._looks_like_short_symbol_noise(diff):
+            return "short_symbol_noise"
+        return ""
 
     def _flag_boundary_drift(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         clause_diffs = [diff for diff in diffs if diff.source_type == "clause"]
@@ -150,7 +188,11 @@ class DiffQualityProcessor:
                     )
                 )
             risk_flags = set(diff.structural_flags) | set(diff.review_flags)
-            if "POSSIBLE_SPLIT_DRIFT" in risk_flags or "LOW_CONFIDENCE_MATCH" in risk_flags:
+            if (
+                "POSSIBLE_SPLIT_DRIFT" in risk_flags
+                or "LOW_CONFIDENCE_MATCH" in risk_flags
+                or "LOW_COVERAGE_CLAUSE_KEY_MATCH" in risk_flags
+            ):
                 diff.quality_status = "NEEDS_REVIEW"
                 decisions.append(
                     DiffQualityDecision(
@@ -206,10 +248,23 @@ class DiffQualityProcessor:
     def _looks_like_minor_ocr_noise(self, diff: DiffItem) -> bool:
         if diff.source_type != "clause" or diff.diff_type != "MODIFY":
             return False
+        if self._has_business_token(diff):
+            return False
         if (diff.match_score or 0) < 96:
             return False
         changed_len = len(self._compact(diff.original_snippet)) + len(self._compact(diff.compare_snippet))
         return 0 < changed_len <= 3
+
+    def _looks_like_short_symbol_noise(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause":
+            return False
+        if self._has_business_token(diff):
+            return False
+        changed = self._changed_text(diff)
+        compact = self._compact(changed)
+        if not compact:
+            return False
+        return len(compact) <= 12 and bool(self.low_value_symbol_pattern.fullmatch(changed.strip()))
 
     def _looks_like_cover_fragment(self, diff: DiffItem) -> bool:
         if diff.source_type != "metadata" or diff.diff_type not in {"ADD", "DELETE"}:
@@ -217,12 +272,21 @@ class DiffQualityProcessor:
         return len(self._compact(diff.original_snippet or diff.compare_snippet)) <= 3
 
     def _is_critical_change(self, diff: DiffItem) -> bool:
+        if self._looks_like_short_symbol_noise(diff):
+            return False
         changed = self._changed_text(diff)
         return bool(self.critical_pattern.search(changed or ""))
 
+    def _has_business_token(self, diff: DiffItem) -> bool:
+        text = f"{self._changed_text(diff)} {diff.original_text} {diff.compare_text}"
+        return bool(self.business_token_pattern.search(text or ""))
+
     def _changed_text(self, diff: DiffItem) -> str:
         if diff.diff_type == "MODIFY":
-            return f"{diff.original_snippet} {diff.compare_snippet}"
+            snippet_text = f"{diff.original_snippet} {diff.compare_snippet}".strip()
+            if snippet_text:
+                return snippet_text
+            return f"{diff.original_text} {diff.compare_text}"
         if diff.diff_type == "ADD":
             return diff.compare_snippet or diff.compare_text
         if diff.diff_type == "DELETE":

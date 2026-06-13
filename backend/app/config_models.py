@@ -81,6 +81,29 @@ class PPStructureSettings(BaseModel):
 # AI / LLM domain
 # ---------------------------------------------------------------------------
 
+class DocumentUnderstandingSettings(BaseModel):
+    """Document semantic cleanup and optional LLM-assisted understanding."""
+
+    enabled: bool = True
+    llm_enabled: bool = False
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
+    llm_timeout_seconds: int = Field(default=60, ge=1)
+    llm_max_retries: int = Field(default=2, ge=0)
+    rule_confidence_accept: float = Field(default=0.85, ge=0.0, le=1.0)
+    llm_confidence_accept: float = Field(default=0.82, ge=0.0, le=1.0)
+    enable_ocr_correction: bool = False
+    enable_cross_page_merge: bool = True
+
+    @field_validator("llm_base_url")
+    @classmethod
+    def validate_llm_base_url(cls, value: str) -> str:
+        url = value.strip()
+        if url and not url.startswith(("http://", "https://")):
+            raise ValueError("llm_base_url must start with http:// or https://")
+        return url
+
 # ---------------------------------------------------------------------------
 # Matching domain
 # ---------------------------------------------------------------------------

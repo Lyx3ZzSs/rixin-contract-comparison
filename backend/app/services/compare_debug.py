@@ -56,6 +56,9 @@ class CompareDebugWriter:
     def write_document_preparation(self, task_id: str, decisions: list[dict[str, Any]]) -> str:
         return str(self._write_json(task_id, "document_preparation.json", {"decisions": decisions}))
 
+    def write_document_understanding(self, task_id: str, payload: dict[str, Any]) -> str:
+        return str(self._write_json(task_id, "document_understanding.json", payload))
+
     def write_section_outline(self, task_id: str, original: list[Clause], compare: list[Clause]) -> str:
         return str(
             self._write_json(

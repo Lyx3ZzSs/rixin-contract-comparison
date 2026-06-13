@@ -140,6 +140,117 @@ def test_clause_splitter_does_not_treat_amount_range_as_clause_number() -> None:
     assert "1000~5000元" in clauses[0].text
 
 
+def test_clause_splitter_filters_toc_dot_leaders_from_body_clauses() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(block_id="t0", page_no=1, text="目录", bbox=BBox(x0=50, y0=60, x1=200, y1=80)),
+                    TextBlock(block_id="t1", page_no=1, text="1. 技术服务项目概要......3", bbox=BBox(x0=50, y0=90, x1=500, y1=110)),
+                    TextBlock(block_id="t2", page_no=1, text="2. 技术服务具体要求..3", bbox=BBox(x0=50, y0=120, x1=500, y1=140)),
+                    TextBlock(block_id="t3", page_no=1, text="12.1/。", bbox=BBox(x0=50, y0=150, x1=500, y1=170)),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert clauses == []
+
+
+def test_clause_splitter_merges_decimal_amount_continuation_into_previous_clause() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1",
+                        page_no=1,
+                        text="5.1 技术服务报酬总额为人民币341850.00元，其中增值税税率6%，增值税税额",
+                        bbox=BBox(x0=50, y0=760, x1=500, y1=790),
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p2",
+                        page_no=2,
+                        text="19350.00元。当合同约定的税率与国家税法规定不一致时，以国家税法规定为准。",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                    )
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["5.1"]
+    assert "19350.00元" in clauses[0].text
+
+
+def test_clause_splitter_keeps_signature_numeric_address_as_signature_continuation() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="sig-title",
+                        page_no=1,
+                        text="签署页",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                        block_role="signature",
+                    ),
+                    TextBlock(
+                        block_id="sig-address",
+                        page_no=1,
+                        text="27号金隅智造工场N6",
+                        bbox=BBox(x0=50, y0=130, x1=500, y1=160),
+                        block_role="signature",
+                    ),
+                    TextBlock(
+                        block_id="sig-contact",
+                        page_no=1,
+                        text="联系人:刘玉良",
+                        bbox=BBox(x0=50, y0=170, x1=500, y1=200),
+                        block_role="signature",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert len(clauses) == 1
+    assert clauses[0].section_type == "signature"
+    assert clauses[0].clause_no == ""
+    assert "27号金隅智造工场N6" in clauses[0].text
+
+
 def test_quote_section_is_split_from_main_contract_clause_flow() -> None:
     document = Document(
         filename="sample.pdf",
@@ -208,6 +319,32 @@ def test_diff_quality_flags_critical_changes_and_minor_ocr_noise() -> None:
     assert "CRITICAL_VALUE_CHANGE" in by_id["D001"].review_flags
     assert by_id["D002"].quality_status == "NEEDS_REVIEW"
     assert "POSSIBLE_OCR_NOISE" in by_id["D002"].review_flags
+
+
+def test_diff_quality_suppresses_short_symbol_noise_without_business_tokens() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D001",
+            diff_type="MODIFY",
+            source_type="clause",
+            original_snippet="/",
+            compare_snippet="∠",
+            match_score=99,
+        ),
+        DiffItem(
+            diff_id="D002",
+            diff_type="MODIFY",
+            source_type="clause",
+            original_snippet="1.5%",
+            compare_snippet="15%",
+            match_score=99,
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+
+    assert [diff.diff_id for diff in result.diffs] == ["D002"]
+    assert any(decision.action == "suppressed_low_value_noise" and decision.diff_id == "D001" for decision in result.decisions)
 
 
 def test_diff_quality_classifies_modify_by_changed_snippets_not_full_context() -> None:

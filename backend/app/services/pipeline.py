@@ -301,6 +301,7 @@ def _default_stages() -> list[PipelineStage]:
     from app.services.pipeline_stages import (
         ClauseDiffStage,
         DocumentPreparationStage,
+        DocumentUnderstandingStage,
         DiffQualityStage,
         EvidenceStage,
         ExtractionStage,
@@ -313,6 +314,7 @@ def _default_stages() -> list[PipelineStage]:
 
     return [
         ExtractionStage(),
+        DocumentUnderstandingStage(),
         DocumentPreparationStage(),
         PreClauseDiffStage(),
         SplitStage(),

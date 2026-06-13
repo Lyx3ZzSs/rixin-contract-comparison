@@ -35,6 +35,7 @@ class CompareService:
         from app.services.pipeline_stages import (
             ClauseDiffStage,
             DocumentPreparationStage,
+            DocumentUnderstandingStage,
             DiffQualityStage,
             EvidenceStage,
             MatchStage,
@@ -52,6 +53,7 @@ class CompareService:
         return ComparePipeline(
             stages=[
                 extraction,
+                DocumentUnderstandingStage(artifact_store=self.artifact_store),
                 DocumentPreparationStage(artifact_store=self.artifact_store),
                 PreClauseDiffStage(artifact_store=self.artifact_store),
                 SplitStage(artifact_store=self.artifact_store),

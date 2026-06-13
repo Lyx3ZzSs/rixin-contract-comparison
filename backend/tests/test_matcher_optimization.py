@@ -119,6 +119,36 @@ def test_numeric_change_still_matches_and_reports_modify_diff() -> None:
     assert "BUSINESS_TOKEN_MISMATCH_REVIEW" in diffs[0].review_flags
 
 
+def test_match_score_is_capped_and_low_coverage_clause_key_match_is_reviewed() -> None:
+    original = [
+        clause(
+            "O001",
+            "",
+            "签署页",
+            "甲方:国家电网有限公司华北分部\n乙方:国能日新科技股份有限公司\n地址:北京市海淀区建材城中路2482号",
+            section_type="signature",
+            clause_key="signature/签署页",
+        )
+    ]
+    compare = [
+        clause(
+            "N001",
+            "",
+            "签署页",
+            "地址:北京市海淀区建材城中路2482号",
+            section_type="signature",
+            clause_key="signature/签署页",
+        )
+    ]
+
+    pair = ClauseMatcher().match(original, compare)[0]
+    diffs = DiffEngine().build_diffs([pair])
+
+    assert pair.score <= 100
+    assert pair.match_confidence in {"LOW", "MEDIUM"}
+    assert "LOW_COVERAGE_CLAUSE_KEY_MATCH" in diffs[0].review_flags
+
+
 def test_business_token_score_prefers_more_specific_template_candidate() -> None:
     original = [
         clause(

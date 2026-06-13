@@ -69,6 +69,8 @@ class ClauseSplitter:
         "signature": "signature",
     }
     weak_numeric_marker_pattern = re.compile(r"^\d+$")
+    toc_dot_leader_pattern = re.compile(r"\.{2,}\s*\d*$|…{2,}\s*\d*$")
+    short_symbol_noise_pattern = re.compile(r"^[/\\∠_.,，。·•\-—~～\s]{1,8}$")
 
     def __init__(self, text_normalizer: TextNormalizer | None = None) -> None:
         self.normalizer = text_normalizer or TextNormalizer()
@@ -88,6 +90,7 @@ class ClauseSplitter:
             clauses = self._single_unit_items(units)
         else:
             clauses = self._repair_adjacent_clause_boundary(clauses)
+            clauses = self._repair_continuation_boundaries(clauses)
 
         return self._build_clauses(clauses, prefix)
 
@@ -95,8 +98,11 @@ class ClauseSplitter:
         mask_index = self._build_mask_index(document)
         units: list[ClauseUnit] = []
         for page in document.pages:
+            toc_page = self._page_looks_like_toc(page)
             page_masks = mask_index.get(page.page_no, [])
             for block in page.blocks:
+                if block.enter_clause_compare is False:
+                    continue
                 if block.flow_role in {"margin", "noise", "non_text"}:
                     continue
                 block_role = (block.block_role or "").lower()
@@ -117,6 +123,8 @@ class ClauseSplitter:
                     continue
                 normalized_block = self.normalizer.normalize(block.text)
                 if not normalized_block:
+                    continue
+                if toc_page and self._is_toc_line_noise(normalized_block):
                     continue
                 if self._is_body_ocr_noise(block, normalized_block, page.width, page.height):
                     continue
@@ -538,6 +546,35 @@ class ClauseSplitter:
                 break
         return clauses
 
+    def _repair_continuation_boundaries(self, clauses: list[dict]) -> list[dict]:
+        repaired: list[dict] = []
+        for clause in clauses:
+            if repaired and self._should_merge_with_previous(repaired[-1], clause):
+                self._merge_clause_items(repaired[-1], clause, "continuation_boundary_repair")
+                continue
+            repaired.append(clause)
+        return repaired
+
+    def _should_merge_with_previous(self, previous: dict, current: dict) -> bool:
+        if previous.get("section_type") != current.get("section_type"):
+            return False
+        first_text = str(current.get("texts", [""])[0] or "")
+        marker = self._parse_marker(first_text)
+        if marker is None:
+            return False
+        if self._is_amount_or_value_continuation(first_text, marker):
+            return True
+        return self._is_weak_numeric_continuation(first_text, marker)
+
+    def _merge_clause_items(self, target: dict, source: dict, reason: str) -> None:
+        target["texts"].extend(source.get("texts", []))
+        target["char_boxes"].extend(source.get("char_boxes", []))
+        target["page_numbers"].extend(source.get("page_numbers", []))
+        target["bboxes"].extend(source.get("bboxes", []))
+        target["source_block_ids"].extend(source.get("source_block_ids", []))
+        target["split_flags"].extend(flag for flag in source.get("split_flags", []) if flag not in target["split_flags"])
+        target["segmentation_reason"] = self._append_order_reason(target.get("segmentation_reason", ""), reason)
+
     def _is_upward_boundary_fragment(self, clause: dict, item_index: int) -> bool:
         text = clause["texts"][item_index]
         compact = re.sub(r"\s+", "", text or "")
@@ -595,6 +632,10 @@ class ClauseSplitter:
             return False
         if self._is_quantity_or_amount_marker(unit.text, marker):
             return False
+        if unit.section_type != "main_contract" and self._is_non_contract_numeric_marker(marker):
+            return False
+        if self._is_weak_numeric_continuation(unit.text, marker):
+            return False
         return True
 
     def _segmentation_reason(self, base_reason: str, unit: ClauseUnit) -> str:
@@ -603,23 +644,39 @@ class ClauseSplitter:
         return f"{base_reason}|order:{unit.order_reason}"
 
     def _single_unit_items(self, units: list[ClauseUnit]) -> list[dict]:
-        return [
-            {
-                "clause_no": "",
-                "title": self._title_from_text(unit.text),
-                "section_type": unit.section_type,
-                "section_path": [self._title_from_text(unit.text)] if unit.section_type != "main_contract" else [],
-                "texts": [unit.text],
-                "char_boxes": [unit.char_boxes],
-                "page_numbers": [unit.page_no],
-                "bboxes": [unit.evidence],
-                "source_block_ids": [unit.block_id],
-                "segmentation_reason": "fallback_single_unit",
-                "segmentation_confidence": 0.45,
-                "split_flags": self._split_flags(unit, None),
-            }
-            for unit in units
-        ]
+        items: list[dict] = []
+        for unit in units:
+            if items and unit.section_type != "main_contract" and items[-1].get("section_type") == unit.section_type:
+                self._merge_clause_items(
+                    items[-1],
+                    {
+                        "texts": [unit.text],
+                        "char_boxes": [unit.char_boxes],
+                        "page_numbers": [unit.page_no],
+                        "bboxes": [unit.evidence],
+                        "source_block_ids": [unit.block_id],
+                        "split_flags": self._split_flags(unit, None),
+                    },
+                    "non_body_section_group",
+                )
+                continue
+            items.append(
+                {
+                    "clause_no": "",
+                    "title": self._title_from_text(unit.text),
+                    "section_type": unit.section_type,
+                    "section_path": [self._title_from_text(unit.text)] if unit.section_type != "main_contract" else [],
+                    "texts": [unit.text],
+                    "char_boxes": [unit.char_boxes],
+                    "page_numbers": [unit.page_no],
+                    "bboxes": [unit.evidence],
+                    "source_block_ids": [unit.block_id],
+                    "segmentation_reason": "fallback_single_unit",
+                    "segmentation_confidence": 0.45,
+                    "split_flags": self._split_flags(unit, None),
+                }
+            )
+        return items
 
     def _build_clauses(self, clauses: list[dict], prefix: str) -> list[Clause]:
         result: list[Clause] = []
@@ -808,7 +865,7 @@ class ClauseSplitter:
         current: list[tuple[str, int, int]] = []
         for line, start, end in lines:
             marker = self._parse_marker(line)
-            if marker and not self._is_quantity_or_amount_marker(line, marker) and current:
+            if marker and not self._is_quantity_or_amount_marker(line, marker) and not self._is_weak_numeric_continuation(line, marker) and current:
                 pieces.append(self._join_line_ranges(current))
                 current = [(line, start, end)]
             else:
@@ -838,19 +895,64 @@ class ClauseSplitter:
         compact = re.sub(r"\s+", "", first_line)
         if re.fullmatch(r"\d{1,3}", compact):
             return True
-        if re.fullmatch(r"\d{3,}", clause_no or ""):
+        if re.fullmatch(r"\d{3,}(?:\.\d+)?", clause_no or ""):
             return True
-        if re.match(r"^\s*\d+(?:[~～—-]\d+)?\s*(元|万元|亿元|usd|rmb|cny|人民币|美元)", first_line, re.IGNORECASE):
+        money_units = r"(万元|亿元|人民币|美元|usd|rmb|cny|元(?!器))"
+        if re.match(rf"^\s*\d+(?:\.\d+)?(?:[~～—-]\d+(?:\.\d+)?)?\s*{money_units}", first_line, re.IGNORECASE):
             return True
         if re.match(r"^\s*\d+\s*[~～—-]\s*\d+", first_line):
             return True
-        if re.match(r"^\s*\d+\s*(套|台|个|项|批|份|万元|元|天|月|个月|年|%)", first_line):
+        if re.match(r"^\s*\d+(?:\.\d+)?\s*(套|台|个|项|批|份|万元|元(?!器)|天|月|个月|年|%)", first_line):
             return True
         if re.match(r"^\s*\d{4}\s*年", first_line):
             return True
         if re.fullmatch(r"(?:19|20)\d{2}(?:\.\d{1,2}){1,2}", clause_no):
             return True
         return False
+
+    def _is_amount_or_value_continuation(self, text: str, marker: tuple[str, str]) -> bool:
+        if not self._is_quantity_or_amount_marker(text, marker):
+            return False
+        first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+        return bool(re.search(r"(元|万元|亿元|税|价款|费用|金额|合同约定|税务机关)", first_line))
+
+    def _is_weak_numeric_continuation(self, text: str, marker: tuple[str, str]) -> bool:
+        clause_no, title = marker
+        if not self.weak_numeric_marker_pattern.fullmatch(clause_no or ""):
+            return False
+        compact_title = re.sub(r"\s+", "", title or "")
+        first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+        compact_line = re.sub(r"\s+", "", first_line)
+        if "以下无正文" in compact_line and re.fullmatch(r"\d+[。.]?(?:（?以下无正文）?)?", compact_line):
+            return True
+        return bool(len(compact_title) < 4 and re.search(r"(以下无正文|地址|联系人|电话|传真|email|邮箱)", text or "", re.IGNORECASE))
+
+    def _is_non_contract_numeric_marker(self, marker: tuple[str, str]) -> bool:
+        clause_no, _ = marker
+        if self._is_formal_clause_marker(clause_no):
+            return False
+        return bool(re.fullmatch(r"\d+(?:\.\d+)?", clause_no or ""))
+
+    def _page_looks_like_toc(self, page) -> bool:
+        texts = [self.normalizer.normalize(block.text) for block in page.blocks if block.text]
+        compact_lines = [re.sub(r"\s+", "", text) for text in texts if text.strip()]
+        if any(line == "目录" for line in compact_lines):
+            return True
+        toc_like = sum(1 for text in texts if self._is_toc_line_noise(text))
+        return toc_like >= 5 and toc_like >= max(1, len(texts) // 3)
+
+    def _is_toc_line_noise(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", text or "")
+        if not compact:
+            return True
+        if compact == "目录":
+            return True
+        marker = self._parse_marker(text)
+        if marker is not None and self.short_symbol_noise_pattern.fullmatch(marker[1] or ""):
+            return True
+        if self.toc_dot_leader_pattern.search(compact):
+            return True
+        return bool(re.fullmatch(r"\d+(?:\.\d+)*[^\n]{0,30}[./∠_·•…]{1,}\d*", compact))
 
     def _split_flags(self, unit: ClauseUnit, marker: tuple[str, str] | None) -> list[str]:
         flags = list(unit.split_flags)

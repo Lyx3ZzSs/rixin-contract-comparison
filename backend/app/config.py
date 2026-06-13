@@ -7,6 +7,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.config_models import (
+    DocumentUnderstandingSettings,
     HybridSettings,
     MatchingSettings,
     PipelineSettings,
@@ -114,6 +115,19 @@ class Settings(BaseSettings):
     ai_llm_base_url: str = ""
     ai_llm_api_key: str = ""
     ai_llm_model: str = ""
+    ai_extraction_timeout_seconds: int = Field(default=60, ge=1)
+
+    document_understanding_enabled: bool = True
+    document_understanding_llm_enabled: bool = False
+    document_understanding_llm_base_url: str = ""
+    document_understanding_llm_api_key: str = ""
+    document_understanding_llm_model: str = ""
+    document_understanding_llm_timeout_seconds: int = Field(default=60, ge=1)
+    document_understanding_llm_max_retries: int = Field(default=2, ge=0)
+    document_understanding_rule_confidence_accept: float = Field(default=0.85, ge=0.0, le=1.0)
+    document_understanding_llm_confidence_accept: float = Field(default=0.82, ge=0.0, le=1.0)
+    document_understanding_enable_ocr_correction: bool = False
+    document_understanding_enable_cross_page_merge: bool = True
 
 
     # -- Matching (flat env vars) -----------------------------------------
@@ -164,6 +178,10 @@ class Settings(BaseSettings):
     report: ReportSettings = Field(default_factory=ReportSettings, exclude=True)
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings, exclude=True)
     registry: RegistrySettings = Field(default_factory=RegistrySettings, exclude=True)
+    document_understanding: DocumentUnderstandingSettings = Field(
+        default_factory=DocumentUnderstandingSettings,
+        exclude=True,
+    )
 
     ppstructure: PPStructureSettings = Field(default_factory=PPStructureSettings, exclude=True)
     ppocrv5: PPOCRV5Settings = Field(default_factory=PPOCRV5Settings, exclude=True)
@@ -210,6 +228,14 @@ class Settings(BaseSettings):
         url = value.strip()
         if url and not url.startswith(("http://", "https://")):
             raise ValueError("MATCH_SEMANTIC_BASE_URL must start with http:// or https://")
+        return url
+
+    @field_validator("ai_llm_base_url", "document_understanding_llm_base_url")
+    @classmethod
+    def validate_optional_llm_http_url(cls, value: str) -> str:
+        url = value.strip()
+        if url and not url.startswith(("http://", "https://")):
+            raise ValueError("LLM URL values must start with http:// or https://")
         return url
 
     @field_validator("layout_analysis_mode")
@@ -271,6 +297,20 @@ class Settings(BaseSettings):
         self.registry = RegistrySettings(
             max_loaded_models=self.model_registry_max_loaded,
             preload_models=preload_list,
+        )
+
+        self.document_understanding = DocumentUnderstandingSettings(
+            enabled=self.document_understanding_enabled,
+            llm_enabled=self.document_understanding_llm_enabled,
+            llm_base_url=self.document_understanding_llm_base_url or self.ai_llm_base_url,
+            llm_api_key=self.document_understanding_llm_api_key or self.ai_llm_api_key,
+            llm_model=self.document_understanding_llm_model or self.ai_llm_model,
+            llm_timeout_seconds=self.document_understanding_llm_timeout_seconds,
+            llm_max_retries=self.document_understanding_llm_max_retries,
+            rule_confidence_accept=self.document_understanding_rule_confidence_accept,
+            llm_confidence_accept=self.document_understanding_llm_confidence_accept,
+            enable_ocr_correction=self.document_understanding_enable_ocr_correction,
+            enable_cross_page_merge=self.document_understanding_enable_cross_page_merge,
         )
 
         self.ppstructure = PPStructureSettings(
