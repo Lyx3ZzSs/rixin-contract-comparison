@@ -78,3 +78,39 @@ def test_diff_engine_accepts_difflib_fallback_mode() -> None:
 def test_diff_engine_rejects_unknown_value() -> None:
     with pytest.raises(ValidationError, match="DIFF_ENGINE"):
         Settings(diff_engine="unknown")
+
+
+def test_semantic_matching_config_maps_to_nested_settings() -> None:
+    app_settings = Settings(
+        match_enable_semantic_match=True,
+        match_semantic_provider="openai",
+        match_semantic_base_url="http://127.0.0.1:8001/v1",
+        match_semantic_api_key="test-key",
+        match_semantic_model="bge-small-zh-v1.5",
+        match_semantic_device="cpu",
+        match_semantic_batch_size=16,
+        match_semantic_timeout_seconds=30,
+        match_semantic_max_retries=1,
+        match_semantic_weight=0.1,
+    )
+
+    assert app_settings.matching.enable_semantic_match is True
+    assert app_settings.matching.semantic_provider == "openai"
+    assert app_settings.matching.semantic_base_url == "http://127.0.0.1:8001/v1"
+    assert app_settings.matching.semantic_api_key == "test-key"
+    assert app_settings.matching.semantic_model == "bge-small-zh-v1.5"
+    assert app_settings.matching.semantic_device == "cpu"
+    assert app_settings.matching.semantic_batch_size == 16
+    assert app_settings.matching.semantic_timeout_seconds == 30
+    assert app_settings.matching.semantic_max_retries == 1
+    assert app_settings.matching.semantic_weight == 0.1
+
+
+def test_semantic_matching_rejects_unknown_provider() -> None:
+    with pytest.raises(ValidationError, match="MATCH_SEMANTIC_PROVIDER"):
+        Settings(match_semantic_provider="custom")
+
+
+def test_semantic_matching_rejects_invalid_http_url() -> None:
+    with pytest.raises(ValidationError, match="MATCH_SEMANTIC_BASE_URL"):
+        Settings(match_semantic_base_url="127.0.0.1:8001/v1")

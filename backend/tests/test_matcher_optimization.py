@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import httpx
+
 from app.models import Clause
 from app.services.diff_engine import DiffEngine
-from app.services.matcher import ClauseMatcher
+from app.services.matcher import ClauseMatcher, SemanticMatcher
 from app.services.normalizer import TextNormalizer
 
 
@@ -215,3 +217,96 @@ def test_matcher_does_not_match_different_document_sections_by_same_number() -> 
     pairs = ClauseMatcher().match(original, compare)
 
     assert {pair.match_method for pair in pairs} == {"delete", "add"}
+
+
+def test_openai_semantic_matcher_calls_embeddings_endpoint(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, timeout: int) -> None:
+            self.timeout = timeout
+
+        def __enter__(self) -> FakeClient:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+        def post(self, url: str, *, headers: dict[str, str], json: dict[str, object]) -> FakeResponse:
+            calls.append({"url": url, "headers": headers, "json": json, "timeout": self.timeout})
+            inputs = json["input"]
+            assert isinstance(inputs, list)
+            data = []
+            for text in inputs:
+                vector = [1.0, 0.0] if "付款" in str(text) else [0.0, 1.0]
+                data.append({"embedding": vector})
+            return FakeResponse({"data": data})
+
+    monkeypatch.setattr("app.services.matcher.httpx.Client", FakeClient)
+
+    matcher = SemanticMatcher(
+        enabled=True,
+        provider="openai",
+        base_url="http://embedding.local/v1",
+        api_key="secret",
+        model="bge-small-zh-v1.5",
+        timeout_seconds=12,
+    )
+    original = clause("O001", "1", "付款条款", "甲方应在收到发票后三十日内付款。")
+    compare = [
+        clause("N001", "A", "服务范围", "乙方提供平台维护服务。"),
+        clause("N002", "B", "付款安排", "客户应在收到有效发票后三十日内完成付款。"),
+    ]
+
+    choices = matcher.prepare(compare)
+    top = matcher.top_k(original, compare, choices, limit=1, score_cutoff=60)
+
+    assert top == [1]
+    assert matcher.score(original, compare[1], choices[1]) == 100.0
+    assert calls[0]["url"] == "http://embedding.local/v1/embeddings"
+    assert calls[0]["headers"] == {"Content-Type": "application/json", "Authorization": "Bearer secret"}
+    assert calls[0]["json"] == {
+        "model": "bge-small-zh-v1.5",
+        "input": [SemanticMatcher._semantic_text(item) for item in compare],
+    }
+    assert calls[0]["timeout"] == 12
+
+
+def test_openai_semantic_matcher_disables_on_http_error(monkeypatch, caplog) -> None:
+    class FailingClient:
+        def __init__(self, timeout: int) -> None:
+            self.timeout = timeout
+
+        def __enter__(self) -> FailingClient:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+        def post(self, url: str, *, headers: dict[str, str], json: dict[str, object]) -> object:
+            raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr("app.services.matcher.httpx.Client", FailingClient)
+    matcher = SemanticMatcher(
+        enabled=True,
+        provider="openai",
+        base_url="http://embedding.local/v1",
+        model="bge-small-zh-v1.5",
+        max_retries=0,
+    )
+
+    vectors = matcher.prepare([clause("N001", "1", "付款", "收到发票后三十日内付款。")])
+
+    assert vectors == {}
+    assert matcher.enabled is False
+    assert "OpenAI-compatible embedding request failed" in caplog.text

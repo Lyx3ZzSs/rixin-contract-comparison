@@ -4,7 +4,11 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+import logging
 import math
+from typing import Any
+
+import httpx
 
 try:
     from rapidfuzz import fuzz
@@ -14,6 +18,8 @@ except Exception:  # pragma: no cover - fallback for minimal environments
 from app.models import Clause, ClausePair
 from app.services.clause_splitter import ClauseSplitter
 from app.services.normalizer import TextNormalizer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -26,29 +32,76 @@ class MatchCandidate:
     sources: tuple[str, ...] = ()
 
 
-class LocalSemanticMatcher:
-    """Optional local embedding scorer used only for candidate recall and tie-breaking."""
+class SemanticMatcher:
+    """Optional embedding scorer used only for candidate recall and tie-breaking."""
 
-    def __init__(self, *, enabled: bool = False, model_path: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        enabled: bool = False,
+        provider: str = "local",
+        model_path: str = "",
+        base_url: str = "",
+        api_key: str = "",
+        model: str = "",
+        device: str = "auto",
+        batch_size: int = 32,
+        timeout_seconds: int = 60,
+        max_retries: int = 2,
+    ) -> None:
         self.enabled = False
-        self.model = None
+        self.provider = provider.strip().lower() or "local"
+        self.model_path = model_path.strip()
+        self.base_url = base_url.strip().rstrip("/")
+        self.api_key = api_key.strip()
+        self.model_name = model.strip()
+        self.device = device.strip() or "auto"
+        self.batch_size = max(1, batch_size)
+        self.timeout_seconds = max(1, timeout_seconds)
+        self.max_retries = max(0, max_retries)
+        self.local_model = None
         self._cache: dict[str, list[float]] = {}
-        if not enabled or not model_path:
+        if not enabled:
+            return
+        if self.provider == "openai":
+            self._enable_openai()
+        else:
+            self._enable_local()
+
+    def _enable_local(self) -> None:
+        if not self.model_path:
+            logger.warning("Semantic matching is enabled but MATCH_SEMANTIC_MODEL_PATH is empty.")
             return
         try:
             from sentence_transformers import SentenceTransformer  # type: ignore
-        except Exception:
+        except Exception as exc:
+            logger.warning("Semantic matching disabled: sentence-transformers is not installed (%s).", exc)
             return
         try:
-            self.model = SentenceTransformer(model_path)
-        except Exception:
+            kwargs: dict[str, str] = {}
+            if self.device != "auto":
+                kwargs["device"] = self.device
+            self.local_model = SentenceTransformer(self.model_path, **kwargs)
+        except Exception as exc:
+            logger.warning("Semantic matching disabled: failed to load local model '%s' (%s).", self.model_path, exc)
+            return
+        self.enabled = True
+
+    def _enable_openai(self) -> None:
+        if not self.base_url:
+            logger.warning("Semantic matching is enabled but MATCH_SEMANTIC_BASE_URL is empty.")
+            return
+        if not self.model_name:
+            logger.warning("Semantic matching is enabled but MATCH_SEMANTIC_MODEL is empty.")
             return
         self.enabled = True
 
     def prepare(self, clauses: list[Clause]) -> dict[int, list[float]]:
         if not self.enabled:
             return {}
-        return {index: self._embedding(self._semantic_text(clause)) for index, clause in enumerate(clauses)}
+        texts = [self._semantic_text(clause) for clause in clauses]
+        vectors = self._embeddings(texts)
+        return {index: vector for index, vector in enumerate(vectors) if vector}
 
     def top_k(
         self,
@@ -76,13 +129,96 @@ class LocalSemanticMatcher:
         right_vector = right_vector or self._embedding(self._semantic_text(right))
         return self._cosine_score(left_vector, right_vector)
 
+    def _embeddings(self, texts: list[str]) -> list[list[float]]:
+        if not self.enabled:
+            return [[] for _ in texts]
+        results: list[list[float] | None] = []
+        missing: list[str] = []
+        for text in texts:
+            if not text:
+                results.append([])
+            elif text in self._cache:
+                results.append(self._cache[text])
+            else:
+                results.append(None)
+                missing.append(text)
+        if missing:
+            embedded = self._embed_uncached(missing)
+            for text, vector in zip(missing, embedded, strict=False):
+                self._cache[text] = vector
+        return [
+            self._cache.get(text, []) if result is None else result
+            for text, result in zip(texts, results, strict=False)
+        ]
+
+    def _embed_uncached(self, texts: list[str]) -> list[list[float]]:
+        if self.provider == "openai":
+            return self._embed_openai(texts)
+        return self._embed_local(texts)
+
+    def _embed_local(self, texts: list[str]) -> list[list[float]]:
+        if not self.enabled or self.local_model is None:
+            return [[] for _ in texts]
+        try:
+            vectors = self.local_model.encode(texts, normalize_embeddings=True, batch_size=self.batch_size)
+        except TypeError:
+            vectors = self.local_model.encode(texts, normalize_embeddings=True)
+        except Exception as exc:
+            logger.warning("Semantic matching disabled: local embedding failed (%s).", exc)
+            self.enabled = False
+            return [[] for _ in texts]
+        return [[float(item) for item in vector] for vector in vectors]
+
+    def _embed_openai(self, texts: list[str]) -> list[list[float]]:
+        if not self.enabled or not texts:
+            return [[] for _ in texts]
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self.batch_size):
+            batch = texts[start : start + self.batch_size]
+            vectors.extend(self._post_openai_embeddings(batch))
+        if len(vectors) != len(texts):
+            logger.warning("Semantic matching disabled: embedding response count mismatch.")
+            self.enabled = False
+            return [[] for _ in texts]
+        return vectors
+
+    def _post_openai_embeddings(self, texts: list[str]) -> list[list[float]]:
+        endpoint = self.base_url if self.base_url.endswith("/embeddings") else f"{self.base_url}/embeddings"
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        body = {"model": self.model_name, "input": texts}
+        attempts = self.max_retries + 1
+        last_error: Exception | None = None
+        for _ in range(attempts):
+            try:
+                with httpx.Client(timeout=self.timeout_seconds) as client:
+                    response = client.post(endpoint, headers=headers, json=body)
+                    response.raise_for_status()
+                    return self._parse_openai_embeddings(response.json(), expected_count=len(texts))
+            except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+                last_error = exc
+        logger.warning("Semantic matching disabled: OpenAI-compatible embedding request failed (%s).", last_error)
+        self.enabled = False
+        return [[] for _ in texts]
+
+    @staticmethod
+    def _parse_openai_embeddings(payload: dict[str, Any], *, expected_count: int) -> list[list[float]]:
+        data = payload.get("data")
+        if not isinstance(data, list) or len(data) != expected_count:
+            raise ValueError("embedding response data count does not match input count")
+        vectors: list[list[float]] = []
+        for item in data:
+            embedding = item.get("embedding") if isinstance(item, dict) else None
+            if not isinstance(embedding, list):
+                raise ValueError("embedding response item is missing embedding list")
+            vectors.append([float(value) for value in embedding])
+        return vectors
+
     def _embedding(self, text: str) -> list[float]:
-        if not self.enabled or self.model is None or not text:
+        if not self.enabled or not text:
             return []
-        if text not in self._cache:
-            vector = self.model.encode(text, normalize_embeddings=True)
-            self._cache[text] = [float(item) for item in vector]
-        return self._cache[text]
+        return self._embeddings([text])[0]
 
     @staticmethod
     def _semantic_text(clause: Clause) -> str:
@@ -108,7 +244,15 @@ class ClauseMatcher:
         body_top_k: int = 8,
         title_top_k: int = 5,
         enable_semantic_match: bool = False,
+        semantic_provider: str = "local",
         semantic_model_path: str = "",
+        semantic_base_url: str = "",
+        semantic_api_key: str = "",
+        semantic_model: str = "",
+        semantic_device: str = "auto",
+        semantic_batch_size: int = 32,
+        semantic_timeout_seconds: int = 60,
+        semantic_max_retries: int = 2,
         semantic_weight: float = 0.08,
         low_confidence_review_threshold: float = 78.0,
     ) -> None:
@@ -119,9 +263,17 @@ class ClauseMatcher:
         self.title_top_k = title_top_k
         self.semantic_weight = semantic_weight
         self.low_confidence_review_threshold = low_confidence_review_threshold
-        self.semantic_matcher = LocalSemanticMatcher(
+        self.semantic_matcher = SemanticMatcher(
             enabled=enable_semantic_match,
+            provider=semantic_provider,
             model_path=semantic_model_path,
+            base_url=semantic_base_url,
+            api_key=semantic_api_key,
+            model=semantic_model,
+            device=semantic_device,
+            batch_size=semantic_batch_size,
+            timeout_seconds=semantic_timeout_seconds,
+            max_retries=semantic_max_retries,
         )
 
     def match(self, original: list[Clause], compare: list[Clause]) -> list[ClausePair]:

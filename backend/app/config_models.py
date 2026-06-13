@@ -91,9 +91,33 @@ class MatchingSettings(BaseModel):
     threshold: int = Field(default=85, ge=0, le=100)
     use_prefilter: bool = True
     enable_semantic_match: bool = False
+    semantic_provider: str = "local"
     semantic_model_path: str = ""
+    semantic_base_url: str = ""
+    semantic_api_key: str = ""
+    semantic_model: str = ""
+    semantic_device: str = "auto"
+    semantic_batch_size: int = Field(default=32, ge=1)
+    semantic_timeout_seconds: int = Field(default=60, ge=1)
+    semantic_max_retries: int = Field(default=2, ge=0)
     semantic_weight: float = Field(default=0.08, ge=0.0, le=0.3)
     low_confidence_review_threshold: float = Field(default=78.0, ge=0.0, le=100.0)
+
+    @field_validator("semantic_provider")
+    @classmethod
+    def validate_semantic_provider(cls, value: str) -> str:
+        provider = str(value or "local").strip().lower()
+        if provider not in {"local", "openai"}:
+            raise ValueError("semantic_provider must be one of: local, openai")
+        return provider
+
+    @field_validator("semantic_base_url")
+    @classmethod
+    def validate_semantic_base_url(cls, value: str) -> str:
+        url = value.strip()
+        if url and not url.startswith(("http://", "https://")):
+            raise ValueError("semantic_base_url must start with http:// or https://")
+        return url
 
 
 # ---------------------------------------------------------------------------

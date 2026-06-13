@@ -28,6 +28,9 @@ dev = [
     "pytest",
     "ruff",
 ]
+semantic = [
+    "sentence-transformers",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
