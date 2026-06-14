@@ -568,6 +568,67 @@ def test_diff_quality_suppresses_signature_template_delete() -> None:
     )
 
 
+def test_diff_quality_keeps_signature_field_with_actual_signer_value() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D001",
+            diff_type="DELETE",
+            source_type="table",
+            title="表格字段：联系人",
+            original_text="法人代表：雍正 | 法人代表或授权委托人：",
+            original_snippet="法人代表：雍正 | 法人代表或授权委托人：",
+        ),
+        DiffItem(
+            diff_id="D002",
+            diff_type="DELETE",
+            source_type="table",
+            title="表格字段：联系人",
+            original_text="委托代理人： | (签字)",
+            original_snippet="委托代理人： | (签字)",
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+    by_id = {diff.diff_id: diff for diff in result.diffs}
+
+    assert "D001" in by_id
+    assert by_id["D001"].quality_status == "NEEDS_REVIEW"
+    assert "SIGNATURE_SECTION_REVIEW" in by_id["D001"].review_flags
+    assert "D002" not in by_id
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D002"
+        and decision.detail["reason"] == "signature_template_noise"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_signature_company_stamp_value() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D001",
+            diff_type="MODIFY",
+            source_type="signature",
+            section_type="signature",
+            original_text="乙方：【国能日新科技股份有限公司】（盖章）",
+            compare_text="乙方：【南京瑞尚电力科技有限公司】（盖章）",
+            original_snippet="乙方：【国能日新科技股份有限公司】（盖章）",
+            compare_snippet="乙方：【南京瑞尚电力科技有限公司】（盖章）",
+        )
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+
+    assert [diff.diff_id for diff in result.diffs] == ["D001"]
+    assert result.diffs[0].quality_status == "NEEDS_REVIEW"
+    assert "SIGNATURE_SECTION_REVIEW" in result.diffs[0].review_flags
+    assert not any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D001"
+        for decision in result.decisions
+    )
+
+
 def test_diff_quality_downgrades_party_contact_table_and_seal_changes() -> None:
     diffs = [
         DiffItem(

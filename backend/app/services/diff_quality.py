@@ -55,6 +55,16 @@ class DiffQualityProcessor:
     )
     party_side_label_pattern = re.compile(r"(?:甲方|乙方|丙方|丁方)[:：]")
     header_footer_pattern = re.compile(r"(?:页眉|页脚|页码|第\s*\d+\s*页|共\s*\d+\s*页)")
+    signature_value_label_pattern = re.compile(
+        r"(?:法人代表|法定代表人|授权委托人|授权代表|委托代理人|签署人|签字人|"
+        r"甲方|乙方|丙方|丁方|供方|需方|买方|卖方|单位名称(?:（章）|\(章\))?|名称|日期)"
+        r"\s*[:：]"
+    )
+    signature_template_cleanup_pattern = re.compile(
+        r"(?:签字页|签署页|此页无正文|以下无正文|盖章|签字|法人代表|法定代表人|授权委托人|"
+        r"授权代表|委托代理人|签署人|签字人|日期|甲方|乙方|丙方|丁方|供方|需方|买方|卖方|"
+        r"单位名称|名称|章)"
+    )
 
     def process(self, diffs: list[DiffItem]) -> DiffQualityResult:
         working = [diff.model_copy(deep=True) for diff in diffs]
@@ -337,6 +347,8 @@ class DiffQualityProcessor:
     def _should_downgrade_non_body_change(self, diff: DiffItem) -> bool:
         if diff.section_type in {"signature", "contact_party_info"}:
             return True
+        if diff.source_type == "signature":
+            return True
         if diff.source_type == "header_footer":
             return True
         if diff.source_type == "seal":
@@ -350,7 +362,7 @@ class DiffQualityProcessor:
         return False
 
     def _non_body_review_flag(self, diff: DiffItem) -> str:
-        if diff.section_type == "signature" or self._looks_like_signature_template_noise(diff):
+        if diff.section_type == "signature" or diff.source_type == "signature" or self._looks_like_signature_change(diff):
             return "SIGNATURE_SECTION_REVIEW"
         if diff.section_type == "contact_party_info" or self._looks_like_party_contact_change(diff):
             return "PARTY_INFO_REVIEW"
@@ -365,6 +377,8 @@ class DiffQualityProcessor:
         compact = self._compact(text)
         if not compact:
             return False
+        if self._has_signature_actual_value(diff):
+            return False
         if "以下无正文" in text or "此页无正文" in text:
             return True
         if not self.strong_signature_template_pattern.search(text):
@@ -377,6 +391,45 @@ class DiffQualityProcessor:
             return True
         business_terms = re.sub(self.signature_template_pattern, "", text)
         return not bool(re.search(r"(违约|付款|支付|交付|验收|质保|保密|争议|解除|赔偿|责任|金额|元|%|‰)", business_terms))
+
+    def _looks_like_signature_change(self, diff: DiffItem) -> bool:
+        text = f"{diff.title} {self._changed_text(diff)} {diff.original_text} {diff.compare_text}"
+        return bool(self.strong_signature_template_pattern.search(text))
+
+    def _has_signature_actual_value(self, diff: DiffItem) -> bool:
+        changed = self._changed_text(diff)
+        if not changed:
+            return False
+        text = unicodedata.normalize("NFKC", changed)
+        if self._has_signature_labeled_value(text):
+            return True
+        residue = self.signature_value_label_pattern.sub("", text)
+        residue = self.signature_template_cleanup_pattern.sub("", residue)
+        residue = self.style_punct_pattern.sub("", residue)
+        residue = re.sub(r"[|/\\_\-—~～·•.。,，;；:：\s]+", "", residue)
+        if not residue:
+            return False
+        if re.fullmatch(r"(?:或|及|和|与|其|负责人|代表|授权|委托|人|无|空|同上)+", residue):
+            return False
+        return bool(
+            re.search(r"(?:公司|有限|集团|银行|支行|[一-鿿]{2,}(?:省|市|区|县|路|街|号|室)|\d{4}年\d{1,2}月\d{1,2}日)", residue)
+            or re.search(r"[A-Za-z0-9][A-Za-z0-9-]{4,}", residue)
+            or re.fullmatch(r"[\u4e00-\u9fff]{2,4}", residue)
+        )
+
+    def _has_signature_labeled_value(self, text: str) -> bool:
+        for match in self.signature_value_label_pattern.finditer(text):
+            value_start = match.end()
+            next_match = self.signature_value_label_pattern.search(text, value_start)
+            value_end = next_match.start() if next_match else len(text)
+            value = text[value_start:value_end]
+            value = re.split(r"[|｜\n\r]", value, maxsplit=1)[0]
+            value = self.signature_template_cleanup_pattern.sub("", value)
+            value = self.style_punct_pattern.sub("", value)
+            value = re.sub(r"[|/\\_\-—~～·•.。,，;；:：\s]+", "", value)
+            if value and not re.fullmatch(r"(?:或|及|和|与|其|负责人|代表|授权|委托|人|无|空|同上)+", value):
+                return True
+        return False
 
     def _looks_like_party_contact_change(self, diff: DiffItem) -> bool:
         if diff.source_type == "table":

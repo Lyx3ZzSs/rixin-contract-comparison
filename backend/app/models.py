@@ -12,7 +12,7 @@ EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
-DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal"]
+DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal", "signature"]
 LayoutMatchStatus = Literal[
     "matched",
     "ambiguous",

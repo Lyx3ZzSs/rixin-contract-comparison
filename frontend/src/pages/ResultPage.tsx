@@ -583,6 +583,7 @@ function auditGroup(diff: DiffItem): AuditGroup {
   if (
     diff.section_type === "signature"
     || diff.section_type === "contact_party_info"
+    || diff.source_type === "signature"
     || flags.includes("SIGNATURE_SECTION_REVIEW")
     || flags.includes("PARTY_INFO_REVIEW")
   ) {
