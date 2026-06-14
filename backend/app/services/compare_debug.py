@@ -59,6 +59,9 @@ class CompareDebugWriter:
     def write_document_understanding(self, task_id: str, payload: dict[str, Any]) -> str:
         return str(self._write_json(task_id, "document_understanding.json", payload))
 
+    def write_signature_compare(self, task_id: str, payload: dict[str, Any]) -> str:
+        return str(self._write_json(task_id, "signature_compare.json", payload))
+
     def write_section_outline(self, task_id: str, original: list[Clause], compare: list[Clause]) -> str:
         return str(
             self._write_json(

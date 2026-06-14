@@ -5,7 +5,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from app.models import AuditItemReview, BBox, CompareTask, DiffItem, EvidenceBox
-from app.services.report_generator import ReportGenerator
+from app.services.report_generator import ReportGenerator, _SOURCE_TYPE_LABELS, _SOURCE_TYPE_ORDER
 
 
 def _make_pdf(path, page_count: int = 6) -> None:
@@ -16,6 +16,11 @@ def _make_pdf(path, page_count: int = 6) -> None:
         pdf.drawString(72, 720, "30 days 45 days invoice warranty")
         pdf.showPage()
     pdf.save()
+
+
+def test_report_generator_labels_signature_source_type() -> None:
+    assert _SOURCE_TYPE_LABELS["signature"] == "签字页"
+    assert _SOURCE_TYPE_ORDER["table"] < _SOURCE_TYPE_ORDER["signature"] < _SOURCE_TYPE_ORDER["seal"]
 
 
 def test_report_generator_produces_grouped_tables_with_diff_content(tmp_path) -> None:

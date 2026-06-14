@@ -31,8 +31,9 @@ from app.services.extractors.base import (
 from app.services.header_footer_compare import HeaderFooterComparator
 from app.services.matcher import ClauseMatcher
 from app.services.pipeline import PipelineContext
-from app.services.table_compare import TableComparator
 from app.services.seal_comparator import build_seal_diffs
+from app.services.signature_compare import SignatureComparator
+from app.services.table_compare import TableComparator
 from app.services.text_coordinate_locator import TextCoordinateLocator
 
 logger = logging.getLogger(__name__)
@@ -333,6 +334,7 @@ class PreClauseDiffStage:
         self.header_footer = HeaderFooterComparator()
         self.cover_metadata = CoverMetadataComparator()
         self.table_comparator = TableComparator()
+        self.signature_comparator = SignatureComparator()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
@@ -360,6 +362,30 @@ class PreClauseDiffStage:
             original_doc, compare_doc,
             start_index=len(header_footer_diffs) + len(metadata_diffs) + len(table_diffs) + 1,
         )
+        signature_result = self.signature_comparator.compare(
+            original_doc,
+            compare_doc,
+            table_diffs=table_diffs,
+            seal_diffs=seal_diffs,
+            start_index=len(header_footer_diffs) + len(metadata_diffs) + len(table_diffs) + len(seal_diffs) + 1,
+        )
+        if signature_result.suppressed_table_diff_ids or signature_result.suppressed_seal_diff_ids:
+            suppressed_table_diff_ids = signature_result.suppressed_table_diff_ids
+            suppressed_seal_diff_ids = signature_result.suppressed_seal_diff_ids
+            table_diffs, seal_diffs = self.signature_comparator.remove_suppressed_non_body_diffs(
+                table_diffs,
+                seal_diffs,
+                signature_result.diffs,
+            )
+            signature_result = self.signature_comparator.compare(
+                original_doc,
+                compare_doc,
+                table_diffs=table_diffs,
+                seal_diffs=seal_diffs,
+                start_index=len(header_footer_diffs) + len(metadata_diffs) + len(table_diffs) + len(seal_diffs) + 1,
+            )
+            signature_result.suppressed_table_diff_ids = suppressed_table_diff_ids
+            signature_result.suppressed_seal_diff_ids = suppressed_seal_diff_ids
         result = ctx.set_table_diffs(
             header_footer_diffs=header_footer_diffs,
             metadata_diffs=metadata_diffs,
@@ -369,6 +395,17 @@ class PreClauseDiffStage:
         task.parse_warnings.extend(result.table_warnings)
         _append_text_warnings(task, result.table_warnings, "table_compare")
         ctx.seal_diffs = seal_diffs
+        ctx.signature_diffs = signature_result.diffs
+        signature_debug_payload = signature_result.to_debug_payload()
+        task.metrics["signature_compare"] = signature_debug_payload.get("metrics", {})
+        _write_debug_artifact(
+            task,
+            "signature_compare",
+            lambda: self.debug_writer.write_signature_compare(
+                task.task_id,
+                signature_debug_payload,
+            ),
+        )
 
     @staticmethod
     def _recognize_seals(ctx: PipelineContext, original_doc: Document, compare_doc: Document) -> None:
@@ -510,6 +547,7 @@ class ClauseDiffStage:
             + len(table_diffs.metadata_diffs)
             + len(table_diffs.table_diffs)
             + len(ctx.seal_diffs)
+            + len(ctx.signature_diffs)
         )
         clause_diffs = self.diff_engine.build_diffs(
             matches.pairs,
@@ -521,6 +559,7 @@ class ClauseDiffStage:
             *table_diffs.metadata_diffs,
             *table_diffs.table_diffs,
             *ctx.seal_diffs,
+            *ctx.signature_diffs,
             *clause_diffs,
         ]
         ctx.set_clause_diffs(clause_diffs, diffs)

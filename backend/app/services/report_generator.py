@@ -20,11 +20,12 @@ from app.config import settings
 from app.models import CompareTask, DiffItem, DiffType, TextRange
 from app.services.audit_summary import AuditItem, build_audit_items
 
-_SOURCE_TYPE_ORDER = {"clause": 0, "table": 1, "seal": 2, "header_footer": 3, "metadata": 4}
+_SOURCE_TYPE_ORDER = {"clause": 0, "table": 1, "signature": 2, "seal": 3, "header_footer": 4, "metadata": 5}
 _SOURCE_TYPE_LABELS = {
     "clause": "条款",
     "table": "表格",
     "metadata": "封面",
+    "signature": "签字页",
     "seal": "印章",
     "header_footer": "页眉页脚",
 }
