@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, replace
+from typing import Any
 
 from app.models import BBox, CharBox, Clause, Document, EvidenceBox, TextBlock
 from app.services.table_compare import TableComparator
@@ -24,6 +25,16 @@ class ClauseUnit:
     order_reason: str = "source"
     section_type: str = "main_contract"
     split_flags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class HeadingCandidate:
+    marker: str
+    title: str
+    level: int
+    score: float
+    signals: tuple[str, ...] = ()
+    risk_flags: tuple[str, ...] = ()
 
 
 class ClauseSplitter:
@@ -72,6 +83,34 @@ class ClauseSplitter:
     weak_numeric_marker_pattern = re.compile(r"^\d+$")
     toc_dot_leader_pattern = re.compile(r"\.{2,}\s*\d*$|…{2,}\s*\d*$")
     short_symbol_noise_pattern = re.compile(r"^[/\\∠_.,，。·•\-—~～\s]{1,8}$")
+    inline_clause_marker_pattern = re.compile(
+        r"(第[一二三四五六七八九十百千万0-9]+[章节条]|[一二三四五六七八九十]+[、.．]|[（(][一二三四五六七八九十0-9]+[)）]|\d+(?:\.\d+){0,3}[\.、])"
+    )
+    heading_accept_score = 0.68
+    weak_heading_review_score = 0.55
+    heading_business_terms = {
+        "服务范围",
+        "服务内容",
+        "合同金额",
+        "付款",
+        "结算",
+        "发票",
+        "交付",
+        "验收",
+        "违约",
+        "保密",
+        "知识产权",
+        "争议解决",
+        "不可抗力",
+        "合同期限",
+        "生效",
+        "终止",
+        "安全",
+        "质量",
+        "联系人",
+        "技术要求",
+        "系统管理",
+    }
 
     def __init__(self, text_normalizer: TextNormalizer | None = None) -> None:
         self.normalizer = text_normalizer or TextNormalizer()
@@ -471,22 +510,20 @@ class ClauseSplitter:
             for left, right in zip(by_y, by_y[1:], strict=False)
         )
 
-    def _detect_clause_items(self, units: list[ClauseUnit]) -> tuple[list[dict], bool]:
-        clauses: list[dict] = []
+    def _detect_clause_items(self, units: list[ClauseUnit]) -> tuple[list[dict[str, Any]], bool]:
+        clauses: list[dict[str, Any]] = []
         current: dict | None = None
         saw_marker = False
         entered_body = False
         section_paths: dict[str, list[str]] = {}
+        section_levels: dict[str, list[tuple[int, str]]] = {}
         for unit in units:
             marker = self._parse_marker(unit.text)
             block_type = unit.block_type
             if not entered_body and self._is_pre_body_noise(unit, marker):
                 continue
-            starts_unnumbered_title = (
-                self._is_unnumbered_section_title(unit, marker)
-                and not self._current_is_bare_marker(current)
-            )
-            starts_clause = self._starts_clause_unit(unit, marker) or starts_unnumbered_title
+            candidate = self._heading_candidate(unit, marker, current)
+            starts_clause = candidate is not None and candidate.score >= self.heading_accept_score
             if starts_clause:
                 saw_marker = True
                 entered_body = True
@@ -496,9 +533,18 @@ class ClauseSplitter:
             if starts_clause or current is None or section_changed:
                 if current is not None:
                     clauses.append(current)
-                clause_no, title = marker if marker else ("", self._title_from_text(unit.text))
-                section_path = self._section_path(section_paths, unit.section_type, clause_no, title)
-                split_flags = self._split_flags(unit, marker)
+                clause_no = candidate.marker if candidate else ""
+                title = candidate.title if candidate else self._title_from_text(unit.text)
+                heading_level = candidate.level if candidate else 1
+                section_path = self._section_path(
+                    section_paths,
+                    section_levels,
+                    unit.section_type,
+                    clause_no,
+                    title,
+                    heading_level,
+                )
+                split_flags = self._split_flags(unit, marker, candidate)
                 current = {
                     "clause_no": clause_no,
                     "title": title,
@@ -510,10 +556,10 @@ class ClauseSplitter:
                     "bboxes": [unit.evidence],
                     "source_block_ids": [unit.block_id],
                     "segmentation_reason": self._segmentation_reason(
-                        f"marker:{clause_no}" if marker else "initial_unit_without_marker",
+                        self._heading_reason(candidate, "section_change" if section_changed and not starts_clause else "initial_unit_without_marker"),
                         unit,
                     ),
-                    "segmentation_confidence": 0.95 if marker else 0.55,
+                    "segmentation_confidence": round(candidate.score, 2) if candidate else 0.55,
                     "split_flags": split_flags,
                 }
             else:
@@ -639,6 +685,122 @@ class ClauseSplitter:
             return False
         return True
 
+    def _heading_candidate(
+        self,
+        unit: ClauseUnit,
+        marker: tuple[str, str] | None,
+        current: dict | None,
+    ) -> HeadingCandidate | None:
+        if marker is None:
+            if not self._is_unnumbered_section_title(unit, marker) or self._current_is_bare_marker(current):
+                return None
+            title = self._title_from_text(unit.text)
+            score = 0.74
+            signals = ["paragraph_title", "unnumbered_title"]
+            if self._has_heading_business_term(title):
+                score += 0.08
+                signals.append("heading_business_term")
+            return HeadingCandidate(
+                marker="",
+                title=title,
+                level=1,
+                score=min(0.95, score),
+                signals=tuple(signals),
+            )
+
+        clause_no, title = marker
+        score = 0.42
+        signals: list[str] = ["marker"]
+        risk_flags: list[str] = []
+
+        if unit.block_type in self.table_block_types:
+            return None
+        if self._is_quantity_or_amount_marker(unit.text, marker):
+            return None
+        if unit.section_type != "main_contract" and self._is_non_contract_numeric_marker(marker):
+            return None
+        if self._is_weak_numeric_continuation(unit.text, marker):
+            return None
+
+        if self._is_formal_clause_marker(clause_no):
+            score += 0.34
+            signals.append("formal_clause_marker")
+        elif re.fullmatch(r"\d+(?:\.\d+)+", clause_no or ""):
+            score += 0.34
+            signals.append("decimal_marker")
+        elif re.fullmatch(r"[一二三四五六七八九十]+", clause_no or ""):
+            score += 0.30
+            signals.append("chinese_list_marker")
+        elif re.fullmatch(r"[（(][一二三四五六七八九十0-9]+[)）]", clause_no or ""):
+            score += 0.20
+            signals.append("parenthesized_marker")
+        elif self.weak_numeric_marker_pattern.fullmatch(clause_no or ""):
+            score += 0.16
+            signals.append("single_numeric_marker")
+
+        compact_title = re.sub(r"\s+", "", title or "")
+        if 2 <= len(compact_title) <= 36:
+            score += 0.12
+            signals.append("title_length")
+        elif 36 < len(compact_title) <= 100 and re.fullmatch(r"\d+(?:\.\d+)+", clause_no or ""):
+            score += 0.04
+            signals.append("decimal_heading_with_body")
+        elif not compact_title:
+            score -= 0.14
+            risk_flags.append("WEAK_HEADING")
+        elif len(compact_title) > 80:
+            score -= 0.18
+            risk_flags.append("LONG_HEADING")
+
+        if unit.block_type in {"paragraph_title", "doc_title", "title"}:
+            score += 0.08
+            signals.append("title_block")
+        if self._has_heading_business_term(title):
+            score += 0.06
+            signals.append("heading_business_term")
+        if re.search(r"[。；;]$", compact_title):
+            score -= 0.10
+            risk_flags.append("PUNCTUATED_HEADING")
+        if self._is_date_like_heading(unit.text, clause_no):
+            score -= 0.30
+            risk_flags.append("DATE_LIKE_HEADING")
+        if self._is_weak_numeric_marker(unit.text, marker):
+            score = min(score, self.weak_heading_review_score)
+            risk_flags.append("WEAK_NUMERIC_MARKER")
+
+        return HeadingCandidate(
+            marker=clause_no,
+            title=title,
+            level=self._marker_level(clause_no),
+            score=max(0.0, min(1.0, score)),
+            signals=tuple(dict.fromkeys(signals)),
+            risk_flags=tuple(dict.fromkeys(risk_flags)),
+        )
+
+    def _heading_reason(self, candidate: HeadingCandidate | None, fallback: str) -> str:
+        if candidate is None:
+            return fallback
+        marker = f"marker:{candidate.marker}" if candidate.marker else "unnumbered_heading"
+        signals = ",".join(candidate.signals)
+        reason = f"{marker}|heading_score:{candidate.score:.2f}"
+        if signals:
+            reason += f"|signals:{signals}"
+        if candidate.risk_flags:
+            reason += f"|risks:{','.join(candidate.risk_flags)}"
+        return reason
+
+    def _has_heading_business_term(self, title: str) -> bool:
+        compact = re.sub(r"\s+", "", title or "")
+        return any(term in compact for term in self.heading_business_terms)
+
+    def _is_date_like_heading(self, text: str, clause_no: str) -> bool:
+        first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+        compact = re.sub(r"\s+", "", first_line)
+        return bool(
+            re.fullmatch(r"(?:19|20)\d{2}[./年-]\d{1,2}(?:[./月-]\d{1,2}日?)?", compact)
+            or re.fullmatch(r"(?:19|20)\d{2}(?:\.\d{1,2}){1,2}", clause_no or "")
+        )
+
     def _segmentation_reason(self, base_reason: str, unit: ClauseUnit) -> str:
         if unit.order_reason in {"", "source", "reading_order"}:
             return base_reason
@@ -710,22 +872,24 @@ class ClauseSplitter:
     def _section_path(
         self,
         section_paths: dict[str, list[str]],
+        section_levels: dict[str, list[tuple[int, str]]],
         section_type: str,
         clause_no: str,
         title: str,
+        level: int | None = None,
     ) -> list[str]:
-        current = list(section_paths.get(section_type, []))
         label = self._path_label(clause_no, title)
         if not label:
-            return current
-        level = self._marker_level(clause_no)
-        if level <= 1:
-            current = [label]
-        else:
-            current = current[: level - 1]
-            current.append(label)
+            return list(section_paths.get(section_type, []))
+        marker_level = level or self._marker_level(clause_no)
+        stack = list(section_levels.get(section_type, []))
+        while stack and stack[-1][0] >= marker_level:
+            stack.pop()
+        stack.append((marker_level, label))
+        section_levels[section_type] = stack
+        current = [item[1] for item in stack]
         section_paths[section_type] = current
-        return list(current)
+        return current
 
     def _path_label(self, clause_no: str, title: str) -> str:
         compact_title = re.sub(r"\s+", "", title or "")[:24]
@@ -861,7 +1025,7 @@ class ClauseSplitter:
         if len(lines) <= 1:
             stripped = text.strip()
             start = text.find(stripped) if stripped else 0
-            return [(stripped, start, start + len(stripped))]
+            return self._split_inline_clause_markers(stripped, start)
         pieces: list[tuple[str, int, int]] = []
         current: list[tuple[str, int, int]] = []
         for line, start, end in lines:
@@ -874,6 +1038,46 @@ class ClauseSplitter:
         if current:
             pieces.append(self._join_line_ranges(current))
         return pieces
+
+    def _split_inline_clause_markers(self, text: str, offset: int) -> list[tuple[str, int, int]]:
+        if not text:
+            return [(text, offset, offset)]
+        starts = [0]
+        for match in self.inline_clause_marker_pattern.finditer(text):
+            start = match.start()
+            if start == 0:
+                continue
+            if not self._inline_marker_boundary_ok(text, start):
+                continue
+            candidate = text[start:]
+            marker = self._parse_marker(candidate)
+            if marker is None:
+                continue
+            if self._is_quantity_or_amount_marker(candidate, marker) or self._is_weak_numeric_continuation(candidate, marker):
+                continue
+            starts.append(start)
+        starts = sorted(set(starts))
+        if len(starts) == 1:
+            return [(text, offset, offset + len(text))]
+        ranges: list[tuple[str, int, int]] = []
+        for index, start in enumerate(starts):
+            end = starts[index + 1] if index + 1 < len(starts) else len(text)
+            piece = text[start:end].strip()
+            if not piece:
+                continue
+            piece_start = offset + start + (text[start:end].find(piece))
+            ranges.append((piece, piece_start, piece_start + len(piece)))
+        return ranges or [(text, offset, offset + len(text))]
+
+    def _inline_marker_boundary_ok(self, text: str, start: int) -> bool:
+        previous = text[start - 1] if start > 0 else ""
+        current = text[start]
+        next_char = text[start + 1] if start + 1 < len(text) else ""
+        if previous.isdigit() or (previous in {".", "．"} and current.isdigit()):
+            return False
+        if current.isdigit() and next_char.isdigit():
+            return False
+        return bool(previous and not previous.isascii())
 
     def _parse_marker(self, text: str) -> tuple[str, str] | None:
         first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
@@ -955,12 +1159,21 @@ class ClauseSplitter:
             return True
         return bool(re.fullmatch(r"\d+(?:\.\d+)*[^\n]{0,30}[./∠_·•…]{1,}\d*", compact))
 
-    def _split_flags(self, unit: ClauseUnit, marker: tuple[str, str] | None) -> list[str]:
+    def _split_flags(
+        self,
+        unit: ClauseUnit,
+        marker: tuple[str, str] | None,
+        candidate: HeadingCandidate | None = None,
+    ) -> list[str]:
         flags = list(unit.split_flags)
         if unit.section_type != "main_contract":
             flags.append(f"SECTION_{unit.section_type.upper()}")
         if marker is not None and self._is_weak_numeric_marker(unit.text, marker):
             flags.append("WEAK_NUMERIC_MARKER")
+        if candidate is not None:
+            flags.extend(candidate.risk_flags)
+            if candidate.score < self.heading_accept_score:
+                flags.append("WEAK_HEADING")
         if "geometry_repair" in (unit.order_reason or ""):
             flags.append("READING_ORDER_REPAIRED")
         return list(dict.fromkeys(flags))

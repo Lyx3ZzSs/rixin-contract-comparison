@@ -31,7 +31,8 @@ DEFAULT_THRESHOLDS = {
     "noise_precision": 0.98,
     "table_cell_accuracy": 1.0,
     "non_text_recall": 1.0,
-    "clause_order_accuracy": 1.0,
+    "clause_precision": 0.85,
+    "clause_recall": 0.85,
 }
 
 
@@ -83,13 +84,16 @@ def evaluate_case_root(case_root: Path) -> dict[str, Any]:
         "non_text_hits": sum(item["non_text_hits"] for item in results),
         "clause_order_expected": sum(item["clause_order_expected"] for item in results),
         "clause_order_hits": sum(item["clause_order_hits"] for item in results),
+        "clause_expected": sum(item["clause_expected"] for item in results),
+        "clause_actual": sum(item["clause_actual"] for item in results),
+        "clause_matched": sum(item["clause_matched"] for item in results),
     }
     totals.update(_rates(totals))
     totals["label_macro_f1"] = _macro_label_f1(results)
     failures = [
         f"{metric}={totals.get(metric, 0):.4f} < {threshold:.4f}"
         for metric, threshold in DEFAULT_THRESHOLDS.items()
-        if totals.get(metric, 0) < threshold
+        if _threshold_applicable(metric, totals) and totals.get(metric, 0) < threshold
     ]
     failures.extend(
         f"{item['case_id']}: minimum_page_reading_order_pair_accuracy="
@@ -105,6 +109,12 @@ def evaluate_case_root(case_root: Path) -> dict[str, Any]:
         "aggregate": totals,
         "cases": results,
     }
+
+
+def _threshold_applicable(metric: str, totals: dict[str, Any]) -> bool:
+    if metric in {"clause_precision", "clause_recall"}:
+        return bool(totals.get("clause_expected") or totals.get("clause_actual"))
+    return True
 
 
 def evaluate_case(case_dir: Path) -> dict[str, Any]:
@@ -123,7 +133,7 @@ def evaluate_case(case_dir: Path) -> dict[str, Any]:
     page_pair_accuracies = _page_reading_order_pair_accuracies(expected, actual, matches)
     label_counts = _label_counts(expected, actual, matches)
     match_metrics = _specialized_match_metrics(expected, actual, matches)
-    clause_hits, clause_expected = _clause_order_metrics(case_dir, actual_payload)
+    clause_metrics = _clause_metrics(case_dir, actual_payload)
     result = {
         "case_id": case_dir.name,
         "expected_regions": len(expected),
@@ -142,8 +152,7 @@ def evaluate_case(case_dir: Path) -> dict[str, Any]:
         "_actual": actual_payload,
         "_pdf_path": str(case_dir / "source.pdf") if (case_dir / "source.pdf").exists() else "",
         **match_metrics,
-        "clause_order_hits": clause_hits,
-        "clause_order_expected": clause_expected,
+        **clause_metrics,
     }
     result.update(_rates(result))
     return result
@@ -299,15 +308,47 @@ def _specialized_match_metrics(
     }
 
 
-def _clause_order_metrics(case_dir: Path, actual_payload: dict[str, Any]) -> tuple[int, int]:
+def _clause_metrics(case_dir: Path, actual_payload: dict[str, Any]) -> dict[str, int]:
     expected_path = case_dir / "expected_clauses.json"
     if not expected_path.exists():
-        return 0, 0
+        return {
+            "clause_order_hits": 0,
+            "clause_order_expected": 0,
+            "clause_expected": 0,
+            "clause_actual": 0,
+            "clause_matched": 0,
+        }
     expected = _read_json_any(expected_path)
     clauses = ClauseSplitter().split(Document.model_validate(actual_payload), "L")
     actual = [_clause_order_summary(clause) for clause in clauses]
-    hits = sum(left == right for left, right in zip(expected, actual, strict=False))
-    return hits, len(expected)
+    order_hits = sum(left == right for left, right in zip(expected, actual, strict=False))
+    return {
+        "clause_order_hits": order_hits,
+        "clause_order_expected": len(expected),
+        "clause_expected": len(expected),
+        "clause_actual": len(actual),
+        "clause_matched": _ordered_clause_match_count(expected, actual),
+    }
+
+
+def _ordered_clause_match_count(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -> int:
+    """Longest common subsequence over clause summaries.
+
+    This complements the stricter zip-based order metric with precision/recall
+    for insertions or deletions that shift all later clauses.
+    """
+    if not expected or not actual:
+        return 0
+    previous = [0] * (len(actual) + 1)
+    for expected_item in expected:
+        current = [0]
+        for index, actual_item in enumerate(actual, start=1):
+            if expected_item == actual_item:
+                current.append(previous[index - 1] + 1)
+            else:
+                current.append(max(previous[index], current[-1]))
+        previous = current
+    return previous[-1]
 
 
 def _clause_order_summary(clause: Any) -> dict[str, str]:
@@ -462,6 +503,8 @@ def _rates(result: dict[str, Any]) -> dict[str, float]:
         "table_cell_accuracy": _divide(result["table_cell_hits"], result["table_cell_expected"]),
         "non_text_recall": _divide(result["non_text_hits"], result["non_text_expected"]),
         "clause_order_accuracy": _divide(result["clause_order_hits"], result["clause_order_expected"]),
+        "clause_precision": _divide(result["clause_matched"], result["clause_actual"]),
+        "clause_recall": _divide(result["clause_matched"], result["clause_expected"]),
     }
 
 

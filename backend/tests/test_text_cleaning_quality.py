@@ -288,6 +288,73 @@ def test_clause_splitter_merges_decimal_amount_continuation_into_previous_clause
     assert "19350.00元" in clauses[0].text
 
 
+def test_clause_splitter_builds_hierarchy_path_from_heading_levels() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(block_id="chapter", page_no=1, text="第一章 总则", bbox=BBox(x0=50, y0=60, x1=500, y1=90)),
+                    TextBlock(block_id="article", page_no=1, text="第一条 服务范围", bbox=BBox(x0=50, y0=100, x1=500, y1=130)),
+                    TextBlock(block_id="sub", page_no=1, text="1.1 平台维护服务", bbox=BBox(x0=50, y0=140, x1=500, y1=170)),
+                    TextBlock(block_id="body", page_no=1, text="乙方负责平台日常维护。", bbox=BBox(x0=70, y0=180, x1=500, y1=210)),
+                    TextBlock(block_id="next", page_no=1, text="第二条 付款方式", bbox=BBox(x0=50, y0=220, x1=500, y1=250)),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["第一章", "第一条", "1.1", "第二条"]
+    assert clauses[2].section_path == ["第一条 服务范围", "1.1 平台维护服务"]
+    assert "heading_score" in clauses[2].segmentation_reason
+    assert "乙方负责平台日常维护" in clauses[2].text
+
+
+def test_clause_splitter_does_not_promote_weak_numbered_contact_line_to_heading() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(block_id="title", page_no=1, text="签署页", bbox=BBox(x0=50, y0=60, x1=500, y1=90), block_role="signature"),
+                    TextBlock(
+                        block_id="address",
+                        page_no=1,
+                        text="27号金隅智造工场N6",
+                        bbox=BBox(x0=50, y0=100, x1=500, y1=130),
+                        block_role="signature",
+                    ),
+                    TextBlock(
+                        block_id="contact",
+                        page_no=1,
+                        text="1 联系人:刘玉良",
+                        bbox=BBox(x0=50, y0=140, x1=500, y1=170),
+                        block_role="signature",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert len(clauses) == 1
+    assert clauses[0].section_type == "signature"
+    assert "联系人" in clauses[0].text
+
+
 def test_clause_splitter_keeps_signature_numeric_address_as_signature_continuation() -> None:
     document = Document(
         filename="sample.pdf",
