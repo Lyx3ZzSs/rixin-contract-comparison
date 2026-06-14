@@ -249,6 +249,60 @@ def test_matcher_does_not_match_different_document_sections_by_same_number() -> 
     assert {pair.match_method for pair in pairs} == {"delete", "add"}
 
 
+def test_unmatched_original_contained_in_matched_compare_clause_is_not_deleted() -> None:
+    supplement_text = "甲方在合同履行过程中,要求乙方提供合同约定范围之外的硬件设备,双方应签订书面补充协议。"
+    permission_text = (
+        "乙方须在系统部署完成后,向甲方提供完整的系统管理权限(含管理员账号、配置文件访问权限、"
+        "日志查看权限),确保甲方在不依赖乙方人员的情况下,可独立完成:\n"
+        "上报通道配置\n上报参数调整\n日志查看与问题定位\n配置备份与恢复"
+    )
+    original = [
+        clause("O059", "14.2", "补充采购", supplement_text),
+        clause("O061", "", "系统管理权限", permission_text),
+    ]
+    compare = [
+        clause("N059", "14.2", "补充采购", f"{supplement_text}\n{permission_text}"),
+    ]
+
+    pairs = ClauseMatcher().match(original, compare)
+    diffs = DiffEngine().build_diffs(pairs)
+    contained = next(pair for pair in pairs if pair.original and pair.original.clause_id == "O061")
+
+    assert contained.compare is not None
+    assert contained.match_method == "contained_compare"
+    assert contained.compare.clause_id.startswith("N059S")
+    assert not any(diff.diff_type == "DELETE" and diff.original_clause_id == "O061" for diff in diffs)
+
+
+def test_contained_compare_modify_is_flagged_as_segmentation_drift() -> None:
+    supplement_text = "甲方在合同履行过程中,要求乙方提供合同约定范围之外的硬件设备,双方应签订书面补充协议。"
+    original_permission = "乙方须向甲方提供完整的系统管理权限,并支持配置备份与恢复。"
+    compare_permission = "乙方须向甲方提供完整的系统管理员权限,并支持配置备份与恢复。"
+    original = [
+        clause("O059", "14.2", "补充采购", supplement_text),
+        Clause(
+            clause_id="O061",
+            clause_no="",
+            title="系统管理权限",
+            text=original_permission,
+            normalized_text=normalizer.normalize_for_diff(original_permission),
+            match_text=normalizer.normalize_for_match(original_permission),
+        ),
+    ]
+    compare = [
+        clause("N059", "14.2", "补充采购", f"{supplement_text}\n{compare_permission}"),
+    ]
+
+    pairs = ClauseMatcher().match(original, compare)
+    diffs = DiffEngine().build_diffs(pairs)
+    diff = next(item for item in diffs if item.original_clause_id == "O061")
+
+    assert diff.diff_type == "MODIFY"
+    assert diff.match_method == "contained_compare"
+    assert "TEXT_FOUND_IN_OTHER_CLAUSE" in diff.review_flags
+    assert "POSSIBLE_SEGMENTATION_DRIFT" in diff.review_flags
+
+
 def test_openai_semantic_matcher_calls_embeddings_endpoint(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 

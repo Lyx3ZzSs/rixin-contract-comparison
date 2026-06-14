@@ -145,6 +145,8 @@ def review_flags(pair: ClausePair) -> list[str]:
         flags.append("SAME_CLAUSE_NO_LOW_SIMILARITY")
     if pair.match_method == "renumbered_similarity":
         flags.append("POSSIBLE_RENUMBERED_CLAUSE")
+    if pair.match_method == "contained_compare":
+        flags.extend(["TEXT_FOUND_IN_OTHER_CLAUSE", "POSSIBLE_SEGMENTATION_DRIFT"])
     if pair.match_confidence == "LOW":
         flags.append("LOW_CONFIDENCE_MATCH")
     if pair.match_method == "same_clause_key_weighted" and pair.score_details.get("body_length_coverage", 1.0) < 0.70:

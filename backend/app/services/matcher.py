@@ -280,7 +280,8 @@ class ClauseMatcher:
         pairs: list[ClausePair] = []
         matched_original: set[str] = set()
         matched_compare: set[str] = set()
-        consumed_spans: dict[str, list[tuple[int, int]]] = {}
+        consumed_original_spans: dict[str, list[tuple[int, int]]] = {}
+        consumed_compare_spans: dict[str, list[tuple[int, int]]] = {}
 
         all_candidates = self._build_candidates(original, compare)
         candidates_by_original = self._candidates_by_original(all_candidates)
@@ -310,24 +311,42 @@ class ClauseMatcher:
             )
         )
 
+        synthetic_pairs = self._match_unmatched_originals_inside_matched_compare(
+            original,
+            compare,
+            pairs,
+            matched_original,
+            consumed_compare_spans,
+        )
+        if consumed_compare_spans:
+            pairs = [
+                pair.model_copy(update={"compare": self._redact_clause(pair.compare, consumed_compare_spans)})
+                if pair.compare is not None and pair.compare.clause_id in consumed_compare_spans
+                else pair
+                for pair in pairs
+            ]
+            pairs = [pair for pair in pairs if pair.original is not None and pair.compare is not None]
+        pairs.extend(synthetic_pairs)
+
         synthetic_pairs = self._match_contained_numbered_clauses(
             original,
             compare,
             matched_compare,
-            consumed_spans,
+            consumed_original_spans,
         )
-        if consumed_spans:
+        if consumed_original_spans:
             pairs = [
-                pair.model_copy(update={"original": self._redact_clause(pair.original, consumed_spans)})
-                if pair.original is not None and pair.original.clause_id in consumed_spans
+                pair.model_copy(update={"original": self._redact_clause(pair.original, consumed_original_spans)})
+                if pair.original is not None and pair.original.clause_id in consumed_original_spans
                 else pair
                 for pair in pairs
             ]
+            pairs = [pair for pair in pairs if pair.original is not None and pair.compare is not None]
         pairs.extend(synthetic_pairs)
 
         for left in original:
             if left.clause_id not in matched_original:
-                redacted = self._redact_clause(left, consumed_spans)
+                redacted = self._redact_clause(left, consumed_original_spans)
                 if redacted is not None:
                     pairs.append(ClausePair(original=redacted, compare=None, match_method="delete"))
         for right in compare:
@@ -908,6 +927,98 @@ class ClauseMatcher:
             consumed_spans.setdefault(parent.clause_id, []).append((start, end))
             matched_compare.add(right.clause_id)
         return pairs
+
+    def _match_unmatched_originals_inside_matched_compare(
+        self,
+        original: list[Clause],
+        compare: list[Clause],
+        pairs: list[ClausePair],
+        matched_original: set[str],
+        consumed_compare_spans: dict[str, list[tuple[int, int]]],
+    ) -> list[ClausePair]:
+        matched_compare_clauses = [
+            pair.compare
+            for pair in pairs
+            if pair.original is not None and pair.compare is not None
+        ]
+        if not matched_compare_clauses:
+            return []
+
+        synthetic_pairs: list[ClausePair] = []
+        synthetic_index = 1
+        compare_order = {clause.clause_id: index for index, clause in enumerate(compare)}
+        for left in original:
+            if left.clause_id in matched_original:
+                continue
+            if len(self._search_text(left.text)[0]) < 20:
+                continue
+            match = self._best_compare_containment(left, matched_compare_clauses, consumed_compare_spans)
+            if match is None:
+                continue
+            right, start, end, score = match
+            right_slice = self._slice_clause(right, start, end, f"{right.clause_id}S{synthetic_index:02d}")
+            if right_slice is None:
+                continue
+            synthetic_index += 1
+            synthetic_pairs.append(
+                ClausePair(
+                    original=left,
+                    compare=right_slice,
+                    score=score,
+                    match_method="contained_compare",
+                    score_details={
+                        "clause_no_score": 0.0,
+                        "title_score": self._score(left.title, right_slice.title) if left.title and right_slice.title else 0.0,
+                        "body_score": round(score, 2),
+                        "body_ratio_score": round(score, 2),
+                        "body_token_score": round(score, 2),
+                        "body_partial_score": round(score, 2),
+                        "body_length_coverage": 1.0,
+                        "position_score": self._position_score(
+                            original.index(left) / max(1, len(original) - 1),
+                            compare_order.get(right.clause_id, len(compare)) / max(1, len(compare) - 1),
+                        ),
+                        "neighbor_score": 0.0,
+                        "contained_in_matched_compare": 1.0,
+                    },
+                    match_confidence="MEDIUM",
+                )
+            )
+            consumed_compare_spans.setdefault(right.clause_id, []).append((start, end))
+            matched_original.add(left.clause_id)
+        return synthetic_pairs
+
+    def _best_compare_containment(
+        self,
+        needle: Clause,
+        haystacks: list[Clause],
+        consumed_compare_spans: dict[str, list[tuple[int, int]]],
+    ) -> tuple[Clause, int, int, float] | None:
+        best: tuple[Clause, int, int, float] | None = None
+        for right in haystacks:
+            if (needle.section_type or "main_contract") != (right.section_type or "main_contract"):
+                continue
+            span = None
+            for needle_text in self._containment_texts(needle):
+                span = self._find_contained_span(needle_text, right.text)
+                if span is not None:
+                    break
+            if span is None or self._overlaps_existing(span, consumed_compare_spans.get(right.clause_id, [])):
+                continue
+            start, end, score = span
+            if best is None or score > best[3]:
+                best = (right, start, end, score)
+        return best
+
+    def _containment_texts(self, clause: Clause) -> list[str]:
+        texts = [clause.text]
+        stripped = (clause.text or "").strip()
+        title = (clause.title or "").strip()
+        if title and stripped.startswith(title):
+            without_title = stripped[len(title):].lstrip("\n\r:： \t")
+            if without_title and without_title != stripped:
+                texts.append(without_title)
+        return list(dict.fromkeys(text for text in texts if text))
 
     def _best_contained_match(
         self,
