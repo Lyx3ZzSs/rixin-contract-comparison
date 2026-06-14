@@ -367,6 +367,7 @@ interface AuditChangeItem {
   id: string;
   diffId: string;
   type: DiffType;
+  group: AuditGroup;
   title: string;
   summary: string;
   pageNo: number | null;
@@ -381,6 +382,15 @@ interface EvidenceLocation {
   pageNo: number;
   y0: number;
 }
+
+type AuditGroup = "MAIN" | "SIGNATURE" | "STRUCTURAL" | "OTHER";
+
+const auditGroupLabels: Record<AuditGroup, string> = {
+  MAIN: "正文差异",
+  SIGNATURE: "签署与主体信息",
+  STRUCTURAL: "结构与质量提示",
+  OTHER: "其他差异",
+};
 
 const ESTIMATED_PAGE_HEIGHT = 842;
 const AXIS_MIN_TOP = 3;
@@ -530,6 +540,7 @@ function auditItem(
     id,
     diffId: diff.diff_id,
     type,
+    group: auditGroup(diff),
     title: diff.title || diff.clause_no || diff.diff_id,
     summary: compactText(summary || diffSummary(diff)),
     pageNo: location?.pageNo ?? null,
@@ -552,13 +563,46 @@ function sortAuditItems(items: AuditChangeItem[]): AuditChangeItem[] {
 }
 
 function auditQualityPriority(item: AuditChangeItem): number {
-  if (item.reviewFlags.includes("CRITICAL_VALUE_CHANGE")) {
+  if (item.group === "MAIN" && item.reviewFlags.includes("CRITICAL_VALUE_CHANGE")) {
     return 0;
   }
-  if (item.qualityStatus === "NEEDS_REVIEW") {
+  if (item.group === "MAIN") {
+    return 1;
+  }
+  if (item.group === "SIGNATURE") {
     return 2;
   }
-  return 1;
+  if (item.group === "STRUCTURAL") {
+    return 3;
+  }
+  return 4;
+}
+
+function auditGroup(diff: DiffItem): AuditGroup {
+  const flags = diff.review_flags ?? [];
+  if (
+    diff.section_type === "signature"
+    || diff.section_type === "contact_party_info"
+    || flags.includes("SIGNATURE_SECTION_REVIEW")
+    || flags.includes("PARTY_INFO_REVIEW")
+  ) {
+    return "SIGNATURE";
+  }
+  if (
+    diff.source_type === "header_footer"
+    || diff.source_type === "seal"
+    || flags.includes("HEADER_FOOTER_REVIEW")
+    || flags.includes("SEAL_REVIEW")
+    || flags.includes("POSSIBLE_OCR_NOISE")
+    || flags.includes("POSSIBLE_SPLIT_DRIFT")
+    || flags.includes("READING_ORDER_REPAIRED")
+  ) {
+    return "STRUCTURAL";
+  }
+  if ((diff.source_type ?? "clause") === "clause" && (!diff.section_type || diff.section_type === "main_contract")) {
+    return "MAIN";
+  }
+  return "OTHER";
 }
 
 function buildAuditStats(items: AuditChangeItem[]): DiffStats {
@@ -577,6 +621,18 @@ function buildAuditStats(items: AuditChangeItem[]): DiffStats {
   );
   stats.all = items.length;
   return stats;
+}
+
+function groupedAuditItems(items: AuditChangeItem[]): Array<{ group: AuditGroup; items: AuditChangeItem[] }> {
+  const groups: Array<{ group: AuditGroup; items: AuditChangeItem[] }> = [];
+  const groupOrder: AuditGroup[] = ["MAIN", "SIGNATURE", "STRUCTURAL", "OTHER"];
+  for (const group of groupOrder) {
+    const groupItems = items.filter((item) => item.group === group);
+    if (groupItems.length > 0) {
+      groups.push({ group, items: groupItems });
+    }
+  }
+  return groups;
 }
 
 function typedEvidence(evidenceList: NonNullable<DiffItem["compare_evidence"]>, type: DiffType): NonNullable<DiffItem["compare_evidence"]> {
@@ -684,16 +740,24 @@ function AuditPanel({
         {items.length === 0 ? (
           <div className="audit-empty">未发现改动点。</div>
         ) : (
-          items.map((item) => (
-            <AuditDiffCard
-              key={item.id}
-              active={item.id === activeAuditItemId}
-              item={item}
-              tabIndex={hiddenTabIndex}
-              isSaving={reviewSavingAuditItemId === item.id}
-              onSelect={onSelectItem}
-              onReview={onReview}
-            />
+          groupedAuditItems(items).map((group) => (
+            <section className="audit-diff-group" key={group.group} aria-label={auditGroupLabels[group.group]}>
+              <div className="audit-diff-group-head">
+                <strong>{auditGroupLabels[group.group]}</strong>
+                <span>{group.items.length}</span>
+              </div>
+              {group.items.map((item) => (
+                <AuditDiffCard
+                  key={item.id}
+                  active={item.id === activeAuditItemId}
+                  item={item}
+                  tabIndex={hiddenTabIndex}
+                  isSaving={reviewSavingAuditItemId === item.id}
+                  onSelect={onSelectItem}
+                  onReview={onReview}
+                />
+              ))}
+            </section>
           ))
         )}
       </div>
@@ -736,6 +800,7 @@ function AuditDiffCard({
       >
         <span className="audit-card-badges">
           <span className={`audit-type-badge ${item.type.toLowerCase()}`}>{diffTypeLabel(item.type)}</span>
+          <span className={`audit-group-badge ${item.group.toLowerCase()}`}>{auditGroupLabels[item.group]}</span>
           {qualityBadges.map((badge) => (
             <span key={badge.className} className={`audit-quality-badge ${badge.className}`}>
               {badge.label}

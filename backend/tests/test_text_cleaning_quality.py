@@ -112,6 +112,88 @@ def test_document_preparation_keeps_signature_text_in_separate_section() -> None
     assert "甲方(盖章) 乙方(盖章) 日期" in clauses[1].text
 
 
+def test_document_preparation_does_not_mark_real_clause_with_signature_terms_as_signature() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="body",
+                        page_no=1,
+                        text="13.1本合同经双方盖章后生效，合同中未尽事宜由双方协商解决。",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                    ),
+                    TextBlock(
+                        block_id="next",
+                        page_no=1,
+                        text="13.2对本合同的修改以双方签章的书面协议为准。",
+                        bbox=BBox(x0=50, y0=120, x1=500, y1=150),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    DocumentPreparer().prepare(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.section_type for clause in clauses] == ["main_contract", "main_contract"]
+
+
+def test_document_preparation_splits_signature_party_line_from_trailing_body_clause() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="c1",
+                        page_no=1,
+                        text="14.1本合同正本一式肆份，双方各执贰份。",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                    ),
+                    TextBlock(
+                        block_id="c2",
+                        page_no=1,
+                        text="14.2补充采购应签订书面补充协议。",
+                        bbox=BBox(x0=50, y0=120, x1=500, y1=150),
+                    ),
+                    TextBlock(
+                        block_id="sig-party",
+                        page_no=1,
+                        text="甲方：江苏东大金智信息系统有限公司乙方：国能日新科技股份有限公司",
+                        bbox=BBox(x0=50, y0=180, x1=500, y1=210),
+                    ),
+                    TextBlock(
+                        block_id="sig-date",
+                        page_no=1,
+                        text="日期：",
+                        bbox=BBox(x0=50, y0=220, x1=120, y1=250),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    DocumentPreparer().prepare(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.section_type for clause in clauses] == ["main_contract", "main_contract", "signature"]
+    assert clauses[1].source_block_ids == ["c2"]
+    assert clauses[2].source_block_ids == ["sig-party", "sig-date"]
+
+
 def test_clause_splitter_does_not_treat_amount_range_as_clause_number() -> None:
     document = Document(
         filename="sample.pdf",
@@ -385,6 +467,106 @@ def test_diff_quality_keeps_critical_flags_for_changed_business_terms() -> None:
 
     assert "CRITICAL_VALUE_CHANGE" in by_id["D001"].review_flags
     assert "CRITICAL_VALUE_CHANGE" in by_id["D002"].review_flags
+
+
+def test_diff_quality_suppresses_signature_template_delete() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D001",
+            diff_type="DELETE",
+            source_type="clause",
+            section_type="signature",
+            original_text="法人代表或授权委托人:\n(签字)\n日期:",
+            original_snippet="法人代表或授权委托人: (签字) 日期:",
+            review_flags=["NON_MAIN_CONTRACT_SECTION"],
+        ),
+        DiffItem(
+            diff_id="D002",
+            diff_type="MODIFY",
+            source_type="clause",
+            section_type="main_contract",
+            original_snippet="3%",
+            compare_snippet="3‰",
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+
+    assert [diff.diff_id for diff in result.diffs] == ["D002"]
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D001"
+        and decision.detail["reason"] == "signature_template_noise"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_downgrades_party_contact_table_and_seal_changes() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D001",
+            diff_type="DELETE",
+            source_type="table",
+            title="表格字段：联系人",
+            original_snippet="单位名称（章）：国能日新科技股份有限公司 单位地址：北京市海淀区",
+        ),
+        DiffItem(
+            diff_id="D002",
+            diff_type="ADD",
+            source_type="seal",
+            title="印章区域（第1页）",
+            compare_snippet="国能日新科技股份有限公司",
+        ),
+        DiffItem(
+            diff_id="D003",
+            diff_type="MODIFY",
+            source_type="header_footer",
+            title="页眉",
+            original_snippet="合同编号A",
+            compare_snippet="合同编号B",
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+    by_id = {diff.diff_id: diff for diff in result.diffs}
+
+    assert "CRITICAL_VALUE_CHANGE" not in by_id["D001"].review_flags
+    assert by_id["D001"].quality_status == "NEEDS_REVIEW"
+    assert "PARTY_INFO_REVIEW" in by_id["D001"].review_flags
+    assert "CRITICAL_VALUE_CHANGE" not in by_id["D002"].review_flags
+    assert "SEAL_REVIEW" in by_id["D002"].review_flags
+    assert "D003" not in by_id
+
+
+def test_diff_quality_suppresses_non_body_party_line_and_downgrades_body_contact_info() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D001",
+            diff_type="MODIFY",
+            source_type="clause",
+            section_type="quote",
+            original_snippet="甲方:江苏东大金智信息系统有限公司乙方:国能日新科技股份有限公司",
+            compare_snippet="",
+            review_flags=["NON_MAIN_CONTRACT_SECTION", "CRITICAL_VALUE_CHANGE"],
+        ),
+        DiffItem(
+            diff_id="D002",
+            diff_type="ADD",
+            source_type="clause",
+            section_type="main_contract",
+            clause_no="27",
+            compare_text="27号金隅智造工场N6\n联系人:刘玉良\n电话:18811089109\nEmail:yuliang.liu@sprixin.com",
+            compare_snippet="27号金隅智造工场N6 联系人:刘玉良 电话:18811089109 Email:yuliang.liu@sprixin.com",
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+    by_id = {diff.diff_id: diff for diff in result.diffs}
+
+    assert "D001" not in by_id
+    assert by_id["D002"].quality_status == "NEEDS_REVIEW"
+    assert "CRITICAL_VALUE_CHANGE" not in by_id["D002"].review_flags
+    assert "PARTY_INFO_REVIEW" in by_id["D002"].review_flags
 
 
 def test_diff_quality_dedupes_exact_cross_source_duplicates() -> None:

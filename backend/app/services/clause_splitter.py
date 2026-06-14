@@ -67,6 +67,7 @@ class ClauseSplitter:
         "quote_metadata": "quote",
         "safety_section": "safety_agreement",
         "signature": "signature",
+        "contact_party_info": "contact_party_info",
     }
     weak_numeric_marker_pattern = re.compile(r"^\d+$")
     toc_dot_leader_pattern = re.compile(r"\.{2,}\s*\d*$|…{2,}\s*\d*$")

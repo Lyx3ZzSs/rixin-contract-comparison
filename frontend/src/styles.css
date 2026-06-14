@@ -3923,9 +3923,40 @@ h2 {
   display: grid;
   min-height: 0;
   align-content: start;
-  gap: 12px;
+  gap: 16px;
   overflow: auto;
   padding: 6px 18px 22px;
+}
+
+.audit-diff-group {
+  display: grid;
+  gap: 10px;
+}
+
+.audit-diff-group-head {
+  position: sticky;
+  top: -6px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 2px 4px;
+  background: rgba(247, 250, 250, 0.96);
+  color: #5f6f72;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.audit-diff-group-head span {
+  display: grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 999px;
+  background: #e7f1f0;
+  color: var(--teal-strong);
+  font-size: 0.72rem;
 }
 
 .audit-diff-card {
@@ -4035,6 +4066,31 @@ h2 {
 .audit-type-badge.modify {
   background: var(--diff-modify-soft);
   color: var(--diff-modify-text);
+}
+
+.audit-group-badge {
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: #eef4f4;
+  color: #506164;
+  font-size: 0.78rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.audit-group-badge.signature {
+  background: #fff4df;
+  color: #9a5b0c;
+}
+
+.audit-group-badge.structural {
+  background: #eef2ff;
+  color: #444ce7;
+}
+
+.audit-group-badge.other {
+  background: #edf3f6;
+  color: #526978;
 }
 
 .audit-quality-badge {

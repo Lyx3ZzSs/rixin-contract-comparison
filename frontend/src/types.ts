@@ -118,6 +118,7 @@ export interface DiffItem {
   compare_snippet: string;
   readable_change: string;
   source_type?: string;
+  section_type?: string;
   match_score?: number | null;
   match_method?: string;
   match_score_details?: Record<string, number>;

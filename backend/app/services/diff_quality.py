@@ -41,6 +41,20 @@ class DiffQualityProcessor:
     )
     style_punct_pattern = re.compile(r"[\s，。；：、”“‘’（）()\[\]【】《》!?:;\"']+")
     low_value_symbol_pattern = re.compile(r"^[\d/\\∠_.,，。·•\-—~～…\sLIl|]+$", re.IGNORECASE)
+    signature_template_pattern = re.compile(
+        r"(?:签字页|签署页|此页无正文|以下无正文|盖章|签字|法人代表|法定代表人|授权委托人|"
+        r"授权代表|委托代理人|日期)"
+    )
+    strong_signature_template_pattern = re.compile(
+        r"(?:签字页|签署页|此页无正文|以下无正文|盖章|签字|法人代表|法定代表人|授权委托人|"
+        r"授权代表|委托代理人)"
+    )
+    party_contact_label_pattern = re.compile(
+        r"(?:联系人|联系电话|电话|传真|邮箱|Email|E-mail|地址|开户行|账号|银行行号|"
+        r"纳税人识别号?|统一社会信用代码|单位名称(?:（章）|\(章\))?)[:：]"
+    )
+    party_side_label_pattern = re.compile(r"(?:甲方|乙方|丙方|丁方)[:：]")
+    header_footer_pattern = re.compile(r"(?:页眉|页脚|页码|第\s*\d+\s*页|共\s*\d+\s*页)")
 
     def process(self, diffs: list[DiffItem]) -> DiffQualityResult:
         working = [diff.model_copy(deep=True) for diff in diffs]
@@ -106,6 +120,18 @@ class DiffQualityProcessor:
 
     def _classify(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         for diff in diffs:
+            if self._should_downgrade_non_body_change(diff):
+                diff.quality_status = "NEEDS_REVIEW"
+                self._remove_flag(diff, "CRITICAL_VALUE_CHANGE")
+                self._add_flag(diff, self._non_body_review_flag(diff))
+                decisions.append(
+                    DiffQualityDecision(
+                        action="non_body_change_review",
+                        diff_id=diff.diff_id,
+                        detail={"source_type": diff.source_type, "section_type": diff.section_type},
+                    )
+                )
+                continue
             if self._looks_like_minor_ocr_noise(diff) or self._looks_like_short_symbol_noise(diff):
                 self._add_flag(diff, "POSSIBLE_OCR_NOISE")
                 diff.quality_status = "NEEDS_REVIEW"
@@ -135,6 +161,12 @@ class DiffQualityProcessor:
         return kept
 
     def _suppression_reason(self, diff: DiffItem) -> str:
+        if self._looks_like_signature_template_noise(diff):
+            return "signature_template_noise"
+        if self._looks_like_non_body_party_info_noise(diff):
+            return "party_info_non_body_noise"
+        if self._looks_like_header_footer_noise(diff):
+            return "header_footer_noise"
         if self._has_business_token(diff):
             return ""
         changed = self._changed_text(diff)
@@ -274,6 +306,8 @@ class DiffQualityProcessor:
     def _is_critical_change(self, diff: DiffItem) -> bool:
         if self._looks_like_short_symbol_noise(diff):
             return False
+        if self._should_downgrade_non_body_change(diff):
+            return False
         changed = self._changed_text(diff)
         return bool(self.critical_pattern.search(changed or ""))
 
@@ -296,6 +330,80 @@ class DiffQualityProcessor:
     def _add_flag(self, diff: DiffItem, flag: str) -> None:
         if flag not in diff.review_flags:
             diff.review_flags.append(flag)
+
+    def _remove_flag(self, diff: DiffItem, flag: str) -> None:
+        diff.review_flags = [item for item in diff.review_flags if item != flag]
+
+    def _should_downgrade_non_body_change(self, diff: DiffItem) -> bool:
+        if diff.section_type in {"signature", "contact_party_info"}:
+            return True
+        if diff.source_type == "header_footer":
+            return True
+        if diff.source_type == "seal":
+            return True
+        if diff.source_type == "table" and self._looks_like_party_contact_change(diff):
+            return True
+        if diff.source_type == "clause" and self._looks_like_party_contact_change(diff):
+            return True
+        if diff.source_type == "clause" and self._looks_like_signature_template_noise(diff):
+            return True
+        return False
+
+    def _non_body_review_flag(self, diff: DiffItem) -> str:
+        if diff.section_type == "signature" or self._looks_like_signature_template_noise(diff):
+            return "SIGNATURE_SECTION_REVIEW"
+        if diff.section_type == "contact_party_info" or self._looks_like_party_contact_change(diff):
+            return "PARTY_INFO_REVIEW"
+        if diff.source_type == "header_footer":
+            return "HEADER_FOOTER_REVIEW"
+        if diff.source_type == "seal":
+            return "SEAL_REVIEW"
+        return "NON_BODY_SECTION_REVIEW"
+
+    def _looks_like_signature_template_noise(self, diff: DiffItem) -> bool:
+        text = f"{diff.title} {self._changed_text(diff)} {diff.original_text} {diff.compare_text}"
+        compact = self._compact(text)
+        if not compact:
+            return False
+        if "以下无正文" in text or "此页无正文" in text:
+            return True
+        if not self.strong_signature_template_pattern.search(text):
+            return False
+        signature_hits = len(self.signature_template_pattern.findall(text))
+        if signature_hits == 0:
+            return False
+        changed = self._compact(self._changed_text(diff))
+        if len(changed) <= 80:
+            return True
+        business_terms = re.sub(self.signature_template_pattern, "", text)
+        return not bool(re.search(r"(违约|付款|支付|交付|验收|质保|保密|争议|解除|赔偿|责任|金额|元|%|‰)", business_terms))
+
+    def _looks_like_party_contact_change(self, diff: DiffItem) -> bool:
+        if diff.source_type == "table":
+            text = f"{diff.title} {self._changed_text(diff)} {diff.original_text} {diff.compare_text}"
+        else:
+            text = f"{diff.title} {self._changed_text(diff)}"
+        if "表格字段：联系人" in text:
+            return True
+        return bool(self.party_contact_label_pattern.search(text) or self.party_side_label_pattern.search(text))
+
+    def _looks_like_header_footer_noise(self, diff: DiffItem) -> bool:
+        if diff.source_type != "header_footer":
+            return False
+        text = f"{diff.title} {self._changed_text(diff)}"
+        if self.header_footer_pattern.search(text):
+            return True
+        return len(self._compact(self._changed_text(diff))) <= 12
+
+    def _looks_like_non_body_party_info_noise(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause":
+            return False
+        if diff.section_type in {"", "main_contract"}:
+            return False
+        if not self._looks_like_party_contact_change(diff):
+            return False
+        changed = self._compact(self._changed_text(diff))
+        return bool(changed and len(changed) <= 120)
 
     def _dedupe_key(self, text: str) -> str:
         return self._compact(text)

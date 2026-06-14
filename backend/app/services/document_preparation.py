@@ -50,7 +50,12 @@ class DocumentPreparer:
     quote_title_pattern = re.compile(r"(?:报价明细|报价单|报价表|报价清单)$")
     appendix_title_pattern = re.compile(r"^(?:附件|附录|附表)\s*[一二三四五六七八九十0-9]*[:：、.．]?\s*")
     safety_title_pattern = re.compile(r"(?:安全协议|安全管理协议|安全生产协议|安全责任协议)")
-    signature_page_pattern = re.compile(r"(?:签字页|签署页|此页无正文|盖章|法定代表人|授权代表)")
+    signature_page_pattern = re.compile(r"(?:签字页|签署页|此页无正文|盖章|法定代表人|法人代表|授权代表|授权委托人|委托代理人)")
+    signature_party_line_pattern = re.compile(r"^(?:甲方|乙方|丙方|丁方)[:：].{0,120}$")
+    contact_party_info_pattern = re.compile(
+        r"^(?:联系人|联系电话|电话|传真|邮箱|Email|E-mail|地址|开户行|账号|银行行号|"
+        r"纳税人识别号?|统一社会信用代码)[:：]"
+    )
     quote_page_pattern = re.compile(r"(?:报价明细|报价单|报价表|报价清单|分项报价表|报价汇总表)")
     generic_table_terms = TABLE_HEADERS | {
         "名称",
@@ -171,6 +176,12 @@ class DocumentPreparer:
 
     def _section_role(self, block: TextBlock, compact: str) -> str | None:
         block_type = (block.block_type or "").lower()
+        if self._looks_like_real_clause_heading(compact):
+            return None
+        if self.signature_party_line_pattern.match(compact):
+            return "signature"
+        if self.contact_party_info_pattern.match(compact):
+            return "contact_party_info"
         if self.signature_page_pattern.search(compact) and len(compact) <= 120:
             return "signature"
         if self.quote_page_pattern.search(compact):
@@ -190,7 +201,7 @@ class DocumentPreparer:
     def _looks_like_main_contract_restart(self, compact: str) -> bool:
         if self.appendix_title_pattern.match(compact):
             return False
-        return bool(re.search(r"(?:^正文$|达成合同如下|合同正文)", compact))
+        return self._looks_like_real_clause_heading(compact) or bool(re.search(r"(?:^正文$|达成合同如下|合同正文)", compact))
 
     def _median_block_height(self, blocks: list[TextBlock]) -> float:
         heights = sorted(max(0.0, block.bbox.y1 - block.bbox.y0) for block in blocks)
