@@ -119,43 +119,8 @@ def test_semantic_matching_rejects_invalid_http_url() -> None:
 def test_document_understanding_config_maps_to_nested_settings() -> None:
     app_settings = Settings(
         document_understanding_enabled=True,
-        document_understanding_llm_enabled=True,
-        document_understanding_llm_base_url="http://127.0.0.1:8002/v1",
-        document_understanding_llm_api_key="test-key",
-        document_understanding_llm_model="qwen2.5",
-        document_understanding_llm_timeout_seconds=20,
-        document_understanding_llm_max_retries=1,
         document_understanding_rule_confidence_accept=0.9,
-        document_understanding_llm_confidence_accept=0.88,
-        document_understanding_enable_ocr_correction=True,
-        document_understanding_enable_cross_page_merge=False,
     )
 
     assert app_settings.document_understanding.enabled is True
-    assert app_settings.document_understanding.llm_enabled is True
-    assert app_settings.document_understanding.llm_base_url == "http://127.0.0.1:8002/v1"
-    assert app_settings.document_understanding.llm_api_key == "test-key"
-    assert app_settings.document_understanding.llm_model == "qwen2.5"
-    assert app_settings.document_understanding.llm_timeout_seconds == 20
-    assert app_settings.document_understanding.llm_max_retries == 1
     assert app_settings.document_understanding.rule_confidence_accept == 0.9
-    assert app_settings.document_understanding.llm_confidence_accept == 0.88
-    assert app_settings.document_understanding.enable_ocr_correction is True
-    assert app_settings.document_understanding.enable_cross_page_merge is False
-
-
-def test_document_understanding_can_fallback_to_global_ai_llm_config() -> None:
-    app_settings = Settings(
-        ai_llm_base_url="http://127.0.0.1:8003/v1",
-        ai_llm_api_key="global-key",
-        ai_llm_model="global-model",
-    )
-
-    assert app_settings.document_understanding.llm_base_url == "http://127.0.0.1:8003/v1"
-    assert app_settings.document_understanding.llm_api_key == "global-key"
-    assert app_settings.document_understanding.llm_model == "global-model"
-
-
-def test_document_understanding_rejects_invalid_llm_url() -> None:
-    with pytest.raises(ValidationError, match="LLM URL"):
-        Settings(document_understanding_llm_base_url="127.0.0.1:8002/v1")

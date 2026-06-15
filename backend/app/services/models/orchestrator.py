@@ -43,7 +43,7 @@ class ModelOrchestrator:
     Mirrors MinerU's ``MineruHybridModel`` pipeline:
     1. Layout detection identifies regions (text, table, seal, header, footer).
     2. Table structures are extracted from table regions.
-    3. Seal/signature regions are identified.
+    3. Seal regions are identified.
     4. Fine-grained OCR enriches text regions.
     5. Results are aggregated into a unified ``Document``.
     """

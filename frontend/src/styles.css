@@ -4078,11 +4078,6 @@ h2 {
   line-height: 1;
 }
 
-.audit-group-badge.signature {
-  background: #fff4df;
-  color: #9a5b0c;
-}
-
 .audit-group-badge.structural {
   background: #eef2ff;
   color: #444ce7;

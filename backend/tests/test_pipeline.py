@@ -356,8 +356,6 @@ class TestPreClauseDiffStage:
         assert any(block.block_type == "seal" for block in ctx.original_extraction.document.pages[0].blocks)
         assert any(block.block_type == "seal" for block in ctx.compare_extraction.document.pages[0].blocks)
 
-
-
 class TestSummaryStage:
     def test_refreshes_diff_count_and_writes_debug_artifact(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
@@ -384,10 +382,9 @@ class TestSummaryStage:
         duplicate = DiffItem(
             diff_id="D001",
             diff_type="DELETE",
-            title="签字页：供方-单位名称",
+            title="表格字段：单位名称",
             original_text="国能日新科技股份有限公司",
-            source_type="signature",
-            section_type="signature",
+            source_type="table",
         )
         ctx.diffs = [
             duplicate,
@@ -395,10 +392,9 @@ class TestSummaryStage:
             DiffItem(
                 diff_id="D002",
                 diff_type="DELETE",
-                title="签字页：供方-单位名称",
+                title="表格字段：单位名称",
                 original_text="国能日新科技股份有限公司",
-                source_type="signature",
-                section_type="signature",
+                source_type="table",
             ),
         ]
 
@@ -515,7 +511,7 @@ class TestComparePipeline:
 
     def test_pipeline_preserves_stage_metrics_recorded_before_completion(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        ctx.task.metrics["signature_compare"] = {"compare_extraction_unreliable": True}
+        ctx.task.metrics["custom_stage"] = {"value": True}
 
         class NoOpStage:
             name = "noop"
@@ -527,7 +523,7 @@ class TestComparePipeline:
 
         result = ComparePipeline(stages=[NoOpStage()]).run(ctx)
 
-        assert result.metrics["signature_compare"] == {"compare_extraction_unreliable": True}
+        assert result.metrics["custom_stage"] == {"value": True}
         assert "stages" in result.metrics
 
 

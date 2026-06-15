@@ -18,9 +18,10 @@ def _make_pdf(path, page_count: int = 6) -> None:
     pdf.save()
 
 
-def test_report_generator_labels_signature_source_type() -> None:
-    assert _SOURCE_TYPE_LABELS["signature"] == "签字页"
-    assert _SOURCE_TYPE_ORDER["table"] < _SOURCE_TYPE_ORDER["signature"] < _SOURCE_TYPE_ORDER["seal"]
+def test_report_generator_orders_supported_source_types() -> None:
+    assert "signature" not in _SOURCE_TYPE_LABELS
+    assert "signature" not in _SOURCE_TYPE_ORDER
+    assert _SOURCE_TYPE_ORDER["table"] < _SOURCE_TYPE_ORDER["seal"]
 
 
 def test_report_generator_produces_grouped_tables_with_diff_content(tmp_path) -> None:

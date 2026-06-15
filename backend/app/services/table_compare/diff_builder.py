@@ -76,17 +76,6 @@ class TableDiffBuilder:
                         compare_block,
                     ):
                         continue
-                    if self._contact_field_diff_covered_by_table_source(
-                        original,
-                        compare,
-                        cell_diff.original_text,
-                        cell_diff.compare_text,
-                        utils.normalize_cell_for_compare(cell_diff.original_text),
-                        utils.normalize_cell_for_compare(cell_diff.compare_text),
-                        original_block,
-                        compare_block,
-                    ):
-                        continue
                     diffs.append(cell_diff)
                 continue
             if self._summary.is_sparse_row_covered_by_source(
@@ -172,18 +161,6 @@ class TableDiffBuilder:
                     compare,
                     orig_row,
                     comp_row,
-                    orig_text,
-                    comp_text,
-                    orig_norm,
-                    comp_norm,
-                    original_block,
-                    compare_block,
-                ):
-                    continue
-
-                if self._contact_field_diff_covered_by_table_source(
-                    original,
-                    compare,
                     orig_text,
                     comp_text,
                     orig_norm,
@@ -354,79 +331,6 @@ class TableDiffBuilder:
         source_text = self._source_text_for_cell_cover(missing_table, missing_row, missing_block)
         source_norm = utils.normalize(source_text)
         return bool(source_norm and present_norm in source_norm)
-
-    def _contact_field_diff_covered_by_table_source(
-        self,
-        original: StructuredTable,
-        compare: StructuredTable,
-        orig_text: str,
-        comp_text: str,
-        orig_norm: str,
-        comp_norm: str,
-        original_block: TextBlock | None,
-        compare_block: TextBlock | None,
-    ) -> bool:
-        if not self._is_noisy_contact_table_pair(original, compare):
-            return False
-        if not orig_norm and not comp_norm:
-            return False
-
-        original_source = self._contact_table_source_norm(original, original_block)
-        compare_source = self._contact_table_source_norm(compare, compare_block)
-        if not original_source or not compare_source:
-            return False
-
-        orig_tokens = utils.contact_value_tokens(orig_text)
-        comp_tokens = utils.contact_value_tokens(comp_text)
-        if orig_tokens and not all(token in compare_source for token in orig_tokens):
-            return False
-        if comp_tokens and not all(token in original_source for token in comp_tokens):
-            return False
-
-        orig_covered = (
-            bool(orig_tokens)
-            or not orig_norm
-            or utils.is_contact_fragment_covered(orig_norm, compare_source)
-        )
-        comp_covered = (
-            bool(comp_tokens)
-            or not comp_norm
-            or utils.is_contact_fragment_covered(comp_norm, original_source)
-        )
-        has_contact_signal = bool(orig_tokens) or bool(comp_tokens) or bool(orig_norm) or bool(comp_norm)
-        return orig_covered and comp_covered and has_contact_signal
-
-    def _is_noisy_contact_table_pair(self, original: StructuredTable, compare: StructuredTable) -> bool:
-        if not self._is_contact_signature_table(original) or not self._is_contact_signature_table(compare):
-            return False
-        return self._has_merged_contact_rows(original) or self._has_merged_contact_rows(compare)
-
-    @staticmethod
-    def _is_contact_signature_table(table: StructuredTable) -> bool:
-        return utils.looks_like_contact_signature_text(table.all_cell_text())
-
-    @staticmethod
-    def _has_merged_contact_rows(table: StructuredTable) -> bool:
-        for row in table.rows:
-            for cell in row.cells:
-                text = utils.normalize(cell.text)
-                if not text:
-                    continue
-                label_count = utils.contact_label_count(text)
-                if cell.colspan >= max(table.col_count, 2) and label_count >= 1:
-                    return True
-                if label_count >= 2:
-                    return True
-        return False
-
-    @staticmethod
-    def _contact_table_source_norm(table: StructuredTable, block: TextBlock | None) -> str:
-        parts = [table.all_cell_text()]
-        if block is not None:
-            parts.append(block.text or "")
-            if block.raw_html:
-                parts.append(utils.strip_html(block.raw_html))
-        return utils.normalize_contact_text(" ".join(part for part in parts if part))
 
     @staticmethod
     def _is_short_remark_label_for_source_cover(text: str, norm: str) -> bool:

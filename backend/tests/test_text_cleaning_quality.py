@@ -69,7 +69,7 @@ def test_diff_engine_reports_decimal_and_version_changes() -> None:
     assert "V10" in diffs[0].compare_text
 
 
-def test_document_preparation_keeps_signature_text_in_separate_section() -> None:
+def test_document_preparation_keeps_signing_text_as_regular_clause_text() -> None:
     document = Document(
         filename="sample.pdf",
         path="sample.pdf",
@@ -103,16 +103,15 @@ def test_document_preparation_keeps_signature_text_in_separate_section() -> None
     result = DocumentPreparer().prepare(document, "original")
     clauses = ClauseSplitter().split(document, "O")
 
-    assert [decision.reason for decision in result.decisions] == ["section_classifier", "section_classifier"]
-    assert len(clauses) == 2
-    assert clauses[0].source_block_ids == ["body"]
-    assert clauses[1].section_type == "signature"
-    assert clauses[1].source_block_ids == ["sig1", "sig2"]
-    assert "签字页 此页无正文" in clauses[1].text
-    assert "甲方(盖章) 乙方(盖章) 日期" in clauses[1].text
+    assert result.decisions == []
+    assert len(clauses) == 1
+    assert clauses[0].section_type == "main_contract"
+    assert clauses[0].source_block_ids == ["body", "sig1", "sig2"]
+    assert "签字页 此页无正文" in clauses[0].text
+    assert "甲方(盖章) 乙方(盖章) 日期" in clauses[0].text
 
 
-def test_document_preparation_does_not_mark_real_clause_with_signature_terms_as_signature() -> None:
+def test_document_preparation_keeps_real_clause_with_signing_terms_in_main_contract() -> None:
     document = Document(
         filename="sample.pdf",
         path="sample.pdf",
@@ -146,7 +145,7 @@ def test_document_preparation_does_not_mark_real_clause_with_signature_terms_as_
     assert [clause.section_type for clause in clauses] == ["main_contract", "main_contract"]
 
 
-def test_document_preparation_splits_signature_party_line_from_trailing_body_clause() -> None:
+def test_document_preparation_does_not_split_party_line_as_special_section() -> None:
     document = Document(
         filename="sample.pdf",
         path="sample.pdf",
@@ -189,9 +188,8 @@ def test_document_preparation_splits_signature_party_line_from_trailing_body_cla
     DocumentPreparer().prepare(document, "original")
     clauses = ClauseSplitter().split(document, "O")
 
-    assert [clause.section_type for clause in clauses] == ["main_contract", "main_contract", "signature"]
-    assert clauses[1].source_block_ids == ["c2"]
-    assert clauses[2].source_block_ids == ["sig-party", "sig-date"]
+    assert all(clause.section_type == "main_contract" for clause in clauses)
+    assert clauses[1].source_block_ids == ["c2", "sig-party", "sig-date"]
 
 
 def test_clause_splitter_does_not_treat_amount_range_as_clause_number() -> None:
@@ -317,7 +315,7 @@ def test_clause_splitter_builds_hierarchy_path_from_heading_levels() -> None:
     assert "乙方负责平台日常维护" in clauses[2].text
 
 
-def test_clause_splitter_does_not_promote_weak_numbered_contact_line_to_heading() -> None:
+def test_clause_splitter_treats_signing_page_text_as_main_contract() -> None:
     document = Document(
         filename="sample.pdf",
         path="sample.pdf",
@@ -328,20 +326,18 @@ def test_clause_splitter_does_not_promote_weak_numbered_contact_line_to_heading(
                 width=595,
                 height=842,
                 blocks=[
-                    TextBlock(block_id="title", page_no=1, text="签署页", bbox=BBox(x0=50, y0=60, x1=500, y1=90), block_role="signature"),
+                    TextBlock(block_id="title", page_no=1, text="签署页", bbox=BBox(x0=50, y0=60, x1=500, y1=90)),
                     TextBlock(
                         block_id="address",
                         page_no=1,
                         text="27号金隅智造工场N6",
                         bbox=BBox(x0=50, y0=100, x1=500, y1=130),
-                        block_role="signature",
                     ),
                     TextBlock(
                         block_id="contact",
                         page_no=1,
                         text="1 联系人:刘玉良",
                         bbox=BBox(x0=50, y0=140, x1=500, y1=170),
-                        block_role="signature",
                     ),
                 ],
             )
@@ -350,12 +346,12 @@ def test_clause_splitter_does_not_promote_weak_numbered_contact_line_to_heading(
 
     clauses = ClauseSplitter().split(document, "O")
 
-    assert len(clauses) == 1
-    assert clauses[0].section_type == "signature"
-    assert "联系人" in clauses[0].text
+    assert len(clauses) == 3
+    assert all(clause.section_type == "main_contract" for clause in clauses)
+    assert any("联系人" in clause.text for clause in clauses)
 
 
-def test_clause_splitter_keeps_signature_numeric_address_as_signature_continuation() -> None:
+def test_clause_splitter_keeps_signing_numeric_address_as_main_contract_continuation() -> None:
     document = Document(
         filename="sample.pdf",
         path="sample.pdf",
@@ -371,21 +367,18 @@ def test_clause_splitter_keeps_signature_numeric_address_as_signature_continuati
                         page_no=1,
                         text="签署页",
                         bbox=BBox(x0=50, y0=80, x1=500, y1=110),
-                        block_role="signature",
                     ),
                     TextBlock(
                         block_id="sig-address",
                         page_no=1,
                         text="27号金隅智造工场N6",
                         bbox=BBox(x0=50, y0=130, x1=500, y1=160),
-                        block_role="signature",
                     ),
                     TextBlock(
                         block_id="sig-contact",
                         page_no=1,
                         text="联系人:刘玉良",
                         bbox=BBox(x0=50, y0=170, x1=500, y1=200),
-                        block_role="signature",
                     ),
                 ],
             )
@@ -394,10 +387,10 @@ def test_clause_splitter_keeps_signature_numeric_address_as_signature_continuati
 
     clauses = ClauseSplitter().split(document, "O")
 
-    assert len(clauses) == 1
-    assert clauses[0].section_type == "signature"
+    assert len(clauses) == 2
+    assert all(clause.section_type == "main_contract" for clause in clauses)
     assert clauses[0].clause_no == ""
-    assert "27号金隅智造工场N6" in clauses[0].text
+    assert "27号金隅智造工场N6" in clauses[1].text
 
 
 def test_quote_section_is_split_from_main_contract_clause_flow() -> None:
@@ -536,100 +529,7 @@ def test_diff_quality_keeps_critical_flags_for_changed_business_terms() -> None:
     assert "CRITICAL_VALUE_CHANGE" in by_id["D002"].review_flags
 
 
-def test_diff_quality_suppresses_signature_template_delete() -> None:
-    diffs = [
-        DiffItem(
-            diff_id="D001",
-            diff_type="DELETE",
-            source_type="clause",
-            section_type="signature",
-            original_text="法人代表或授权委托人:\n(签字)\n日期:",
-            original_snippet="法人代表或授权委托人: (签字) 日期:",
-            review_flags=["NON_MAIN_CONTRACT_SECTION"],
-        ),
-        DiffItem(
-            diff_id="D002",
-            diff_type="MODIFY",
-            source_type="clause",
-            section_type="main_contract",
-            original_snippet="3%",
-            compare_snippet="3‰",
-        ),
-    ]
-
-    result = DiffQualityProcessor().process(diffs)
-
-    assert [diff.diff_id for diff in result.diffs] == ["D002"]
-    assert any(
-        decision.action == "suppressed_low_value_noise"
-        and decision.diff_id == "D001"
-        and decision.detail["reason"] == "signature_template_noise"
-        for decision in result.decisions
-    )
-
-
-def test_diff_quality_keeps_signature_field_with_actual_signer_value() -> None:
-    diffs = [
-        DiffItem(
-            diff_id="D001",
-            diff_type="DELETE",
-            source_type="table",
-            title="表格字段：联系人",
-            original_text="法人代表：雍正 | 法人代表或授权委托人：",
-            original_snippet="法人代表：雍正 | 法人代表或授权委托人：",
-        ),
-        DiffItem(
-            diff_id="D002",
-            diff_type="DELETE",
-            source_type="table",
-            title="表格字段：联系人",
-            original_text="委托代理人： | (签字)",
-            original_snippet="委托代理人： | (签字)",
-        ),
-    ]
-
-    result = DiffQualityProcessor().process(diffs)
-    by_id = {diff.diff_id: diff for diff in result.diffs}
-
-    assert "D001" in by_id
-    assert by_id["D001"].quality_status == "NEEDS_REVIEW"
-    assert "SIGNATURE_SECTION_REVIEW" in by_id["D001"].review_flags
-    assert "D002" not in by_id
-    assert any(
-        decision.action == "suppressed_low_value_noise"
-        and decision.diff_id == "D002"
-        and decision.detail["reason"] == "signature_template_noise"
-        for decision in result.decisions
-    )
-
-
-def test_diff_quality_keeps_signature_company_stamp_value() -> None:
-    diffs = [
-        DiffItem(
-            diff_id="D001",
-            diff_type="MODIFY",
-            source_type="signature",
-            section_type="signature",
-            original_text="乙方：【国能日新科技股份有限公司】（盖章）",
-            compare_text="乙方：【南京瑞尚电力科技有限公司】（盖章）",
-            original_snippet="乙方：【国能日新科技股份有限公司】（盖章）",
-            compare_snippet="乙方：【南京瑞尚电力科技有限公司】（盖章）",
-        )
-    ]
-
-    result = DiffQualityProcessor().process(diffs)
-
-    assert [diff.diff_id for diff in result.diffs] == ["D001"]
-    assert result.diffs[0].quality_status == "NEEDS_REVIEW"
-    assert "SIGNATURE_SECTION_REVIEW" in result.diffs[0].review_flags
-    assert not any(
-        decision.action == "suppressed_low_value_noise"
-        and decision.diff_id == "D001"
-        for decision in result.decisions
-    )
-
-
-def test_diff_quality_downgrades_party_contact_table_and_seal_changes() -> None:
+def test_diff_quality_treats_party_contact_table_as_regular_table_change() -> None:
     diffs = [
         DiffItem(
             diff_id="D001",
@@ -658,15 +558,14 @@ def test_diff_quality_downgrades_party_contact_table_and_seal_changes() -> None:
     result = DiffQualityProcessor().process(diffs)
     by_id = {diff.diff_id: diff for diff in result.diffs}
 
-    assert "CRITICAL_VALUE_CHANGE" not in by_id["D001"].review_flags
-    assert by_id["D001"].quality_status == "NEEDS_REVIEW"
-    assert "PARTY_INFO_REVIEW" in by_id["D001"].review_flags
+    assert "CRITICAL_VALUE_CHANGE" in by_id["D001"].review_flags
+    assert by_id["D001"].quality_status == "NORMAL"
     assert "CRITICAL_VALUE_CHANGE" not in by_id["D002"].review_flags
     assert "SEAL_REVIEW" in by_id["D002"].review_flags
     assert "D003" not in by_id
 
 
-def test_diff_quality_suppresses_non_body_party_line_and_downgrades_body_contact_info() -> None:
+def test_diff_quality_treats_party_line_and_body_contact_info_as_regular_clause_changes() -> None:
     diffs = [
         DiffItem(
             diff_id="D001",
@@ -691,10 +590,9 @@ def test_diff_quality_suppresses_non_body_party_line_and_downgrades_body_contact
     result = DiffQualityProcessor().process(diffs)
     by_id = {diff.diff_id: diff for diff in result.diffs}
 
-    assert "D001" not in by_id
-    assert by_id["D002"].quality_status == "NEEDS_REVIEW"
-    assert "CRITICAL_VALUE_CHANGE" not in by_id["D002"].review_flags
-    assert "PARTY_INFO_REVIEW" in by_id["D002"].review_flags
+    assert "D001" in by_id
+    assert "CRITICAL_VALUE_CHANGE" in by_id["D001"].review_flags
+    assert "CRITICAL_VALUE_CHANGE" in by_id["D002"].review_flags
 
 
 def test_diff_quality_dedupes_exact_cross_source_duplicates() -> None:

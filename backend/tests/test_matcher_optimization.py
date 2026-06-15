@@ -126,8 +126,8 @@ def test_match_score_is_capped_and_low_coverage_clause_key_match_is_reviewed() -
             "",
             "签署页",
             "甲方:国家电网有限公司华北分部\n乙方:国能日新科技股份有限公司\n地址:北京市海淀区建材城中路2482号",
-            section_type="signature",
-            clause_key="signature/签署页",
+            section_type="main_contract",
+            clause_key="main_contract/签署页",
         )
     ]
     compare = [
@@ -136,8 +136,8 @@ def test_match_score_is_capped_and_low_coverage_clause_key_match_is_reviewed() -
             "",
             "签署页",
             "地址:北京市海淀区建材城中路2482号",
-            section_type="signature",
-            clause_key="signature/签署页",
+            section_type="main_contract",
+            clause_key="main_contract/签署页",
         )
     ]
 

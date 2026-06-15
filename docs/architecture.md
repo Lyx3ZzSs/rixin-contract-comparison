@@ -26,9 +26,9 @@ HTTP responses are built through presenter functions and API schemas. Public JSO
 
 ## Artifact And Client Boundaries
 
-Runtime file locations are resolved through `ArtifactStore`. Uploads, OCR/LLM raw JSON, compare debug files, and reports should not be built by direct `settings.*_dir` path concatenation outside infrastructure adapters. The default implementation is local filesystem storage under `storage/tasks/{task_id}/`, with `manifest.json` tracking generated artifacts. Online comparison highlights are rendered by the frontend from diff evidence coordinates; the backend no longer renders or exports highlighted PDFs.
+Runtime file locations are resolved through `ArtifactStore`. Uploads, OCR raw JSON, compare debug files, and reports should not be built by direct `settings.*_dir` path concatenation outside infrastructure adapters. The default implementation is local filesystem storage under `storage/tasks/{task_id}/`, with `manifest.json` tracking generated artifacts. Online comparison highlights are rendered by the frontend from diff evidence coordinates; the backend no longer renders or exports highlighted PDFs.
 
-External OCR, PP-Structure, and LLM calls go through `HttpClientProvider`. Extractors and extraction services accept the provider and app settings through constructors, which keeps tests injectable and avoids hard-wiring module-level clients into domain flow.
+External OCR and PP-Structure calls go through `HttpClientProvider`. Extractors and extraction services accept the provider and app settings through constructors, which keeps tests injectable and avoids hard-wiring module-level clients into domain flow.
 
 ## Task Execution
 

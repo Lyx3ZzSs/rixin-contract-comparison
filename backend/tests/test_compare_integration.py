@@ -38,9 +38,6 @@ def configure_storage(tmp_path: Path) -> None:
     settings.compare_document_extractor = "ppstructure_ocr_hybrid"
     settings.compare_require_structured_ocr = True
     settings.align_structured_extraction = True
-    settings.ai_llm_base_url = ""
-    settings.ai_llm_api_key = ""
-    settings.ai_llm_model = ""
     settings.ensure_storage()
 
 

@@ -12,7 +12,7 @@ EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
-DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal", "signature"]
+DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal"]
 LayoutMatchStatus = Literal[
     "matched",
     "ambiguous",
@@ -164,7 +164,6 @@ class TextBlock(BaseModel):
     semantic_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     semantic_reasons: list[str] = Field(default_factory=list)
     enter_clause_compare: bool | None = None
-    ocr_correction_suggestions: list[dict[str, Any]] = Field(default_factory=list)
     layout_match_score: float | None = Field(default=None, ge=0.0, le=1.0)
     layout_match_status: LayoutMatchStatus = "not_applicable"
     layout_match_reason: str = ""

@@ -383,11 +383,10 @@ interface EvidenceLocation {
   y0: number;
 }
 
-type AuditGroup = "MAIN" | "SIGNATURE" | "STRUCTURAL" | "OTHER";
+type AuditGroup = "MAIN" | "STRUCTURAL" | "OTHER";
 
 const auditGroupLabels: Record<AuditGroup, string> = {
   MAIN: "正文差异",
-  SIGNATURE: "签署与主体信息",
   STRUCTURAL: "结构与质量提示",
   OTHER: "其他差异",
 };
@@ -569,26 +568,14 @@ function auditQualityPriority(item: AuditChangeItem): number {
   if (item.group === "MAIN") {
     return 1;
   }
-  if (item.group === "SIGNATURE") {
+  if (item.group === "STRUCTURAL") {
     return 2;
   }
-  if (item.group === "STRUCTURAL") {
-    return 3;
-  }
-  return 4;
+  return 3;
 }
 
 function auditGroup(diff: DiffItem): AuditGroup {
   const flags = diff.review_flags ?? [];
-  if (
-    diff.section_type === "signature"
-    || diff.section_type === "contact_party_info"
-    || diff.source_type === "signature"
-    || flags.includes("SIGNATURE_SECTION_REVIEW")
-    || flags.includes("PARTY_INFO_REVIEW")
-  ) {
-    return "SIGNATURE";
-  }
   if (
     diff.source_type === "header_footer"
     || diff.source_type === "seal"
@@ -626,7 +613,7 @@ function buildAuditStats(items: AuditChangeItem[]): DiffStats {
 
 function groupedAuditItems(items: AuditChangeItem[]): Array<{ group: AuditGroup; items: AuditChangeItem[] }> {
   const groups: Array<{ group: AuditGroup; items: AuditChangeItem[] }> = [];
-  const groupOrder: AuditGroup[] = ["MAIN", "SIGNATURE", "STRUCTURAL", "OTHER"];
+  const groupOrder: AuditGroup[] = ["MAIN", "STRUCTURAL", "OTHER"];
   for (const group of groupOrder) {
     const groupItems = items.filter((item) => item.group === group);
     if (groupItems.length > 0) {

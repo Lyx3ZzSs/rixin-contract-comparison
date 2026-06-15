@@ -160,7 +160,7 @@ const mockDiffs: DiffItem[] = [
     compare_snippet: "新增发票条款",
     readable_change: "新增发票条款。",
     source_type: "metadata",
-    review_flags: ["PARTY_INFO_REVIEW"],
+    review_flags: ["SEAL_REVIEW"],
     review_status: "UNREVIEWED",
     original_evidence: [],
     compare_evidence: [
@@ -482,7 +482,7 @@ describe("ResultPage", () => {
     expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("2");
     expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
     expect(screen.getByLabelText("正文差异")).toBeInTheDocument();
-    expect(screen.getByLabelText("签署与主体信息")).toBeInTheDocument();
+    expect(screen.getByLabelText("结构与质量提示")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-4:DELETE" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
 
