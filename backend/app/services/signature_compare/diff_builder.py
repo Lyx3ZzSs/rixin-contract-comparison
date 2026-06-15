@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.models import DiffItem, EvidenceBox, TextRange
 from app.services.signature_compare import normalizer, patterns
-from app.services.signature_compare.types import SignatureField, SignatureMatch
+from app.services.signature_compare.types import SignatureExtractionQuality, SignatureField, SignatureMatch
 from app.utils.id_utils import generate_diff_id
 
 
@@ -26,6 +26,42 @@ class SignatureDiffBuilder:
             diffs.append(diff)
             next_index += 1
         return diffs
+
+    def build_unreliable_extraction_diff(
+        self,
+        original_quality: SignatureExtractionQuality | None,
+        compare_quality: SignatureExtractionQuality | None,
+        start_index: int,
+    ) -> DiffItem:
+        unreliable_sides = [
+            quality.side
+            for quality in (original_quality, compare_quality)
+            if quality is not None and quality.unreliable
+        ]
+        reasons = []
+        for quality in (original_quality, compare_quality):
+            if quality is not None and quality.unreliable:
+                reasons.extend(quality.reasons)
+        side_label = "、".join("原文" if side == "original" else "对比文" for side in unreliable_sides)
+        reason_text = "；".join(dict.fromkeys(reasons)) or "签字页字段抽取不完整"
+        readable = f"签字页字段抽取不可靠（{side_label}）：{reason_text}，请人工复核。"
+        return DiffItem(
+            diff_id=generate_diff_id(start_index),
+            diff_type="MODIFY",
+            title="签字页：抽取质量复核",
+            original_text=self._quality_summary(original_quality),
+            compare_text=self._quality_summary(compare_quality),
+            original_snippet=self._quality_summary(original_quality),
+            compare_snippet=self._quality_summary(compare_quality),
+            readable_change=readable,
+            source_type="signature",
+            section_type="signature",
+            match_method="signature_extraction_quality_gate",
+            match_confidence="LOW",
+            review_flags=["SIGNATURE_SECTION_REVIEW", "SIGNATURE_EXTRACTION_UNRELIABLE"],
+            quality_status="NEEDS_REVIEW",
+            text_confidence=0.4,
+        )
 
     def _make_modify(self, orig: SignatureField, comp: SignatureField, match: SignatureMatch, index: int) -> DiffItem:
         title = self._title(orig)
@@ -118,4 +154,17 @@ class SignatureDiffBuilder:
             highlight_type=highlight_type,
             confidence=field.confidence,
             evidence_quality="HIGH" if field.confidence >= 0.8 else "MEDIUM",
+        )
+
+    @staticmethod
+    def _quality_summary(quality: SignatureExtractionQuality | None) -> str:
+        if quality is None:
+            return ""
+        reasons = "；".join(quality.reasons)
+        return (
+            f"{quality.side}: fields={quality.field_count}, "
+            f"critical={quality.critical_field_count}, "
+            f"inferred={quality.inferred_role_count}, "
+            f"conflicts={quality.conflict_count}"
+            + (f", reasons={reasons}" if reasons else "")
         )

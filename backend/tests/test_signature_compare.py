@@ -73,21 +73,23 @@ def _continued_signature_table(address_suffix: str = "27号1幢2层227号") -> s
     )
 
 
-def test_signature_comparator_reports_real_signature_field_deletes() -> None:
+def test_signature_comparator_gates_unreliable_signature_extraction() -> None:
     original = _make_doc([_table_block("o1", _signature_table())])
     compare = _make_doc([_table_block("c1", _merged_signature_table())])
 
     result = SignatureComparator().compare(original, compare)
 
-    deleted = {(diff.title, diff.original_text) for diff in result.diffs if diff.diff_type == "DELETE"}
-    assert ("签字页：供方-单位名称", "国能日新科技股份有限公司") in deleted
-    assert ("签字页：供方-法人代表", "雍正") in deleted
+    assert len(result.diffs) == 1
+    assert result.diffs[0].title == "签字页：抽取质量复核"
+    assert result.diffs[0].match_method == "signature_extraction_quality_gate"
+    assert "SIGNATURE_EXTRACTION_UNRELIABLE" in result.diffs[0].review_flags
     assert not any("(签字)" in diff.original_text for diff in result.diffs)
     assert all(diff.source_type == "signature" for diff in result.diffs)
     assert all("SIGNATURE_SECTION_REVIEW" in diff.review_flags for diff in result.diffs)
     debug_payload = result.to_debug_payload()
     assert debug_payload["metrics"]["original_candidate_count"] > 0
     assert debug_payload["metrics"]["signature_diff_count"] == len(result.diffs)
+    assert debug_payload["metrics"]["compare_extraction_unreliable"] is True
     assert any(
         candidate["reject_reason"] == "pending_label_without_value"
         for candidate in debug_payload["rejected_candidates"]
@@ -124,6 +126,31 @@ def test_signature_comparator_continues_address_and_bank_rows() -> None:
     assert "SIGNATURE_CONTINUED_FIELD" in by_title["签字页：供方-单位地址"].review_flags
     bank_fields = [field for field in result.original_fields if field.field_key == "bank"]
     assert bank_fields and bank_fields[0].field_value.endswith("支行")
+
+
+def test_signature_comparator_rejects_label_fragments_as_values() -> None:
+    original = _make_doc([_table_block("o1", _signature_table())])
+    compare = _make_doc([
+        _table_block(
+            "c1",
+            (
+                "<table>"
+                "<tr><td>供 方</td><td>需 方</td></tr>"
+                "<tr><td>传真：开户银 帐 税</td><td>传真：</td></tr>"
+                "<tr><td>开户银行：招商银行北京大屯路支行</td><td>开户银行：招商银行股份有限公司西宁生物园区</td></tr>"
+                "<tr><td></td><td>支行</td></tr>"
+                "</table>"
+            ),
+        )
+    ])
+
+    result = SignatureComparator().compare(original, compare)
+
+    assert not any(field.field_key == "fax" and field.field_value == "开户银 帐 税" for field in result.compare_fields)
+    assert any(
+        candidate["reject_reason"] == "label_fragment_value"
+        for candidate in result.to_debug_payload()["compare_candidates"]
+    )
 
 
 def test_signature_comparator_reports_company_stamp_modify() -> None:

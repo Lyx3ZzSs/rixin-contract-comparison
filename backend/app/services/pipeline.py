@@ -212,7 +212,7 @@ class ComparePipeline:
                 metrics.finished_at = datetime.now(UTC).isoformat()
                 metrics.total_duration_seconds = time.perf_counter() - pipeline_t0
                 metrics.peak_memory_mb = peak_memory
-                ctx.task.metrics = dataclasses.asdict(metrics)
+                ctx.task.metrics = {**ctx.task.metrics, **dataclasses.asdict(metrics)}
                 raise
             sm.duration_seconds = time.perf_counter() - stage_t0
             sm.memory_mb_end = get_process_memory_mb()
@@ -222,7 +222,7 @@ class ComparePipeline:
         metrics.finished_at = datetime.now(UTC).isoformat()
         metrics.total_duration_seconds = time.perf_counter() - pipeline_t0
         metrics.peak_memory_mb = peak_memory
-        ctx.task.metrics = dataclasses.asdict(metrics)
+        ctx.task.metrics = {**ctx.task.metrics, **dataclasses.asdict(metrics)}
 
         ctx.task.status = "COMPLETED"
         ctx.task.stage = "已完成"

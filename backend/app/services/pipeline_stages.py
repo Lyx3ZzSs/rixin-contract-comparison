@@ -8,6 +8,7 @@ from app.infrastructure.artifact_store import ArtifactStore, default_artifact_st
 from app.models import (
     Clause,
     CompareTask,
+    DiffItem,
     Document,
     DocumentProfile,
     OcrRawResultPaths,
@@ -642,7 +643,7 @@ class SummaryStage:
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
-        task.diffs = ctx.require_diffs()
+        task.diffs = _dedupe_final_diffs(ctx.require_diffs())
         _write_debug_artifact(
             task,
             "diff_decisions",
@@ -665,3 +666,26 @@ def _clauses_for_evidence(
 
 def _refresh_stats(task: CompareTask) -> None:
     task.diff_count = len(task.diffs)
+
+
+def _dedupe_final_diffs(diffs: list[DiffItem]) -> list[DiffItem]:
+    seen_ids: set[str] = set()
+    seen_content: set[tuple[str, str, str, str, str, str]] = set()
+    result: list[DiffItem] = []
+    for diff in diffs:
+        if diff.diff_id in seen_ids:
+            continue
+        content_key = (
+            diff.source_type,
+            diff.section_type,
+            diff.title,
+            diff.diff_type,
+            diff.original_text or diff.original_snippet,
+            diff.compare_text or diff.compare_snippet,
+        )
+        if content_key in seen_content:
+            continue
+        seen_ids.add(diff.diff_id)
+        seen_content.add(content_key)
+        result.append(diff)
+    return result

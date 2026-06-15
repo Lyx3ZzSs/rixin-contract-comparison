@@ -19,6 +19,7 @@ class SignatureField:
     source_method: str = "signature_field"
     source_block_ids: list[str] = field(default_factory=list)
     review_flags: list[str] = field(default_factory=list)
+    column_zone: str = "unknown"
 
     @property
     def match_key(self) -> tuple[str, str]:
@@ -41,6 +42,7 @@ class SignatureFieldCandidate:
     source_block_ids: list[str] = field(default_factory=list)
     status: str = "accepted"
     reject_reason: str = ""
+    column_zone: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,20 @@ class SignatureMatch:
     match_method: str
 
 
+@dataclass
+class SignatureExtractionQuality:
+    side: str
+    field_count: int
+    critical_field_count: int
+    party_roles: list[str]
+    inferred_role_count: int
+    conflict_count: int
+    accepted_candidate_count: int
+    rejected_candidate_count: int
+    unreliable: bool = False
+    reasons: list[str] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class PendingSignatureLabel:
     party_role: str
@@ -59,6 +75,7 @@ class PendingSignatureLabel:
     field_label: str
     bbox: BBox | None
     source_block_ids: list[str]
+    column_zone: str = "unknown"
 
 
 @dataclass
@@ -70,6 +87,8 @@ class SignatureCompareResult:
     matches: list[SignatureMatch] = field(default_factory=list)
     diffs: list[DiffItem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    original_quality: SignatureExtractionQuality | None = None
+    compare_quality: SignatureExtractionQuality | None = None
     suppressed_table_diff_ids: list[str] = field(default_factory=list)
     suppressed_seal_diff_ids: list[str] = field(default_factory=list)
 
@@ -101,7 +120,11 @@ class SignatureCompareResult:
                 "suppressed_table_diff_count": len(self.suppressed_table_diff_ids),
                 "suppressed_seal_diff_count": len(self.suppressed_seal_diff_ids),
                 "low_confidence_signature_count": len(low_confidence_diffs),
+                "original_extraction_unreliable": bool(self.original_quality and self.original_quality.unreliable),
+                "compare_extraction_unreliable": bool(self.compare_quality and self.compare_quality.unreliable),
             },
+            "original_quality": _quality_debug(self.original_quality),
+            "compare_quality": _quality_debug(self.compare_quality),
             "original_candidates": [_candidate_debug(candidate) for candidate in self.original_candidates],
             "compare_candidates": [_candidate_debug(candidate) for candidate in self.compare_candidates],
             "rejected_candidates": [_candidate_debug(candidate) for candidate in rejected_candidates],
@@ -137,6 +160,7 @@ def _field_debug(field: SignatureField) -> dict:
         "source_method": field.source_method,
         "source_block_ids": field.source_block_ids,
         "review_flags": field.review_flags,
+        "column_zone": field.column_zone,
     }
 
 
@@ -155,6 +179,24 @@ def _candidate_debug(candidate: SignatureFieldCandidate) -> dict:
         "source_block_ids": candidate.source_block_ids,
         "status": candidate.status,
         "reject_reason": candidate.reject_reason,
+        "column_zone": candidate.column_zone,
+    }
+
+
+def _quality_debug(quality: SignatureExtractionQuality | None) -> dict | None:
+    if quality is None:
+        return None
+    return {
+        "side": quality.side,
+        "field_count": quality.field_count,
+        "critical_field_count": quality.critical_field_count,
+        "party_roles": quality.party_roles,
+        "inferred_role_count": quality.inferred_role_count,
+        "conflict_count": quality.conflict_count,
+        "accepted_candidate_count": quality.accepted_candidate_count,
+        "rejected_candidate_count": quality.rejected_candidate_count,
+        "unreliable": quality.unreliable,
+        "reasons": quality.reasons,
     }
 
 

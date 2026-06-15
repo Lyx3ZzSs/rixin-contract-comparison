@@ -124,7 +124,16 @@ class SignatureDeduplicator:
             "signature_field": 1,
         }.get(field.source_method, 0)
         value_quality = SignatureDeduplicator._field_value_quality(field)
-        return method_rank, field.confidence, value_quality, len(field.field_value)
+        risk_penalty = sum(
+            1
+            for flag in field.review_flags
+            if flag in {
+                "SIGNATURE_FIELD_SOURCE_CONFLICT",
+                "SIGNATURE_COLUMN_ROLE_CONFLICT",
+                "SIGNATURE_ROLE_INFERRED_BY_POSITION",
+            }
+        )
+        return method_rank - risk_penalty, field.confidence, value_quality, len(field.field_value)
 
     def _should_replace_field(self, current: SignatureField, candidate: SignatureField) -> bool:
         if normalizer.value_equal(current.field_value, candidate.field_value):
@@ -143,6 +152,8 @@ class SignatureDeduplicator:
             score += 1
         if len(normalizer.normalize_value(value)) >= 4:
             score += 1
+        if any(token in value for token in ("开户", "户银", "帐", "账", "税", "传")) and field.field_key in {"phone", "fax"}:
+            score -= 4
         return score
 
     @staticmethod
@@ -162,7 +173,8 @@ class SignatureDeduplicator:
     def _winner_key(field: SignatureField) -> tuple[str, str]:
         if field.field_key == "seal_text":
             return f"page:{field.page_no}", field.field_key
-        return field.party_role, field.field_key
+        zone = field.column_zone if field.column_zone in {"left", "right"} else "unknown"
+        return f"{field.party_role}:{zone}", field.field_key
 
     @staticmethod
     def _looks_like_signature_table_diff(diff: DiffItem) -> bool:

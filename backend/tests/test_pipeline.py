@@ -379,6 +379,34 @@ class TestSummaryStage:
         assert ctx.task.diff_count == 1
         assert "diff_decisions" in ctx.task.debug_artifact_paths
 
+    def test_deduplicates_final_diffs(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        duplicate = DiffItem(
+            diff_id="D001",
+            diff_type="DELETE",
+            title="签字页：供方-单位名称",
+            original_text="国能日新科技股份有限公司",
+            source_type="signature",
+            section_type="signature",
+        )
+        ctx.diffs = [
+            duplicate,
+            duplicate.model_copy(deep=True),
+            DiffItem(
+                diff_id="D002",
+                diff_type="DELETE",
+                title="签字页：供方-单位名称",
+                original_text="国能日新科技股份有限公司",
+                source_type="signature",
+                section_type="signature",
+            ),
+        ]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D001"]
+        assert ctx.task.diff_count == 1
+
 
 class TestComparePipeline:
     def test_pipeline_runs_all_stages_in_order(self, tmp_path: Path) -> None:
@@ -484,6 +512,23 @@ class TestComparePipeline:
         assert result.metrics["peak_memory_mb"] == 64.0
         assert result.metrics["stages"][0]["memory_mb_start"] == 64.0
         assert result.metrics["stages"][0]["memory_mb_end"] == 48.0
+
+    def test_pipeline_preserves_stage_metrics_recorded_before_completion(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.task.metrics["signature_compare"] = {"compare_extraction_unreliable": True}
+
+        class NoOpStage:
+            name = "noop"
+            start_progress = 50
+            progress = 50
+
+            def execute(self, ctx: PipelineContext) -> None:
+                return None
+
+        result = ComparePipeline(stages=[NoOpStage()]).run(ctx)
+
+        assert result.metrics["signature_compare"] == {"compare_extraction_unreliable": True}
+        assert "stages" in result.metrics
 
 
 class TestPipelineStageFailure:

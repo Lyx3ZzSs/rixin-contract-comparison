@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unicodedata
 
 from app.models import BBox, Document
@@ -276,11 +277,12 @@ class SignatureFieldExtractor:
                 text_compact = normalizer.compact(text)
                 if not text_compact:
                     continue
+                column_zone = self._column_zone(cell.bbox, table)
                 role = role_by_col.get(cell.col_index)
                 if role is None:
                     role = normalizer.role_from_x(cell.bbox, self._table_width(table)) if cell.bbox else ("unknown", patterns.PARTY_LABELS["unknown"])
                 party_role, party_label = role
-                role_review_flags = self._role_review_flags(party_role, role_by_col, cell.col_index)
+                role_review_flags = self._role_review_flags(party_role, role_by_col, cell.col_index, column_zone)
                 if normalizer.role_from_text(text) and len(text_compact) <= 12:
                     candidates.append(self._candidate(
                         side=side,
@@ -296,13 +298,14 @@ class SignatureFieldExtractor:
                         source_block_ids=[table.source_block_id] if table.source_block_id else [],
                         status="rejected",
                         reject_reason="role_header_only",
+                        column_zone=column_zone,
                     ))
                     continue
 
                 labeled = normalizer.labeled_values(text)
                 if labeled:
                     for label, value, key in labeled:
-                        if not normalizer.is_actual_value(value):
+                        if not normalizer.is_actual_value(value) or not self._value_allowed_for_key(value, key):
                             candidates.append(self._candidate(
                                 side=side,
                                 page_no=table.page_no,
@@ -316,7 +319,12 @@ class SignatureFieldExtractor:
                                 source_method="signature_table_cell",
                                 source_block_ids=[table.source_block_id] if table.source_block_id else [],
                                 status="rejected",
-                                reject_reason="pending_label_without_value",
+                                reject_reason=(
+                                    "label_fragment_value"
+                                    if normalizer.is_actual_value(value)
+                                    else "pending_label_without_value"
+                                ),
+                                column_zone=column_zone,
                             ))
                             pending_by_col[cell.col_index] = PendingSignatureLabel(
                                 party_role=party_role,
@@ -325,6 +333,7 @@ class SignatureFieldExtractor:
                                 field_label=label,
                                 bbox=cell.bbox,
                                 source_block_ids=[table.source_block_id] if table.source_block_id else [],
+                                column_zone=column_zone,
                             )
                             previous_by_col.pop(cell.col_index, None)
                             continue
@@ -341,6 +350,7 @@ class SignatureFieldExtractor:
                             source_method="signature_table_cell",
                             source_block_ids=[table.source_block_id] if table.source_block_id else [],
                             review_flags=role_review_flags,
+                            column_zone=column_zone,
                         )
                         fields.append(field)
                         candidates.append(self._accepted_candidate(
@@ -355,12 +365,13 @@ class SignatureFieldExtractor:
                             0.82,
                             "signature_table_cell",
                             [table.source_block_id] if table.source_block_id else [],
+                            column_zone=column_zone,
                         ))
                         previous_by_col[cell.col_index] = field
                         pending_by_col.pop(cell.col_index, None)
                     continue
 
-                pending_item = self._pending_label_for_cell(pending_by_col, role_by_col, cell.col_index)
+                pending_item = self._pending_label_for_cell(pending_by_col, role_by_col, cell.col_index, column_zone)
                 if pending_item and normalizer.is_actual_value(text):
                     pending_col, pending = pending_item
                     field = self._field(
@@ -376,6 +387,7 @@ class SignatureFieldExtractor:
                         source_method="signature_table_cell",
                         source_block_ids=pending.source_block_ids,
                         review_flags=[*role_review_flags, "SIGNATURE_CROSS_CELL_VALUE"],
+                        column_zone=pending.column_zone,
                     )
                     fields.append(field)
                     candidates.append(self._accepted_candidate(
@@ -390,13 +402,14 @@ class SignatureFieldExtractor:
                         0.74,
                         "signature_table_cell",
                         pending.source_block_ids,
+                        column_zone=pending.column_zone,
                     ))
                     previous_by_col[cell.col_index] = field
                     pending_by_col.pop(pending_col, None)
                     continue
 
                 previous = previous_by_col.get(cell.col_index)
-                previous = previous or self._nearby_previous_continuation(previous_by_col, cell.col_index)
+                previous = previous or self._nearby_previous_continuation(previous_by_col, cell.col_index, column_zone)
                 if previous and previous.field_key in patterns.CONTINUATION_FIELDS and normalizer.is_continuation_value(text, previous.field_key):
                     field = self._field(
                         side=side,
@@ -411,6 +424,7 @@ class SignatureFieldExtractor:
                         source_method=previous.source_method,
                         source_block_ids=previous.source_block_ids,
                         review_flags=[*previous.review_flags, "SIGNATURE_CONTINUED_FIELD"],
+                        column_zone=previous.column_zone,
                     )
                     fields = [item for item in fields if item is not previous]
                     fields.append(field)
@@ -426,6 +440,7 @@ class SignatureFieldExtractor:
                         min(previous.confidence, 0.76),
                         previous.source_method,
                         previous.source_block_ids,
+                        column_zone=previous.column_zone,
                     ))
                     previous_by_col[cell.col_index] = field
         return fields
@@ -443,6 +458,7 @@ class SignatureFieldExtractor:
         confidence: float,
         source_method: str,
         source_block_ids: list[str],
+        column_zone: str = "unknown",
     ) -> SignatureFieldCandidate:
         return self._candidate(
             side=side,
@@ -458,6 +474,7 @@ class SignatureFieldExtractor:
             source_block_ids=source_block_ids,
             status="accepted",
             reject_reason="",
+            column_zone=column_zone,
         )
 
     @staticmethod
@@ -476,6 +493,7 @@ class SignatureFieldExtractor:
         source_block_ids: list[str],
         status: str,
         reject_reason: str,
+        column_zone: str = "unknown",
     ) -> SignatureFieldCandidate:
         return SignatureFieldCandidate(
             side=side,
@@ -492,6 +510,7 @@ class SignatureFieldExtractor:
             source_block_ids=source_block_ids,
             status=status,
             reject_reason=reject_reason,
+            column_zone=column_zone,
         )
 
     def _pending_label_for_cell(
@@ -499,11 +518,17 @@ class SignatureFieldExtractor:
         pending_by_col: dict[int, PendingSignatureLabel],
         role_by_col: dict[int, tuple[str, str]],
         col_index: int,
+        column_zone: str,
     ) -> tuple[int, PendingSignatureLabel] | None:
         if col_index in pending_by_col:
-            return col_index, pending_by_col[col_index]
+            pending = pending_by_col[col_index]
+            if pending.column_zone == column_zone or pending.column_zone == "unknown" or column_zone == "unknown":
+                return col_index, pending
+            return None
         if col_index - 1 in pending_by_col:
             pending = pending_by_col[col_index - 1]
+            if pending.column_zone not in {column_zone, "unknown"} and column_zone != "unknown":
+                return None
             target_role = role_by_col.get(col_index)
             if (
                 target_role is not None
@@ -518,10 +543,15 @@ class SignatureFieldExtractor:
     def _nearby_previous_continuation(
         previous_by_col: dict[int, SignatureField],
         col_index: int,
+        column_zone: str,
     ) -> SignatureField | None:
         for candidate_col in (col_index, col_index - 1, col_index + 1):
             previous = previous_by_col.get(candidate_col)
-            if previous and previous.field_key in patterns.CONTINUATION_FIELDS:
+            if (
+                previous
+                and previous.field_key in patterns.CONTINUATION_FIELDS
+                and (previous.column_zone == column_zone or previous.column_zone == "unknown" or column_zone == "unknown")
+            ):
                 return previous
         return None
 
@@ -530,12 +560,19 @@ class SignatureFieldExtractor:
         party_role: str,
         role_by_col: dict[int, tuple[str, str]],
         col_index: int,
+        column_zone: str,
     ) -> list[str]:
+        flags: list[str] = []
         if party_role.startswith("unknown"):
-            return ["SIGNATURE_ROLE_INFERRED_BY_POSITION"]
+            flags.append("SIGNATURE_ROLE_INFERRED_BY_POSITION")
         if col_index not in role_by_col:
-            return ["SIGNATURE_ROLE_INFERRED_BY_POSITION"]
-        return []
+            flags.append("SIGNATURE_ROLE_INFERRED_BY_POSITION")
+        if (
+            (party_role in {"supplier", "party_a", "seller"} and column_zone == "right")
+            or (party_role in {"buyer", "party_b", "purchaser"} and column_zone == "left")
+        ):
+            flags.append("SIGNATURE_COLUMN_ROLE_CONFLICT")
+        return list(dict.fromkeys(flags))
 
     def _roles_by_column(self, table: StructuredTable) -> dict[int, tuple[str, str]]:
         result: dict[int, tuple[str, str]] = {}
@@ -567,6 +604,7 @@ class SignatureFieldExtractor:
         source_method: str,
         source_block_ids: list[str],
         review_flags: list[str] | None = None,
+        column_zone: str = "unknown",
     ) -> SignatureField:
         return SignatureField(
             side=side,
@@ -581,6 +619,7 @@ class SignatureFieldExtractor:
             source_method=source_method,
             source_block_ids=source_block_ids,
             review_flags=review_flags or [],
+            column_zone=column_zone,
         )
 
     @staticmethod
@@ -591,5 +630,39 @@ class SignatureFieldExtractor:
         return max(bbox.x1 for bbox in bboxes)
 
     @staticmethod
+    def _table_x_bounds(table: StructuredTable) -> tuple[float, float] | None:
+        bboxes = [cell.bbox for row in table.rows for cell in row.cells if cell.bbox]
+        if not bboxes:
+            return None
+        return min(bbox.x0 for bbox in bboxes), max(bbox.x1 for bbox in bboxes)
+
+    def _column_zone(self, bbox: BBox | None, table: StructuredTable) -> str:
+        bounds = self._table_x_bounds(table)
+        if bbox is None or bounds is None:
+            return "unknown"
+        left, right = bounds
+        if right <= left:
+            return "unknown"
+        center = (bbox.x0 + bbox.x1) / 2
+        return "left" if center <= (left + right) / 2 else "right"
+
+    @staticmethod
     def _looks_like_signature_table(table: StructuredTable) -> bool:
         return normalizer.looks_like_signature_text(table.all_cell_text()) or table_utils.looks_like_contact_signature_text(table.all_cell_text())
+
+    @staticmethod
+    def _value_allowed_for_key(value: str, field_key: str) -> bool:
+        compact = normalizer.compact(normalizer.clean_value(value))
+        if not compact:
+            return False
+        if field_key in {"phone", "fax"}:
+            return bool(re.search(r"\d{5,}", compact)) and not bool(
+                re.search(r"(开户|户银|银行|账号|帐号|税号|邮政|政编)", compact)
+            )
+        if field_key in {"account", "tax_no", "postcode"}:
+            return bool(re.search(r"[A-Za-z0-9]{4,}", compact)) and not bool(
+                re.search(r"(开户|银行|传真|电话)", compact)
+            )
+        if field_key == "bank":
+            return bool("银行" in compact or "支行" in compact or "分行" in compact)
+        return True
