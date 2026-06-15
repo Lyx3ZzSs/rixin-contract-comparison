@@ -4,6 +4,7 @@ import difflib
 import logging
 import os
 import re
+import unicodedata
 
 from app.models import TextRange
 
@@ -24,9 +25,12 @@ except Exception:  # pragma: no cover - dependency may be absent in fallback dep
 
 DIFF_MATCH_PATCH_TIMEOUT_SECONDS = 1.0
 logger = logging.getLogger(__name__)
+LAYOUT_WEAK_PUNCTUATION_PATTERN = re.compile(r"[\s,，.。;；:：、”“‘’\"'()（）\[\]【】《》!！?？]+")
 
 
 def changed_snippets(left: str, right: str) -> tuple[str, str, list[TextRange], list[TextRange]]:
+    if layout_punctuation_equivalent(left, right):
+        return "", "", [], []
     if _should_use_line_first(left, right):
         return changed_snippets_line_first(left, right)
     if configured_diff_engine() == "diff_match_patch":
@@ -36,6 +40,34 @@ def changed_snippets(left: str, right: str) -> tuple[str, str, list[TextRange], 
             logger.warning("diff-match-patch failed; falling back to difflib", exc_info=True)
             return changed_snippets_difflib(left, right)
     return changed_snippets_difflib(left, right)
+
+
+def layout_punctuation_equivalent(left: str, right: str) -> bool:
+    left_folded, left_breaks = semantic_fold_with_internal_breaks(left)
+    right_folded, right_breaks = semantic_fold_with_internal_breaks(right)
+    if not left_folded or left_folded != right_folded:
+        return False
+    if len(left_folded) < 6:
+        return False
+    if sum(1 for char in left_folded if char.isalnum() or "一" <= char <= "鿿") < 4:
+        return False
+    return left_breaks != right_breaks and bool(left_breaks or right_breaks)
+
+
+def semantic_fold_with_internal_breaks(text: str) -> tuple[str, set[int]]:
+    folded_chars: list[str] = []
+    internal_breaks: set[int] = set()
+    for char in unicodedata.normalize("NFKC", text or ""):
+        if char in "\r\n":
+            if folded_chars:
+                internal_breaks.add(len(folded_chars))
+            continue
+        if LAYOUT_WEAK_PUNCTUATION_PATTERN.fullmatch(char):
+            continue
+        folded_chars.append(char.lower())
+    folded = "".join(folded_chars)
+    internal_breaks = {position for position in internal_breaks if 0 < position < len(folded)}
+    return folded, internal_breaks
 
 
 def configured_diff_engine() -> str:
@@ -598,4 +630,3 @@ def changed_snippets_line_first(
         left_ranges,
         right_ranges,
     )
-

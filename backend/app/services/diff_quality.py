@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.models import DiffItem, EvidenceBox
+from app.services.diff.range_refiner import layout_punctuation_equivalent
 
 
 @dataclass
@@ -150,6 +151,8 @@ class DiffQualityProcessor:
     def _suppression_reason(self, diff: DiffItem) -> str:
         if self._looks_like_header_footer_noise(diff):
             return "header_footer_noise"
+        if self._is_layout_punctuation_equivalent_clause_change(diff):
+            return "layout_punctuation_equivalent"
         if self._has_business_token(diff):
             return ""
         changed = self._changed_text(diff)
@@ -163,6 +166,18 @@ class DiffQualityProcessor:
         if diff.source_type == "clause" and self._looks_like_short_symbol_noise(diff):
             return "short_symbol_noise"
         return ""
+
+    @staticmethod
+    def _is_layout_punctuation_equivalent_clause_change(diff: DiffItem) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        if (diff.match_score or 0) < 96:
+            return False
+        if diff.match_score_details.get("body_score", 100.0) < 96:
+            return False
+        if diff.match_score_details.get("business_token_mismatch", 0.0) >= 1:
+            return False
+        return layout_punctuation_equivalent(diff.original_text, diff.compare_text)
 
     def _flag_boundary_drift(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         clause_diffs = [diff for diff in diffs if diff.source_type == "clause"]

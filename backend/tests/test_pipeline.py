@@ -199,6 +199,30 @@ class TestClauseDiffStage:
         assert len(ctx.clause_diffs) == 1
         assert ctx.diffs == ctx.clause_diffs
 
+    def test_suppresses_layout_reflow_punctuation_equivalent_diff(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.pairs = [
+            ClausePair(
+                original=make_clause(
+                    "O001",
+                    "4",
+                    "4我方提供6%增值税专用发票,需方支付全部\n款项.",
+                ),
+                compare=make_clause(
+                    "N001",
+                    "4",
+                    "4我方提供6%增值税专用发票,需方支\n付全部款项。",
+                ),
+                score=100.0,
+                match_method="same_clause_no_weighted",
+            )
+        ]
+
+        ClauseDiffStage().execute(ctx)
+
+        assert ctx.clause_diffs == []
+        assert ctx.diffs == []
+
     def test_keeps_non_punctuation_changes_with_punctuation_changes(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         ctx.pairs = [

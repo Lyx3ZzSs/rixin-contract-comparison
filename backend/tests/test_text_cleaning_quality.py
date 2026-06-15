@@ -489,6 +489,33 @@ def test_diff_quality_suppresses_short_symbol_noise_without_business_tokens() ->
     assert any(decision.action == "suppressed_low_value_noise" and decision.diff_id == "D001" for decision in result.decisions)
 
 
+def test_diff_quality_suppresses_layout_reflow_punctuation_equivalent_clause_change() -> None:
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="4我方提供6%增值税专用发票,需方支付全部\n款项.",
+        compare_text="4我方提供6%增值税专用发票,需方支\n付全部款项。",
+        original_snippet="付全部款项.",
+        compare_snippet="付全部款项。",
+        match_score=100,
+        match_score_details={
+            "body_score": 100.0,
+            "business_token_mismatch": 0.0,
+        },
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D001"
+        and decision.detail["reason"] == "layout_punctuation_equivalent"
+        for decision in result.decisions
+    )
+
+
 def test_diff_quality_classifies_modify_by_changed_snippets_not_full_context() -> None:
     diff = DiffItem(
         diff_id="D001",

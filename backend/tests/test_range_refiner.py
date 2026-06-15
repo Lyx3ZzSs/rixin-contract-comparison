@@ -152,6 +152,50 @@ class TestD018EndToEnd:
 class TestBasicDiffSemantics:
     """Ensure line-first diffing preserves genuine changes."""
 
+    def test_layout_reflow_with_punctuation_style_change_is_suppressed(self) -> None:
+        left = "4我方提供6%增值税专用发票,需方支付全部\n款项."
+        right = "4我方提供6%增值税专用发票,需方支\n付全部款项。"
+
+        original_snippet, compare_snippet, left_ranges, right_ranges = changed_snippets(left, right)
+
+        assert original_snippet == ""
+        assert compare_snippet == ""
+        assert left_ranges == []
+        assert right_ranges == []
+
+    def test_punctuation_only_change_without_layout_reflow_is_preserved(self) -> None:
+        left = "甲方应付款。"
+        right = "甲方应付款，"
+
+        original_snippet, compare_snippet, left_ranges, right_ranges = changed_snippets(left, right)
+
+        assert original_snippet == "。"
+        assert compare_snippet == "，"
+        assert left_ranges
+        assert right_ranges
+
+    def test_real_word_change_with_layout_reflow_is_preserved(self) -> None:
+        left = "4我方提供6%增值税专用发票,需方支付全部\n款项."
+        right = "4我方提供6%增值税专用发票,需方支\n付部分款项。"
+
+        _, _, left_ranges, right_ranges = changed_snippets(left, right)
+
+        assert left_ranges
+        assert right_ranges
+        assert any("全部" in left[item.start:item.end] for item in left_ranges)
+        assert any("部分" in right[item.start:item.end] for item in right_ranges)
+
+    def test_percent_change_with_layout_reflow_is_preserved(self) -> None:
+        left = "4我方提供6%增值税专用发票,需方支付全部\n款项."
+        right = "4我方提供13%增值税专用发票,需方支\n付全部款项。"
+
+        _, _, left_ranges, right_ranges = changed_snippets(left, right)
+
+        assert left_ranges
+        assert right_ranges
+        assert any("6" in left[item.start:item.end] for item in left_ranges)
+        assert any("13" in right[item.start:item.end] for item in right_ranges)
+
     def test_numeric_change_detected(self) -> None:
         left = "金额:1000元"
         right = "金额:2000元"
