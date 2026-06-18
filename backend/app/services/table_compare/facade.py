@@ -118,7 +118,7 @@ class TableComparator:
             orig_score = float(original_quality["score"])
             comp_score = float(compare_quality["score"])
             min_score = min(orig_score, comp_score)
-            downgrade_reasons = self._quality_downgrade_reasons(original_quality, compare_quality, min_score)
+            diagnostic_reasons = self._quality_diagnostic_reasons(original_quality, compare_quality, min_score)
             self.last_debug_payload["quality"] = {
                 "original_score": round(orig_score, 4),
                 "compare_score": round(comp_score, 4),
@@ -127,64 +127,25 @@ class TableComparator:
                     "original": original_quality,
                     "compare": compare_quality,
                 },
-                "downgrade_reasons": downgrade_reasons,
+                "diagnostic_reasons": diagnostic_reasons,
+                "route_decision": "structured_table_compare",
+                "score_policy": "diagnostic_only",
             }
 
-            if min_score >= 0.75 or self._should_use_cell_level(original_quality, compare_quality):
-                self.last_debug_payload["tier"] = "cell_level"
-                if min_score < 0.75:
-                    self.last_debug_payload["quality"]["cell_level_override"] = "html_grid_usable"
-                self._diff_builder.reset_diagnostics()
-                diffs, warnings = self._compare_tables(
-                    original_tables, compare_tables, original_blocks, compare_blocks, start_index, warnings
-                )
-                self.last_debug_payload["diff_count"] = len(diffs)
-                self.last_debug_payload["suppressed_diffs"] = self._diff_builder.diagnostics_payload()
-                self.last_debug_payload["warnings"] = list(warnings)
-                return diffs, warnings
-            elif min_score >= 0.45:
-                self.last_debug_payload["tier"] = "row_level"
-                warning = self._downgrade_warning("row-level", min_score, downgrade_reasons)
-                warnings.append(warning)
-                logger.info(warning)
-                diffs, warnings = self._flat.row_level_compare(
-                    original_tables, compare_tables, start_index, warnings
-                )
-                business_diffs = self._business_field_level_diffs(
-                    original_tables,
-                    compare_tables,
-                    start_index + len(diffs),
-                )
-                diffs.extend(business_diffs)
-                diffs = self._renumber_diffs(diffs, start_index)
-                self.last_debug_payload["diff_count"] = len(diffs)
-                self.last_debug_payload["business_field_diff_count"] = len(business_diffs)
-                self.last_debug_payload["suppressed_diffs"] = self._empty_suppressed_diff_payload()
-                self.last_debug_payload["warnings"] = list(warnings)
-                return diffs, warnings
-            elif min_score >= 0.25:
-                self.last_debug_payload["tier"] = "table_text"
-                warning = self._downgrade_warning("table-text", min_score, downgrade_reasons)
-                warnings.append(warning)
-                logger.info(warning)
-                diffs, warnings = self._flat.flat_compare(original_blocks, compare_blocks, start_index, warnings)
-                self.last_debug_payload["diff_count"] = len(diffs)
-                self.last_debug_payload["suppressed_diffs"] = self._empty_suppressed_diff_payload()
-                self.last_debug_payload["warnings"] = list(warnings)
-                return diffs, warnings
-            else:
-                self.last_debug_payload["tier"] = "skip_structured_table"
-                warning = self._downgrade_warning("skip-structured-table", min_score, downgrade_reasons)
-                warnings.append(warning)
-                logger.info(warning)
-                self.last_debug_payload["diff_count"] = 0
-                self.last_debug_payload["suppressed_diffs"] = self._empty_suppressed_diff_payload()
-                self.last_debug_payload["warnings"] = list(warnings)
-                return [], warnings
+            self.last_debug_payload["tier"] = "cell_level"
+            self._diff_builder.reset_diagnostics()
+            diffs, warnings = self._compare_tables(
+                original_tables, compare_tables, original_blocks, compare_blocks, start_index, warnings
+            )
+            self.last_debug_payload["diff_count"] = len(diffs)
+            self.last_debug_payload["suppressed_diffs"] = self._diff_builder.diagnostics_payload()
+            self.last_debug_payload["warnings"] = list(warnings)
+            return diffs, warnings
 
         # Fallback: flat-text comparison for blocks without HTML
         self.last_debug_payload["tier"] = "flat_text_no_html"
         diffs, warnings = self._flat.flat_compare(original_blocks, compare_blocks, start_index, warnings)
+        self.last_debug_payload["flat_text"] = self._flat.last_debug_payload
         self.last_debug_payload["diff_count"] = len(diffs)
         self.last_debug_payload["suppressed_diffs"] = self._empty_suppressed_diff_payload()
         self.last_debug_payload["warnings"] = list(warnings)
@@ -293,8 +254,6 @@ class TableComparator:
             + continuation_score * 0.10
             + business_score * 0.20
         )
-        if "severe_conflict" in geometry_statuses:
-            score = min(score, 0.44)
         reasons = TableComparator._quality_reasons(
             grid_score,
             bbox_score,
@@ -329,10 +288,6 @@ class TableComparator:
             "html_grid_usable": True,
             "reasons": [reason],
         }
-
-    @staticmethod
-    def _should_use_cell_level(original_quality: dict[str, object], compare_quality: dict[str, object]) -> bool:
-        return bool(original_quality.get("html_grid_usable") and compare_quality.get("html_grid_usable"))
 
     @staticmethod
     def _continuation_quality_score(tables: list[_LogicalTable]) -> float:
@@ -423,7 +378,7 @@ class TableComparator:
         return list(dict.fromkeys(reasons))
 
     @staticmethod
-    def _quality_downgrade_reasons(
+    def _quality_diagnostic_reasons(
         original_quality: dict[str, object],
         compare_quality: dict[str, object],
         min_score: float,
@@ -435,11 +390,6 @@ class TableComparator:
                     continue
                 reasons.append(f"{side}:{reason}")
         return list(dict.fromkeys(reasons))
-
-    @staticmethod
-    def _downgrade_warning(tier: str, score: float, reasons: list[str]) -> str:
-        reason_text = "；".join(reasons[:8]) if reasons else f"score={score:.4f}"
-        return f"表格结构质量不足，已降级到{tier}；原因：{reason_text}"
 
     @staticmethod
     def _row_sequence_int(row) -> int | None:

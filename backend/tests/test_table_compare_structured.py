@@ -613,7 +613,7 @@ class TestStructuredTableComparison:
         assert diffs[0].original_evidence[0].text == "X"
         assert diffs[0].compare_evidence[0].text == "Y"
 
-    def test_severe_bbox_grid_conflict_degrades_to_table_text(self):
+    def test_severe_bbox_grid_conflict_keeps_structured_compare_with_quality_diagnostics(self):
         html = (
             "<table>"
             "<tr><td>序号</td><td>产品名称</td><td>金额</td></tr>"
@@ -639,11 +639,30 @@ class TestStructuredTableComparison:
             _make_doc([_make_raw_table_block("c1", 1, html, html, collapsed_bboxes)]),
         )
 
-        assert warnings
-        assert "降级到table-text" in warnings[0]
+        assert warnings == []
         assert diffs == []
-        assert comparator.last_debug_payload["tier"] == "table_text"
+        assert comparator.last_debug_payload["tier"] == "cell_level"
+        assert comparator.last_debug_payload["quality"]["score_policy"] == "diagnostic_only"
+        assert comparator.last_debug_payload["quality"]["route_decision"] == "structured_table_compare"
         assert comparator.last_debug_payload["tables"]["original"][0]["geometry_status"] == "severe_conflict"
+
+    def test_flat_text_large_unmatched_emits_review_diff_instead_of_silent_skip(self):
+        original_text = "\n".join(f"原表缺失字段{i}" for i in range(10))
+        compare_text = "\n".join(f"对比新增字段{i}" for i in range(10))
+        comparator = TableComparator()
+
+        diffs, warnings = comparator.build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_text)]),
+            _make_doc([_make_table_block("c1", 1, compare_text)]),
+        )
+
+        assert warnings
+        assert comparator.last_debug_payload["tier"] == "flat_text_no_html"
+        assert len(diffs) == 1
+        assert diffs[0].match_method == "table_text_large_unmatched"
+        assert diffs[0].quality_status == "NEEDS_REVIEW"
+        assert "large_flat_unmatched" in diffs[0].structural_flags
+        assert "TABLE_REGION_REVIEW" in diffs[0].review_flags
 
     def test_row_level_degradation_keeps_amount_quantity_field_checks(self, monkeypatch):
         quality = {
@@ -676,11 +695,12 @@ class TestStructuredTableComparison:
             _make_doc([_make_table_block("c1", 1, compare_html)]),
         )
 
-        assert warnings
-        assert "降级到row-level" in warnings[0]
-        assert comparator.last_debug_payload["tier"] == "row_level"
-        assert any("row_level_business_field_check" in diff.structural_flags for diff in diffs)
-        assert any(diff.title == "表格字段：数量" and diff.original_text == "1" and diff.compare_text == "2" for diff in diffs)
+        assert warnings == []
+        assert comparator.last_debug_payload["tier"] == "cell_level"
+        assert comparator.last_debug_payload["quality"]["score_policy"] == "diagnostic_only"
+        assert not any("row_level_business_field_check" in diff.structural_flags for diff in diffs)
+        assert any("1" in diff.original_text and "100" in diff.original_text for diff in diffs)
+        assert any("2" in diff.compare_text and "200" in diff.compare_text for diff in diffs)
 
     def test_bbox_geometry_unusable_does_not_force_row_level_when_html_grid_is_usable(self):
         rows = [
@@ -745,13 +765,15 @@ class TestStructuredTableComparison:
             "<td>台</td><td>1</td><td>30500</td><td>30500</td><td></td></tr>",
         ])
 
-        diffs, warnings = TableComparator().build_diffs(
+        comparator = TableComparator()
+        diffs, warnings = comparator.build_diffs(
             _make_doc([_make_table_block("o1", 1, original_html)]),
             _make_doc([_make_table_block("c1", 1, compare_html)]),
         )
 
-        assert warnings
-        assert "降级到row-level" in warnings[0]
+        assert warnings == []
+        assert comparator.last_debug_payload["tier"] == "cell_level"
+        assert comparator.last_debug_payload["quality"]["score_policy"] == "diagnostic_only"
         assert diffs == []
 
     def test_row_level_business_field_check_rejects_number_to_text_misalignment(self, monkeypatch):
@@ -779,12 +801,14 @@ class TestStructuredTableComparison:
             "<td>套</td><td>3</td><td>4000</td><td>国产操作系统</td><td></td></tr>",
         ])
 
-        diffs, warnings = TableComparator().build_diffs(
+        comparator = TableComparator()
+        diffs, warnings = comparator.build_diffs(
             _make_doc([_make_table_block("o1", 1, original_html)]),
             _make_doc([_make_table_block("c1", 1, compare_html)]),
         )
 
-        assert warnings
+        assert warnings == []
+        assert comparator.last_debug_payload["tier"] == "cell_level"
         assert not any("row_level_business_field_check" in diff.structural_flags for diff in diffs)
 
     def test_similarity_threshold_filters_punctuation_ocr_noise(self):

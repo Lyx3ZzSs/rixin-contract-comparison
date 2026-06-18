@@ -736,6 +736,27 @@ def test_diff_quality_marks_row_level_table_noise_for_review_not_critical() -> N
     assert "CRITICAL_VALUE_CHANGE" not in processed.review_flags
 
 
+def test_diff_quality_keeps_table_region_coverage_gap_as_review_not_critical() -> None:
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格区域：大范围内容不一致",
+        original_text="单位名称：国能日新科技股份有限公司 金额：100",
+        compare_text="单位名称：斯美能源科技有限公司 金额：200",
+        structural_flags=["table_region_coverage_gap", "large_flat_unmatched"],
+        review_flags=["CRITICAL_VALUE_CHANGE"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+    processed = result.diffs[0]
+
+    assert processed.quality_status == "NEEDS_REVIEW"
+    assert "TABLE_REGION_REVIEW" in processed.review_flags
+    assert "CRITICAL_VALUE_CHANGE" not in processed.review_flags
+    assert any(decision.action == "table_region_review" for decision in result.decisions)
+
+
 def test_diff_quality_keeps_row_level_table_protected_value_changes_critical() -> None:
     diff = DiffItem(
         diff_id="D001",

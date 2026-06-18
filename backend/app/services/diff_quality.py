@@ -131,6 +131,18 @@ class DiffQualityProcessor:
                 diff.quality_status = "NEEDS_REVIEW"
                 decisions.append(DiffQualityDecision(action="row_level_table_review", diff_id=diff.diff_id))
                 continue
+            if self._is_table_region_review_diff(diff):
+                self._remove_flag(diff, "CRITICAL_VALUE_CHANGE")
+                self._add_flag(diff, "TABLE_REGION_REVIEW")
+                diff.quality_status = "NEEDS_REVIEW"
+                decisions.append(
+                    DiffQualityDecision(
+                        action="table_region_review",
+                        diff_id=diff.diff_id,
+                        detail={"flags": sorted(set(diff.structural_flags) | set(diff.review_flags))},
+                    )
+                )
+                continue
             if self._is_critical_change(diff):
                 self._add_flag(diff, "CRITICAL_VALUE_CHANGE")
                 decisions.append(DiffQualityDecision(action="critical_change", diff_id=diff.diff_id))
@@ -327,6 +339,13 @@ class DiffQualityProcessor:
             return False
         evidences = [*diff.original_evidence, *diff.compare_evidence]
         return any(evidence.method == "table_row" for evidence in evidences)
+
+    @staticmethod
+    def _is_table_region_review_diff(diff: DiffItem) -> bool:
+        if diff.source_type != "table":
+            return False
+        flags = set(diff.structural_flags) | set(diff.review_flags)
+        return "table_region_coverage_gap" in flags
 
     def _row_level_table_has_protected_change(self, diff: DiffItem) -> bool:
         if diff.diff_type != "MODIFY":

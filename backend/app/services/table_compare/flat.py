@@ -25,6 +25,10 @@ class FlatTextComparator:
     # Tier 3: flat text comparison (existing)
     # -----------------------------------------------------------------
 
+    def __init__(self) -> None:
+        self._matcher = TableMatcher()
+        self.last_debug_payload: dict[str, object] = {}
+
     def flat_compare(
         self,
         original_blocks: list[tuple[TextBlock, str]],
@@ -32,17 +36,39 @@ class FlatTextComparator:
         start_index: int,
         warnings: list[str],
     ) -> tuple[list[DiffItem], list[str]]:
+        self.last_debug_payload = {
+            "original_unit_count": 0,
+            "compare_unit_count": 0,
+            "original_unmatched_count": 0,
+            "compare_unmatched_count": 0,
+            "skipped_reason": "",
+            "review_fallback": False,
+        }
         original_units = self._extract_flat_units(original_blocks)
         compare_units = self._extract_flat_units(compare_blocks)
+        self.last_debug_payload["original_unit_count"] = len(original_units)
+        self.last_debug_payload["compare_unit_count"] = len(compare_units)
         if not original_units and not compare_units:
             return [], warnings
 
         original_unmatched, compare_unmatched = self._unmatched_units(original_units, compare_units)
+        self.last_debug_payload["original_unmatched_count"] = len(original_unmatched)
+        self.last_debug_payload["compare_unmatched_count"] = len(compare_unmatched)
+        self.last_debug_payload["original_unmatched_samples"] = [unit.text[:120] for unit in original_unmatched[:5]]
+        self.last_debug_payload["compare_unmatched_samples"] = [unit.text[:120] for unit in compare_unmatched[:5]]
         if not original_unmatched and not compare_unmatched:
             return [], warnings
         if len(original_unmatched) + len(compare_unmatched) > 8:
             warnings.append("表格抽取顺序差异较大，已跳过大范围表格字符级高亮。")
-            return [], warnings
+            self.last_debug_payload["skipped_reason"] = "large_flat_unmatched"
+            self.last_debug_payload["review_fallback"] = True
+            return [
+                self._large_unmatched_review_diff(
+                    original_unmatched,
+                    compare_unmatched,
+                    start_index,
+                )
+            ], warnings
 
         diffs: list[DiffItem] = []
         next_index = start_index
@@ -87,9 +113,6 @@ class FlatTextComparator:
     # -----------------------------------------------------------------
 
     _ROW_MATCH_THRESHOLD = 0.55
-
-    def __init__(self) -> None:
-        self._matcher = TableMatcher()
 
     def row_level_compare(
         self,
@@ -419,6 +442,65 @@ class FlatTextComparator:
         text = text.replace(":", "").replace(";", "").replace(",", "").replace(".", "")
         text = text.replace("；", "").replace("，", "").replace("。", "")
         return text
+
+    def _large_unmatched_review_diff(
+        self,
+        original_unmatched: list[_FlatUnit],
+        compare_unmatched: list[_FlatUnit],
+        index: int,
+    ) -> DiffItem:
+        original_text = self._joined_unit_text(original_unmatched)
+        compare_text = self._joined_unit_text(compare_unmatched)
+        return DiffItem(
+            diff_id=generate_diff_id(index),
+            diff_type="MODIFY",
+            title="表格区域：大范围内容不一致",
+            original_text=original_text[:1000],
+            compare_text=compare_text[:1000],
+            original_snippet=original_text[:300],
+            compare_snippet=compare_text[:300],
+            readable_change="表格区域存在大范围内容不一致，已降级为区域级复核",
+            source_type="table",
+            match_method="table_text_large_unmatched",
+            match_score_details={
+                "fallback_level": "table_region",
+                "reason": "large_flat_unmatched",
+                "original_unmatched_count": len(original_unmatched),
+                "compare_unmatched_count": len(compare_unmatched),
+                "original_unmatched_samples": [unit.text[:120] for unit in original_unmatched[:5]],
+                "compare_unmatched_samples": [unit.text[:120] for unit in compare_unmatched[:5]],
+            },
+            structural_flags=["table_region_coverage_gap", "large_flat_unmatched"],
+            review_flags=["TABLE_REGION_REVIEW"],
+            quality_status="NEEDS_REVIEW",
+            text_confidence=0.35,
+            original_evidence=self._region_evidences(original_unmatched, "MODIFY"),
+            compare_evidence=self._region_evidences(compare_unmatched, "MODIFY"),
+        )
+
+    @staticmethod
+    def _joined_unit_text(units: list[_FlatUnit]) -> str:
+        return " ".join(unit.text for unit in units if unit.text)
+
+    @staticmethod
+    def _region_evidences(units: list[_FlatUnit], highlight_type: str) -> list[EvidenceBox]:
+        evidences: list[EvidenceBox] = []
+        seen: set[tuple[int, float, float, float, float]] = set()
+        for unit in units[:4]:
+            key = (unit.page_no, unit.bbox.x0, unit.bbox.y0, unit.bbox.x1, unit.bbox.y1)
+            if key in seen:
+                continue
+            seen.add(key)
+            evidences.append(EvidenceBox(
+                page_no=unit.page_no,
+                bbox=unit.bbox,
+                method="table_region",
+                text=unit.text[:300],
+                highlight_type=highlight_type,
+                confidence=0.4,
+                evidence_quality="LOW",
+            ))
+        return evidences
 
     def _evidence(self, unit: _FlatUnit, highlight_type: str) -> EvidenceBox:
         return EvidenceBox(
