@@ -4,6 +4,7 @@ from app.models import ClausePair, DiffItem, TextRange
 from app.utils.id_utils import generate_diff_id
 
 from app.services.diff.range_refiner import changed_snippets
+from app.services.diff.spatial_line_pairing import repair_spatial_line_pairing
 from app.services.diff.spatial_repair import rebuild_change_text, repair_spatial_duplicate_ranges
 from app.services.diff.text_utils import shorten
 
@@ -89,6 +90,12 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
     right = pair.compare
     assert left is not None and right is not None
     original_snippet, compare_snippet, original_ranges, compare_ranges = changed_snippets(left.text, right.text)
+    original_ranges, compare_ranges, line_pairing_reasons = repair_spatial_line_pairing(
+        left,
+        right,
+        original_ranges,
+        compare_ranges,
+    )
     original_ranges, compare_ranges, repair_reasons = repair_spatial_duplicate_ranges(
         left,
         right,
@@ -97,7 +104,7 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
     )
     if not original_ranges and not compare_ranges:
         return None
-    if repair_reasons:
+    if line_pairing_reasons or repair_reasons:
         original_snippet, compare_snippet, readable_change = rebuild_change_text(
             left.text,
             right.text,
@@ -107,6 +114,8 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
     else:
         readable_change = f"原文：{original_snippet}\n修改后：{compare_snippet}"
     flags = review_flags(pair)
+    if line_pairing_reasons:
+        flags.append("SPATIAL_LINE_PAIRING_REPAIRED")
     if repair_reasons:
         flags.append("SPATIAL_DUPLICATE_TOKEN_REPAIRED")
     return DiffItem(

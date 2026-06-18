@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 
-from app.models import Clause, ClausePair
+from app.models import BBox, CharBox, Clause, ClausePair
+from app.services.evidence_locator import EvidenceLocator
 from app.services.diff import range_refiner
 from app.services.diff_engine import DiffEngine
 
@@ -110,3 +111,68 @@ def test_diff_engine_ignores_whitespace_only_changes(monkeypatch) -> None:
     assert compare_snippet == ""
     assert original_ranges == []
     assert compare_ranges == []
+
+
+def test_spatial_line_pairing_repairs_two_column_form_label_false_add(monkeypatch) -> None:
+    monkeypatch.setenv("DIFF_ENGINE", "diff_match_patch")
+    monkeypatch.setattr(range_refiner, "_DiffMatchPatch", None)
+
+    original = _clause_with_line_boxes(
+        "O001",
+        [
+            ("法人代表或授权委托人:", 80, 100),
+            ("法人代表或授权委托人:", 320, 100),
+        ],
+    )
+    compare = _clause_with_line_boxes(
+        "N001",
+        [
+            ("法人", 80, 100),
+            ("法人代表或", 320, 100),
+        ],
+    )
+
+    diff = DiffEngine().build_diffs([ClausePair(original=original, compare=compare)])[0]
+
+    assert [diff.original_text[item.start:item.end] for item in diff.original_change_ranges] == [
+        "代表或授权委托人:",
+        "授权委托人:",
+    ]
+    assert diff.compare_change_ranges == []
+    assert "SPATIAL_LINE_PAIRING_REPAIRED" in diff.review_flags
+
+    [located] = EvidenceLocator().locate([diff], [original], [compare])
+    assert [item.text for item in located.original_evidence] == ["代表或授权委托人:", "授权委托人:"]
+    assert located.compare_evidence == []
+    assert located.original_evidence[0].bbox.x0 > original.char_boxes[0].bbox.x0
+
+
+def _clause_with_line_boxes(clause_id: str, lines: list[tuple[str, float, float]]) -> Clause:
+    text = "\n".join(line for line, _, _ in lines)
+    char_boxes: list[CharBox | None] = []
+    text_index = 0
+    for line_index, (line, x0, y0) in enumerate(lines):
+        for offset, char in enumerate(line):
+            char_boxes.append(
+                CharBox(
+                    char=char,
+                    page_no=1,
+                    bbox=BBox(
+                        x0=x0 + offset * 10,
+                        y0=y0,
+                        x1=x0 + offset * 10 + 8,
+                        y1=y0 + 14,
+                    ),
+                    text_index=text_index,
+                )
+            )
+            text_index += 1
+        if line_index < len(lines) - 1:
+            char_boxes.append(None)
+            text_index += 1
+    return Clause(
+        clause_id=clause_id,
+        text=text,
+        normalized_text=text,
+        char_boxes=char_boxes,
+    )
