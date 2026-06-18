@@ -1987,6 +1987,57 @@ class TestStructuredTableComparison:
         assert warnings == []
         assert diffs
 
+    def test_full_row_colspan_coverage_does_not_create_duplicate_field_diffs(self):
+        original_html = (
+            "<table>"
+            "<tr><td>字段甲：AA-10001</td><td>字段乙：BB-20002</td></tr>"
+            "<tr><td>字段丙：CC-30003</td><td>字段丁：</td></tr>"
+            "<tr><td>字段戊：长文本甲长文本乙</td><td>字段己：长文本丙长文本丁</td></tr>"
+            "<tr><td></td><td>尾缀文本</td></tr>"
+            "<tr><td>字段庚：770001</td><td>字段辛：880002</td></tr>"
+            "</table>"
+        )
+        compare_html = (
+            "<table>"
+            "<tr><td colspan='2'>字段甲：AA-10001 字段乙：BB-20002 字</td></tr>"
+            "<tr><td colspan='2'>段丙：CC-30003 字段丁： 字段</td></tr>"
+            "<tr><td colspan='2'>戊：长文本甲长文本乙 字段己：长文本丙长文本丁</td></tr>"
+            "<tr><td colspan='2'>尾缀文本 字段庚：770001 字段辛：880002</td></tr>"
+            "</table>"
+        )
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings == []
+        assert diffs == []
+
+    def test_full_row_colspan_coverage_preserves_real_value_change(self):
+        original_html = (
+            "<table>"
+            "<tr><td>字段甲：AA-10001</td><td>字段乙：BB-20002</td></tr>"
+            "<tr><td>字段丙：CC-30003</td><td>字段丁：DD-40004</td></tr>"
+            "</table>"
+        )
+        compare_html = (
+            "<table>"
+            "<tr><td colspan='2'>字段甲：AA-10001 字段乙：BB-99999</td></tr>"
+            "<tr><td colspan='2'>字段丙：CC-30003 字段丁：DD-40004</td></tr>"
+            "</table>"
+        )
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings == []
+        combined = " ".join(diff.original_text + diff.compare_text for diff in diffs)
+        assert "BB-20002" in combined
+        assert "BB-99999" in combined
+
     def test_one_sided_product_row_covered_by_plain_ocr_text_is_not_reported(self):
         original_html = _product_table([
             "<tr><td>5</td><td>显示器</td><td>X20H 19寸放机柜带背板安装螺丝</td><td>方大极视</td>"

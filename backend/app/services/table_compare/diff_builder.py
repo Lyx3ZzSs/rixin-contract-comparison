@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from difflib import SequenceMatcher
 
 from app.models import BBox, CharBox, DiffItem, DiffType, EvidenceBox, TextBlock
@@ -119,6 +120,13 @@ class TableDiffBuilder:
                 comp_row,
                 original_block,
                 compare_block,
+            ):
+                continue
+            if self._row_covered_by_merged_cell_source(
+                original,
+                compare,
+                orig_row,
+                comp_row,
             ):
                 continue
 
@@ -331,6 +339,124 @@ class TableDiffBuilder:
         source_text = self._source_text_for_cell_cover(missing_table, missing_row, missing_block)
         source_norm = utils.normalize(source_text)
         return bool(source_norm and present_norm in source_norm)
+
+    def _row_covered_by_merged_cell_source(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+    ) -> bool:
+        if orig_row is not None and comp_row is not None:
+            return self._matched_row_covered_by_merged_cell(original, compare, orig_row, comp_row)
+        if orig_row is not None:
+            return self._one_sided_row_covered_by_merged_cell(original, compare, orig_row)
+        if comp_row is not None:
+            return self._one_sided_row_covered_by_merged_cell(compare, original, comp_row)
+        return False
+
+    def _matched_row_covered_by_merged_cell(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int,
+        comp_row: int,
+    ) -> bool:
+        if not self._row_window_has_spanning_cell(original, orig_row, radius=1) and not self._row_window_has_spanning_cell(compare, comp_row, radius=1):
+            return False
+
+        original_tokens = self._row_coverage_tokens(original, orig_row)
+        compare_tokens = self._row_coverage_tokens(compare, comp_row)
+        if not original_tokens or not compare_tokens:
+            return False
+
+        original_text = utils.normalize(" ".join(original_tokens))
+        compare_text = utils.normalize(" ".join(compare_tokens))
+        if original_text == compare_text or original_text in compare_text or compare_text in original_text:
+            return True
+
+        compare_window = self._row_window_norm(compare, comp_row, radius=1)
+        if self._all_coverage_tokens_covered(original_tokens, compare_window):
+            return True
+
+        original_window = self._row_window_norm(original, orig_row, radius=1)
+        return self._all_coverage_tokens_covered(compare_tokens, original_window)
+
+    def _one_sided_row_covered_by_merged_cell(
+        self,
+        present_table: StructuredTable,
+        other_table: StructuredTable,
+        present_row: int,
+    ) -> bool:
+        if not self._row_window_has_spanning_cell(other_table, present_row, radius=4):
+            return False
+
+        present_tokens = self._row_coverage_tokens(present_table, present_row)
+        if not present_tokens:
+            return False
+
+        other_window = self._row_window_norm(other_table, present_row, radius=4)
+        return self._all_coverage_tokens_covered(present_tokens, other_window)
+
+    def _row_window_has_spanning_cell(self, table: StructuredTable, row: int, radius: int) -> bool:
+        return any(self._row_has_spanning_cell(table, candidate) for candidate in self._nearby_rows(table, row, radius))
+
+    def _row_has_spanning_cell(self, table: StructuredTable, row: int) -> bool:
+        if row < 0 or row >= len(table.rows) or table.col_count < 2:
+            return False
+        return any(cell.colspan >= max(2, table.col_count) for cell in table.rows[row].cells)
+
+    def _row_coverage_tokens(self, table: StructuredTable, row: int | None) -> list[str]:
+        if row is None or row < 0 or row >= len(table.rows):
+            return []
+        tokens: list[str] = []
+        for cell in self._matcher._row_nonempty_cells(table, row):
+            tokens.extend(self._coverage_tokens(cell.text))
+        return list(dict.fromkeys(tokens))
+
+    def _row_window_norm(self, table: StructuredTable, row: int, radius: int) -> str:
+        parts: list[str] = []
+        for candidate in self._nearby_rows(table, row, radius):
+            for cell in self._matcher._row_nonempty_cells(table, candidate):
+                parts.append(cell.text)
+        return utils.normalize(" ".join(parts))
+
+    @staticmethod
+    def _nearby_rows(table: StructuredTable, row: int, radius: int) -> list[int]:
+        start = max(0, row - radius)
+        end = min(len(table.rows), row + radius + 1)
+        return list(range(start, end))
+
+    def _all_coverage_tokens_covered(self, tokens: list[str], source: str) -> bool:
+        if not source:
+            return False
+        for token in tokens:
+            if not self._coverage_token_covered(token, source):
+                return False
+        return bool(tokens)
+
+    def _coverage_token_covered(self, token: str, source: str) -> bool:
+        if not token or not source:
+            return False
+        if token in source:
+            return True
+        folded_token = utils.punctuation_fold(token)
+        folded_source = utils.punctuation_fold(source)
+        if folded_token and folded_token in folded_source:
+            return True
+        return len(token) >= 4 and utils.is_loose_subsequence_present(token, source)
+
+    @staticmethod
+    def _coverage_tokens(text: str) -> list[str]:
+        compact = utils.normalize(text)
+        if not compact:
+            return []
+
+        value_text = re.sub(r"[\u4e00-\u9fffA-Za-z]{1,10}:", " ", compact)
+        tokens: list[str] = []
+        tokens.extend(match.group(0) for match in re.finditer(r"[A-Za-z]*\d[A-Za-z0-9._/\-]*", value_text))
+        tokens.extend(match.group(0) for match in re.finditer(r"[\u4e00-\u9fff]{2,}", value_text))
+        return [token for token in dict.fromkeys(tokens) if len(token) >= 2]
 
     @staticmethod
     def _is_short_remark_label_for_source_cover(text: str, norm: str) -> bool:
