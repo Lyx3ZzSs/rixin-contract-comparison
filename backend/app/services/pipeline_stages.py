@@ -446,6 +446,15 @@ class SplitStage:
                 clauses.compare_clauses,
             ),
         )
+        _write_debug_artifact(
+            ctx.task,
+            "clause_split_quality",
+            lambda: self.debug_writer.write_clause_split_quality(
+                ctx.task.task_id,
+                clauses.original_clauses,
+                clauses.compare_clauses,
+            ),
+        )
         _emit_progress(ctx, 44, self.name, "clause_debug_artifacts_done")
 
 
@@ -462,6 +471,7 @@ class MatchStage:
         self.matcher = ClauseMatcher(
             threshold if threshold is not None else settings.match_threshold,
             use_prefilter=settings.matching.use_prefilter,
+            assignment_strategy=settings.matching.assignment_strategy,
             enable_semantic_match=settings.matching.enable_semantic_match,
             semantic_provider=settings.matching.semantic_provider,
             semantic_model_path=settings.matching.semantic_model_path,
@@ -473,6 +483,14 @@ class MatchStage:
             semantic_timeout_seconds=settings.matching.semantic_timeout_seconds,
             semantic_max_retries=settings.matching.semantic_max_retries,
             semantic_weight=settings.matching.semantic_weight,
+            enable_rerank=settings.matching.enable_rerank,
+            rerank_base_url=settings.matching.rerank_base_url,
+            rerank_api_key=settings.matching.rerank_api_key,
+            rerank_model=settings.matching.rerank_model,
+            rerank_top_k=settings.matching.rerank_top_k,
+            rerank_timeout_seconds=settings.matching.rerank_timeout_seconds,
+            rerank_max_retries=settings.matching.rerank_max_retries,
+            rerank_weight=settings.matching.rerank_weight,
             low_confidence_review_threshold=settings.matching.low_confidence_review_threshold,
         )
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)

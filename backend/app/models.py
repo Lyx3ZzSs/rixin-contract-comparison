@@ -221,7 +221,7 @@ class ClausePair(BaseModel):
     compare: Clause | None = None
     score: float = 0
     match_method: str = "unmatched"
-    score_details: dict[str, float] = Field(default_factory=dict)
+    score_details: dict[str, Any] = Field(default_factory=dict)
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
     match_confidence: str = "NORMAL"
 
@@ -243,7 +243,7 @@ class DiffItem(BaseModel):
     section_path: list[str] = Field(default_factory=list)
     match_score: float | None = None
     match_method: str = ""
-    match_score_details: dict[str, float] = Field(default_factory=dict)
+    match_score_details: dict[str, Any] = Field(default_factory=dict)
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
     match_confidence: str = ""
     structural_flags: list[str] = Field(default_factory=list)

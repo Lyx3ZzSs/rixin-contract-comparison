@@ -220,6 +220,130 @@ def test_clause_splitter_does_not_treat_amount_range_as_clause_number() -> None:
     assert "1000~5000元" in clauses[0].text
 
 
+def test_clause_splitter_keeps_deep_decimal_clause_number() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="deep",
+                        page_no=1,
+                        text="1.2.3.4.5 五级标题",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                    ),
+                    TextBlock(
+                        block_id="body",
+                        page_no=1,
+                        text="五级正文内容。",
+                        bbox=BBox(x0=70, y0=120, x1=500, y1=150),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["1.2.3.4.5"]
+    assert clauses[0].title == "五级标题"
+    assert "n1_2_3_4_5" in clauses[0].clause_key
+    assert "五级正文内容" in clauses[0].text
+
+
+def test_clause_splitter_keeps_single_numeric_inline_body_clause_number() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="body",
+                        page_no=1,
+                        text="1. 服务范围 甲方提供服务。2. 付款方式 乙方付款。",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=120),
+                    )
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["1", "2"]
+    assert "服务范围" in clauses[0].title
+    assert "付款方式" in clauses[1].title
+
+
+def test_clause_splitter_merges_ocr_split_paragraph_with_evidence() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(block_id="h1", page_no=1, text="1. 服务范围", bbox=BBox(x0=50, y0=80, x1=500, y1=110)),
+                    TextBlock(block_id="p1", page_no=1, text="甲方提供风功率预测服务", bbox=BBox(x0=70, y0=116, x1=500, y1=146)),
+                    TextBlock(block_id="p2", page_no=1, text="并负责系统日常维护。", bbox=BBox(x0=70, y0=152, x1=500, y1=182)),
+                    TextBlock(block_id="h2", page_no=1, text="2. 付款", bbox=BBox(x0=50, y0=220, x1=500, y1=250)),
+                    TextBlock(block_id="p3", page_no=1, text="乙方按月付款。", bbox=BBox(x0=70, y0=256, x1=500, y1=286)),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["1", "2"]
+    assert clauses[0].source_block_ids == ["h1", "p1", "p2"]
+    assert clauses[0].page_numbers == [1]
+    assert len(clauses[0].bboxes) == 3
+    assert "PARAGRAPH_MERGED" in clauses[0].split_flags
+    assert "2. 付款" not in clauses[0].text
+    assert clauses[1].source_block_ids == ["h2", "p3"]
+
+
+def test_clause_splitter_merges_bare_number_with_following_heading() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(block_id="number", page_no=1, text="1.", bbox=BBox(x0=50, y0=80, x1=72, y1=110)),
+                    TextBlock(block_id="title", page_no=1, text="服务范围", bbox=BBox(x0=80, y0=80, x1=180, y1=110)),
+                    TextBlock(block_id="body", page_no=1, text="甲方提供服务。", bbox=BBox(x0=70, y0=120, x1=500, y1=150)),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert len(clauses) == 1
+    assert clauses[0].clause_no == "1"
+    assert clauses[0].title == "服务范围"
+    assert clauses[0].source_block_ids == ["number", "title", "body"]
+
+
 def test_clause_splitter_filters_toc_dot_leaders_from_body_clauses() -> None:
     document = Document(
         filename="sample.pdf",

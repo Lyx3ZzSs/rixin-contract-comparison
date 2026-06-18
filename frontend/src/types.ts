@@ -121,7 +121,7 @@ export interface DiffItem {
   section_type?: string;
   match_score?: number | null;
   match_method?: string;
-  match_score_details?: Record<string, number>;
+  match_score_details?: Record<string, number | string>;
   match_candidates?: Record<string, unknown>[];
   review_flags?: string[];
   quality_status?: DiffQualityStatus;

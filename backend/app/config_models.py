@@ -96,6 +96,7 @@ class MatchingSettings(BaseModel):
 
     threshold: int = Field(default=85, ge=0, le=100)
     use_prefilter: bool = True
+    assignment_strategy: str = "greedy"
     enable_semantic_match: bool = False
     semantic_provider: str = "local"
     semantic_model_path: str = ""
@@ -107,7 +108,23 @@ class MatchingSettings(BaseModel):
     semantic_timeout_seconds: int = Field(default=60, ge=1)
     semantic_max_retries: int = Field(default=2, ge=0)
     semantic_weight: float = Field(default=0.08, ge=0.0, le=0.3)
+    enable_rerank: bool = False
+    rerank_base_url: str = ""
+    rerank_api_key: str = ""
+    rerank_model: str = ""
+    rerank_top_k: int = Field(default=30, ge=1, le=50)
+    rerank_timeout_seconds: int = Field(default=30, ge=1)
+    rerank_max_retries: int = Field(default=1, ge=0)
+    rerank_weight: float = Field(default=0.12, ge=0.0, le=0.5)
     low_confidence_review_threshold: float = Field(default=78.0, ge=0.0, le=100.0)
+
+    @field_validator("assignment_strategy")
+    @classmethod
+    def validate_assignment_strategy(cls, value: str) -> str:
+        strategy = str(value or "greedy").strip().lower()
+        if strategy not in {"greedy", "optimal"}:
+            raise ValueError("assignment_strategy must be one of: greedy, optimal")
+        return strategy
 
     @field_validator("semantic_provider")
     @classmethod
@@ -123,6 +140,14 @@ class MatchingSettings(BaseModel):
         url = value.strip()
         if url and not url.startswith(("http://", "https://")):
             raise ValueError("semantic_base_url must start with http:// or https://")
+        return url
+
+    @field_validator("rerank_base_url")
+    @classmethod
+    def validate_rerank_base_url(cls, value: str) -> str:
+        url = value.strip()
+        if url and not url.startswith(("http://", "https://")):
+            raise ValueError("rerank_base_url must start with http:// or https://")
         return url
 
 

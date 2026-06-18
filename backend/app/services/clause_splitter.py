@@ -6,6 +6,8 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from app.models import BBox, CharBox, Clause, Document, EvidenceBox, TextBlock
+from app.services.clause_numbering import ClauseNumberParser
+from app.services.clause_paragraphs import ParagraphBuilder
 from app.services.table_compare import TableComparator
 from app.services.normalizer import TextNormalizer
 
@@ -25,6 +27,9 @@ class ClauseUnit:
     order_reason: str = "source"
     section_type: str = "main_contract"
     split_flags: tuple[str, ...] = ()
+    page_numbers: tuple[int, ...] = ()
+    evidences: tuple[EvidenceBox, ...] = ()
+    source_block_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -39,7 +44,7 @@ class HeadingCandidate:
 
 class ClauseSplitter:
     clause_start_pattern = re.compile(
-        r"^\s*((第[一二三四五六七八九十百千万0-9]+[章节条])|([一二三四五六七八九十]+、)|(（[一二三四五六七八九十0-9]+）)|(\d+(?:\.\d+){0,3}[\.、]?))\s*(.*)$"
+        r"^\s*((第[零〇一二两三四五六七八九十百千万0-9]+[章节条])|([零〇一二两三四五六七八九十百千万]+[、.．])|(（[零〇一二两三四五六七八九十百千万0-9]+）)|(\d+(?:\.\d+)*[\.、．]?))\s*(.*)$"
     )
     skip_block_types = {
         "footer",
@@ -82,7 +87,7 @@ class ClauseSplitter:
     toc_dot_leader_pattern = re.compile(r"\.{2,}\s*\d*$|…{2,}\s*\d*$")
     short_symbol_noise_pattern = re.compile(r"^[/\\∠_.,，。·•\-—~～\s]{1,8}$")
     inline_clause_marker_pattern = re.compile(
-        r"(第[一二三四五六七八九十百千万0-9]+[章节条]|[一二三四五六七八九十]+[、.．]|[（(][一二三四五六七八九十0-9]+[)）]|\d+(?:\.\d+){0,3}[\.、])"
+        r"(第[零〇一二两三四五六七八九十百千万0-9]+[章节条]|[零〇一二两三四五六七八九十百千万]+[、.．]|[（(][零〇一二两三四五六七八九十百千万0-9]+[)）]|[①②③④⑤⑥⑦⑧⑨⑩]|\d+(?:\.\d+)*[\.、．])"
     )
     heading_accept_score = 0.68
     weak_heading_review_score = 0.55
@@ -113,6 +118,8 @@ class ClauseSplitter:
     def __init__(self, text_normalizer: TextNormalizer | None = None) -> None:
         self.normalizer = text_normalizer or TextNormalizer()
         self.table_detector = TableComparator()
+        self.number_parser = ClauseNumberParser()
+        self.paragraph_builder = ParagraphBuilder()
 
     def split(self, document: Document, prefix: str) -> list[Clause]:
         units = self._collect_units(document)
@@ -122,6 +129,7 @@ class ClauseSplitter:
         units = self._trim_cover_units(self._order_units(units))
         if not units:
             return []
+        units = self.paragraph_builder.build(units, parse_marker=self._parse_marker)
 
         clauses, saw_marker = self._detect_clause_items(units)
         if not saw_marker:
@@ -157,7 +165,7 @@ class ClauseSplitter:
                     continue
                 if self._is_masked_by_non_text(block, page_masks):
                     continue
-                if self._is_low_content_density(block):
+                if self._is_low_content_density(block) and self.number_parser.parse_line(block.text) is None:
                     continue
                 normalized_block = self.normalizer.normalize(block.text)
                 if not normalized_block:
@@ -189,6 +197,16 @@ class ClauseSplitter:
                             layout_order=block.layout_order,
                             reading_order=block.reading_order,
                             section_type=self._section_type_for_block(block),
+                            page_numbers=(block.page_no,),
+                            evidences=(
+                                EvidenceBox(
+                                    page_no=block.page_no,
+                                    bbox=block.bbox,
+                                    method="block_fallback",
+                                    text=piece[:300],
+                                ),
+                            ),
+                            source_block_ids=(block.block_id,),
                         )
                     )
         return units
@@ -508,6 +526,15 @@ class ClauseSplitter:
             for left, right in zip(by_y, by_y[1:], strict=False)
         )
 
+    def _unit_page_numbers(self, unit: ClauseUnit) -> tuple[int, ...]:
+        return unit.page_numbers or (unit.page_no,)
+
+    def _unit_evidences(self, unit: ClauseUnit) -> tuple[EvidenceBox, ...]:
+        return unit.evidences or (unit.evidence,)
+
+    def _unit_source_block_ids(self, unit: ClauseUnit) -> tuple[str, ...]:
+        return unit.source_block_ids or (unit.block_id,)
+
     def _detect_clause_items(self, units: list[ClauseUnit]) -> tuple[list[dict[str, Any]], bool]:
         clauses: list[dict[str, Any]] = []
         current: dict | None = None
@@ -550,9 +577,9 @@ class ClauseSplitter:
                     "section_path": section_path,
                     "texts": [unit.text],
                     "char_boxes": [unit.char_boxes],
-                    "page_numbers": [unit.page_no],
-                    "bboxes": [unit.evidence],
-                    "source_block_ids": [unit.block_id],
+                    "page_numbers": list(self._unit_page_numbers(unit)),
+                    "bboxes": list(self._unit_evidences(unit)),
+                    "source_block_ids": list(self._unit_source_block_ids(unit)),
                     "segmentation_reason": self._segmentation_reason(
                         self._heading_reason(candidate, "section_change" if section_changed and not starts_clause else "initial_unit_without_marker"),
                         unit,
@@ -563,9 +590,9 @@ class ClauseSplitter:
             else:
                 current["texts"].append(unit.text)
                 current["char_boxes"].append(unit.char_boxes)
-                current["page_numbers"].append(unit.page_no)
-                current["bboxes"].append(unit.evidence)
-                current["source_block_ids"].append(unit.block_id)
+                current["page_numbers"].extend(self._unit_page_numbers(unit))
+                current["bboxes"].extend(self._unit_evidences(unit))
+                current["source_block_ids"].extend(self._unit_source_block_ids(unit))
                 current["split_flags"].extend(flag for flag in unit.split_flags if flag not in current["split_flags"])
         if current is not None:
             clauses.append(current)
@@ -720,6 +747,7 @@ class ClauseSplitter:
         if self._is_weak_numeric_continuation(unit.text, marker):
             return None
 
+        business_heading = self._has_heading_business_term(title)
         if self._is_formal_clause_marker(clause_no):
             score += 0.34
             signals.append("formal_clause_marker")
@@ -753,9 +781,12 @@ class ClauseSplitter:
         if unit.block_type in {"paragraph_title", "doc_title", "title"}:
             score += 0.08
             signals.append("title_block")
-        if self._has_heading_business_term(title):
+        if business_heading:
             score += 0.06
             signals.append("heading_business_term")
+        if self.weak_numeric_marker_pattern.fullmatch(clause_no or "") and business_heading:
+            score += 0.08
+            signals.append("inline_numeric_business_heading")
         if re.search(r"[。；;]$", compact_title):
             score -= 0.10
             risk_flags.append("PUNCTUATED_HEADING")
@@ -813,9 +844,9 @@ class ClauseSplitter:
                     {
                         "texts": [unit.text],
                         "char_boxes": [unit.char_boxes],
-                        "page_numbers": [unit.page_no],
-                        "bboxes": [unit.evidence],
-                        "source_block_ids": [unit.block_id],
+                        "page_numbers": list(self._unit_page_numbers(unit)),
+                        "bboxes": list(self._unit_evidences(unit)),
+                        "source_block_ids": list(self._unit_source_block_ids(unit)),
                         "split_flags": self._split_flags(unit, None),
                     },
                     "non_body_section_group",
@@ -829,9 +860,9 @@ class ClauseSplitter:
                     "section_path": [self._title_from_text(unit.text)] if unit.section_type != "main_contract" else [],
                     "texts": [unit.text],
                     "char_boxes": [unit.char_boxes],
-                    "page_numbers": [unit.page_no],
-                    "bboxes": [unit.evidence],
-                    "source_block_ids": [unit.block_id],
+                    "page_numbers": list(self._unit_page_numbers(unit)),
+                    "bboxes": list(self._unit_evidences(unit)),
+                    "source_block_ids": list(self._unit_source_block_ids(unit)),
                     "segmentation_reason": "fallback_single_unit",
                     "segmentation_confidence": 0.45,
                     "split_flags": self._split_flags(unit, None),
@@ -896,25 +927,28 @@ class ClauseSplitter:
         return clause_no or compact_title
 
     def _marker_level(self, clause_no: str) -> int:
-        value = (clause_no or "").strip()
-        if not value:
-            return 1
-        if re.fullmatch(r"\d+(?:\.\d+)+", value):
-            return min(6, value.count(".") + 1)
-        if re.fullmatch(r"[（(][一二三四五六七八九十0-9]+[)）]", value):
-            return 2
-        return 1
+        return self.number_parser.level_of(clause_no)
 
     def _clause_key(self, section_type: str, section_path: list[str], clause_no: str, text: str) -> str:
         parts = [section_type or "main_contract"]
-        path = [self.normalizer.normalize_for_match(item) for item in section_path if item]
+        path = [self.normalizer.normalize_for_match(self._canonical_path_label(item)) for item in section_path if item]
         if path:
             parts.extend(path)
         elif clause_no:
-            parts.append(self.normalizer.normalize_for_match(clause_no))
+            canonical = self.number_parser.normalize_number(clause_no).replace(".", "_")
+            parts.append(self.normalizer.normalize_for_match(f"n{canonical}"))
         else:
             parts.append(self.normalizer.normalize_for_match(self._title_from_text(text))[:32])
         return "/".join(part for part in parts if part)
+
+    def _canonical_path_label(self, label: str) -> str:
+        parsed = self.number_parser.parse_line(label)
+        if parsed is None:
+            return label
+        canonical = f"n{parsed.canonical_number.replace('.', '_')}"
+        if parsed.title:
+            return f"{canonical} {parsed.title}"
+        return canonical
 
     def _is_pre_body_noise(self, unit: ClauseUnit, marker: tuple[str, str] | None) -> bool:
         block_type = unit.block_type
@@ -1078,22 +1112,21 @@ class ClauseSplitter:
         return bool(previous and not previous.isascii())
 
     def _parse_marker(self, text: str) -> tuple[str, str] | None:
-        first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
-        match = self.clause_start_pattern.match(first_line)
-        if not match:
+        parsed = self.number_parser.parse_line(text)
+        if parsed is None:
             return None
-        clause_no = match.group(1).rstrip("、.")
-        rest = match.group(6).strip() if match.lastindex and match.lastindex >= 6 else ""
-        title = self._title_from_text(rest)
-        return clause_no, title
+        return parsed.raw_number, parsed.title
 
     def _is_formal_clause_marker(self, clause_no: str) -> bool:
-        return bool(re.fullmatch(r"第[一二三四五六七八九十百千万0-9]+[章节条]", clause_no or ""))
+        return self.number_parser.is_formal_number(clause_no)
 
     def _is_quantity_or_amount_marker(self, text: str, marker: tuple[str, str]) -> bool:
         clause_no, _ = marker
         if self._is_formal_clause_marker(clause_no):
             return False
+        parsed = self.number_parser.parse_line(text)
+        if self.number_parser.is_non_clause_numeric(text, parsed):
+            return True
         first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
         compact = re.sub(r"\s+", "", first_line)
         if re.fullmatch(r"\d{1,3}", compact):
@@ -1134,7 +1167,8 @@ class ClauseSplitter:
         clause_no, _ = marker
         if self._is_formal_clause_marker(clause_no):
             return False
-        return bool(re.fullmatch(r"\d+(?:\.\d+)?", clause_no or ""))
+        normalized = self.number_parser.normalize_number(clause_no)
+        return bool(re.fullmatch(r"\d+(?:\.\d+)?", normalized or ""))
 
     def _page_looks_like_toc(self, page) -> bool:
         texts = [self.normalizer.normalize(block.text) for block in page.blocks if block.text]
@@ -1181,6 +1215,8 @@ class ClauseSplitter:
         if not self.weak_numeric_marker_pattern.fullmatch(clause_no or ""):
             return False
         compact_title = re.sub(r"\s+", "", title or "")
+        if self._has_heading_business_term(compact_title):
+            return False
         if len(compact_title) < 4:
             return True
         first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""

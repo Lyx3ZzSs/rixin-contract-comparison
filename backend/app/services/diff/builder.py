@@ -55,7 +55,7 @@ def build_add(pair: ClausePair, index: int) -> DiffItem:
         match_candidates=pair.match_candidates,
         match_confidence=pair.match_confidence,
         structural_flags=clause.split_flags,
-        review_flags=structural_review_flags(clause),
+        review_flags=list(dict.fromkeys([*structural_review_flags(clause), *unmatched_review_flags(pair)])),
         compare_evidence=clause.bboxes,
         compare_change_ranges=[TextRange(start=0, end=len(clause.text), highlight_type="ADD")],
     )
@@ -82,7 +82,7 @@ def build_delete(pair: ClausePair, index: int) -> DiffItem:
         match_candidates=pair.match_candidates,
         match_confidence=pair.match_confidence,
         structural_flags=clause.split_flags,
-        review_flags=structural_review_flags(clause),
+        review_flags=list(dict.fromkeys([*structural_review_flags(clause), *unmatched_review_flags(pair)])),
         original_evidence=clause.bboxes,
         original_change_ranges=[TextRange(start=0, end=len(clause.text), highlight_type="DELETE")],
     )
@@ -181,12 +181,36 @@ def review_flags(pair: ClausePair) -> list[str]:
         flags.append("SAME_CLAUSE_NO_LOW_SIMILARITY")
     if pair.match_method == "renumbered_similarity":
         flags.append("POSSIBLE_RENUMBERED_CLAUSE")
-    if pair.match_method == "contained_compare":
-        flags.extend(["TEXT_FOUND_IN_OTHER_CLAUSE", "POSSIBLE_SEGMENTATION_DRIFT"])
+    if pair.match_method in {"contained_compare", "merged_compare"}:
+        flags.extend(
+            [
+                "TEXT_FOUND_IN_OTHER_CLAUSE",
+                "POSSIBLE_SEGMENTATION_DRIFT",
+                "POSSIBLE_MERGED_CLAUSE",
+                "PARTIAL_CLAUSE_MATCH",
+            ]
+        )
+    if pair.match_method in {"contained_original", "split_original"}:
+        flags.extend(
+            [
+                "TEXT_FOUND_IN_OTHER_CLAUSE",
+                "POSSIBLE_SEGMENTATION_DRIFT",
+                "POSSIBLE_SPLIT_CLAUSE",
+                "PARTIAL_CLAUSE_MATCH",
+            ]
+        )
+    if pair.score_details.get("partial_clause_match", 0.0) >= 1:
+        flags.append("PARTIAL_CLAUSE_MATCH")
     if pair.match_confidence == "LOW":
         flags.append("LOW_CONFIDENCE_MATCH")
     if pair.match_method == "same_clause_key_weighted" and pair.score_details.get("body_length_coverage", 1.0) < 0.70:
         flags.append("LOW_COVERAGE_CLAUSE_KEY_MATCH")
+    if pair.score_details.get("body_length_coverage", 1.0) < 0.50 and pair.match_method != "contained_compare":
+        flags.append("LOW_COVERAGE_MATCH_REVIEW")
+    if pair.score_details.get("short_clause_pair", 0.0) >= 1:
+        flags.append("SHORT_CLAUSE_MATCH_REVIEW")
+    if pair.score_details.get("section_mismatch_candidate", 0.0) >= 1:
+        flags.append("POSSIBLE_SECTION_MISCLASSIFICATION")
     if pair.match_method in {"section_mismatch_blocked", "same_clause_no_low_similarity"}:
         flags.append("POSSIBLE_CLAUSE_MISMATCH")
     if pair.score_details.get("business_token_mismatch", 0.0) >= 1:
@@ -198,6 +222,23 @@ def review_flags(pair: ClausePair) -> list[str]:
     if pair.compare is not None:
         flags.extend(structural_review_flags(pair.compare))
     return list(dict.fromkeys(flags))
+
+
+def unmatched_review_flags(pair: ClausePair) -> list[str]:
+    flags: list[str] = []
+    if any(
+        candidate.get("score_details", {}).get("section_mismatch_candidate", 0.0) >= 1
+        for candidate in pair.match_candidates
+        if isinstance(candidate.get("score_details"), dict)
+    ):
+        flags.append("POSSIBLE_SECTION_MISCLASSIFICATION")
+    if any(
+        candidate.get("score_details", {}).get("short_clause_pair", 0.0) >= 1
+        for candidate in pair.match_candidates
+        if isinstance(candidate.get("score_details"), dict)
+    ):
+        flags.append("SHORT_CLAUSE_MATCH_REVIEW")
+    return flags
 
 
 def structural_review_flags(clause) -> list[str]:

@@ -82,6 +82,7 @@ def test_diff_engine_rejects_unknown_value() -> None:
 
 def test_semantic_matching_config_maps_to_nested_settings() -> None:
     app_settings = Settings(
+        match_assignment_strategy="optimal",
         match_enable_semantic_match=True,
         match_semantic_provider="openai",
         match_semantic_base_url="http://127.0.0.1:8001/v1",
@@ -92,8 +93,17 @@ def test_semantic_matching_config_maps_to_nested_settings() -> None:
         match_semantic_timeout_seconds=30,
         match_semantic_max_retries=1,
         match_semantic_weight=0.1,
+        match_enable_rerank=True,
+        match_rerank_base_url="http://127.0.0.1:8002/v1",
+        match_rerank_api_key="rerank-key",
+        match_rerank_model="clause-reranker",
+        match_rerank_top_k=25,
+        match_rerank_timeout_seconds=12,
+        match_rerank_max_retries=0,
+        match_rerank_weight=0.2,
     )
 
+    assert app_settings.matching.assignment_strategy == "optimal"
     assert app_settings.matching.enable_semantic_match is True
     assert app_settings.matching.semantic_provider == "openai"
     assert app_settings.matching.semantic_base_url == "http://127.0.0.1:8001/v1"
@@ -104,6 +114,19 @@ def test_semantic_matching_config_maps_to_nested_settings() -> None:
     assert app_settings.matching.semantic_timeout_seconds == 30
     assert app_settings.matching.semantic_max_retries == 1
     assert app_settings.matching.semantic_weight == 0.1
+    assert app_settings.matching.enable_rerank is True
+    assert app_settings.matching.rerank_base_url == "http://127.0.0.1:8002/v1"
+    assert app_settings.matching.rerank_api_key == "rerank-key"
+    assert app_settings.matching.rerank_model == "clause-reranker"
+    assert app_settings.matching.rerank_top_k == 25
+    assert app_settings.matching.rerank_timeout_seconds == 12
+    assert app_settings.matching.rerank_max_retries == 0
+    assert app_settings.matching.rerank_weight == 0.2
+
+
+def test_matching_rejects_unknown_assignment_strategy() -> None:
+    with pytest.raises(ValidationError, match="MATCH_ASSIGNMENT_STRATEGY"):
+        Settings(match_assignment_strategy="random")
 
 
 def test_semantic_matching_rejects_unknown_provider() -> None:
@@ -114,6 +137,16 @@ def test_semantic_matching_rejects_unknown_provider() -> None:
 def test_semantic_matching_rejects_invalid_http_url() -> None:
     with pytest.raises(ValidationError, match="MATCH_SEMANTIC_BASE_URL"):
         Settings(match_semantic_base_url="127.0.0.1:8001/v1")
+
+
+def test_rerank_matching_rejects_invalid_http_url() -> None:
+    with pytest.raises(ValidationError, match="MATCH_RERANK_BASE_URL"):
+        Settings(match_rerank_base_url="127.0.0.1:8002/v1")
+
+
+def test_rerank_matching_rejects_invalid_top_k() -> None:
+    with pytest.raises(ValidationError):
+        Settings(match_rerank_top_k=51)
 
 
 def test_document_understanding_config_maps_to_nested_settings() -> None:

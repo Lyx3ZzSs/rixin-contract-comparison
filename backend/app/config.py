@@ -119,6 +119,7 @@ class Settings(BaseSettings):
 
     match_threshold: int = Field(default=85, ge=0, le=100)
     match_use_prefilter: bool = True
+    match_assignment_strategy: str = "greedy"
     match_enable_semantic_match: bool = False
     match_semantic_provider: str = "local"
     match_semantic_model_path: str = ""
@@ -130,6 +131,14 @@ class Settings(BaseSettings):
     match_semantic_timeout_seconds: int = Field(default=60, ge=1)
     match_semantic_max_retries: int = Field(default=2, ge=0)
     match_semantic_weight: float = Field(default=0.08, ge=0.0, le=0.3)
+    match_enable_rerank: bool = False
+    match_rerank_base_url: str = ""
+    match_rerank_api_key: str = ""
+    match_rerank_model: str = ""
+    match_rerank_top_k: int = Field(default=30, ge=1, le=50)
+    match_rerank_timeout_seconds: int = Field(default=30, ge=1)
+    match_rerank_max_retries: int = Field(default=1, ge=0)
+    match_rerank_weight: float = Field(default=0.12, ge=0.0, le=0.5)
     match_low_confidence_review_threshold: float = Field(default=78.0, ge=0.0, le=100.0)
 
     # -- Diff (flat env vars) ---------------------------------------------
@@ -207,12 +216,20 @@ class Settings(BaseSettings):
             raise ValueError("MATCH_SEMANTIC_PROVIDER must be one of: local, openai")
         return provider
 
-    @field_validator("match_semantic_base_url")
+    @field_validator("match_assignment_strategy", mode="before")
     @classmethod
-    def validate_match_semantic_base_url(cls, value: str) -> str:
+    def validate_match_assignment_strategy(cls, value: Any) -> str:
+        strategy = str(value or "greedy").strip().lower()
+        if strategy not in {"greedy", "optimal"}:
+            raise ValueError("MATCH_ASSIGNMENT_STRATEGY must be one of: greedy, optimal")
+        return strategy
+
+    @field_validator("match_semantic_base_url", "match_rerank_base_url")
+    @classmethod
+    def validate_match_http_url(cls, value: str) -> str:
         url = value.strip()
         if url and not url.startswith(("http://", "https://")):
-            raise ValueError("MATCH_SEMANTIC_BASE_URL must start with http:// or https://")
+            raise ValueError("MATCH_SEMANTIC_BASE_URL or MATCH_RERANK_BASE_URL must start with http:// or https://")
         return url
 
     @field_validator("layout_analysis_mode")
@@ -240,6 +257,7 @@ class Settings(BaseSettings):
         self.matching = MatchingSettings(
             threshold=self.match_threshold,
             use_prefilter=self.match_use_prefilter,
+            assignment_strategy=self.match_assignment_strategy,
             enable_semantic_match=self.match_enable_semantic_match,
             semantic_provider=self.match_semantic_provider,
             semantic_model_path=self.match_semantic_model_path,
@@ -251,6 +269,14 @@ class Settings(BaseSettings):
             semantic_timeout_seconds=self.match_semantic_timeout_seconds,
             semantic_max_retries=self.match_semantic_max_retries,
             semantic_weight=self.match_semantic_weight,
+            enable_rerank=self.match_enable_rerank,
+            rerank_base_url=self.match_rerank_base_url,
+            rerank_api_key=self.match_rerank_api_key,
+            rerank_model=self.match_rerank_model,
+            rerank_top_k=self.match_rerank_top_k,
+            rerank_timeout_seconds=self.match_rerank_timeout_seconds,
+            rerank_max_retries=self.match_rerank_max_retries,
+            rerank_weight=self.match_rerank_weight,
             low_confidence_review_threshold=self.match_low_confidence_review_threshold,
         )
 

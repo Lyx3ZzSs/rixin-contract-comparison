@@ -6,6 +6,7 @@ from collections import Counter
 
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.models import Clause, ClausePair, DiffItem, DocumentProfile, LayoutQualityReport
+from app.services.clause_numbering import ClauseNumberParser
 from app.utils.json_utils import to_jsonable
 
 
@@ -14,6 +15,7 @@ class CompareDebugWriter:
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.artifact_store = artifact_store
+        self.number_parser = ClauseNumberParser()
 
     def write_profiles(
         self,
@@ -67,6 +69,18 @@ class CompareDebugWriter:
                 {
                     "original": self._section_outline(original),
                     "compare": self._section_outline(compare),
+                },
+            )
+        )
+
+    def write_clause_split_quality(self, task_id: str, original: list[Clause], compare: list[Clause]) -> str:
+        return str(
+            self._write_json(
+                task_id,
+                "clause_split_quality.json",
+                {
+                    "original": self._clause_split_quality(original),
+                    "compare": self._clause_split_quality(compare),
                 },
             )
         )
@@ -177,9 +191,12 @@ class CompareDebugWriter:
         return to_jsonable(model)
 
     def _clause_summary(self, clause: Clause) -> dict[str, Any]:
+        parsed = self.number_parser.parse_line(clause.clause_no) if clause.clause_no else None
         return {
             "clause_id": clause.clause_id,
             "clause_no": clause.clause_no,
+            "canonical_clause_no": parsed.canonical_number if parsed else self.number_parser.normalize_number(clause.clause_no),
+            "number_style": parsed.style if parsed else "",
             "title": clause.title,
             "section_type": clause.section_type,
             "section_path": clause.section_path,
@@ -193,6 +210,50 @@ class CompareDebugWriter:
             "text_length": len(clause.text),
             "normalized_length": len(clause.normalized_text),
             "text_preview": clause.text[:500],
+        }
+
+    def _clause_split_quality(self, clauses: list[Clause]) -> dict[str, Any]:
+        key_counts: Counter[str] = Counter(clause.clause_key for clause in clauses if clause.clause_key)
+        duplicate_keys = [key for key, count in key_counts.items() if count > 1]
+        short_clauses = [clause for clause in clauses if len(clause.normalized_text) < 8]
+        long_clauses = [clause for clause in clauses if len(clause.normalized_text) > 1500]
+        low_confidence = [clause for clause in clauses if clause.segmentation_confidence < 0.68]
+        weak_numbered = [
+            clause
+            for clause in clauses
+            if "WEAK_NUMERIC_MARKER" in clause.split_flags or "WEAK_HEADING" in clause.split_flags
+        ]
+        paragraph_merged = [clause for clause in clauses if "PARAGRAPH_MERGED" in clause.split_flags]
+        section_counts: Counter[str] = Counter(clause.section_type for clause in clauses)
+        return {
+            "clause_count": len(clauses),
+            "section_counts": dict(section_counts),
+            "short_clause_count": len(short_clauses),
+            "long_clause_count": len(long_clauses),
+            "low_confidence_count": len(low_confidence),
+            "weak_numbered_count": len(weak_numbered),
+            "paragraph_merged_count": len(paragraph_merged),
+            "duplicate_clause_key_count": len(duplicate_keys),
+            "duplicate_clause_keys": duplicate_keys[:50],
+            "short_clauses": [self._quality_clause_ref(clause) for clause in short_clauses[:50]],
+            "long_clauses": [self._quality_clause_ref(clause) for clause in long_clauses[:50]],
+            "low_confidence_clauses": [self._quality_clause_ref(clause) for clause in low_confidence[:50]],
+            "weak_numbered_clauses": [self._quality_clause_ref(clause) for clause in weak_numbered[:50]],
+            "paragraph_merged_clauses": [self._quality_clause_ref(clause) for clause in paragraph_merged[:50]],
+        }
+
+    def _quality_clause_ref(self, clause: Clause) -> dict[str, Any]:
+        return {
+            "clause_id": clause.clause_id,
+            "clause_no": clause.clause_no,
+            "title": clause.title,
+            "section_type": clause.section_type,
+            "clause_key": clause.clause_key,
+            "split_flags": clause.split_flags,
+            "segmentation_confidence": clause.segmentation_confidence,
+            "normalized_length": len(clause.normalized_text),
+            "page_numbers": clause.page_numbers,
+            "text_preview": clause.text[:160],
         }
 
     def _section_outline(self, clauses: list[Clause]) -> list[dict[str, Any]]:

@@ -16,7 +16,7 @@ except Exception:  # pragma: no cover - fallback for minimal environments
     fuzz = None
 
 from app.models import Clause, ClausePair
-from app.services.clause_splitter import ClauseSplitter
+from app.services.clause_numbering import ClauseNumberParser
 from app.services.normalizer import TextNormalizer
 
 logger = logging.getLogger(__name__)
@@ -28,8 +28,16 @@ class MatchCandidate:
     compare: Clause
     score: float
     method: str
-    details: dict[str, float]
+    details: dict[str, Any]
     sources: tuple[str, ...] = ()
+
+
+@dataclass
+class _FlowEdge:
+    to: int
+    reverse: int
+    capacity: int
+    cost: int
 
 
 class SemanticMatcher:
@@ -236,6 +244,87 @@ class SemanticMatcher:
         return max(0.0, min(100.0, dot / (left_norm * right_norm) * 100.0))
 
 
+class RerankMatcher:
+    """Optional private reranker used after candidate recall and before assignment."""
+
+    def __init__(
+        self,
+        *,
+        enabled: bool = False,
+        base_url: str = "",
+        api_key: str = "",
+        model: str = "",
+        timeout_seconds: int = 30,
+        max_retries: int = 1,
+    ) -> None:
+        self.enabled = False
+        self.base_url = base_url.strip().rstrip("/")
+        self.api_key = api_key.strip()
+        self.model_name = model.strip()
+        self.timeout_seconds = max(1, timeout_seconds)
+        self.max_retries = max(0, max_retries)
+        if not enabled:
+            return
+        if not self.base_url:
+            logger.warning("Clause rerank is enabled but MATCH_RERANK_BASE_URL is empty.")
+            return
+        self.enabled = True
+
+    def score_candidates(self, candidates: list[MatchCandidate]) -> list[tuple[float, bool, str]]:
+        if not self.enabled or not candidates:
+            return [(0.0, False, "") for _ in candidates]
+        pairs = [
+            {
+                "original": self._rerank_text(candidate.original),
+                "compare": self._rerank_text(candidate.compare),
+            }
+            for candidate in candidates
+        ]
+        endpoint = self.base_url if self.base_url.endswith("/rerank") else f"{self.base_url}/rerank"
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        body: dict[str, Any] = {"pairs": pairs}
+        if self.model_name:
+            body["model"] = self.model_name
+        attempts = self.max_retries + 1
+        last_error: Exception | None = None
+        for _ in range(attempts):
+            try:
+                with httpx.Client(timeout=self.timeout_seconds) as client:
+                    response = client.post(endpoint, headers=headers, json=body)
+                    response.raise_for_status()
+                    return self._parse_scores(response.json(), expected_count=len(candidates))
+            except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+                last_error = exc
+        logger.warning("Clause rerank disabled: rerank request failed (%s).", last_error)
+        self.enabled = False
+        return [(0.0, False, "") for _ in candidates]
+
+    @staticmethod
+    def _parse_scores(payload: dict[str, Any], *, expected_count: int) -> list[tuple[float, bool, str]]:
+        data = payload.get("data")
+        if not isinstance(data, list) or len(data) != expected_count:
+            raise ValueError("rerank response data count does not match input count")
+        scores: list[tuple[float, bool, str]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                raise ValueError("rerank response item must be an object")
+            raw_score = item.get("score")
+            if not isinstance(raw_score, (int, float)):
+                raise ValueError("rerank response item is missing numeric score")
+            score = float(raw_score)
+            if 0.0 <= score <= 1.0:
+                score *= 100.0
+            reason = str(item.get("reason") or "")[:300]
+            scores.append((max(0.0, min(100.0, score)), True, reason))
+        return scores
+
+    @staticmethod
+    def _rerank_text(clause: Clause) -> str:
+        return "\n".join(part for part in [clause.title, clause.text] if part)[:1600]
+
+
 class ClauseMatcher:
     def __init__(
         self,
@@ -243,6 +332,7 @@ class ClauseMatcher:
         use_prefilter: bool = True,
         body_top_k: int = 8,
         title_top_k: int = 5,
+        assignment_strategy: str = "greedy",
         enable_semantic_match: bool = False,
         semantic_provider: str = "local",
         semantic_model_path: str = "",
@@ -254,14 +344,28 @@ class ClauseMatcher:
         semantic_timeout_seconds: int = 60,
         semantic_max_retries: int = 2,
         semantic_weight: float = 0.08,
+        enable_rerank: bool = False,
+        rerank_base_url: str = "",
+        rerank_api_key: str = "",
+        rerank_model: str = "",
+        rerank_top_k: int = 30,
+        rerank_timeout_seconds: int = 30,
+        rerank_max_retries: int = 1,
+        rerank_weight: float = 0.12,
         low_confidence_review_threshold: float = 78.0,
     ) -> None:
         self.threshold = threshold
         self.normalizer = TextNormalizer()
+        self.number_parser = ClauseNumberParser()
         self._use_prefilter = use_prefilter
         self.body_top_k = body_top_k
         self.title_top_k = title_top_k
+        self.assignment_strategy = assignment_strategy.strip().lower() if assignment_strategy else "greedy"
+        if self.assignment_strategy not in {"greedy", "optimal"}:
+            self.assignment_strategy = "greedy"
         self.semantic_weight = semantic_weight
+        self.rerank_weight = rerank_weight
+        self.rerank_top_k = max(1, min(50, rerank_top_k))
         self.low_confidence_review_threshold = low_confidence_review_threshold
         self.semantic_matcher = SemanticMatcher(
             enabled=enable_semantic_match,
@@ -274,6 +378,14 @@ class ClauseMatcher:
             batch_size=semantic_batch_size,
             timeout_seconds=semantic_timeout_seconds,
             max_retries=semantic_max_retries,
+        )
+        self.rerank_matcher = RerankMatcher(
+            enabled=enable_rerank,
+            base_url=rerank_base_url,
+            api_key=rerank_api_key,
+            model=rerank_model,
+            timeout_seconds=rerank_timeout_seconds,
+            max_retries=rerank_max_retries,
         )
 
     def match(self, original: list[Clause], compare: list[Clause]) -> list[ClausePair]:
@@ -310,6 +422,16 @@ class ClauseMatcher:
                 compare.index(pair.compare) if pair.compare in compare else len(compare),
             )
         )
+
+        structural_pairs = self._match_structural_drift_candidates(
+            original,
+            compare,
+            matched_original,
+            matched_compare,
+            consumed_original_spans,
+            consumed_compare_spans,
+        )
+        pairs.extend(structural_pairs)
 
         synthetic_pairs = self._match_unmatched_originals_inside_matched_compare(
             original,
@@ -348,15 +470,42 @@ class ClauseMatcher:
             if left.clause_id not in matched_original:
                 redacted = self._redact_clause(left, consumed_original_spans)
                 if redacted is not None:
-                    pairs.append(ClausePair(original=redacted, compare=None, match_method="delete"))
+                    pairs.append(
+                        ClausePair(
+                            original=redacted,
+                            compare=None,
+                            match_method="delete",
+                            match_candidates=self._section_mismatch_summaries(candidates_by_original.get(left.clause_id, [])),
+                        )
+                    )
         for right in compare:
             if right.clause_id not in matched_compare:
-                pairs.append(ClausePair(original=None, compare=right, match_method="add"))
+                pairs.append(
+                    ClausePair(
+                        original=None,
+                        compare=right,
+                        match_method="add",
+                        match_candidates=self._section_mismatch_summaries_for_compare(all_candidates, right.clause_id),
+                    )
+                )
 
         return pairs
 
     def _select_global_candidates(self, candidates: list[MatchCandidate]) -> list[MatchCandidate]:
         acceptable = [candidate for candidate in candidates if self._candidate_acceptable(candidate)]
+        if self.assignment_strategy == "optimal":
+            try:
+                selected = self._select_optimal_candidates(acceptable)
+            except Exception:
+                logger.warning("Optimal clause assignment failed; falling back to greedy selection.", exc_info=True)
+                return self._select_greedy_candidates(acceptable)
+            if acceptable and not selected:
+                logger.warning("Optimal clause assignment returned no matches; falling back to greedy selection.")
+                return self._select_greedy_candidates(acceptable)
+            return selected
+        return self._select_greedy_candidates(acceptable)
+
+    def _select_greedy_candidates(self, acceptable: list[MatchCandidate]) -> list[MatchCandidate]:
         by_original: dict[str, list[MatchCandidate]] = {}
         by_compare: dict[str, list[MatchCandidate]] = {}
         for candidate in acceptable:
@@ -382,6 +531,116 @@ class ClauseMatcher:
             used_original.add(candidate.original.clause_id)
             used_compare.add(candidate.compare.clause_id)
 
+        return selected
+
+    def _select_optimal_candidates(self, candidates: list[MatchCandidate]) -> list[MatchCandidate]:
+        if not candidates:
+            return []
+        best_by_pair: dict[tuple[str, str], MatchCandidate] = {}
+        for candidate in candidates:
+            key = (candidate.original.clause_id, candidate.compare.clause_id)
+            existing = best_by_pair.get(key)
+            if existing is None or candidate.score > existing.score:
+                best_by_pair[key] = candidate
+        sparse_candidates = list(best_by_pair.values())
+        original_ids = sorted({candidate.original.clause_id for candidate in sparse_candidates})
+        compare_ids = sorted({candidate.compare.clause_id for candidate in sparse_candidates})
+        original_index = {clause_id: index for index, clause_id in enumerate(original_ids)}
+        compare_index = {clause_id: index for index, clause_id in enumerate(compare_ids)}
+        selected_keys = self._max_weight_matching(
+            [
+                (
+                    original_index[candidate.original.clause_id],
+                    compare_index[candidate.compare.clause_id],
+                    candidate.score,
+                )
+                for candidate in sparse_candidates
+            ],
+            left_count=len(original_ids),
+            right_count=len(compare_ids),
+        )
+        by_index_pair = {
+            (original_index[candidate.original.clause_id], compare_index[candidate.compare.clause_id]): candidate
+            for candidate in sparse_candidates
+        }
+        selected = [by_index_pair[key] for key in selected_keys if key in by_index_pair]
+        selected.sort(
+            key=lambda item: (
+                item.score,
+                item.details["body_score"],
+                item.details["clause_no_score"],
+                item.details["title_score"],
+            ),
+            reverse=True,
+        )
+        return selected
+
+    def _max_weight_matching(
+        self,
+        edges: list[tuple[int, int, float]],
+        *,
+        left_count: int,
+        right_count: int,
+    ) -> set[tuple[int, int]]:
+        if not edges or left_count <= 0 or right_count <= 0:
+            return set()
+        source = 0
+        left_start = 1
+        right_start = left_start + left_count
+        sink = right_start + right_count
+        graph: list[list[_FlowEdge]] = [[] for _ in range(sink + 1)]
+
+        def add_edge(left: int, right: int, capacity: int, cost: int) -> None:
+            graph[left].append(_FlowEdge(right, len(graph[right]), capacity, cost))
+            graph[right].append(_FlowEdge(left, len(graph[left]) - 1, 0, -cost))
+
+        for left in range(left_count):
+            add_edge(source, left_start + left, 1, 0)
+        for right in range(right_count):
+            add_edge(right_start + right, sink, 1, 0)
+        cardinality_bonus = 100_000
+        for left, right, score in edges:
+            add_edge(left_start + left, right_start + right, 1, -(cardinality_bonus + int(round(score * 100))))
+
+        selected: set[tuple[int, int]] = set()
+        while True:
+            distance = [10**18] * len(graph)
+            previous_node = [-1] * len(graph)
+            previous_edge = [-1] * len(graph)
+            in_queue = [False] * len(graph)
+            queue = [source]
+            distance[source] = 0
+            in_queue[source] = True
+            while queue:
+                node = queue.pop(0)
+                in_queue[node] = False
+                for edge_index, edge in enumerate(graph[node]):
+                    if edge.capacity <= 0:
+                        continue
+                    next_distance = distance[node] + edge.cost
+                    if next_distance < distance[edge.to]:
+                        distance[edge.to] = next_distance
+                        previous_node[edge.to] = node
+                        previous_edge[edge.to] = edge_index
+                        if not in_queue[edge.to]:
+                            queue.append(edge.to)
+                            in_queue[edge.to] = True
+            if distance[sink] >= 0 or previous_node[sink] < 0:
+                break
+            node = sink
+            while node != source:
+                prev = previous_node[node]
+                edge_index = previous_edge[node]
+                edge = graph[prev][edge_index]
+                edge.capacity -= 1
+                graph[node][edge.reverse].capacity += 1
+                node = prev
+
+        for left in range(left_count):
+            graph_node = left_start + left
+            for edge in graph[graph_node]:
+                if right_start <= edge.to < right_start + right_count and edge.capacity == 0:
+                    selected.add((left, edge.to - right_start))
         return selected
 
     def _is_mutual_best(
@@ -419,7 +678,7 @@ class ClauseMatcher:
             ),
             reverse=True,
         )
-        return candidates
+        return self._apply_rerank(candidates)
 
     def _build_candidates_prefiltered(self, original: list[Clause], compare: list[Clause]) -> list[MatchCandidate]:
         compare_no_index = self._build_clause_no_index(compare)
@@ -500,7 +759,72 @@ class ClauseMatcher:
             ),
             reverse=True,
         )
-        return candidates
+        return self._apply_rerank(candidates)
+
+    def _apply_rerank(self, candidates: list[MatchCandidate]) -> list[MatchCandidate]:
+        if not self.rerank_matcher.enabled or not candidates:
+            return candidates
+        rerank_by_key: dict[tuple[str, str], tuple[float, str]] = {}
+        for group in self._rerank_groups(candidates):
+            rerank_scores = self.rerank_matcher.score_candidates(group)
+            if not any(available for _, available, _ in rerank_scores):
+                continue
+            for candidate, (rerank_score, available, reason) in zip(group, rerank_scores, strict=False):
+                if available:
+                    rerank_by_key[(candidate.original.clause_id, candidate.compare.clause_id)] = (rerank_score, reason)
+        if not rerank_by_key:
+            return candidates
+
+        reranked: list[MatchCandidate] = []
+        for candidate in candidates:
+            details = dict(candidate.details)
+            rerank_result = rerank_by_key.get((candidate.original.clause_id, candidate.compare.clause_id))
+            if rerank_result is not None:
+                rerank_score, reason = rerank_result
+                details["semantic_rerank_available"] = 1.0
+                details["semantic_rerank_score"] = round(rerank_score, 2)
+                details["semantic_rerank_reason"] = reason
+                details["semantic_rerank_reason_present"] = 1.0 if reason else 0.0
+                details["rerank_available"] = 1.0
+                details["rerank_score"] = round(rerank_score, 2)
+                details["rerank_reason_present"] = 1.0 if reason else 0.0
+            else:
+                details["semantic_rerank_available"] = 0.0
+                details["semantic_rerank_score"] = 0.0
+                details["semantic_rerank_reason"] = ""
+                details["semantic_rerank_reason_present"] = 0.0
+            details["assignment_strategy_optimal"] = 1.0 if self.assignment_strategy == "optimal" else 0.0
+            score = self._weighted_score(details)
+            method = self._match_method(candidate.original, candidate.compare, details, score)
+            reranked.append(MatchCandidate(candidate.original, candidate.compare, score, method, details, candidate.sources))
+        reranked.sort(
+            key=lambda item: (
+                item.score,
+                item.details["body_score"],
+                item.details["clause_no_score"],
+                item.details["title_score"],
+            ),
+            reverse=True,
+        )
+        return reranked
+
+    def _rerank_groups(self, candidates: list[MatchCandidate]) -> list[list[MatchCandidate]]:
+        by_original: dict[str, list[MatchCandidate]] = {}
+        for candidate in candidates:
+            by_original.setdefault(candidate.original.clause_id, []).append(candidate)
+        groups: list[list[MatchCandidate]] = []
+        for group in by_original.values():
+            group.sort(
+                key=lambda item: (
+                    item.score,
+                    item.details["body_score"],
+                    item.details["clause_no_score"],
+                    item.details["title_score"],
+                ),
+                reverse=True,
+            )
+            groups.append(group[: self.rerank_top_k])
+        return groups
 
     def _build_clause_no_index(self, clauses: list[Clause]) -> dict[str, list[int]]:
         index: dict[str, list[int]] = {}
@@ -520,33 +844,48 @@ class ClauseMatcher:
         compare: list[Clause],
         original_count: int,
         compare_count: int,
-    ) -> dict[str, float]:
+    ) -> dict[str, Any]:
         title_score = self._token_score(left.title, right.title) if left.title and right.title else 0.0
         body_details = self._body_score_details(self._match_text(left), self._match_text(right))
         clause_no_score = self._clause_no_score(left.clause_no, right.clause_no)
         clause_key_score = self._clause_key_score(left, right)
+        canonical_path_score = self._canonical_path_score(left, right)
         section_score = self._section_score(left, right)
+        section_mismatch_score = self._section_mismatch_score(left, right, body_details["body_score"], clause_no_score, title_score)
         position_score = self._position_score(original_index / original_count, compare_index / compare_count)
         neighbor_score = self._neighbor_score(original, compare, original_index, compare_index)
         business_token_score, business_mismatch = self._business_token_score(left.text, right.text, body_details["body_score"])
         details = {
             "clause_key_score": round(clause_key_score, 2),
+            "canonical_path_score": round(canonical_path_score, 2),
             "clause_no_score": round(clause_no_score, 2),
             "section_score": round(section_score, 2),
+            "section_mismatch_candidate": 1.0 if section_mismatch_score >= 88 else 0.0,
+            "section_mismatch_score": round(section_mismatch_score, 2),
             "title_score": round(title_score, 2),
             "position_score": round(position_score, 2),
             "neighbor_score": round(neighbor_score, 2),
             "business_token_score": round(business_token_score, 2),
             "business_token_mismatch": 1.0 if business_mismatch else 0.0,
             "weak_numeric_marker": 1.0 if self._has_weak_numeric_marker(left, right) else 0.0,
+            "short_clause_pair": 1.0 if self._is_short_clause(left) or self._is_short_clause(right) else 0.0,
             "semantic_score": 0.0,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 1.0 if self.assignment_strategy == "optimal" else 0.0,
         }
         details.update({key: round(value, 2) for key, value in body_details.items()})
         return details
 
-    def _weighted_score(self, details: dict[str, float]) -> float:
+    def _weighted_score(self, details: dict[str, Any]) -> float:
         weighted = (
             details["clause_key_score"] * 0.16
+            + details.get("canonical_path_score", 0.0) * 0.05
             + details["section_score"] * 0.10
             + details["clause_no_score"] * 0.14
             + details["title_score"] * 0.18
@@ -555,6 +894,7 @@ class ClauseMatcher:
             + details["position_score"] * 0.06
             + details["neighbor_score"] * 0.05
             + details.get("semantic_score", 0.0) * self.semantic_weight
+            + float(details.get("semantic_rerank_score", 0.0)) * float(details.get("semantic_rerank_available", 0.0)) * self.rerank_weight
         )
         if details["section_score"] < 100 and details["body_score"] < 90:
             weighted = min(weighted, 72.0)
@@ -610,7 +950,7 @@ class ClauseMatcher:
             and min(len(self._match_text(candidate.original)), len(self._match_text(candidate.compare))) >= 20
         )
 
-    def _match_method(self, left: Clause, right: Clause, details: dict[str, float], score: float) -> str:
+    def _match_method(self, left: Clause, right: Clause, details: dict[str, Any], score: float) -> str:
         same_clause_no = self._same_clause_no(left.clause_no, right.clause_no)
         if details["section_score"] < 100:
             return "section_mismatch_blocked"
@@ -654,6 +994,34 @@ class ClauseMatcher:
             )
         return result
 
+    def _section_mismatch_summaries(self, candidates: list[MatchCandidate]) -> list[dict[str, object]]:
+        flagged = [
+            candidate
+            for candidate in candidates
+            if candidate.details.get("section_mismatch_candidate", 0.0) >= 1
+        ]
+        return self._candidate_summaries(flagged)
+
+    def _section_mismatch_summaries_for_compare(
+        self,
+        candidates: list[MatchCandidate],
+        compare_clause_id: str,
+    ) -> list[dict[str, object]]:
+        flagged = [
+            candidate
+            for candidate in candidates
+            if candidate.compare.clause_id == compare_clause_id
+            and candidate.details.get("section_mismatch_candidate", 0.0) >= 1
+        ]
+        flagged.sort(
+            key=lambda item: (
+                item.details.get("section_mismatch_score", 0.0),
+                item.details.get("body_score", 0.0),
+            ),
+            reverse=True,
+        )
+        return self._candidate_summaries(flagged)
+
     def _match_confidence(self, candidate: MatchCandidate) -> str:
         details = candidate.details
         if candidate.score < self.low_confidence_review_threshold:
@@ -696,6 +1064,50 @@ class ClauseMatcher:
             return 0.0
         return self._token_score(left.clause_key, right.clause_key)
 
+    def _canonical_path_score(self, left: Clause, right: Clause) -> float:
+        left_path = self._canonical_path(left)
+        right_path = self._canonical_path(right)
+        if left_path and right_path and left_path == right_path:
+            return 100.0
+        if not left_path or not right_path:
+            return 0.0
+        if (left.section_type or "main_contract") != (right.section_type or "main_contract"):
+            return 0.0
+        return self._token_score(left_path, right_path)
+
+    def _canonical_path(self, clause: Clause) -> str:
+        parts = [clause.section_type or "main_contract"]
+        for item in clause.section_path:
+            parts.append(self._canonical_path_item(item))
+        if clause.clause_no:
+            parts.append(self._normalize_clause_no(clause.clause_no))
+        elif clause.title:
+            parts.append(self.normalizer.normalize_for_match(clause.title)[:32])
+        return "/".join(part for part in parts if part)
+
+    def _canonical_path_item(self, item: str) -> str:
+        parsed = self.number_parser.parse_line(item)
+        if parsed is not None:
+            return f"{parsed.canonical_number}:{self.normalizer.normalize_for_match(parsed.title)}"
+        return self.normalizer.normalize_for_match(item)
+
+    def _section_mismatch_score(
+        self,
+        left: Clause,
+        right: Clause,
+        body_score: float,
+        clause_no_score: float,
+        title_score: float,
+    ) -> float:
+        if (left.section_type or "main_contract") == (right.section_type or "main_contract"):
+            return 0.0
+        score = body_score
+        if clause_no_score >= 100:
+            score = max(score, 90.0)
+        if title_score >= 92 and body_score >= 80:
+            score = max(score, 88.0)
+        return score
+
     def _section_score(self, left: Clause, right: Clause) -> float:
         left_type = left.section_type or "main_contract"
         right_type = right.section_type or "main_contract"
@@ -713,15 +1125,22 @@ class ClauseMatcher:
         flags = {*left.split_flags, *right.split_flags}
         if "WEAK_NUMERIC_MARKER" in flags:
             return True
+        left_raw = (left.clause_no or "").strip()
+        right_raw = (right.clause_no or "").strip()
         return bool(
             self._normalize_clause_no(left.clause_no)
             and self._normalize_clause_no(left.clause_no) == self._normalize_clause_no(right.clause_no)
-            and re.fullmatch(r"\d+", self._normalize_clause_no(left.clause_no))
+            and re.fullmatch(r"\d+", left_raw)
+            and re.fullmatch(r"\d+", right_raw)
             and (len(left.title.strip()) < 4 or len(right.title.strip()) < 4)
         )
 
     def _has_weak_titles(self, left: Clause, right: Clause) -> bool:
         return self._weak_title(left.title) or self._weak_title(right.title)
+
+    def _is_short_clause(self, clause: Clause) -> bool:
+        compact = self._match_text(clause)
+        return 0 < len(compact) < 20
 
     def _weak_title(self, title: str) -> bool:
         compact = re.sub(r"[\s、.．:：]+", "", title or "")
@@ -733,23 +1152,7 @@ class ClauseMatcher:
         return bool(left_norm and right_norm and left_norm == right_norm)
 
     def _normalize_clause_no(self, value: str) -> str:
-        value = unicodedata.normalize("NFKC", value or "").strip()
-        value = value.strip("、. ")
-        value = value.replace("第", "").replace("条", "").replace("章", "").replace("节", "")
-        value = value.strip("（）()")
-        chinese_digits = {
-            "一": "1",
-            "二": "2",
-            "三": "3",
-            "四": "4",
-            "五": "5",
-            "六": "6",
-            "七": "7",
-            "八": "8",
-            "九": "9",
-            "十": "10",
-        }
-        return chinese_digits.get(value, value.lower())
+        return self.number_parser.normalize_number(value)
 
     def _position_score(self, left_ratio: float, right_ratio: float) -> float:
         distance = abs(left_ratio - right_ratio)
@@ -886,6 +1289,211 @@ class ClauseMatcher:
     def _match_text(self, clause: Clause) -> str:
         return clause.match_text or clause.normalized_text
 
+    def _match_structural_drift_candidates(
+        self,
+        original: list[Clause],
+        compare: list[Clause],
+        matched_original: set[str],
+        matched_compare: set[str],
+        consumed_original_spans: dict[str, list[tuple[int, int]]],
+        consumed_compare_spans: dict[str, list[tuple[int, int]]],
+    ) -> list[ClausePair]:
+        pairs: list[ClausePair] = []
+        pairs.extend(
+            self._match_many_originals_to_one_compare(
+                original,
+                compare,
+                matched_original,
+                matched_compare,
+                consumed_compare_spans,
+            )
+        )
+        pairs.extend(
+            self._match_one_original_to_many_compares(
+                original,
+                compare,
+                matched_original,
+                matched_compare,
+                consumed_original_spans,
+            )
+        )
+        return pairs
+
+    def _match_many_originals_to_one_compare(
+        self,
+        original: list[Clause],
+        compare: list[Clause],
+        matched_original: set[str],
+        matched_compare: set[str],
+        consumed_compare_spans: dict[str, list[tuple[int, int]]],
+    ) -> list[ClausePair]:
+        pairs: list[ClausePair] = []
+        synthetic_index = 1
+        for right in compare:
+            if right.clause_id in matched_compare:
+                continue
+            matches: list[tuple[Clause, int, int, float]] = []
+            local_spans: list[tuple[int, int]] = []
+            for left in original:
+                if left.clause_id in matched_original:
+                    continue
+                if (left.section_type or "main_contract") != (right.section_type or "main_contract"):
+                    continue
+                if not self._eligible_for_containment(left):
+                    continue
+                span = self._best_span_for_clause_in_text(left, right.text, local_spans)
+                if span is None:
+                    continue
+                start, end, score = span
+                matches.append((left, start, end, score))
+                local_spans.append((start, end))
+            if len(matches) < 2:
+                continue
+            matches.sort(key=lambda item: (item[1], item[0].order_index, item[0].clause_id))
+            group_pairs: list[tuple[ClausePair, Clause, tuple[int, int]]] = []
+            for left, start, end, score in matches:
+                right_slice = self._slice_clause(right, start, end, f"{right.clause_id}M{synthetic_index:02d}")
+                if right_slice is None:
+                    continue
+                synthetic_index += 1
+                group_pairs.append(
+                    (
+                        ClausePair(
+                            original=left,
+                            compare=right_slice,
+                            score=score,
+                            match_method="merged_compare",
+                            score_details=self._structural_drift_score_details(
+                                score,
+                                body_length_coverage=self._body_length_coverage(left.text, right_slice.text),
+                                merged=True,
+                            ),
+                            match_confidence="MEDIUM",
+                        ),
+                        left,
+                        (start, end),
+                    )
+                )
+            if len(group_pairs) < 2:
+                continue
+            for pair, left, span in group_pairs:
+                pairs.append(pair)
+                matched_original.add(left.clause_id)
+                consumed_compare_spans.setdefault(right.clause_id, []).append(span)
+            matched_compare.add(right.clause_id)
+        return pairs
+
+    def _match_one_original_to_many_compares(
+        self,
+        original: list[Clause],
+        compare: list[Clause],
+        matched_original: set[str],
+        matched_compare: set[str],
+        consumed_original_spans: dict[str, list[tuple[int, int]]],
+    ) -> list[ClausePair]:
+        pairs: list[ClausePair] = []
+        synthetic_index = 1
+        for left in original:
+            if left.clause_id in matched_original:
+                continue
+            matches: list[tuple[Clause, int, int, float]] = []
+            local_spans: list[tuple[int, int]] = []
+            for right in compare:
+                if right.clause_id in matched_compare:
+                    continue
+                if (left.section_type or "main_contract") != (right.section_type or "main_contract"):
+                    continue
+                if not self._eligible_for_containment(right):
+                    continue
+                span = self._best_span_for_clause_in_text(right, left.text, local_spans)
+                if span is None:
+                    continue
+                start, end, score = span
+                matches.append((right, start, end, score))
+                local_spans.append((start, end))
+            if len(matches) < 2:
+                continue
+            matches.sort(key=lambda item: (item[1], item[0].order_index, item[0].clause_id))
+            group_pairs: list[tuple[ClausePair, Clause, tuple[int, int]]] = []
+            for right, start, end, score in matches:
+                left_slice = self._slice_clause(left, start, end, f"{left.clause_id}P{synthetic_index:02d}")
+                if left_slice is None:
+                    continue
+                synthetic_index += 1
+                group_pairs.append(
+                    (
+                        ClausePair(
+                            original=left_slice,
+                            compare=right,
+                            score=score,
+                            match_method="split_original",
+                            score_details=self._structural_drift_score_details(
+                                score,
+                                body_length_coverage=self._body_length_coverage(left_slice.text, right.text),
+                                split=True,
+                            ),
+                            match_confidence="MEDIUM",
+                        ),
+                        right,
+                        (start, end),
+                    )
+                )
+            if len(group_pairs) < 2:
+                continue
+            for pair, right, span in group_pairs:
+                pairs.append(pair)
+                matched_compare.add(right.clause_id)
+                consumed_original_spans.setdefault(left.clause_id, []).append(span)
+            matched_original.add(left.clause_id)
+        return pairs
+
+    def _best_span_for_clause_in_text(
+        self,
+        needle: Clause,
+        haystack_text: str,
+        existing_spans: list[tuple[int, int]],
+    ) -> tuple[int, int, float] | None:
+        best: tuple[int, int, float] | None = None
+        for needle_text in self._coverage_texts(needle):
+            span = self._find_contained_span(needle_text, haystack_text)
+            if span is None or self._overlaps_existing(span, existing_spans):
+                continue
+            if best is None or span[2] > best[2]:
+                best = span
+        return best
+
+    def _structural_drift_score_details(
+        self,
+        score: float,
+        *,
+        body_length_coverage: float,
+        merged: bool = False,
+        split: bool = False,
+    ) -> dict[str, Any]:
+        rounded = round(score, 2)
+        return {
+            "clause_no_score": 0.0,
+            "title_score": 0.0,
+            "body_score": rounded,
+            "body_ratio_score": rounded,
+            "body_token_score": rounded,
+            "body_partial_score": rounded,
+            "body_length_coverage": round(body_length_coverage, 4),
+            "position_score": 0.0,
+            "neighbor_score": 0.0,
+            "contained_span_score": rounded,
+            "structural_drift_candidate": 1.0,
+            "partial_clause_match": 1.0,
+            "merged_compare_clause": 1.0 if merged else 0.0,
+            "split_original_clause": 1.0 if split else 0.0,
+        }
+
+    def _body_length_coverage(self, left_text: str, right_text: str) -> float:
+        left, _ = self._search_text(left_text)
+        right, _ = self._search_text(right_text)
+        max_len = max(len(left), len(right))
+        return min(len(left), len(right)) / max_len if max_len else 1.0
+
     def _match_contained_numbered_clauses(
         self,
         original: list[Clause],
@@ -950,7 +1558,7 @@ class ClauseMatcher:
         for left in original:
             if left.clause_id in matched_original:
                 continue
-            if len(self._search_text(left.text)[0]) < 20:
+            if not self._eligible_for_containment(left):
                 continue
             match = self._best_compare_containment(left, matched_compare_clauses, consumed_compare_spans)
             if match is None:
@@ -999,7 +1607,7 @@ class ClauseMatcher:
             if (needle.section_type or "main_contract") != (right.section_type or "main_contract"):
                 continue
             span = None
-            for needle_text in self._containment_texts(needle):
+            for needle_text in self._coverage_texts(needle):
                 span = self._find_contained_span(needle_text, right.text)
                 if span is not None:
                     break
@@ -1011,14 +1619,38 @@ class ClauseMatcher:
         return best
 
     def _containment_texts(self, clause: Clause) -> list[str]:
-        texts = [clause.text]
+        texts = [clause.text, self._strip_clause_prefix_only(clause.text)]
         stripped = (clause.text or "").strip()
         title = (clause.title or "").strip()
         if title and stripped.startswith(title):
             without_title = stripped[len(title):].lstrip("\n\r:： \t")
             if without_title and without_title != stripped:
                 texts.append(without_title)
+        if title:
+            compact_title = self.normalizer.normalize_for_match(title)
+            for line in stripped.splitlines():
+                compact_line = self.normalizer.normalize_for_match(line)
+                if compact_line and compact_line != compact_title and compact_title not in compact_line:
+                    texts.append(line)
         return list(dict.fromkeys(text for text in texts if text))
+
+    def _coverage_texts(self, clause: Clause) -> list[str]:
+        texts = [*self._containment_texts(clause), *self._paragraph_sentence_fragments(clause.text)]
+        return list(dict.fromkeys(text for text in texts if len(self._search_text(text)[0]) >= 8))
+
+    def _paragraph_sentence_fragments(self, text: str) -> list[str]:
+        fragments: list[str] = []
+        for paragraph in re.split(r"[\n\r]+", text or ""):
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+            fragments.append(paragraph)
+            sentence_parts = re.split(r"(?<=[。；;.!?！？])\s*|[；;]\s*", paragraph)
+            for sentence in sentence_parts:
+                sentence = sentence.strip()
+                if sentence and sentence != paragraph:
+                    fragments.append(sentence)
+        return fragments
 
     def _best_contained_match(
         self,
@@ -1048,7 +1680,8 @@ class ClauseMatcher:
             return None
 
         exact = haystack.find(needle)
-        if exact >= 0:
+        min_exact_len = 8 if len(needle) < 20 else 1
+        if exact >= 0 and len(needle) >= min_exact_len:
             return self._source_span(exact, exact + len(needle), haystack_map, 100.0)
 
         if len(needle) < 20:
@@ -1070,6 +1703,21 @@ class ClauseMatcher:
             return None
         return self._source_span(start_index, compact_end, haystack_map, score)
 
+    def _eligible_for_containment(self, clause: Clause) -> bool:
+        compact_len = len(self._search_text(clause.text)[0])
+        if compact_len >= 20:
+            return True
+        if compact_len < 8:
+            return False
+        return bool(clause.clause_no or len(self.normalizer.normalize_for_match(clause.title)) >= 2 or self._has_segmentation_flag(clause))
+
+    @staticmethod
+    def _has_segmentation_flag(clause: Clause) -> bool:
+        return any(
+            flag in {"PARAGRAPH_MERGED", "WEAK_NUMERIC_MARKER", "WEAK_HEADING", "READING_ORDER_REPAIRED"}
+            for flag in clause.split_flags
+        )
+
     def _source_span(
         self,
         compact_start: int,
@@ -1089,10 +1737,10 @@ class ClauseMatcher:
             return ""
         lines = stripped.splitlines()
         first_line = lines[0]
-        match = ClauseSplitter.clause_start_pattern.match(first_line)
-        if not match:
+        parsed = self.number_parser.parse_line(first_line)
+        if parsed is None:
             return stripped
-        first_line_body = first_line[match.end(1):].lstrip("、. 　")
+        first_line_body = first_line[len(parsed.marker_text) :].lstrip("、.． 　")
         return "\n".join([first_line_body, *lines[1:]]).strip()
 
     def _slice_clause(self, clause: Clause, start: int, end: int, clause_id: str) -> Clause | None:
