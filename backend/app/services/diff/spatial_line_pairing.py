@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import difflib
-import re
 from dataclasses import dataclass
 
 from app.models import BBox, Clause, TextRange
@@ -18,7 +17,6 @@ TEXT_WEIGHT = 0.52
 SPATIAL_WEIGHT = 0.36
 ORDER_WEIGHT = 0.12
 SHORT_LINE_MAX_LEN = 16
-FORM_LABEL_PATTERN = re.compile(r"(法人|代表|授权|委托|盖章|签字|日期|甲方|乙方)")
 
 
 @dataclass(frozen=True)
@@ -101,8 +99,15 @@ def _has_suspicious_short_add_delete(
 
 
 def _is_short_form_text(text: str) -> bool:
-    compact = re.sub(r"\s+", "", text or "")
-    return 0 < len(compact) <= SHORT_LINE_MAX_LEN and bool(FORM_LABEL_PATTERN.search(compact))
+    compact = "".join(char for char in text or "" if not char.isspace())
+    if not compact or len(compact) > SHORT_LINE_MAX_LEN:
+        return False
+    meaningful_count = sum(1 for char in compact if _is_meaningful_char(char))
+    if meaningful_count < 2:
+        return False
+    if all(char.isdigit() or char in ".,，:：-_/ " for char in compact):
+        return False
+    return True
 
 
 def _line_candidates(clause: Clause) -> list[LineCandidate]:
@@ -232,8 +237,8 @@ def _ranges_from_line_pairs(
 
 
 def _line_similarity(left: str, right: str) -> float:
-    left_compact = re.sub(r"\s+", "", left or "")
-    right_compact = re.sub(r"\s+", "", right or "")
+    left_compact = "".join(char for char in left or "" if not char.isspace())
+    right_compact = "".join(char for char in right or "" if not char.isspace())
     if not left_compact or not right_compact:
         return 0.0
     if len({char for char in set(left_compact) & set(right_compact) if _is_meaningful_char(char)}) < 2:

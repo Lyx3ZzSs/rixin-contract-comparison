@@ -3,9 +3,12 @@ from __future__ import annotations
 from app.models import ClausePair, DiffItem, TextRange
 from app.utils.id_utils import generate_diff_id
 
+from app.services.diff.cross_column_prefix import repair_cross_column_prefix_fragments
 from app.services.diff.range_refiner import changed_snippets
 from app.services.diff.spatial_line_pairing import repair_spatial_line_pairing
 from app.services.diff.spatial_repair import rebuild_change_text, repair_spatial_duplicate_ranges
+from app.services.diff.spatial_substring_coverage import repair_spatial_substring_coverage
+from app.services.diff.spatial_value_coverage import repair_spatial_value_coverage
 from app.services.diff.text_utils import shorten
 
 LOW_CONFIDENCE_MATCH_THRESHOLD = 75.0
@@ -96,7 +99,25 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
         original_ranges,
         compare_ranges,
     )
+    original_ranges, compare_ranges, cross_column_reasons = repair_cross_column_prefix_fragments(
+        left,
+        right,
+        original_ranges,
+        compare_ranges,
+    )
+    original_ranges, compare_ranges, substring_coverage_reasons = repair_spatial_substring_coverage(
+        left,
+        right,
+        original_ranges,
+        compare_ranges,
+    )
     original_ranges, compare_ranges, repair_reasons = repair_spatial_duplicate_ranges(
+        left,
+        right,
+        original_ranges,
+        compare_ranges,
+    )
+    original_ranges, compare_ranges, value_coverage_reasons = repair_spatial_value_coverage(
         left,
         right,
         original_ranges,
@@ -104,7 +125,7 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
     )
     if not original_ranges and not compare_ranges:
         return None
-    if line_pairing_reasons or repair_reasons:
+    if line_pairing_reasons or cross_column_reasons or substring_coverage_reasons or repair_reasons or value_coverage_reasons:
         original_snippet, compare_snippet, readable_change = rebuild_change_text(
             left.text,
             right.text,
@@ -116,8 +137,14 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
     flags = review_flags(pair)
     if line_pairing_reasons:
         flags.append("SPATIAL_LINE_PAIRING_REPAIRED")
+    if cross_column_reasons:
+        flags.append("SPATIAL_CROSS_COLUMN_PREFIX_REPAIRED")
+    if substring_coverage_reasons:
+        flags.append("SPATIAL_SUBSTRING_COVERAGE_REPAIRED")
     if repair_reasons:
         flags.append("SPATIAL_DUPLICATE_TOKEN_REPAIRED")
+    if value_coverage_reasons:
+        flags.append("SPATIAL_VALUE_COVERAGE_REPAIRED")
     return DiffItem(
         diff_id=generate_diff_id(index),
         diff_type="MODIFY",
