@@ -613,6 +613,180 @@ class TestStructuredTableComparison:
         assert diffs[0].original_evidence[0].text == "X"
         assert diffs[0].compare_evidence[0].text == "Y"
 
+    def test_severe_bbox_grid_conflict_degrades_to_table_text(self):
+        html = (
+            "<table>"
+            "<tr><td>序号</td><td>产品名称</td><td>金额</td></tr>"
+            "<tr><td>1</td><td>服务器</td><td>100</td></tr>"
+            "<tr><td>2</td><td>工作站</td><td>200</td></tr>"
+            "</table>"
+        )
+        collapsed_bboxes = [
+            [0, 0, 40, 20],
+            [50, 0, 90, 20],
+            [100, 0, 140, 20],
+            [0, 0, 40, 20],
+            [50, 0, 90, 20],
+            [100, 0, 140, 20],
+            [0, 0, 40, 20],
+            [50, 0, 90, 20],
+            [100, 0, 140, 20],
+        ]
+        comparator = TableComparator()
+
+        diffs, warnings = comparator.build_diffs(
+            _make_doc([_make_raw_table_block("o1", 1, html, html, collapsed_bboxes)]),
+            _make_doc([_make_raw_table_block("c1", 1, html, html, collapsed_bboxes)]),
+        )
+
+        assert warnings
+        assert "降级到table-text" in warnings[0]
+        assert diffs == []
+        assert comparator.last_debug_payload["tier"] == "table_text"
+        assert comparator.last_debug_payload["tables"]["original"][0]["geometry_status"] == "severe_conflict"
+
+    def test_row_level_degradation_keeps_amount_quantity_field_checks(self, monkeypatch):
+        quality = {
+            "score": 0.6,
+            "grid_score": 0.6,
+            "bbox_score": 0.6,
+            "text_score": 0.6,
+            "continuation_score": 1.0,
+            "business_score": 0.8,
+            "html_grid_usable": False,
+            "reasons": ["forced_row_level_for_test"],
+        }
+        monkeypatch.setattr(
+            TableComparator,
+            "_compute_table_quality_detail",
+            staticmethod(lambda _tables: quality),
+        )
+        original_html = _product_table([
+            "<tr><td>1</td><td>服务器</td><td>配置</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td>100</td><td>100</td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>1</td><td>服务器</td><td>配置</td><td>国能日新</td>"
+            "<td>套</td><td>2</td><td>100</td><td>200</td><td></td></tr>",
+        ])
+
+        comparator = TableComparator()
+        diffs, warnings = comparator.build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings
+        assert "降级到row-level" in warnings[0]
+        assert comparator.last_debug_payload["tier"] == "row_level"
+        assert any("row_level_business_field_check" in diff.structural_flags for diff in diffs)
+        assert any(diff.title == "表格字段：数量" and diff.original_text == "1" and diff.compare_text == "2" for diff in diffs)
+
+    def test_bbox_geometry_unusable_does_not_force_row_level_when_html_grid_is_usable(self):
+        rows = [
+            "<tr><td>1</td><td>预测服务器</td><td>14020R双电</td><td>航天联志</td>"
+            "<td>台</td><td>1</td><td>8500</td><td>8500</td><td></td></tr>",
+            "<tr><td>2</td><td>气象服务器</td><td>14020R双电</td><td>航天联志</td>"
+            "<td>台</td><td>1</td><td>8500</td><td>8500</td><td></td></tr>",
+            "<tr><td>3</td><td>工作站</td><td>288G9E</td><td>HP/超云</td>"
+            "<td>台</td><td>1</td><td>4000</td><td>4000</td><td></td></tr>",
+        ]
+        html = _product_table(rows)
+        collapsed_bboxes = []
+        for row_index in range(4):
+            y0 = 100 + row_index * 30
+            y1 = y0 + 20
+            collapsed_bboxes.extend([
+                [0, y0, 90, y1],
+                [100, y0, 190, y1],
+                [200, y0, 290, y1],
+                [0, y0, 90, y1],
+                [100, y0, 190, y1],
+                [200, y0, 290, y1],
+                [0, y0, 90, y1],
+                [100, y0, 190, y1],
+                [200, y0, 290, y1],
+            ])
+        comparator = TableComparator()
+
+        diffs, warnings = comparator.build_diffs(
+            _make_doc([_make_raw_table_block("o1", 1, html, html, collapsed_bboxes)]),
+            _make_doc([_make_raw_table_block("c1", 1, html, html, collapsed_bboxes)]),
+        )
+
+        assert diffs == []
+        assert warnings == []
+        assert comparator.last_debug_payload["tier"] == "cell_level"
+        assert comparator.last_debug_payload["tables"]["original"][0]["geometry_status"] == "geometry_unusable"
+        assert comparator.last_debug_payload["quality"]["details"]["original"]["html_grid_usable"] is True
+
+    def test_row_level_degradation_suppresses_high_similarity_ocr_noise(self, monkeypatch):
+        quality = {
+            "score": 0.6,
+            "grid_score": 0.6,
+            "bbox_score": 0.6,
+            "text_score": 0.6,
+            "continuation_score": 1.0,
+            "business_score": 0.8,
+            "html_grid_usable": False,
+            "reasons": ["forced_row_level_for_test"],
+        }
+        monkeypatch.setattr(
+            TableComparator,
+            "_compute_table_quality_detail",
+            staticmethod(lambda _tables: quality),
+        )
+        original_html = _product_table([
+            "<tr><td>6</td><td>反向隔离装置</td><td>StoneWall-2000BF 百兆</td><td>科东</td>"
+            "<td>台</td><td>1</td><td>30500</td><td>30500</td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>6</td><td>反向隔离装置</td><td>StoneWal1-2000BF 百兆</td><td>科东</td>"
+            "<td>台</td><td>1</td><td>30500</td><td>30500</td><td></td></tr>",
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings
+        assert "降级到row-level" in warnings[0]
+        assert diffs == []
+
+    def test_row_level_business_field_check_rejects_number_to_text_misalignment(self, monkeypatch):
+        quality = {
+            "score": 0.6,
+            "grid_score": 0.6,
+            "bbox_score": 0.6,
+            "text_score": 0.6,
+            "continuation_score": 1.0,
+            "business_score": 0.8,
+            "html_grid_usable": False,
+            "reasons": ["forced_row_level_for_test"],
+        }
+        monkeypatch.setattr(
+            TableComparator,
+            "_compute_table_quality_detail",
+            staticmethod(lambda _tables: quality),
+        )
+        original_html = _product_table([
+            "<tr><td>1</td><td>国产操作系统</td><td>国产操作系统</td><td>凝思</td>"
+            "<td>套</td><td>3</td><td>4000</td><td>12000</td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>1</td><td>国产操作系统</td><td>国产操作系统</td><td>凝思</td>"
+            "<td>套</td><td>3</td><td>4000</td><td>国产操作系统</td><td></td></tr>",
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings
+        assert not any("row_level_business_field_check" in diff.structural_flags for diff in diffs)
+
     def test_similarity_threshold_filters_punctuation_ocr_noise(self):
         orig_html = '<table><tr><td>配置</td><td>2TSATA;</td></tr></table>'
         comp_html = '<table><tr><td>配置</td><td>2T SATA：</td></tr></table>'
@@ -1468,13 +1642,25 @@ class TestStructuredTableComparison:
             "国能日新探针系统V3.0\nagent 软件\n1500\n小计\n22500\n风电功率预测系统V1.0-配套软件",
         )
 
-        diffs, warnings = TableComparator().build_diffs(
+        comparator = TableComparator()
+        diffs, warnings = comparator.build_diffs(
             _make_doc([_make_table_block("o1", 1, original_html)]),
             _make_doc([compare_block]),
         )
 
         assert warnings == []
         assert diffs == []
+        compare_decisions = comparator.last_debug_payload["repair"]["compare"]["decisions"]
+        source_fill_decision = next(
+            decision
+            for decision in compare_decisions
+            if decision["repair_type"] == "summary_source_fill"
+        )
+        assert source_fill_decision["source_block_id"] == "c1"
+        assert source_fill_decision["signals"]["label"] == "小计"
+        assert source_fill_decision["signals"]["amount"] == "22500"
+        assert source_fill_decision["before_metrics"]["nonempty_cell_count"] == 1
+        assert source_fill_decision["after_metrics"]["nonempty_cell_count"] == 2
 
     def test_product_detail_containing_summary_label_is_not_split_into_summary_row(self):
         original_html = _product_table([

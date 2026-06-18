@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -379,6 +380,83 @@ class TestPreClauseDiffStage:
         assert ctx.seal_diffs[0].source_type == "seal"
         assert any(block.block_type == "seal" for block in ctx.original_extraction.document.pages[0].blocks)
         assert any(block.block_type == "seal" for block in ctx.compare_extraction.document.pages[0].blocks)
+
+    def test_writes_table_repair_debug_artifact(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        original = make_table_document(
+            "<table><tr><td>序号</td><td>产品名称</td><td>金额</td></tr>"
+            "<tr><td>1</td><td>服务器</td><td>100</td></tr></table>"
+        )
+        compare = make_table_document(
+            "<table><tr><td>序号</td><td>产品名称</td><td>金额</td></tr>"
+            "<tr><td>1</td><td>服务器</td><td>200</td></tr></table>"
+        )
+        ctx.original_extraction = ExtractionResult(document=original, extractor_used="test")
+        ctx.compare_extraction = ExtractionResult(document=compare, extractor_used="test")
+
+        PreClauseDiffStage().execute(ctx)
+
+        assert "table_repair" in ctx.task.debug_artifact_paths
+        path = Path(ctx.task.debug_artifact_paths["table_repair"])
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["tier"] == "cell_level"
+        assert payload["quality"]["min"] >= 0.75
+        assert payload["quality"]["details"]["original"]["grid_score"] > 0
+        assert payload["quality"]["details"]["original"]["bbox_score"] > 0
+        assert payload["quality"]["details"]["original"]["text_score"] > 0
+        assert payload["quality"]["details"]["original"]["continuation_score"] > 0
+        assert payload["quality"]["details"]["original"]["business_score"] > 0
+        assert payload["table_block_counts"] == {"original": 1, "compare": 1}
+        assert payload["parsed_table_counts"] == {"original": 1, "compare": 1}
+        assert payload["logical_table_counts"] == {"original": 1, "compare": 1}
+        assert payload["quality_metrics"]["original"]["table_count"] == 1
+        assert payload["quality_metrics"]["compare"]["row_count"] == 1
+        assert "source_text_token_coverage" in payload["quality_metrics"]["compare"]
+        assert payload["shape_changes"]["compare"]["row_count_delta"] == -1
+        assert payload["shape_changes"]["compare_vs_original_logical"]["row_count_delta"] == 0
+        assert payload["suppressed_diffs"]["suppressed_diff_count"] == 0
+        assert payload["suppressed_diffs"]["suppressed_diff_counts_by_reason"] == {}
+        assert payload["repair"]["original"]["decision_count"] == 0
+        assert payload["repair"]["compare"]["decision_count"] == 0
+        assert payload["tables"]["compare"][0]["bbox_coverage"] == 0.0
+
+    def test_records_table_repair_decision_debug_artifact(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        original = make_table_document(
+            "<table>"
+            "<tr><td>序号</td><td>产品名称</td><td>详细配置</td><td>品牌</td>"
+            "<td>单位</td><td>数量</td><td>单价</td><td>金额</td><td>备注</td></tr>"
+            "<tr><td>2</td><td>中期模型</td><td>配置A</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td>100</td><td>100</td><td></td></tr>"
+            "<tr><td>3</td><td>短期模型</td><td>配置B</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td>200</td><td>200</td><td></td></tr>"
+            "</table>"
+        )
+        compare = make_table_document(
+            "<table>"
+            "<tr><td>序号</td><td>产品名称</td><td>详细配置</td><td>品牌</td>"
+            "<td>单位</td><td>数量</td><td>单价</td><td>金额</td><td>备注</td></tr>"
+            "<tr><td>2 3</td><td>中期模型 短期模型</td><td>配置A 配置B</td>"
+            "<td>国能日新 国能日新</td><td>套 套</td><td>1 1</td>"
+            "<td>100 200</td><td>100 200</td><td></td></tr>"
+            "</table>"
+        )
+        ctx.original_extraction = ExtractionResult(document=original, extractor_used="test")
+        ctx.compare_extraction = ExtractionResult(document=compare, extractor_used="test")
+
+        PreClauseDiffStage().execute(ctx)
+
+        payload = json.loads(Path(ctx.task.debug_artifact_paths["table_repair"]).read_text(encoding="utf-8"))
+        decisions = payload["repair"]["compare"]["decisions"]
+        decision = next(item for item in decisions if item["repair_type"] == "merged_sequence_split")
+        assert decision["source_block_id"] == "p1_t1"
+        assert decision["row_index"] == 0
+        assert decision["before_metrics"]["row_count"] == 1
+        assert decision["after_metrics"]["row_count"] == 2
+        assert decision["signals"]["sequences"] == ["2", "3"]
+        assert decision["confidence"] > 0
+        assert decision["reason"]
+
 
 class TestSummaryStage:
     def test_refreshes_diff_count_and_writes_debug_artifact(self, tmp_path: Path) -> None:

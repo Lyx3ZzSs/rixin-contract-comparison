@@ -125,6 +125,12 @@ class DiffQualityProcessor:
                 diff.quality_status = "NEEDS_REVIEW"
                 decisions.append(DiffQualityDecision(action="possible_ocr_noise", diff_id=diff.diff_id))
                 continue
+            if self._is_row_level_table_diff(diff) and not self._row_level_table_has_protected_change(diff):
+                self._remove_flag(diff, "CRITICAL_VALUE_CHANGE")
+                self._add_flag(diff, "ROW_LEVEL_TABLE_REVIEW")
+                diff.quality_status = "NEEDS_REVIEW"
+                decisions.append(DiffQualityDecision(action="row_level_table_review", diff_id=diff.diff_id))
+                continue
             if self._is_critical_change(diff):
                 self._add_flag(diff, "CRITICAL_VALUE_CHANGE")
                 decisions.append(DiffQualityDecision(action="critical_change", diff_id=diff.diff_id))
@@ -312,6 +318,61 @@ class DiffQualityProcessor:
     def _has_business_token(self, diff: DiffItem) -> bool:
         text = f"{self._changed_text(diff)} {diff.original_text} {diff.compare_text}"
         return bool(self.business_token_pattern.search(text or ""))
+
+    @staticmethod
+    def _is_row_level_table_diff(diff: DiffItem) -> bool:
+        if diff.source_type != "table":
+            return False
+        if "row_level_business_field_check" in diff.structural_flags:
+            return False
+        evidences = [*diff.original_evidence, *diff.compare_evidence]
+        return any(evidence.method == "table_row" for evidence in evidences)
+
+    def _row_level_table_has_protected_change(self, diff: DiffItem) -> bool:
+        if diff.diff_type != "MODIFY":
+            return False
+        original_parts = self._split_table_row_parts(diff.original_text or diff.original_snippet)
+        compare_parts = self._split_table_row_parts(diff.compare_text or diff.compare_snippet)
+        if len(original_parts) >= 8 and len(compare_parts) >= 8:
+            for index in (5, 6, 7):
+                if self._protected_value(original_parts[index]) != self._protected_value(compare_parts[index]):
+                    if self._protected_value(original_parts[index]) or self._protected_value(compare_parts[index]):
+                        return True
+        original_date = self._canonical_date(diff.original_text or diff.original_snippet)
+        compare_date = self._canonical_date(diff.compare_text or diff.compare_snippet)
+        return bool(original_date and compare_date and original_date != compare_date)
+
+    @staticmethod
+    def _split_table_row_parts(text: str) -> list[str]:
+        return [part.strip() for part in (text or "").split("|")]
+
+    @staticmethod
+    def _protected_value(text: str) -> str:
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
+        if not compact:
+            return ""
+        amount = re.fullmatch(r"(?:人民币|¥|￥)?([+-]?\d[\d,]*(?:\.\d+)?)(万)?元?", compact)
+        if amount:
+            value = float(amount.group(1).replace(",", ""))
+            if amount.group(2) or "万元" in compact:
+                value *= 10000
+            return f"amount:{value:.2f}"
+        quantity = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)(套|台|个|项|批|份|件|人天|天|月|年)?", compact)
+        if quantity:
+            unit = quantity.group(2) or ""
+            return f"quantity:{float(quantity.group(1)):.4f}{unit}"
+        return ""
+
+    @staticmethod
+    def _canonical_date(text: str) -> str:
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
+        match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", compact)
+        if match:
+            return f"{int(match.group(1)):04d}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+        match = re.search(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", compact)
+        if match:
+            return f"{int(match.group(1)):04d}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+        return ""
 
     def _changed_text(self, diff: DiffItem) -> str:
         if diff.diff_type == "MODIFY":

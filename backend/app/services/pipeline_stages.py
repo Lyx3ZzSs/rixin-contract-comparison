@@ -335,6 +335,7 @@ class PreClauseDiffStage:
         self.header_footer = HeaderFooterComparator()
         self.cover_metadata = CoverMetadataComparator()
         self.table_comparator = TableComparator()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
@@ -356,6 +357,14 @@ class PreClauseDiffStage:
         table_diffs, table_warnings = self.table_comparator.build_diffs(
             original_doc, compare_doc,
             start_index=len(header_footer_diffs) + len(metadata_diffs) + 1,
+        )
+        _write_debug_artifact(
+            task,
+            "table_repair",
+            lambda: self.debug_writer.write_table_repair(
+                task.task_id,
+                self.table_comparator.last_debug_payload,
+            ),
         )
         seal_diffs = build_seal_diffs(
             original_doc, compare_doc,

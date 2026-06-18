@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models import BBox
 
@@ -28,6 +28,14 @@ class StructuredTable(BaseModel):
     source_text: str = ""
     caption: str = ""
     footnote: str = ""
+    geometry_status: str = "not_available"
+    geometry_confidence: float = 1.0
+    geometry_warnings: list[str] = Field(default_factory=list)
+    geometry_strategy: str = ""
+    bbox_grid_row_count: int = 0
+    bbox_grid_col_count: int = 0
+    bbox_cell_count: int = 0
+    html_cell_count: int = 0
 
     @property
     def bbox(self) -> BBox | None:

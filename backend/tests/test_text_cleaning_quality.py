@@ -716,6 +716,45 @@ def test_diff_quality_treats_party_contact_table_as_regular_table_change() -> No
     assert "D003" not in by_id
 
 
+def test_diff_quality_marks_row_level_table_noise_for_review_not_critical() -> None:
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格行：行3变更",
+        original_text="3 | 工作站 | 2T SATA;网口 | HP/超云 | 台 | 1 | 4000 | 4000",
+        compare_text="3 | 工作站 | 2T SATA：网口 | HP/超云 | 台 | 1 | 4000 | 4000",
+        original_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=0, y0=0, x1=100, y1=20), method="table_row")],
+        compare_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=0, y0=0, x1=100, y1=20), method="table_row")],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+    processed = result.diffs[0]
+
+    assert processed.quality_status == "NEEDS_REVIEW"
+    assert "ROW_LEVEL_TABLE_REVIEW" in processed.review_flags
+    assert "CRITICAL_VALUE_CHANGE" not in processed.review_flags
+
+
+def test_diff_quality_keeps_row_level_table_protected_value_changes_critical() -> None:
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格行：行1变更",
+        original_text="1 | 服务器 | 配置 | 国能日新 | 套 | 1 | 100 | 100",
+        compare_text="1 | 服务器 | 配置 | 国能日新 | 套 | 2 | 100 | 200",
+        original_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=0, y0=0, x1=100, y1=20), method="table_row")],
+        compare_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=0, y0=0, x1=100, y1=20), method="table_row")],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+    processed = result.diffs[0]
+
+    assert processed.quality_status == "NORMAL"
+    assert "CRITICAL_VALUE_CHANGE" in processed.review_flags
+
+
 def test_diff_quality_treats_party_line_and_body_contact_info_as_regular_clause_changes() -> None:
     diffs = [
         DiffItem(

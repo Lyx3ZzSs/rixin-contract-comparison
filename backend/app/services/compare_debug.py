@@ -88,6 +88,9 @@ class CompareDebugWriter:
     def write_diff_quality(self, task_id: str, decisions: list[dict[str, Any]]) -> str:
         return str(self._write_json(task_id, "diff_quality.json", {"decisions": decisions}))
 
+    def write_table_repair(self, task_id: str, payload: dict[str, Any]) -> str:
+        return str(self._write_json(task_id, "table_repair.json", payload))
+
     def write_matches(self, task_id: str, pairs: list[ClausePair]) -> str:
         payload = []
         for pair in pairs:

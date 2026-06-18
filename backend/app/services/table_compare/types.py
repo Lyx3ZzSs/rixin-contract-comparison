@@ -106,7 +106,21 @@ class LogicalRow:
 
 
 class LogicalTable:
-    __slots__ = ("rows", "col_count", "page_no", "source_block_id", "source", "caption", "footnote")
+    __slots__ = (
+        "rows",
+        "col_count",
+        "page_no",
+        "source_block_id",
+        "source",
+        "caption",
+        "footnote",
+        "geometry_status",
+        "geometry_confidence",
+        "geometry_warnings",
+        "geometry_strategy",
+        "bbox_grid_row_count",
+        "bbox_grid_col_count",
+    )
 
     def __init__(
         self,
@@ -117,6 +131,12 @@ class LogicalTable:
         source: str = "",
         caption: str = "",
         footnote: str = "",
+        geometry_status: str = "not_available",
+        geometry_confidence: float = 1.0,
+        geometry_warnings: list[str] | None = None,
+        geometry_strategy: str = "",
+        bbox_grid_row_count: int = 0,
+        bbox_grid_col_count: int = 0,
     ):
         self.rows = rows
         self.col_count = col_count
@@ -125,6 +145,12 @@ class LogicalTable:
         self.source = source
         self.caption = caption
         self.footnote = footnote
+        self.geometry_status = geometry_status
+        self.geometry_confidence = geometry_confidence
+        self.geometry_warnings = geometry_warnings or []
+        self.geometry_strategy = geometry_strategy
+        self.bbox_grid_row_count = bbox_grid_row_count
+        self.bbox_grid_col_count = bbox_grid_col_count
 
     def get_cell(self, row: int, col: int) -> LogicalCell | None:
         for table_row in self.rows:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import re
 from difflib import SequenceMatcher
 
@@ -14,6 +15,7 @@ from app.services.table_compare.types import (
 )
 from app.services.table_compare import utils
 from app.services.table_compare.matcher import TableMatcher
+from app.services.table_compare.repair_context import BusinessChangeProtector
 from app.services.table_compare.summary import SummaryComparator
 from app.utils.id_utils import generate_diff_id
 
@@ -26,6 +28,65 @@ class TableDiffBuilder:
     def __init__(self, matcher: TableMatcher, summary: SummaryComparator) -> None:
         self._matcher = matcher
         self._summary = summary
+        self._suppressed_diffs: list[dict[str, object]] = []
+        self._change_protector = BusinessChangeProtector()
+
+    def reset_diagnostics(self) -> None:
+        self._suppressed_diffs = []
+
+    def diagnostics_payload(self) -> dict[str, object]:
+        reason_counts = Counter(str(item["reason"]) for item in self._suppressed_diffs)
+        return {
+            "suppressed_diff_count": len(self._suppressed_diffs),
+            "suppressed_diff_counts_by_reason": dict(sorted(reason_counts.items())),
+            "suppressed_diffs": list(self._suppressed_diffs),
+        }
+
+    def _record_suppressed_diff(
+        self,
+        reason: str,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+        *,
+        col: int | None = None,
+        original_text: str = "",
+        compare_text: str = "",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        if len(self._suppressed_diffs) >= 500:
+            return
+        self._suppressed_diffs.append({
+            "reason": reason,
+            "original_source_block_id": original.source_block_id,
+            "compare_source_block_id": compare.source_block_id,
+            "original_row": orig_row,
+            "compare_row": comp_row,
+            "col": col,
+            "original_text": original_text,
+            "compare_text": compare_text,
+            "details": details or {},
+        })
+
+    def _is_protected_business_change(self, original_text: str, compare_text: str) -> bool:
+        return self._change_protector.is_protected_change(original_text, compare_text)
+
+    def _row_has_protected_business_change(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+    ) -> bool:
+        if orig_row is None or comp_row is None:
+            return False
+        for col in range(max(original.col_count, compare.col_count)):
+            original_text = self._matcher._cell_text(original, orig_row, col)
+            compare_text = self._matcher._cell_text(compare, comp_row, col)
+            if self._is_protected_business_change(original_text, compare_text):
+                return True
+        return False
 
     def diff_cells(
         self,
@@ -62,7 +123,17 @@ class TableDiffBuilder:
                         utils.normalize_cell_for_compare(cell_diff.compare_text),
                         original_block,
                         compare_block,
-                    ):
+                    ) and not self._is_protected_business_change(cell_diff.original_text, cell_diff.compare_text):
+                        self._record_suppressed_diff(
+                            "duplicate_amount_covered_by_source",
+                            original,
+                            compare,
+                            filter_orig_row,
+                            filter_comp_row,
+                            col=filter_col,
+                            original_text=cell_diff.original_text,
+                            compare_text=cell_diff.compare_text,
+                        )
                         continue
                     if self._short_remark_cell_covered_by_missing_source(
                         original,
@@ -75,7 +146,17 @@ class TableDiffBuilder:
                         utils.normalize_cell_for_compare(cell_diff.compare_text),
                         original_block,
                         compare_block,
-                    ):
+                    ) and not self._is_protected_business_change(cell_diff.original_text, cell_diff.compare_text):
+                        self._record_suppressed_diff(
+                            "short_remark_covered_by_source",
+                            original,
+                            compare,
+                            filter_orig_row,
+                            filter_comp_row,
+                            col=filter_col,
+                            original_text=cell_diff.original_text,
+                            compare_text=cell_diff.compare_text,
+                        )
                         continue
                     diffs.append(cell_diff)
                 continue
@@ -86,14 +167,28 @@ class TableDiffBuilder:
                 comp_row,
                 original_block,
                 compare_block,
-            ):
+            ) and not self._row_has_protected_business_change(original, compare, orig_row, comp_row):
+                self._record_suppressed_diff(
+                    "sparse_row_covered_by_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
             if self._summary.matched_malformed_summary_row_covered_by_source(
                 original,
                 compare,
                 orig_row,
                 comp_row,
-            ):
+            ) and not self._row_has_protected_business_change(original, compare, orig_row, comp_row):
+                self._record_suppressed_diff(
+                    "matched_malformed_summary_covered_by_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
             if self._summary.matched_sparse_product_row_covered_by_source(
                 original,
@@ -102,9 +197,23 @@ class TableDiffBuilder:
                 comp_row,
                 original_block,
                 compare_block,
-            ):
+            ) and not self._row_has_protected_business_change(original, compare, orig_row, comp_row):
+                self._record_suppressed_diff(
+                    "matched_sparse_product_covered_by_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
             if self._summary.one_sided_summary_row_covered_by_source(original, compare, orig_row, comp_row):
+                self._record_suppressed_diff(
+                    "one_sided_summary_covered_by_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
             if self._summary.one_sided_summary_row_covered_by_malformed_source(
                 original,
@@ -112,6 +221,13 @@ class TableDiffBuilder:
                 orig_row,
                 comp_row,
             ):
+                self._record_suppressed_diff(
+                    "one_sided_summary_covered_by_malformed_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
             if self._summary.one_sided_product_row_covered_by_source(
                 original,
@@ -121,13 +237,27 @@ class TableDiffBuilder:
                 original_block,
                 compare_block,
             ):
+                self._record_suppressed_diff(
+                    "one_sided_product_covered_by_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
             if self._row_covered_by_merged_cell_source(
                 original,
                 compare,
                 orig_row,
                 comp_row,
-            ):
+            ) and not self._row_has_protected_business_change(original, compare, orig_row, comp_row):
+                self._record_suppressed_diff(
+                    "row_covered_by_merged_cell_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
 
             for c in range(max_cols):
@@ -139,16 +269,59 @@ class TableDiffBuilder:
                 if orig_norm == comp_norm:
                     continue
                 if utils.is_noise(orig_norm) and utils.is_noise(comp_norm):
+                    self._record_suppressed_diff(
+                        "both_sides_noise",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
                 if (not orig_norm or not comp_norm) and (utils.is_noise(orig_norm) or utils.is_noise(comp_norm)):
+                    self._record_suppressed_diff(
+                        "one_sided_noise",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
                 if not orig_norm and not comp_norm:
                     continue
 
                 if self._matcher.is_similar_ocr_noise(orig_norm, comp_norm, self.cell_similarity_threshold):
+                    self._record_suppressed_diff(
+                        "similar_ocr_noise",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
 
-                if self._matcher.is_short_text_fragment(original, compare, orig_row, comp_row, orig_norm, comp_norm):
+                if (
+                    self._matcher.is_short_text_fragment(original, compare, orig_row, comp_row, orig_norm, comp_norm)
+                    and not self._is_protected_business_change(orig_text, comp_text)
+                ):
+                    self._record_suppressed_diff(
+                        "short_text_fragment",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
 
                 if self._summary.is_covered_duplicate_amount_cell(
@@ -161,7 +334,17 @@ class TableDiffBuilder:
                     comp_norm,
                     original_block,
                     compare_block,
-                ):
+                ) and not self._is_protected_business_change(orig_text, comp_text):
+                    self._record_suppressed_diff(
+                        "duplicate_amount_covered_by_source",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
 
                 if self._short_remark_cell_covered_by_missing_source(
@@ -175,7 +358,17 @@ class TableDiffBuilder:
                     comp_norm,
                     original_block,
                     compare_block,
-                ):
+                ) and not self._is_protected_business_change(orig_text, comp_text):
+                    self._record_suppressed_diff(
+                        "short_remark_covered_by_source",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
 
                 if not orig_norm:

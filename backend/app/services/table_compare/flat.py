@@ -7,6 +7,7 @@ from collections import Counter
 from difflib import SequenceMatcher
 
 from app.models import BBox, DiffItem, EvidenceBox, TextBlock
+from app.services.table_compare.matcher import TableMatcher
 from app.services.table_compare.types import _FlatUnit, _LogicalRow
 from app.services.table_compare import utils
 from app.utils.id_utils import generate_diff_id
@@ -87,6 +88,9 @@ class FlatTextComparator:
 
     _ROW_MATCH_THRESHOLD = 0.55
 
+    def __init__(self) -> None:
+        self._matcher = TableMatcher()
+
     def row_level_compare(
         self,
         original_tables: list,
@@ -120,6 +124,8 @@ class FlatTextComparator:
             paired_comp.add(ci)
             if orig.normalized == comp.normalized:
                 continue
+            if self._is_row_level_noise(orig, comp, score):
+                continue
             diffs.append(DiffItem(
                 diff_id=generate_diff_id(next_index),
                 diff_type="MODIFY",
@@ -137,6 +143,8 @@ class FlatTextComparator:
 
         for oi, orig in enumerate(orig_rows):
             if oi not in paired_orig:
+                if self._is_fragment_row_unit(orig):
+                    continue
                 diffs.append(DiffItem(
                     diff_id=generate_diff_id(next_index),
                     diff_type="DELETE",
@@ -153,6 +161,8 @@ class FlatTextComparator:
                 next_index += 1
         for ci, comp in enumerate(comp_rows):
             if ci not in paired_comp:
+                if self._is_fragment_row_unit(comp):
+                    continue
                 diffs.append(DiffItem(
                     diff_id=generate_diff_id(next_index),
                     diff_type="ADD",
@@ -175,7 +185,8 @@ class FlatTextComparator:
         units: list[_RowUnit] = []
         for table in tables:
             caption = getattr(table, "caption", "") or ""
-            for row in table.rows:
+            table_type = utils.table_type(table)
+            for table_row_index, row in enumerate(table.rows):
                 texts = [cell.text for cell in row.cells if cell.text.strip()]
                 if not texts:
                     continue
@@ -192,6 +203,12 @@ class FlatTextComparator:
                     page_no=page_no,
                     bbox=bbox,
                     caption=caption,
+                    sequence=self._row_sequence(row),
+                    product_name=self._row_product_name(table, table_row_index),
+                    business_key=self._matcher._row_business_key(table, table_row_index),
+                    table_type=table_type,
+                    protected_values=self._protected_values(table, table_row_index),
+                    nonempty_texts=tuple(texts),
                 ))
         return units
 
@@ -203,6 +220,8 @@ class FlatTextComparator:
         for oi, o in enumerate(orig):
             for ci, c in enumerate(comp):
                 score = SequenceMatcher(None, o.normalized, c.normalized).ratio()
+                if not self._row_units_compatible(o, c, score):
+                    continue
                 if score >= 0.4:
                     candidates.append((score, oi, ci))
         candidates.sort(reverse=True)
@@ -216,6 +235,92 @@ class FlatTextComparator:
             used_c.add(ci)
             result.append((oi, ci, score))
         return result
+
+    def _row_units_compatible(self, original: "_RowUnit", compare: "_RowUnit", score: float) -> bool:
+        if original.table_type == "product" or compare.table_type == "product":
+            if original.sequence and compare.sequence and original.sequence == compare.sequence:
+                if original.product_name and compare.product_name:
+                    product_score = SequenceMatcher(None, original.product_name, compare.product_name).ratio()
+                    if product_score < 0.90:
+                        return False
+            if original.business_key and compare.business_key:
+                key_score = SequenceMatcher(None, original.business_key, compare.business_key).ratio()
+                if key_score >= 0.92:
+                    return True
+                if score < 0.92 and original.sequence and compare.sequence and original.sequence != compare.sequence:
+                    return False
+        return True
+
+    def _is_row_level_noise(self, original: "_RowUnit", compare: "_RowUnit", score: float) -> bool:
+        if score < 0.94:
+            return False
+        if self._protected_values_changed(original, compare):
+            return False
+        if utils.punctuation_fold(original.normalized) == utils.punctuation_fold(compare.normalized):
+            return True
+        if self._matcher.is_similar_ocr_noise(original.normalized, compare.normalized, 0.94):
+            return True
+        return score >= 0.96 and self._product_identity_compatible(original, compare)
+
+    @staticmethod
+    def _protected_values_changed(original: "_RowUnit", compare: "_RowUnit") -> bool:
+        keys = set(original.protected_values) | set(compare.protected_values)
+        for key in keys:
+            left = original.protected_values.get(key, "")
+            right = compare.protected_values.get(key, "")
+            if left != right:
+                return True
+        return False
+
+    @staticmethod
+    def _product_identity_compatible(original: "_RowUnit", compare: "_RowUnit") -> bool:
+        if not original.product_name or not compare.product_name:
+            return True
+        return SequenceMatcher(None, original.product_name, compare.product_name).ratio() >= 0.90
+
+    @staticmethod
+    def _row_sequence(row: _LogicalRow) -> str:
+        for cell in row.cells:
+            text = utils.normalize(cell.text)
+            if re.fullmatch(r"\d{1,3}", text):
+                return text
+        return ""
+
+    @staticmethod
+    def _row_product_name(table, row: int) -> str:
+        if utils.table_type(table) == "product":
+            return utils.normalize(FlatTextComparator._cell_text(table, row, 1))
+        return ""
+
+    @staticmethod
+    def _protected_values(table, row: int) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for col, name in ((5, "quantity"), (6, "price"), (7, "amount")):
+            text = FlatTextComparator._cell_text(table, row, col)
+            norm = utils.normalize_cell_for_compare(text)
+            if norm.startswith(("quantity:", "amount:", "date:", "percent:")):
+                values[name] = norm
+            elif utils.is_number_like(utils.normalize(text)):
+                values[name] = utils.normalize(text)
+        return values
+
+    @staticmethod
+    def _cell_text(table, row: int, col: int) -> str:
+        cell = utils.anchor_cell(table, row, col)
+        return cell.text if cell else ""
+
+    @staticmethod
+    def _is_fragment_row_unit(unit: "_RowUnit") -> bool:
+        texts = [utils.normalize(text) for text in unit.nonempty_texts if utils.normalize(text)]
+        if not texts:
+            return True
+        if unit.table_type == "product" and unit.product_name:
+            return False
+        if len(texts) <= 2 and all(text in {"序号", "金额", "数量", "单价", "备注"} or len(text) <= 3 for text in texts):
+            return True
+        if len(texts) <= 3 and all(len(text) <= 3 or text in {"套", "台", "个", "项", "年", "月"} for text in texts):
+            return True
+        return False
 
     @staticmethod
     def _row_diff_title(orig: _RowUnit, comp: _RowUnit) -> str:
@@ -328,7 +433,20 @@ class FlatTextComparator:
 class _RowUnit:
     """Lightweight container for a single logical row during row-level comparison."""
 
-    __slots__ = ("row_index", "text", "normalized", "page_no", "bbox", "caption")
+    __slots__ = (
+        "row_index",
+        "text",
+        "normalized",
+        "page_no",
+        "bbox",
+        "caption",
+        "sequence",
+        "product_name",
+        "business_key",
+        "table_type",
+        "protected_values",
+        "nonempty_texts",
+    )
 
     def __init__(
         self,
@@ -338,6 +456,12 @@ class _RowUnit:
         page_no: int,
         bbox: BBox | None,
         caption: str = "",
+        sequence: str = "",
+        product_name: str = "",
+        business_key: str = "",
+        table_type: str = "generic",
+        protected_values: dict[str, str] | None = None,
+        nonempty_texts: tuple[str, ...] = (),
     ):
         self.row_index = row_index
         self.text = text
@@ -345,3 +469,9 @@ class _RowUnit:
         self.page_no = page_no
         self.bbox = bbox
         self.caption = caption
+        self.sequence = sequence
+        self.product_name = product_name
+        self.business_key = business_key
+        self.table_type = table_type
+        self.protected_values = protected_values or {}
+        self.nonempty_texts = nonempty_texts

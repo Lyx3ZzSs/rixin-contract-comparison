@@ -4,6 +4,7 @@ from html.parser import HTMLParser
 
 from app.models import BBox
 from app.models_table import TableCell, TableRow, StructuredTable
+from app.services.table_compare.bbox_grid import BBoxGridAnalyzer
 
 
 class TableHTMLParser(HTMLParser):
@@ -34,7 +35,13 @@ class TableHTMLParser(HTMLParser):
         self._cell_bbox_idx = 0
         self.feed(html)
         return [
-            builder.build(page_no, source=source, source_block_id=source_block_id, source_text=source_text)
+            builder.build(
+                page_no,
+                source=source,
+                source_block_id=source_block_id,
+                source_text=source_text,
+                provided_bbox_count=len(self._cell_bboxes),
+            )
             for builder in self._tables
         ]
 
@@ -119,7 +126,12 @@ class _TableBuilder:
         self._current_row.append({"text": text, "colspan": colspan, "rowspan": rowspan, "bbox": bbox})
 
     def build(
-        self, page_no: int = 0, source: str = "", source_block_id: str = "", source_text: str = ""
+        self,
+        page_no: int = 0,
+        source: str = "",
+        source_block_id: str = "",
+        source_text: str = "",
+        provided_bbox_count: int = 0,
     ) -> StructuredTable:
         if not self._raw_rows:
             return StructuredTable(page_no=page_no, rows=[], col_count=0, source=source, source_block_id=source_block_id, source_text=source_text)
@@ -127,6 +139,9 @@ class _TableBuilder:
         max_cols = self._estimate_col_count()
         grid = self._normalize_grid(max_cols)
         rows = self._grid_to_rows(grid)
+        geometry_analyzer = BBoxGridAnalyzer()
+        geometry = geometry_analyzer.analyze(rows, max_cols, provided_bbox_count=provided_bbox_count)
+        rows = geometry_analyzer.apply_col_corrections(rows, geometry)
         return StructuredTable(
             page_no=page_no,
             rows=rows,
@@ -134,6 +149,14 @@ class _TableBuilder:
             source=source,
             source_block_id=source_block_id,
             source_text=source_text,
+            geometry_status=geometry.status,
+            geometry_confidence=geometry.confidence,
+            geometry_warnings=geometry.warnings,
+            geometry_strategy=geometry.strategy,
+            bbox_grid_row_count=geometry.bbox_grid_row_count,
+            bbox_grid_col_count=geometry.bbox_grid_col_count,
+            bbox_cell_count=geometry.bbox_cell_count,
+            html_cell_count=geometry.html_cell_count,
         )
 
     def _estimate_col_count(self) -> int:

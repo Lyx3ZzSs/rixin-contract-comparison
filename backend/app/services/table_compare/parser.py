@@ -18,6 +18,7 @@ from app.services.table_compare.types import (
     _LogicalTable,
 )
 from app.services.table_compare.html_parser import parse_html_tables
+from app.services.table_compare.repair_context import TableRepairContext
 from app.services.table_compare import utils
 
 logger = logging.getLogger(__name__)
@@ -349,15 +350,23 @@ class LogicalTableParser:
                 ))
                 logical_index += 1
 
-        rows = repair_service.normalize_merged_sequence_rows(rows, col_count)
-        rows = repair_service.repair_merged_adjacent_sequence_rows(rows, col_count)
-        rows = repair_service.repair_phantom_merged_name_rows(rows, col_count)
-        rows = repair_service.repair_product_continuation_rows(rows, col_count)
-        rows = repair_service.repair_shifted_product_field_rows(rows, col_count)
-        rows = repair_service.repair_embedded_summary_transitions(rows, col_count)
-        rows = repair_service.normalize_summary_rows(rows, col_count, tables)
-        rows = repair_service.remove_orphan_overflow_sequence_cells(rows, col_count)
+        repair_context = TableRepairContext.from_tables(tables)
+        rows = repair_service.normalize_merged_sequence_rows(repair_context, rows, col_count)
+        rows = repair_service.repair_merged_adjacent_sequence_rows(repair_context, rows, col_count)
+        rows = repair_service.repair_phantom_merged_name_rows(repair_context, rows, col_count)
+        rows = repair_service.repair_product_continuation_rows(repair_context, rows, col_count)
+        rows = repair_service.repair_shifted_product_field_rows(repair_context, rows, col_count)
+        rows = repair_service.repair_embedded_summary_transitions(repair_context, rows, col_count)
+        rows = repair_service.normalize_summary_rows(repair_context, rows, col_count, tables)
+        rows = repair_service.remove_orphan_overflow_sequence_cells(repair_context, rows, col_count)
         first = tables[0] if tables else None
+        geometry_status = self._combined_geometry_status(tables)
+        geometry_confidence = min((table.geometry_confidence for table in tables), default=1.0)
+        geometry_warnings = sorted({
+            warning
+            for table in tables
+            for warning in table.geometry_warnings
+        })
         return _LogicalTable(
             rows=rows,
             col_count=col_count,
@@ -366,7 +375,23 @@ class LogicalTableParser:
             source="logical_table",
             caption=first.caption if first else "",
             footnote=first.footnote if first else "",
+            geometry_status=geometry_status,
+            geometry_confidence=geometry_confidence,
+            geometry_warnings=geometry_warnings,
+            geometry_strategy=first.geometry_strategy if first else "",
+            bbox_grid_row_count=sum(table.bbox_grid_row_count for table in tables),
+            bbox_grid_col_count=max((table.bbox_grid_col_count for table in tables), default=0),
         )
+
+    @staticmethod
+    def _combined_geometry_status(tables: list[StructuredTable]) -> str:
+        statuses = [table.geometry_status for table in tables if table.geometry_status != "not_available"]
+        if not statuses:
+            return "not_available"
+        for status in ("severe_conflict", "geometry_unusable", "minor_conflict", "low_confidence"):
+            if status in statuses:
+                return status
+        return "consistent"
 
     def _logical_cells(self, table: StructuredTable, row: int, logical_row: int) -> list[_LogicalCell]:
         cells: list[_LogicalCell] = []
