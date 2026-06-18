@@ -31,6 +31,7 @@ from app.services.extractors.base import (
 )
 from app.services.header_footer_compare import HeaderFooterComparator
 from app.services.matcher import ClauseMatcher
+from app.services.page_diff import PageDiffConsolidator
 from app.services.pipeline import PipelineContext
 from app.services.seal_comparator import build_seal_diffs
 from app.services.table_compare import TableComparator
@@ -534,6 +535,7 @@ class EvidenceStage:
     def __init__(self) -> None:
         self.evidence_locator = EvidenceLocator()
         self.text_coordinate_locator = TextCoordinateLocator()
+        self.page_consolidator = PageDiffConsolidator()
 
     def execute(self, ctx: PipelineContext) -> None:
         clauses = ctx.require_clauses()
@@ -554,6 +556,13 @@ class EvidenceStage:
         _emit_progress(ctx, 76, self.name, "coordinate_refined")
         self.evidence_locator.assign_evidence_confidence(ctx.diffs)
         ctx.diffs = DiffEngine().deduplicate_overlaps(ctx.diffs)
+        if ctx.original_extraction is not None and ctx.compare_extraction is not None:
+            ctx.diffs = self.page_consolidator.consolidate(
+                ctx.original_extraction.document,
+                ctx.compare_extraction.document,
+                ctx.diffs,
+            )
+            self.evidence_locator.assign_evidence_confidence(ctx.diffs)
         _emit_progress(ctx, 82, self.name, "evidence_confidence_done")
 
 

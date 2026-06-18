@@ -59,6 +59,7 @@ class TextCoordinateLocator:
             "table_cell",
             "cover_metadata",
             "seal_region",
+            "page_region",
             "text_exact",
         }
         return not any((evidence.method or "").lower() in precise_methods for evidence in existing)

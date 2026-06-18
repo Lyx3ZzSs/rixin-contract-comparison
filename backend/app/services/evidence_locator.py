@@ -197,6 +197,8 @@ class EvidenceLocator:
                 diff.compare_evidence = kept
 
     def _evidence_conflicts(self, left: EvidenceBox, right: EvidenceBox) -> bool:
+        if (left.method or "").lower() == "page_region" or (right.method or "").lower() == "page_region":
+            return False
         if left.page_no != right.page_no:
             return False
         coverage = self._smaller_coverage(left.bbox, right.bbox)
@@ -277,6 +279,8 @@ class EvidenceLocator:
             return 0.9
         if method == "seal_region":
             return 0.74
+        if method == "page_region":
+            return 0.9
         if method in {"estimated_char"}:
             return 0.74
         if method in {"exact_text", "cover_extra", "clause_fallback"}:
