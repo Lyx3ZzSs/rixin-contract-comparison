@@ -170,8 +170,6 @@ class TextBlock(BaseModel):
     char_boxes: list[CharBox] = Field(default_factory=list)
     raw_html: str = ""
     table_cell_bboxes: list[list[float]] = Field(default_factory=list)
-    table_ocr_texts: list[str] = Field(default_factory=list)
-    table_ocr_bboxes: list[list[float]] = Field(default_factory=list)
 
 
 class Page(BaseModel):

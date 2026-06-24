@@ -277,10 +277,6 @@ class EvidenceLocator:
             return 0.98
         if method in {"table_cell", "cover_metadata"}:
             return 0.9
-        if method == "table_ocr_text_range":
-            return 0.74
-        if method == "table_cell_estimated":
-            return 0.68
         if method == "seal_region":
             return 0.74
         if method == "page_region":

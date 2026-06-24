@@ -1182,21 +1182,14 @@ class TableDiffBuilder:
                 if not text:
                     continue
                 estimated_bbox = self._usable_cell_bbox(table, row, cell, text)
-                bbox, method = self._best_text_range_bbox(
-                    block,
-                    cell.bbox,
-                    text,
-                    0,
-                    len(text),
-                    estimated_bbox,
-                )
+                bbox = self._block_char_bbox_for_fragment(block, cell.bbox, text, estimated_bbox) or estimated_bbox
                 if not bbox:
                     continue
                 highlight_type = "DELETE" if side == "original" else "ADD"
                 evidences.append(EvidenceBox(
                     page_no=getattr(cell, "page_no", block.page_no if block else 1),
                     bbox=bbox,
-                    method=method,
+                    method="table_cell",
                     text=text,
                     highlight_type=highlight_type,
                 ))
@@ -1206,42 +1199,17 @@ class TableDiffBuilder:
                 if not evidence_text and text:
                     evidence_text = text[max(0, start - 1):min(len(text), start + 1)]
                 estimated_bbox = self._cell_char_bbox_for_text(table, row, cell, text, start, end)
-                bbox, method = self._best_text_range_bbox(
-                    block,
-                    cell.bbox,
-                    text,
-                    start,
-                    end,
-                    estimated_bbox,
-                )
+                bbox = self._block_char_bbox_for_fragment(block, cell.bbox, evidence_text, estimated_bbox) or estimated_bbox
                 if not bbox:
                     continue
                 evidences.append(EvidenceBox(
                     page_no=getattr(cell, "page_no", block.page_no if block else 1),
                     bbox=bbox,
-                    method=method,
+                    method="table_cell",
                     text=evidence_text,
                     highlight_type=highlight_type,
                 ))
         return evidences
-
-    def _best_text_range_bbox(
-        self,
-        block: TextBlock | None,
-        cell_bbox: BBox | None,
-        text: str,
-        start: int,
-        end: int,
-        estimated_bbox: BBox | None,
-    ) -> tuple[BBox | None, str]:
-        fragment = text[start:end]
-        bbox = self._block_char_bbox_for_fragment(block, cell_bbox, fragment, estimated_bbox)
-        if bbox is not None:
-            return bbox, "table_cell"
-        bbox = self._table_ocr_bbox_for_text_range(block, cell_bbox, text, start, end)
-        if bbox is not None:
-            return bbox, "table_ocr_text_range"
-        return estimated_bbox, "table_cell_estimated"
 
     def _block_char_bbox_for_fragment(
         self,
@@ -1277,80 +1245,6 @@ class TableDiffBuilder:
         if not self._accept_block_char_bbox(bbox, boxes, fragment, estimated_bbox):
             return None
         return bbox
-
-    def _table_ocr_bbox_for_text_range(
-        self,
-        block: TextBlock | None,
-        cell_bbox: BBox | None,
-        text: str,
-        start: int,
-        end: int,
-    ) -> BBox | None:
-        if block is None or not text or not utils.normalize(text):
-            return None
-        ocr_texts = getattr(block, "table_ocr_texts", []) or []
-        ocr_bboxes = getattr(block, "table_ocr_bboxes", []) or []
-        if not ocr_texts or not ocr_bboxes:
-            return None
-        candidates: list[tuple[BBox, BBox]] = []
-        for index, candidate_text in enumerate(ocr_texts):
-            if index >= len(ocr_bboxes):
-                break
-            bbox = self._bbox_from_values(ocr_bboxes[index])
-            if bbox is None:
-                continue
-            if cell_bbox is not None and self._bbox_overlap_area(bbox, cell_bbox) <= 0:
-                continue
-            range_bbox = self._ocr_candidate_range_bbox(candidate_text, bbox, text, start, end)
-            if range_bbox is None:
-                continue
-            candidates.append((range_bbox, bbox))
-        if not candidates:
-            return None
-        candidates.sort(
-            key=lambda item: self._char_bbox_score(item[0], cell_bbox),
-            reverse=True,
-        )
-        return candidates[0][0]
-
-    def _ocr_candidate_range_bbox(
-        self,
-        candidate_text: str,
-        candidate_bbox: BBox,
-        text: str,
-        start: int,
-        end: int,
-    ) -> BBox | None:
-        candidate_text = candidate_text or ""
-        if not candidate_text:
-            return None
-        if candidate_text == text:
-            return self._cell_char_bbox(candidate_bbox, text, start, end)
-        raw_start = candidate_text.find(text)
-        if raw_start >= 0:
-            return self._cell_char_bbox(candidate_bbox, candidate_text, raw_start + start, raw_start + end)
-        normalized_candidate = utils.normalize(candidate_text)
-        normalized_text = utils.normalize(text)
-        if normalized_candidate == normalized_text:
-            return self._cell_char_bbox(candidate_bbox, text, start, end)
-        normalized_start = normalized_candidate.find(normalized_text)
-        if normalized_start < 0:
-            return None
-        return self._cell_char_bbox(candidate_bbox, normalized_candidate, normalized_start + start, normalized_start + end)
-
-    @staticmethod
-    def _bbox_from_values(values: list[float] | tuple[float, ...]) -> BBox | None:
-        if len(values) < 4:
-            return None
-        try:
-            x0, y0, x1, y1 = (float(values[0]), float(values[1]), float(values[2]), float(values[3]))
-        except (TypeError, ValueError):
-            return None
-        left, right = sorted((x0, x1))
-        top, bottom = sorted((y0, y1))
-        if right <= left or bottom <= top:
-            return None
-        return BBox(x0=left, y0=top, x1=right, y1=bottom)
 
     def _fragment_spans(self, text: str, fragment: str) -> list[tuple[int, int]]:
         spans: list[tuple[int, int]] = []
