@@ -1,7 +1,9 @@
 from app.models import BBox, CharBox, Document, Page, TextBlock
+from app.services.evidence_locator import EvidenceLocator
 from app.services.table_compare import TableComparator
 from app.services.table_compare.parser import LogicalTableParser
 from app.services.table_compare.repair import TableRepairService
+from app.services.table_compare.types import _LogicalCell
 
 
 def _make_table_block(block_id: str, page_no: int, html: str, bbox: BBox | None = None) -> TextBlock:
@@ -925,6 +927,78 @@ class TestStructuredTableComparison:
         assert diffs[0].compare_evidence[0].highlight_type == "ADD"
         assert diffs[0].compare_evidence[0].text == "21"
         assert diffs[0].compare_evidence[0].bbox == BBox(x0=240, y0=202, x1=260, y1=218)
+
+    def test_table_evidence_uses_table_ocr_word_box_when_block_text_misses_inserted_text(self):
+        original_html = '<table><tr><td>签订日期</td><td>2026年4月 日</td></tr></table>'
+        compare_html = '<table><tr><td>签订日期</td><td>2026年4月21日</td></tr></table>'
+        cell_bboxes = [
+            [0, 200, 100, 220],
+            [100, 200, 500, 220],
+        ]
+        orig_block = TextBlock(
+            block_id="o1",
+            page_no=1,
+            text="签订日期\n2026年4月 日",
+            raw_html=original_html,
+            bbox=BBox(x0=0, y0=200, x1=500, y1=220),
+            block_type="table",
+            table_cell_bboxes=cell_bboxes,
+        )
+        comp_block = TextBlock(
+            block_id="c1",
+            page_no=1,
+            text="签订日期\n2026年4月2日",
+            raw_html=compare_html,
+            bbox=BBox(x0=0, y0=200, x1=500, y1=220),
+            block_type="table",
+            table_cell_bboxes=cell_bboxes,
+            table_ocr_texts=["2026年4月21日"],
+            table_ocr_bboxes=[[170, 202, 310, 218]],
+        )
+
+        diffs, warnings = TableComparator().build_diffs(_make_doc([orig_block]), _make_doc([comp_block]))
+
+        assert warnings == []
+        assert len(diffs) == 1
+        evidence = diffs[0].compare_evidence[0]
+        assert evidence.text == "21"
+        assert evidence.method == "table_ocr_text_range"
+        assert evidence.bbox == BBox(x0=268, y0=202, x1=296, y1=218)
+        assert evidence.bbox.x1 < 310
+
+    def test_estimated_table_cell_evidence_is_not_marked_high_quality(self):
+        original_html = '<table><tr><td>签订日期</td><td>2026年4月 日</td></tr></table>'
+        compare_html = '<table><tr><td>签订日期</td><td>2026年4月21日</td></tr></table>'
+        cell_bboxes = [
+            [0, 200, 100, 220],
+            [100, 200, 500, 220],
+        ]
+        orig_block = TextBlock(
+            block_id="o1",
+            page_no=1,
+            text="签订日期\n2026年4月 日",
+            raw_html=original_html,
+            bbox=BBox(x0=0, y0=200, x1=500, y1=220),
+            block_type="table",
+            table_cell_bboxes=cell_bboxes,
+        )
+        comp_block = TextBlock(
+            block_id="c1",
+            page_no=1,
+            text="签订日期\n2026年4月2日",
+            raw_html=compare_html,
+            bbox=BBox(x0=0, y0=200, x1=500, y1=220),
+            block_type="table",
+            table_cell_bboxes=cell_bboxes,
+        )
+
+        diffs, _ = TableComparator().build_diffs(_make_doc([orig_block]), _make_doc([comp_block]))
+        EvidenceLocator().assign_evidence_confidence(diffs)
+
+        evidence = diffs[0].compare_evidence[0]
+        assert evidence.method == "table_cell_estimated"
+        assert evidence.confidence == 0.68
+        assert evidence.evidence_quality == "MEDIUM"
 
     def test_cross_page_product_tables_are_stitched_before_row_matching(self):
         orig = _make_doc([

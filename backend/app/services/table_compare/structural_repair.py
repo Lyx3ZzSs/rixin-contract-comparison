@@ -302,7 +302,7 @@ class StructuralRepairMixin:
         missing_seq: int,
         col_count: int,
     ) -> list[_LogicalRow] | None:
-        candidate = self._missing_sequence_candidate_from_source(self._source_text_for_row(row), missing_seq)
+        candidate = self._select_missing_sequence_candidate_for_row(row, missing_seq)
         if candidate is None:
             return None
 
@@ -440,10 +440,119 @@ class StructuralRepairMixin:
                 )
                 index += 2  # consume both original rows
             else:
-                repaired.append(row)
-                index += 1
+                sparse_split = self._try_split_sparse_following_sequence_pair(
+                    row, next_row, current_seq, col_count,
+                )
+                if sparse_split is not None:
+                    repaired.extend(sparse_split)
+                    self._record_repair_decision(
+                        "sparse_following_sequence_split",
+                        before=[row, next_row],
+                        after=sparse_split,
+                        reason="split merged product row and consume sparse following sequence row",
+                        confidence=0.84,
+                        signals={
+                            "current_sequence": current_seq,
+                            "next_sequence": next_seq,
+                            "col_count": col_count,
+                        },
+                    )
+                    index += 2
+                else:
+                    repaired.append(row)
+                    index += 1
 
         return self._reindex_logical_rows(repaired)
+
+    def _try_split_sparse_following_sequence_pair(
+        self,
+        row: _LogicalRow,
+        next_row: _LogicalRow,
+        current_seq: int,
+        col_count: int,
+    ) -> list[_LogicalRow] | None:
+        name_tokens = self._split_name_tokens(self._cell_text_from_row(row, 1))
+        if len(name_tokens) != 2:
+            return None
+        if not self._is_sparse_sequence_residue_row(next_row):
+            return None
+
+        detail_parts = self._split_cell_text_for_row_count(self._cell_text_from_row(row, 2), 2)
+        if len(detail_parts) != 2:
+            return None
+
+        brand = self._dedupe_repeated_cell_text(self._cell_text_from_row(row, 3))
+        if not utils.normalize(brand):
+            return None
+        current_unit = utils.first_unit_token([self._cell_text_from_row(row, 4)])
+        current_qty = self._cell_text_from_row(row, 5)
+        next_unit = self._first_unit_from_row(next_row)
+        next_qty = self._first_quantity_from_row(next_row)
+        if not current_unit or not next_unit or utils.normalize(current_unit) != utils.normalize(next_unit):
+            return None
+        if not utils.normalize(current_qty) or not utils.normalize(next_qty):
+            return None
+
+        kept_cells: list[_LogicalCell] = []
+        missing_cells: list[_LogicalCell] = []
+        for col in range(col_count):
+            source_cell = self._cell_at_col(row, col) or row.cells[0]
+            next_cell = self._cell_at_col(next_row, col)
+            kept_text = self._cell_text_from_row(row, col)
+            missing_text = ""
+            missing_source = source_cell
+            if col == 0:
+                kept_text = str(current_seq)
+                missing_text = str(current_seq + 1)
+                missing_source = next_cell or source_cell
+            elif col == 1:
+                kept_text = name_tokens[0]
+                missing_text = name_tokens[1]
+            elif col == 2:
+                kept_text = detail_parts[0]
+                missing_text = detail_parts[1]
+            elif col == 3:
+                kept_text = brand
+                missing_text = brand
+            elif col == 4:
+                kept_text = current_unit
+                missing_text = next_unit
+                missing_source = next_cell or source_cell
+            elif col == 5:
+                kept_text = current_qty
+                missing_text = next_qty
+                missing_source = next_cell or source_cell
+
+            if kept_text or self._cell_at_col(row, col) is not None:
+                kept_cells.append(self._clone_logical_cell(source_cell, row_index=0, col_index=col, text=kept_text))
+            if missing_text:
+                missing_cells.append(
+                    self._clone_logical_cell(missing_source, row_index=1, col_index=col, text=missing_text)
+                )
+
+        if len([cell for cell in missing_cells if utils.normalize(cell.text)]) < 5:
+            return None
+
+        return [
+            _LogicalRow(
+                row_index=0,
+                cells=kept_cells,
+                page_no=row.page_no,
+                source_block_id=row.source_block_id,
+                source_row=row.source_row,
+                section_title=row.section_title,
+                source_text=self._source_text_for_row(row),
+            ),
+            _LogicalRow(
+                row_index=1,
+                cells=missing_cells,
+                page_no=next_row.page_no,
+                source_block_id=next_row.source_block_id,
+                source_row=next_row.source_row,
+                section_title=row.section_title,
+                source_text=self._source_text_for_row(next_row),
+            ),
+        ]
 
     def _try_split_phantom_merged_name_pair(
         self,
@@ -805,50 +914,153 @@ class StructuralRepairMixin:
             return detail_norm.replace(missing_norm, "", 1).strip()
         return raw
 
+    def _select_missing_sequence_candidate_for_row(self, row: _LogicalRow, missing_seq: int) -> dict[str, str] | None:
+        candidates = self._missing_sequence_candidates_from_source(self._source_text_for_row(row), missing_seq)
+        if not candidates:
+            return None
+        matched = [
+            candidate
+            for candidate in candidates
+            if self._missing_sequence_candidate_matches_row(row, candidate)
+        ]
+        if len(matched) != 1:
+            return None
+        return matched[0]
+
+    def _missing_sequence_candidate_matches_row(self, row: _LogicalRow, candidate: dict[str, str]) -> bool:
+        name_text = self._cell_text_from_row(row, 1)
+        detail_text = self._cell_text_from_row(row, 2)
+        brand_text = self._cell_text_from_row(row, 3)
+        expected_name = self._merged_name_suffix(name_text, detail_text, candidate.get("name", ""))
+        if not expected_name:
+            expected_name = candidate.get("name", "")
+
+        expected_norm = utils.normalize(expected_name)
+        candidate_name_norm = utils.normalize(candidate.get("name", ""))
+        candidate_detail_norm = utils.normalize(candidate.get("detail", ""))
+        candidate_brand_norm = utils.normalize(candidate.get("brand", ""))
+        if expected_norm and not (
+            expected_norm in candidate_name_norm
+            or candidate_name_norm in expected_norm
+            or expected_norm in candidate_detail_norm
+            or candidate_detail_norm in expected_norm
+        ):
+            return False
+
+        detail_norm = utils.normalize(detail_text)
+        if candidate_detail_norm and detail_norm and candidate_detail_norm not in detail_norm:
+            merged_name_norm = utils.normalize(name_text)
+            if candidate_detail_norm not in merged_name_norm:
+                return False
+
+        if candidate_brand_norm:
+            brand_norm = utils.normalize(brand_text)
+            if candidate_brand_norm not in brand_norm and not self._has_repeated_cell_value(brand_text):
+                return False
+
+        return True
+
     def _missing_sequence_candidate_from_source(self, source_text: str, missing_seq: int) -> dict[str, str] | None:
+        candidates = self._missing_sequence_candidates_from_source(source_text, missing_seq)
+        return candidates[0] if candidates else None
+
+    def _missing_sequence_candidates_from_source(self, source_text: str, missing_seq: int) -> list[dict[str, str]]:
         tokens = self._source_line_tokens(source_text)
         if not tokens:
-            return None
+            return []
+        candidates: list[dict[str, str]] = []
         for index, token in enumerate(tokens):
             if utils.normalize(token) != str(missing_seq):
                 continue
             window = tokens[index + 1:index + 10]
             detail = self._first_detail_token(window)
             if not detail:
-                continue
-            detail_index = window.index(detail)
-            brand = self._first_brand_token(window[detail_index + 1:])
-            unit = utils.first_unit_token(window[detail_index + 1:])
+                detail = ""
+            if detail:
+                detail_index = window.index(detail)
+                brand = self._first_brand_token(window[detail_index + 1:])
+                unit = utils.first_unit_token(window[detail_index + 1:])
+                if unit:
+                    unit_index = window.index(unit)
+                    quantity = self._first_quantity_token(window[unit_index + 1:])
+                    if quantity:
+                        candidates.append(
+                            self._build_missing_sequence_candidate(
+                                tokens,
+                                index,
+                                window,
+                                detail=detail,
+                                brand=brand,
+                                unit=unit,
+                                quantity=quantity,
+                                trailing_index=unit_index + 1,
+                            )
+                        )
+
+            unit = utils.first_unit_token(window[:4])
             if not unit:
                 continue
             unit_index = window.index(unit)
-            quantity = self._first_quantity_token(window[unit_index + 1:])
+            brand = self._first_brand_token(window[unit_index + 1:])
+            if not brand:
+                continue
+            brand_index = unit_index + 1 + window[unit_index + 1:].index(brand)
+            detail = self._first_detail_token(window[brand_index + 1:])
+            if not detail:
+                continue
+            detail_index = brand_index + 1 + window[brand_index + 1:].index(detail)
+            quantity = self._first_quantity_token(window[detail_index + 1:])
             if not quantity:
                 continue
+            candidates.append(
+                self._build_missing_sequence_candidate(
+                    tokens,
+                    index,
+                    window,
+                    detail=detail,
+                    brand=brand,
+                    unit=unit,
+                    quantity=quantity,
+                    trailing_index=detail_index + 2,
+                )
+            )
+        return candidates
 
-            name = detail
-            previous = tokens[index - 1] if index > 0 else ""
-            trailing = ""
-            if unit_index + 1 < len(window):
-                after_unit = window[unit_index + 1]
-                if self._looks_like_row_name_fragment(after_unit):
-                    trailing = after_unit
-            if self._looks_like_row_name_fragment(previous):
-                previous_norm = utils.normalize(previous)
-                detail_norm = utils.normalize(detail)
-                if previous_norm and previous_norm in detail_norm and len(detail_norm) > len(previous_norm):
-                    name = detail
-                else:
-                    name = f"{previous} {trailing}".strip() if trailing else previous
+    def _build_missing_sequence_candidate(
+        self,
+        tokens: list[str],
+        index: int,
+        window: list[str],
+        *,
+        detail: str,
+        brand: str,
+        unit: str,
+        quantity: str,
+        trailing_index: int,
+    ) -> dict[str, str]:
+        name = detail
+        previous = tokens[index - 1] if index > 0 else ""
+        trailing = ""
+        if trailing_index < len(window):
+            after_anchor = window[trailing_index]
+            if self._looks_like_row_name_fragment(after_anchor):
+                trailing = after_anchor
+        if self._looks_like_row_name_fragment(previous):
+            previous_norm = utils.normalize(previous)
+            detail_norm = utils.normalize(detail)
+            if previous_norm and previous_norm in detail_norm and len(detail_norm) > len(previous_norm):
+                name = detail
+            else:
+                name = f"{previous} {trailing}".strip() if trailing else previous
 
-            return {
-                "name": name,
-                "detail": detail,
-                "brand": brand,
-                "unit": unit,
-                "quantity": quantity,
-            }
-        return None
+        return {
+            "name": name,
+            "detail": detail,
+            "brand": brand,
+            "unit": unit,
+            "quantity": quantity,
+            "_token_index": str(index),
+        }
 
     def _source_line_tokens(self, source_text: str) -> list[str]:
         raw = unicodedata.normalize("NFKC", source_text or "")
@@ -880,6 +1092,32 @@ class StructuralRepairMixin:
             norm = utils.normalize(token)
             if re.fullmatch(r"\d{1,3}(?:\.\d+)?", norm) and not utils.looks_like_amount_value(f"amount:{utils.canonical_amount(token)}"):
                 return token
+        return ""
+
+    def _is_sparse_sequence_residue_row(self, row: _LogicalRow) -> bool:
+        if self._row_sequence_int(row) is None:
+            return False
+        nonempty = [cell for cell in row.cells if utils.normalize(cell.text)]
+        if len(nonempty) > 3:
+            return False
+        return bool(self._first_unit_from_row(row) and self._first_quantity_from_row(row))
+
+    def _first_unit_from_row(self, row: _LogicalRow) -> str:
+        for cell in sorted(row.cells, key=lambda item: item.col_index):
+            if cell.col_index == 0:
+                continue
+            unit = utils.first_unit_token([cell.text])
+            if unit:
+                return unit
+        return ""
+
+    def _first_quantity_from_row(self, row: _LogicalRow) -> str:
+        for cell in sorted(row.cells, key=lambda item: item.col_index):
+            if cell.col_index == 0:
+                continue
+            norm = utils.normalize(cell.text)
+            if re.fullmatch(r"\d{1,3}(?:\.\d+)?", norm):
+                return cell.text
         return ""
 
     def _is_source_row_field_noise(self, norm: str) -> bool:
@@ -960,11 +1198,12 @@ class StructuralRepairMixin:
         return cell.text if cell is not None else ""
 
     def _clone_logical_cell(self, source: _LogicalCell, row_index: int, col_index: int, text: str) -> _LogicalCell:
+        bbox = source.bbox if utils.normalize(source.text) == utils.normalize(text) else None
         return _LogicalCell(
             row_index=row_index,
             col_index=col_index,
             text=text,
-            bbox=source.bbox,
+            bbox=bbox,
             page_no=source.page_no,
             source_block_id=source.source_block_id,
             source_row=source.source_row,

@@ -156,6 +156,8 @@ class ModelOrchestrator:
             block_type = _normalize_block_type(region.region_type)
             raw_html = table_html_map.get(id(region), "")
             cell_bboxes = region.table_cell_bboxes if region.region_type == "table" else []
+            table_ocr_texts = region.table_ocr_texts if region.region_type == "table" else []
+            table_ocr_bboxes = region.table_ocr_bboxes if region.region_type == "table" else []
 
             block = TextBlock(
                 block_id=f"p{page_no}_orchestrator_b{index + 1}",
@@ -173,6 +175,8 @@ class ModelOrchestrator:
                 layout_match_reason="region returned by PP-Structure",
                 raw_html=raw_html,
                 table_cell_bboxes=cell_bboxes,
+                table_ocr_texts=table_ocr_texts,
+                table_ocr_bboxes=table_ocr_bboxes,
             )
             blocks.append(block)
 

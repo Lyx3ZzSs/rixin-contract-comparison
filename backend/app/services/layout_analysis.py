@@ -42,6 +42,8 @@ class LayoutRegion:
     text: str = ""
     raw_html: str = ""
     table_cell_bboxes: list[list[float]] = field(default_factory=list)
+    table_ocr_texts: list[str] = field(default_factory=list)
+    table_ocr_bboxes: list[list[float]] = field(default_factory=list)
     raw_data: dict[str, Any] = field(default_factory=dict)
     original_label: str = ""
     layout_order: int | None = None
@@ -141,6 +143,8 @@ class PPStructureLayoutAdapter:
                     layout_match_reason="region returned by PP-Structure",
                     raw_html=region.raw_html,
                     table_cell_bboxes=region.table_cell_bboxes,
+                    table_ocr_texts=region.table_ocr_texts,
+                    table_ocr_bboxes=region.table_ocr_bboxes,
                 )
                 for index, region in enumerate(page_regions)
             ]
@@ -228,7 +232,10 @@ class PPStructureLayoutAdapter:
         table_pairs = self._match_tables(candidates, table_entries)
         for candidate_index, entry_index in table_pairs.items():
             region = candidates[candidate_index][0]
-            region.table_cell_bboxes = table_entries[entry_index]["cells"]
+            table_entry = table_entries[entry_index]
+            region.table_cell_bboxes = table_entry["cells"]
+            region.table_ocr_texts = table_entry.get("ocr_texts", [])
+            region.table_ocr_bboxes = table_entry.get("ocr_bboxes", [])
             stats["table_cell_matched_count"] += 1
         table_count = sum(region.region_type == "table" for region, _ in candidates)
         stats["table_region_count"] = table_count
@@ -307,8 +314,56 @@ class PPStructureLayoutAdapter:
                     cells.append([bbox.x0, bbox.y0, bbox.x1, bbox.y1])
             if not cells:
                 continue
-            entries.append({"bbox": union_bbox_values(cells), "cells": cells})
+            ocr_texts, ocr_bboxes = self._table_ocr_entries(item, width, height, remote_w, remote_h)
+            entries.append(
+                {
+                    "bbox": union_bbox_values(cells),
+                    "cells": cells,
+                    "ocr_texts": ocr_texts,
+                    "ocr_bboxes": ocr_bboxes,
+                }
+            )
         return entries
+
+    def _table_ocr_entries(
+        self,
+        item: dict[str, Any],
+        width: float,
+        height: float,
+        remote_w: float,
+        remote_h: float,
+    ) -> tuple[list[str], list[list[float]]]:
+        table_ocr = item.get("table_ocr_pred") or item.get("tableOcrPred")
+        if not isinstance(table_ocr, dict):
+            return [], []
+        texts = table_ocr.get("rec_texts") or table_ocr.get("recTexts") or []
+        boxes = (
+            table_ocr.get("rec_boxes")
+            or table_ocr.get("recBoxes")
+            or table_ocr.get("rec_polys")
+            or table_ocr.get("recPolys")
+            or []
+        )
+        if not isinstance(texts, list) or not isinstance(boxes, list):
+            return [], []
+        ocr_texts: list[str] = []
+        ocr_bboxes: list[list[float]] = []
+        for index, value in enumerate(texts):
+            text = str(value).strip()
+            if not text:
+                continue
+            bbox = self.parse_bbox(
+                boxes[index] if index < len(boxes) else None,
+                width,
+                height,
+                remote_w,
+                remote_h,
+            )
+            if bbox is None:
+                continue
+            ocr_texts.append(text)
+            ocr_bboxes.append([bbox.x0, bbox.y0, bbox.x1, bbox.y1])
+        return ocr_texts, ocr_bboxes
 
     def _match_tables(
         self,

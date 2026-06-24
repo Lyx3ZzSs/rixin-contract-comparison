@@ -326,15 +326,20 @@ class PPStructureOCRHybridExtractor:
         return result
 
     @staticmethod
-    def _collect_html_tables(structure_blocks: list[TextBlock]) -> dict[str, tuple[str, list[list[float]], BBox]]:
+    def _collect_html_tables(
+        structure_blocks: list[TextBlock],
+    ) -> dict[str, tuple[str, list[list[float]], list[str], list[list[float]], BBox]]:
         return {
-            b.block_id: (b.text, b.table_cell_bboxes, b.bbox)
+            b.block_id: (b.text, b.table_cell_bboxes, b.table_ocr_texts, b.table_ocr_bboxes, b.bbox)
             for b in structure_blocks
             if b.block_type in {"table", "table_title", "table_cell"} and "<table" in (b.text or "").lower()
         }
 
     @staticmethod
-    def _consolidate_table_blocks(blocks: list[TextBlock], html_tables: dict[str, tuple[str, list[list[float]], BBox]]) -> list[TextBlock]:
+    def _consolidate_table_blocks(
+        blocks: list[TextBlock],
+        html_tables: dict[str, tuple[str, list[list[float]], list[str], list[list[float]], BBox]],
+    ) -> list[TextBlock]:
         if not html_tables:
             return blocks
         table_children: dict[str, list[TextBlock]] = {}
@@ -350,7 +355,7 @@ class PPStructureOCRHybridExtractor:
                 if layout_id in seen:
                     continue
                 seen.add(layout_id)
-                html_text, cell_bboxes, layout_bbox = html_tables[layout_id]
+                html_text, cell_bboxes, table_ocr_texts, table_ocr_bboxes, layout_bbox = html_tables[layout_id]
                 merged_text, merged_char_boxes = PPStructureOCRHybridExtractor._merge_table_ocr_children(
                     table_children.get(layout_id, [block])
                 )
@@ -358,6 +363,8 @@ class PPStructureOCRHybridExtractor:
                     "bbox": layout_bbox,
                     "raw_html": html_text,
                     "table_cell_bboxes": cell_bboxes,
+                    "table_ocr_texts": table_ocr_texts,
+                    "table_ocr_bboxes": table_ocr_bboxes,
                 }
                 if merged_text:
                     update["text"] = merged_text
