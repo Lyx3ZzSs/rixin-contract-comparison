@@ -149,6 +149,8 @@ def should_join_extra_fragments(
         return False
     if previous.layout_block_id and previous.layout_block_id == current.layout_block_id:
         return True
+    if _is_unmatched_single_char_fragment(previous) or _is_unmatched_single_char_fragment(current):
+        return False
     previous_bbox = previous.evidence.bbox
     current_bbox = current.evidence.bbox
     height = max(previous_bbox.y1 - previous_bbox.y0, current_bbox.y1 - current_bbox.y0, 1.0)
@@ -156,3 +158,8 @@ def should_join_extra_fragments(
     if current_value.rstrip().endswith((':', '：')):
         return gap <= max(80.0, height * 5)
     return gap <= max(24.0, height * 1.5)
+
+
+def _is_unmatched_single_char_fragment(fragment: CoverExtraFragment) -> bool:
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", fragment.value or ""))
+    return not fragment.layout_block_id and len(compact) <= 1

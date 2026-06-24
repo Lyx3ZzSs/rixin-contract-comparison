@@ -1,7 +1,12 @@
+import signal
+
+import pytest
+
 from app.models import BBox, CharBox, Document, Page, TextBlock
 from app.services.table_compare import TableComparator
 from app.services.table_compare.parser import LogicalTableParser
-from app.services.table_compare.repair import TableRepairService
+from app.services.table_compare.repair import TableRepairContext, TableRepairService
+from app.services.table_compare.types import _LogicalCell, _LogicalRow
 
 
 def _make_table_block(block_id: str, page_no: int, html: str, bbox: BBox | None = None) -> TextBlock:
@@ -48,6 +53,50 @@ def _make_doc(blocks: list[TextBlock]) -> Document:
         pages_by_no.setdefault(b.page_no, []).append(b)
     pages = [Page(page_no=pn, width=595, height=842, blocks=blocks) for pn, blocks in sorted(pages_by_no.items())]
     return Document(filename="test.pdf", path="test.pdf", page_count=len(pages), pages=pages)
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="requires SIGALRM")
+def test_block_range_bbox_returns_when_prefix_empty_and_suffix_missing() -> None:
+    builder = TableComparator()._diff_builder
+    block_text = "目标单元格后面的整块表格文本不包含期望后缀"
+    block = _make_text_block(
+        "b1",
+        1,
+        block_text,
+        BBox(x0=10, y0=10, x1=300, y1=30),
+    ).model_copy(
+        update={
+            "char_boxes": [
+                CharBox(
+                    char=char,
+                    bbox=BBox(x0=10 + index * 8, y0=10, x1=16 + index * 8, y1=20),
+                    page_no=1,
+                    text_index=index,
+                )
+                for index, char in enumerate(block_text)
+            ]
+        }
+    )
+
+    def timeout_handler(signum, frame):  # noqa: ANN001
+        raise TimeoutError("range lookup did not terminate")
+
+    previous = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, 0.2)
+    try:
+        bbox = builder._block_char_bbox_for_range(
+            block,
+            BBox(x0=10, y0=10, x1=80, y1=30),
+            "务。.5项预报,并根据电场地形地貌条件进行天气预报的降尺度",
+            0,
+            2,
+            None,
+        )
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+    assert bbox is None
 
 
 def _product_table(rows: list[str]) -> str:
@@ -333,6 +382,129 @@ class TestStructuredTableComparison:
         assert len(diffs) == 1
         assert "2" in diffs[0].compare_text
         assert warnings == []
+
+    def test_version_suffix_in_product_name_is_not_split_into_phantom_row(self):
+        def row(row_index: int, values: list[str]) -> _LogicalRow:
+            return _LogicalRow(
+                row_index=row_index,
+                cells=[
+                    _LogicalCell(
+                        row_index=row_index,
+                        col_index=col,
+                        text=value,
+                        bbox=None,
+                        page_no=1,
+                        source_block_id="p1_ppocrv5_b10",
+                        source_row=row_index + 1,
+                        source_col=col,
+                    )
+                    for col, value in enumerate(values)
+                    if value
+                ],
+                page_no=1,
+                source_block_id="p1_ppocrv5_b10",
+                source_row=row_index + 1,
+            )
+
+        rows = [
+            row(0, ["1", "光伏功率预测拓展 系统V1.0", "光功率国产化改造", "套", "1", "140000", "140000", "13%", ""]),
+            row(1, ["2", "数值天气预报", "光功率预测系统技 术服务合同", "年", "0.5", "60000", "60000", "6%", "以后每年服务 费5万圆整"]),
+        ]
+        context = TableRepairContext(
+            source_text=(
+                "光伏功率预测拓展\n套\n140000\n140000\n13%\n1\n"
+                "光功率国产化改造\n1\n系统 V1.0\n光功率预测系统技\n以后每年服务\n"
+                "年\n60000\n6%\n0.5\n60000\n2\n数值天气预报\n术服务合同\n费5万圆整"
+            ),
+        )
+
+        repaired = TableRepairService().repair_phantom_merged_name_rows(context, rows, 9)
+
+        assert len(repaired) == 2
+        assert repaired[0].cells[1].text == "光伏功率预测拓展 系统V1.0"
+        assert repaired[1].cells[1].text == "数值天气预报"
+
+    def test_truncated_service_detail_row_is_covered_by_plain_ocr_text(self):
+        original_html = (
+            "<table>"
+            "<tr><td>序号</td><td>项目</td><td>内容</td><td>数量</td><td>单位</td>"
+            "<td>生产厂家</td><td>单价</td><td>总价</td><td>备注</td></tr>"
+            "<tr><td>1</td><td>数值气象服务</td><td>务。 .5 项 预报，并根据电场地形地 "
+            "貌条件进行天气预报的降 尺度分析计算处理，为光 伏电站功率预测系统提供 精准的数据模型.</td>"
+            "<td>0.5</td><td>项</td><td></td><td></td><td></td><td></td></tr>"
+            "<tr><td>2</td><td>功率预测服务</td><td>提供后期数据库更新升级 服务。</td>"
+            "<td>0.5</td><td>项</td><td></td><td></td><td></td><td></td></tr>"
+            "</table>"
+        )
+        compare_html = (
+            "<table>"
+            "<tr><td>序号</td><td>项目</td><td>内容</td><td>数量</td><td>单位</td>"
+            "<td>生产厂家</td><td>单价</td><td>总价</td><td>备注</td></tr>"
+            "<tr><td>1</td><td>数值气象服务</td><td>每日提供高精度数值天气 "
+            "预报，并根据电场地形地貌条件进行天气预报 的降尺度分析计算处理，"
+            "为光伏电站功率预测系统提供精准的数据模型。</td>"
+            "<td>0.5</td><td>项</td><td></td><td></td><td></td><td></td></tr>"
+            "<tr><td>2</td><td>功率预测服务</td><td>提供后期数据库更新升级 服务。</td>"
+            "<td>0.5</td><td>项</td><td></td><td></td><td></td><td></td></tr>"
+            "</table>"
+        )
+        source_text = (
+            "每日提供高精度数值天气\n预报，并根据电场地形地\n貌条件进行天气预报的降\n"
+            "1\n0.5\n项\n数值气象服务\n尺度分析计算处理，为光\n伏电站功率预测系统提供\n精准的数据模型。\n"
+            "提供后期数据库更新升级\n0.5\n项\n2\n功率预测服务"
+        )
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_raw_table_block("o1", 4, original_html, source_text)]),
+            _make_doc([_make_raw_table_block("c1", 4, compare_html, source_text)]),
+        )
+
+        assert warnings == []
+        assert diffs == []
+
+    def test_contact_row_delete_does_not_pair_with_single_character_residual(self):
+        original_html = (
+            "<table>"
+            "<tr><td>供 方</td><td>需 方</td></tr>"
+            "<tr><td>单位名称（章）：国能日新科技股份有限公司 单位地址：北京市海淀区西三旗建材城中路</td>"
+            "<td>单位名称(章）：斯美能源科技(青海)有限公司 单位地址：青海省西宁市城北区宁张路44号西宁</td></tr>"
+            "<tr><td>27号1幢2层227号</td><td>创业孵化基地1号楼0814室</td></tr>"
+            "<tr><td>法人代表：雍正</td><td>法人代表或授权委托人：</td></tr>"
+            "<tr><td>委托代理人：</td><td>(签字)</td></tr>"
+            "<tr><td>电 话：010-83458100</td><td>电话：18097182156</td></tr>"
+            "<tr><td>传 真：010-83458107</td><td>传真：</td></tr>"
+            "<tr><td>开户银行：招商银行北京大屯路支行</td><td>开户银行：招商银行股份有限公司西宁生物园区</td></tr>"
+            "<tr><td></td><td>支行</td></tr>"
+            "<tr><td>帐 号：110904199110901</td><td>账 号：972900591810801</td></tr>"
+            "<tr><td>税 号：911101086723891430</td><td>税 号：91630000MA7588E76L</td></tr>"
+            "<tr><td>政编码：100096</td><td></td></tr>"
+            "<tr><td>邮</td><td>邮政编码：813000</td></tr>"
+            "</table>"
+        )
+        compare_html = (
+            "<table>"
+            "<tr><td>供 方 技照</td><td>需 方 司</td></tr>"
+            '<tr><td colspan="2">宁</td></tr>'
+            '<tr><td colspan="2">电 话：010-83458100 电话：18097182156 传</td></tr>'
+            '<tr><td colspan="2">真：010-83458107 传真： 开户银 帐 税</td></tr>'
+            '<tr><td colspan="2">行：招商银行北京大屯路支行 开户银行：招商银行股份有限公司西宁生物园区</td></tr>'
+            '<tr><td colspan="2">支行 号：110904199110901 账 号：972900591810801</td></tr>'
+            '<tr><td colspan="2">号：911101086723891430 税 号：91630000MA7588E76L</td></tr>'
+            '<tr><td colspan="2">邮政编码：100096</td></tr>'
+            '<tr><td colspan="2">邮政编 码：813000</td></tr>'
+            "</table>"
+        )
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 2, original_html)]),
+            _make_doc([_make_table_block("c1", 2, compare_html)]),
+        )
+
+        assert warnings == []
+        assert not any(diff.compare_text == "宁" for diff in diffs)
+        contact_diff = next(diff for diff in diffs if "单位名称" in diff.original_text)
+        assert contact_diff.diff_type == "DELETE"
+        assert contact_diff.compare_text == ""
 
     def test_merged_sequence_with_single_name_and_phantom_continuation(self):
         """OCR merges seq+detail but puts only first name in col 1, pushing
@@ -740,6 +912,52 @@ class TestStructuredTableComparison:
         assert comparator.last_debug_payload["tables"]["original"][0]["geometry_status"] == "geometry_unusable"
         assert comparator.last_debug_payload["quality"]["details"]["original"]["html_grid_usable"] is True
 
+    def test_geometry_unusable_merged_product_rows_do_not_emit_false_business_diffs(self):
+        original_html = _product_table([
+            "<tr><td>2</td><td>中期模型</td><td>光伏场中期功率预报 模型开发。</td>"
+            "<td>国能日新</td><td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>3</td><td>短期模型</td><td>光伏场短期功率预报 模型开发。</td>"
+            "<td>国能日新</td><td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>6</td><td>理论可用功率计算</td><td>理论可用功率计算</td>"
+            "<td>国能日新</td><td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>7</td><td>接口开放及 系统开发</td><td>接口开放及系统开发</td>"
+            "<td>国能日新</td><td>年</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>2 3</td><td>中期模型 短期模型</td><td>光伏场中期功率预报 模型开发。</td>"
+            "<td>国能日新</td><td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>光伏场短期功率预报 模型开发。</td><td>国能日新</td><td>套</td>"
+            "<td>1</td><td></td><td></td><td></td><td></td><td></td></tr>",
+            "<tr><td>6</td><td>理论可用功率计算 接口开放及 系统开发</td><td>理论可用功率计算</td>"
+            "<td>国能日新 国能日新</td><td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+        collapsed_bboxes = []
+        for row_index in range(5):
+            y0 = 100 + row_index * 30
+            y1 = y0 + 20
+            collapsed_bboxes.extend([
+                [0, y0, 90, y1],
+                [100, y0, 190, y1],
+                [200, y0, 290, y1],
+                [0, y0, 90, y1],
+                [100, y0, 190, y1],
+                [200, y0, 290, y1],
+                [0, y0, 90, y1],
+                [100, y0, 190, y1],
+                [200, y0, 290, y1],
+            ])
+
+        comparator = TableComparator()
+        diffs, warnings = comparator.build_diffs(
+            _make_doc([_make_raw_table_block("o1", 1, original_html, original_html, collapsed_bboxes)]),
+            _make_doc([_make_raw_table_block("c1", 1, compare_html, compare_html, collapsed_bboxes)]),
+        )
+
+        assert warnings == []
+        assert diffs == []
+        assert comparator.last_debug_payload["tables"]["original"][0]["geometry_status"] == "geometry_unusable"
+        assert comparator.last_debug_payload["tables"]["compare"][0]["geometry_status"] == "geometry_unusable"
+
     def test_row_level_degradation_suppresses_high_similarity_ocr_noise(self, monkeypatch):
         quality = {
             "score": 0.6,
@@ -925,6 +1143,56 @@ class TestStructuredTableComparison:
         assert diffs[0].compare_evidence[0].highlight_type == "ADD"
         assert diffs[0].compare_evidence[0].text == "21"
         assert diffs[0].compare_evidence[0].bbox == BBox(x0=240, y0=202, x1=260, y1=218)
+
+    def test_table_evidence_uses_neighbor_char_boxes_when_inserted_text_is_partially_missing(self):
+        original_html = '<table><tr><td>签订日期</td><td>2026年4月 日</td></tr></table>'
+        compare_html = '<table><tr><td>签订日期</td><td>2026年4月21日</td></tr></table>'
+        cell_bboxes = [
+            [0, 200, 100, 220],
+            [100, 200, 300, 220],
+        ]
+        compare_text = "签订日期\n2026年4月2日"
+        date_start = compare_text.index("2026")
+        date_char_boxes = []
+        for offset, char in enumerate("2026年4月2日"):
+            x0 = 130 + offset * 10
+            if char == "日":
+                x0 = 220
+            date_char_boxes.append(
+                CharBox(
+                    char=char,
+                    page_no=1,
+                    bbox=BBox(x0=x0, y0=202, x1=x0 + 8, y1=218),
+                    text_index=date_start + offset,
+                )
+            )
+        comp_block = TextBlock(
+            block_id="c1",
+            page_no=1,
+            text=compare_text,
+            bbox=BBox(x0=0, y0=200, x1=300, y1=220),
+            block_type="table",
+            raw_html=compare_html,
+            table_cell_bboxes=cell_bboxes,
+            char_boxes=date_char_boxes,
+        )
+        orig_block = TextBlock(
+            block_id="o1",
+            page_no=1,
+            text="签订日期\n2026年4月 日",
+            bbox=BBox(x0=0, y0=200, x1=300, y1=220),
+            block_type="table",
+            raw_html=original_html,
+            table_cell_bboxes=cell_bboxes,
+        )
+
+        diffs, warnings = TableComparator().build_diffs(_make_doc([orig_block]), _make_doc([comp_block]))
+
+        assert warnings == []
+        assert len(diffs) == 1
+        assert diffs[0].compare_evidence[0].text == "21"
+        assert diffs[0].compare_evidence[0].bbox.x0 < 210
+        assert diffs[0].compare_evidence[0].bbox.x1 <= 225
 
     def test_cross_page_product_tables_are_stitched_before_row_matching(self):
         orig = _make_doc([

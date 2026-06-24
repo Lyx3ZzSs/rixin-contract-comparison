@@ -26,6 +26,11 @@ from app.services.extractors.ppocrv5 import PPOCRV5Extractor
 from app.services.extractors.ppstructure import PPStructureExtractor
 from app.services.layout_analysis import bbox_area, flow_role_for_region
 from app.services.reading_order import assign_page_reading_order, reading_order_conflict_count
+from app.services.text_repair import (
+    compact_text_for_repair,
+    is_clause_marker_ocr_repair,
+    is_delivery_date_placeholder_repair,
+)
 
 
 @dataclass(frozen=True)
@@ -463,8 +468,12 @@ class PPStructureOCRHybridExtractor:
         return structure_height <= max(24.0, median_child_height * 2.0)
 
     def _should_trust_structure_text(self, structure_text: str, ocr_text: str) -> bool:
-        structure_norm = self._compact_text_for_repair(structure_text)
-        ocr_norm = self._compact_text_for_repair(ocr_text)
+        if is_delivery_date_placeholder_repair(structure_text, ocr_text):
+            return True
+        if is_clause_marker_ocr_repair(structure_text, ocr_text):
+            return True
+        structure_norm = compact_text_for_repair(structure_text)
+        ocr_norm = compact_text_for_repair(ocr_text)
         if not structure_norm or not ocr_norm or structure_norm == ocr_norm:
             return False
         if min(len(structure_norm), len(ocr_norm)) < 8:
@@ -472,17 +481,7 @@ class PPStructureOCRHybridExtractor:
         similarity = SequenceMatcher(None, structure_norm, ocr_norm).ratio()
         if similarity < 0.92:
             return False
-        return (
-            self._is_delivery_date_structure_correction(structure_norm, ocr_norm)
-            or self._only_confusable_text_differences(structure_norm, ocr_norm)
-        )
-
-    @staticmethod
-    def _is_delivery_date_structure_correction(structure_norm: str, ocr_norm: str) -> bool:
-        return bool(
-            re.search(r"交货日期\d{4}年.*月.*日交货", structure_norm)
-            and re.search(r"交货日期\d{4}年.*月.*且交货", ocr_norm)
-        )
+        return self._only_confusable_text_differences(structure_norm, ocr_norm)
 
     @staticmethod
     def _only_confusable_text_differences(structure_norm: str, ocr_norm: str) -> bool:
@@ -500,11 +499,6 @@ class PPStructureOCRHybridExtractor:
             if structure_char != ocr_char
         ]
         return 0 < len(differences) <= 2 and all(pair in confusables for pair in differences)
-
-    @staticmethod
-    def _compact_text_for_repair(text: str) -> str:
-        text = unicodedata.normalize("NFKC", text or "")
-        return re.sub(r"[\s，。；：、“”‘’（）()\[\]【】《》,.!?:;\"']+", "", text)
 
     def _is_replaceable_structure_text(self, block: TextBlock) -> bool:
         block_type = self._normalize_block_type(block.block_type)

@@ -457,6 +457,8 @@ class StructuralRepairMixin:
         name_tokens = self._split_name_tokens(name_text)
         if len(name_tokens) < 2:
             return None
+        if self._has_version_suffix_name_fragment(name_tokens):
+            return None
 
         # Signal 2: next row shows column shift (brand/unit in wrong columns)
         # In a phantom row, OCR puts content shifted left:
@@ -682,6 +684,10 @@ class StructuralRepairMixin:
             return []
         parts = [p.strip() for p in re.split(r"\s+", raw) if p.strip()]
         return [p for p in parts if self._is_product_name_like(p)]
+
+    @staticmethod
+    def _has_version_suffix_name_fragment(tokens: list[str]) -> bool:
+        return any(re.search(r"(?:^|[^\w])v?\d+(?:\.\d+)+|[vV]\d", token) for token in tokens[1:])
 
     def _is_product_name_like(self, text: str) -> bool:
         norm = utils.normalize(text)

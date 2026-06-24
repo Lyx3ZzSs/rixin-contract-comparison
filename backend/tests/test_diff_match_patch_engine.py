@@ -113,6 +113,36 @@ def test_diff_engine_ignores_whitespace_only_changes(monkeypatch) -> None:
     assert compare_ranges == []
 
 
+def test_percent_ocr_suffix_deletion_is_reported_as_modify(monkeypatch) -> None:
+    monkeypatch.setenv("DIFF_ENGINE", "diff_match_patch")
+    monkeypatch.setattr(range_refiner, "_DiffMatchPatch", None)
+
+    original_snippet, compare_snippet, original_ranges, compare_ranges = range_refiner.changed_snippets(
+        "3%o作为违约金",
+        "3%作为违约金",
+    )
+
+    assert original_snippet == "3%o"
+    assert compare_snippet == "3%"
+    assert [(item.start, item.end, item.highlight_type) for item in original_ranges] == [(0, 3, "MODIFY")]
+    assert [(item.start, item.end, item.highlight_type) for item in compare_ranges] == [(0, 2, "MODIFY")]
+
+
+def test_percent_ocr_suffix_punctuation_replacement_is_normalized_as_same_per_mille(monkeypatch) -> None:
+    monkeypatch.setenv("DIFF_ENGINE", "diff_match_patch")
+    monkeypatch.setattr(range_refiner, "_DiffMatchPatch", None)
+
+    original_snippet, compare_snippet, original_ranges, compare_ranges = range_refiner.changed_snippets(
+        "3%o的违约金",
+        "3%。的违约金",
+    )
+
+    assert original_snippet == ""
+    assert compare_snippet == ""
+    assert original_ranges == []
+    assert compare_ranges == []
+
+
 def test_spatial_line_pairing_repairs_two_column_form_label_false_add(monkeypatch) -> None:
     monkeypatch.setenv("DIFF_ENGINE", "diff_match_patch")
     monkeypatch.setattr(range_refiner, "_DiffMatchPatch", None)

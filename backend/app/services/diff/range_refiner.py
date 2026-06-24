@@ -129,6 +129,10 @@ def changed_snippets_from_opcodes(
         right_start, right_end = compacted_range_to_original(
             c_right_start, c_right_end, right_segments
         )
+        if c_left_start == c_left_end:
+            left_start = left_end = compacted_position_to_original_boundary(c_left_start, left_segments)
+        if c_right_start == c_right_end:
+            right_start = right_end = compacted_position_to_original_boundary(c_right_start, right_segments)
 
         left_start, left_end = trim_range_whitespace(left, left_start, left_end)
         right_start, right_end = trim_range_whitespace(right, right_start, right_end)
@@ -157,9 +161,25 @@ def changed_snippets_from_opcodes(
             left_ranges.extend(refined_left_ranges)
             right_ranges.extend(refined_right_ranges)
         elif has_left_change:
-            left_ranges.append(expand_token_range(left, left_start, left_end, "DELETE"))
+            percent_ranges = percent_ocr_suffix_modify_ranges(
+                left, left_start, left_end, right, right_start, right_end,
+            )
+            if percent_ranges is not None:
+                refined_left_ranges, refined_right_ranges = percent_ranges
+                left_ranges.extend(refined_left_ranges)
+                right_ranges.extend(refined_right_ranges)
+            else:
+                left_ranges.append(expand_token_range(left, left_start, left_end, "DELETE"))
         elif has_right_change:
-            right_ranges.append(expand_token_range(right, right_start, right_end, "ADD"))
+            percent_ranges = percent_ocr_suffix_modify_ranges(
+                left, left_start, left_end, right, right_start, right_end,
+            )
+            if percent_ranges is not None:
+                refined_left_ranges, refined_right_ranges = percent_ranges
+                left_ranges.extend(refined_left_ranges)
+                right_ranges.extend(refined_right_ranges)
+            else:
+                right_ranges.append(expand_token_range(right, right_start, right_end, "ADD"))
 
     left_ranges = merge_ranges(left_ranges)
     right_ranges = merge_ranges(right_ranges)
@@ -343,9 +363,27 @@ def refine_inline_changed_ranges(
                     expand_token_range(right, current_right_start, current_right_end, "MODIFY", left, current_left_start)
                 )
         elif has_left:
-            left_ranges.append(expand_token_range(left, current_left_start, current_left_end, "DELETE"))
+            percent_ranges = percent_ocr_suffix_modify_ranges(
+                left, current_left_start, current_left_end,
+                right, current_right_start, current_right_end,
+            )
+            if percent_ranges is not None:
+                refined_left_ranges, refined_right_ranges = percent_ranges
+                left_ranges.extend(refined_left_ranges)
+                right_ranges.extend(refined_right_ranges)
+            else:
+                left_ranges.append(expand_token_range(left, current_left_start, current_left_end, "DELETE"))
         elif has_right:
-            right_ranges.append(expand_token_range(right, current_right_start, current_right_end, "ADD"))
+            percent_ranges = percent_ocr_suffix_modify_ranges(
+                left, current_left_start, current_left_end,
+                right, current_right_start, current_right_end,
+            )
+            if percent_ranges is not None:
+                refined_left_ranges, refined_right_ranges = percent_ranges
+                left_ranges.extend(refined_left_ranges)
+                right_ranges.extend(refined_right_ranges)
+            else:
+                right_ranges.append(expand_token_range(right, current_right_start, current_right_end, "ADD"))
     return left_ranges, right_ranges
 
 
@@ -458,10 +496,25 @@ def local_range_to_original(
     segments: list[tuple[int, int]],
     offset: int,
 ) -> tuple[int, int]:
-    if start >= end or not segments:
+    if not segments:
+        return offset, offset
+    if start == end:
+        boundary = compacted_position_to_original_boundary(start, segments)
+        return offset + boundary, offset + boundary
+    if start > end:
         return offset, offset
     local_start, local_end = compacted_range_to_original(start, end, segments)
     return offset + local_start, offset + local_end
+
+
+def compacted_position_to_original_boundary(position: int, segments: list[tuple[int, int]]) -> int:
+    if not segments:
+        return 0
+    if position <= 0:
+        return segments[0][0]
+    if position >= len(segments):
+        return segments[-1][1]
+    return segments[position][0]
 
 
 def expand_token_range(
@@ -495,6 +548,41 @@ def expand_token_range(
 
 def is_ascii_token_char(char: str) -> bool:
     return char.isascii() and (char.isalnum() or char in "._-/%")
+
+
+def percent_ocr_suffix_modify_ranges(
+    left: str,
+    left_start: int,
+    left_end: int,
+    right: str,
+    right_start: int,
+    right_end: int,
+) -> tuple[list[TextRange], list[TextRange]] | None:
+    left_range = percent_suffix_token_range(left, left_start, left_end)
+    right_range = percent_suffix_token_range(right, right_start, right_end)
+    if left_range is None or right_range is None:
+        return None
+    return (
+        [TextRange(start=left_range[0], end=left_range[1], highlight_type="MODIFY")],
+        [TextRange(start=right_range[0], end=right_range[1], highlight_type="MODIFY")],
+    )
+
+
+def percent_suffix_token_range(text: str, start: int, end: int) -> tuple[int, int] | None:
+    if not (0 <= start <= end <= len(text)):
+        return None
+    if start == 0 or text[start - 1] != "%" or not has_numeric_prefix(text, start - 1):
+        return None
+    if any(char not in "oO0。.．" for char in text[start:end]):
+        return None
+
+    token_start = start - 1
+    while token_start > 0 and (text[token_start - 1].isdigit() or text[token_start - 1] in ".,"):
+        token_start -= 1
+    token_end = end
+    if token_end == start:
+        token_end = start
+    return token_start, token_end
 
 
 def is_percent_unit_change(

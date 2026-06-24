@@ -59,6 +59,8 @@ def is_noise_line(line: str) -> bool:
 
 def skip_extra_block(block: TextBlock) -> bool:
     block_type = (block.block_type or "").lower()
+    if block_type in {"header", "page_header"} and _is_unmatched_cover_extra(block):
+        return False
     return block_type in {
         "header",
         "footer",
@@ -72,6 +74,14 @@ def skip_extra_block(block: TextBlock) -> bool:
         "attachment_header",
         "edge_noise",
     }
+
+
+def _is_unmatched_cover_extra(block: TextBlock) -> bool:
+    return (
+        not block.layout_block_id
+        and (block.source or "").lower().endswith("_unmatched")
+        and (block.layout_match_status or "") == "meaningful_unmatched"
+    )
 
 
 def skip_extra_line(line: str, block: TextBlock, page_width: float) -> bool:

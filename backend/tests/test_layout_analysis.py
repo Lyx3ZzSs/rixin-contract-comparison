@@ -384,6 +384,112 @@ def test_extraction_stage_persists_layout_quality_debug_and_warnings(
     assert any(item.code == "LAYOUT_LOW_MATCH_RATE" for item in ctx.task.parse_warning_details)
 
 
+def test_hybrid_trusts_structure_delivery_date_when_ocr_misses_month_fragment() -> None:
+    extractor = PPStructureOCRHybridExtractor(overlap_threshold=0.5)
+    structure_block = _block(
+        "p1_ppstructure_b18",
+        80,
+        560,
+        290,
+        575,
+        text="交货日期：2026年月日交货",
+    )
+    children = [
+        _block("p1_ppocrv5_b22", 85, 562, 188, 574, text="交货日期：2026年").model_copy(
+            update={"layout_block_id": structure_block.block_id}
+        ),
+        _block("p1_ppocrv5_b23", 255, 562, 288, 575, text="且交货").model_copy(
+            update={"layout_block_id": structure_block.block_id}
+        ),
+    ]
+
+    result = extractor._consolidate_structure_text_blocks(
+        children,
+        {structure_block.block_id: structure_block},
+        set(),
+    )
+
+    assert len(result) == 1
+    assert result[0].text == "交货日期:2026年月日交货"
+    assert result[0].source == "ppstructure_text"
+
+
+def test_hybrid_trusts_structure_clause_marker_when_ocr_reads_ten_as_tu() -> None:
+    extractor = PPStructureOCRHybridExtractor(overlap_threshold=0.5)
+    structure_block = _block(
+        "p2_ppstructure_b12",
+        60,
+        200,
+        520,
+        216,
+        text="十二、本合同自双方签字盖章之日起生效。本合同1式4份",
+    )
+    children = [
+        _block(
+            "p2_ppocrv5_b7",
+            62,
+            201,
+            518,
+            215,
+            text="土二、本合同自双方签字盖章之日起生效。本合同1式4份",
+        ).model_copy(update={"layout_block_id": structure_block.block_id}),
+    ]
+
+    result = extractor._consolidate_structure_text_blocks(
+        children,
+        {structure_block.block_id: structure_block},
+        set(),
+    )
+
+    assert len(result) == 1
+    assert result[0].text == "十二、本合同自双方签字盖章之日起生效。本合同1式4份"
+    assert result[0].source == "ppstructure_text"
+
+
+def test_hybrid_trusts_merged_structure_clause_block_when_ocr_reads_ten_as_tu() -> None:
+    extractor = PPStructureOCRHybridExtractor(overlap_threshold=0.5)
+    structure_text = (
+        "十一、其它约定事项：其它未尽事宜，双方协商解决。技术协议与本合同具法律效力。"
+        "十二、本合同自双方签字盖章之日起生效。本合同1式4份"
+    )
+    structure_block = _block(
+        "p2_ppstructure_b4",
+        58,
+        179,
+        533,
+        216,
+        text=structure_text,
+    )
+    children = [
+        _block(
+            "p2_ppocrv5_b6",
+            60,
+            181,
+            516,
+            192,
+            text="十一、其它约定事项：其它未尽事宜，双方协商解决。技术协议与本合同具法律效力。",
+        ).model_copy(update={"layout_block_id": structure_block.block_id}),
+        _block(
+            "p2_ppocrv5_b7",
+            61,
+            203,
+            380,
+            216,
+            text="土二、本合同自双方签字盖章之日起生效。本合同1式4份",
+        ).model_copy(update={"layout_block_id": structure_block.block_id}),
+    ]
+
+    result = extractor._consolidate_structure_text_blocks(
+        children,
+        {structure_block.block_id: structure_block},
+        set(),
+    )
+
+    assert len(result) == 1
+    assert result[0].text == "十一、其它约定事项:其它未尽事宜,双方协商解决。技术协议与本合同具法律效力。十二、本合同自双方签字盖章之日起生效。本合同1式4份"
+    assert result[0].source == "ppstructure_text"
+
+
 class _StaticExtractor:
     name = "ppstructure_ocr_hybrid"
 

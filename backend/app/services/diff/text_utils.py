@@ -8,11 +8,21 @@ from app.models import TextRange
 def build_diff_text(text: str) -> tuple[str, list[tuple[int, int]]]:
     result_chars: list[str] = []
     segments: list[tuple[int, int]] = []
-    for index, char in enumerate(text):
+    index = 0
+    while index < len(text):
+        normalized = per_mille_ocr_token(text, index)
+        if normalized is not None:
+            result_chars.append("‰")
+            segments.append(normalized)
+            index = normalized[1]
+            continue
+        char = text[index]
         if char.isspace():
+            index += 1
             continue
         result_chars.append(char)
         segments.append((index, index + 1))
+        index += 1
     return "".join(result_chars), segments
 
 
@@ -28,10 +38,34 @@ def build_compacted_text(text: str) -> tuple[str, list[tuple[int, int]]]:
                 i += 1
             segments.append((ws_start, i))
         else:
+            normalized = per_mille_ocr_token(text, i)
+            if normalized is not None:
+                result_chars.append("‰")
+                segments.append(normalized)
+                i = normalized[1]
+                continue
             result_chars.append(text[i])
             segments.append((i, i + 1))
             i += 1
     return "".join(result_chars), segments
+
+
+def per_mille_ocr_token(text: str, percent_index: int) -> tuple[int, int] | None:
+    if percent_index <= 0 or percent_index + 1 >= len(text):
+        return None
+    if text[percent_index] != "%" or not text[percent_index - 1].isdigit():
+        return None
+    suffix = text[percent_index + 1]
+    if suffix in "oO0":
+        return percent_index, percent_index + 2
+    if suffix not in "。.．":
+        return None
+    if percent_index + 2 >= len(text):
+        return None
+    next_char = text[percent_index + 2]
+    if next_char.isspace():
+        return None
+    return percent_index, percent_index + 2
 
 
 def compacted_range_to_original(
