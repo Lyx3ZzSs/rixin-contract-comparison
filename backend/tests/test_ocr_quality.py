@@ -489,6 +489,8 @@ def test_propagates_unreliable_page_to_diff_review_status() -> None:
     assert "PAGE_UNRELIABLE" in diff.review_flags
     assert "OCR_LOW_CONFIDENCE" in diff.review_flags
     assert "READING_ORDER_RISK" in diff.review_flags
+    assert "TABLE_STRUCTURE_UNRELIABLE" not in diff.review_flags
+    assert "SEAL_OR_SIGNATURE_RISK" not in diff.review_flags
     assert profiles[0].affected_diff_ids == ["D001"]
     assert summary.affected_diff_count == 1
 

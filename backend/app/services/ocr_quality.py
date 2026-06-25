@@ -33,6 +33,26 @@ STATUS_PRIORITY: dict[OcrQualityStatus, int] = {
 
 _SIDE_ORDER: dict[OcrQualitySide, int] = {"original": 0, "compare": 1}
 
+_LOW_TEXT_REASONS = {
+    "LOW_AVG_CONFIDENCE",
+    "LOW_CONFIDENCE_BLOCK_RATIO",
+    "MISSING_CHAR_CONFIDENCE",
+}
+_LAYOUT_REASONS = {
+    "MEANINGFUL_UNMATCHED_OCR",
+    "LOW_LAYOUT_MATCH_RATE",
+    "LAYOUT_LOW_MATCH_RATE",
+}
+_READING_ORDER_REASONS = {"READING_ORDER_CONFLICT"}
+_TABLE_REASONS = {
+    "TABLE_CELL_UNMATCHED",
+    "TABLE_HEAVY_WITHOUT_STRUCTURE",
+}
+_SEAL_OR_SIGNATURE_REASONS = {
+    "SEAL_OR_SIGNATURE_INCOMPLETE",
+    "SEAL_OR_SIGNATURE_DETECTED",
+}
+
 
 @dataclass(frozen=True)
 class OcrQualityThresholds:
@@ -326,23 +346,24 @@ class OcrQualityProfiler:
     def _diff_flags_for_profile(self, diff: DiffItem, profile: PageOcrQualityProfile) -> tuple[list[str], bool]:
         flags: list[str] = []
         needs_review = False
+        reasons = set(profile.reasons)
 
         if profile.status == "UNRELIABLE":
             flags.append("PAGE_UNRELIABLE")
             needs_review = True
-        if profile.status in {"LOW_TEXT_CONFIDENCE", "UNRELIABLE"}:
+        if profile.status == "LOW_TEXT_CONFIDENCE" or reasons.intersection(_LOW_TEXT_REASONS):
             flags.append("OCR_LOW_CONFIDENCE")
             needs_review = needs_review or self._has_business_token(diff)
-        if profile.status in {"LAYOUT_MISMATCH", "UNRELIABLE"}:
+        if profile.status == "LAYOUT_MISMATCH" or reasons.intersection(_LAYOUT_REASONS):
             flags.append("LAYOUT_MISMATCH_RISK")
             needs_review = True
-        if profile.status in {"READING_ORDER_RISK", "UNRELIABLE"}:
+        if profile.status == "READING_ORDER_RISK" or reasons.intersection(_READING_ORDER_REASONS):
             flags.append("READING_ORDER_RISK")
             needs_review = True
-        if profile.status in {"TABLE_RISK", "UNRELIABLE"}:
+        if profile.status == "TABLE_RISK" or reasons.intersection(_TABLE_REASONS):
             flags.append("TABLE_STRUCTURE_UNRELIABLE")
             needs_review = True
-        if profile.status in {"SEAL_OR_SIGNATURE_RISK", "UNRELIABLE"}:
+        if profile.status == "SEAL_OR_SIGNATURE_RISK" or reasons.intersection(_SEAL_OR_SIGNATURE_REASONS):
             flags.append("SEAL_OR_SIGNATURE_RISK")
 
         return sorted(dict.fromkeys(flags)), needs_review
