@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Iterable
 
 from app.models import (
+    DiffItem,
     Document,
     DocumentProfile,
     LayoutQualityReport,
@@ -42,6 +44,10 @@ class OcrQualityThresholds:
 
 class OcrQualityProfiler:
     """Build deterministic page-level OCR quality profiles."""
+
+    business_token_pattern = re.compile(
+        r"(\d|%|‰|元|万元|亿元|付款|支付|金额|日期|期限|甲方|乙方|公司|交付|违约|责任|终止|解除)"
+    )
 
     def __init__(self, thresholds: OcrQualityThresholds | None = None) -> None:
         self.thresholds = thresholds or OcrQualityThresholds()
@@ -113,6 +119,44 @@ class OcrQualityProfiler:
             affected_diff_count=len(affected_diff_ids),
             profiles=ordered_profiles,
         )
+
+    def apply_to_diffs(
+        self,
+        diffs: Iterable[DiffItem],
+        profiles: Iterable[PageOcrQualityProfile],
+    ) -> TaskOcrQualitySummary:
+        profile_list = list(profiles)
+        risk_profiles_by_key = {
+            (profile.side, profile.page_no): profile for profile in profile_list if profile.status != "OK"
+        }
+        risk_keys = sorted(risk_profiles_by_key, key=lambda key: (_SIDE_ORDER.get(key[0], 99), key[1]))
+
+        for diff in diffs:
+            matched_profiles = self._matched_profiles(diff, risk_profiles_by_key)
+            if matched_profiles:
+                for profile in matched_profiles:
+                    flags, needs_review = self._diff_flags_for_profile(diff, profile)
+                    self._add_review_flags(diff, flags)
+                    if needs_review:
+                        diff.quality_status = "NEEDS_REVIEW"
+                    self._add_affected_diff_id(profile, diff.diff_id)
+                continue
+
+            if (
+                not diff.original_evidence
+                and not diff.compare_evidence
+                and diff.source_type in {"clause", "page", "table", "metadata"}
+                and risk_keys
+            ):
+                self._add_review_flags(diff, ["EVIDENCE_UNRELIABLE"])
+                diff.quality_status = "NEEDS_REVIEW"
+                for profile in self._missing_evidence_profiles(diff, risk_profiles_by_key, risk_keys):
+                    self._add_affected_diff_id(profile, diff.diff_id)
+
+        for profile in profile_list:
+            profile.affected_diff_ids = sorted(dict.fromkeys(profile.affected_diff_ids))
+
+        return self.build_summary(profile_list)
 
     def _metrics(
         self,
@@ -259,6 +303,86 @@ class OcrQualityProfiler:
 
     def _warnings_for_page(self, warnings: list[ParseWarningDetail], page_no: int) -> list[ParseWarningDetail]:
         return [warning for warning in warnings if warning.page_no in {None, page_no}]
+
+    def _matched_profiles(
+        self,
+        diff: DiffItem,
+        risk_profiles_by_key: dict[tuple[OcrQualitySide, int], PageOcrQualityProfile],
+    ) -> list[PageOcrQualityProfile]:
+        matched_by_key: dict[tuple[OcrQualitySide, int], PageOcrQualityProfile] = {}
+        for evidence in diff.original_evidence:
+            key: tuple[OcrQualitySide, int] = ("original", evidence.page_no)
+            if key in risk_profiles_by_key:
+                matched_by_key[key] = risk_profiles_by_key[key]
+        for evidence in diff.compare_evidence:
+            key = ("compare", evidence.page_no)
+            if key in risk_profiles_by_key:
+                matched_by_key[key] = risk_profiles_by_key[key]
+        return [
+            matched_by_key[key]
+            for key in sorted(matched_by_key, key=lambda item: (_SIDE_ORDER.get(item[0], 99), item[1]))
+        ]
+
+    def _diff_flags_for_profile(self, diff: DiffItem, profile: PageOcrQualityProfile) -> tuple[list[str], bool]:
+        flags: list[str] = []
+        needs_review = False
+
+        if profile.status == "UNRELIABLE":
+            flags.append("PAGE_UNRELIABLE")
+            needs_review = True
+        if profile.status in {"LOW_TEXT_CONFIDENCE", "UNRELIABLE"}:
+            flags.append("OCR_LOW_CONFIDENCE")
+            needs_review = needs_review or self._has_business_token(diff)
+        if profile.status in {"LAYOUT_MISMATCH", "UNRELIABLE"}:
+            flags.append("LAYOUT_MISMATCH_RISK")
+            needs_review = True
+        if profile.status in {"READING_ORDER_RISK", "UNRELIABLE"}:
+            flags.append("READING_ORDER_RISK")
+            needs_review = True
+        if profile.status in {"TABLE_RISK", "UNRELIABLE"}:
+            flags.append("TABLE_STRUCTURE_UNRELIABLE")
+            needs_review = True
+        if profile.status in {"SEAL_OR_SIGNATURE_RISK", "UNRELIABLE"}:
+            flags.append("SEAL_OR_SIGNATURE_RISK")
+
+        return sorted(dict.fromkeys(flags)), needs_review
+
+    def _missing_evidence_profiles(
+        self,
+        diff: DiffItem,
+        risk_profiles_by_key: dict[tuple[OcrQualitySide, int], PageOcrQualityProfile],
+        risk_keys: list[tuple[OcrQualitySide, int]],
+    ) -> list[PageOcrQualityProfile]:
+        preferred_sides: tuple[OcrQualitySide, ...]
+        if diff.diff_type == "ADD":
+            preferred_sides = ("compare",)
+        elif diff.diff_type == "DELETE":
+            preferred_sides = ("original",)
+        else:
+            preferred_sides = ("original", "compare")
+
+        selected_keys = [key for key in risk_keys if key[0] in preferred_sides]
+        if not selected_keys:
+            selected_keys = risk_keys
+        return [risk_profiles_by_key[key] for key in selected_keys]
+
+    def _has_business_token(self, diff: DiffItem) -> bool:
+        text = "\n".join(
+            [
+                diff.title,
+                diff.original_text,
+                diff.compare_text,
+                diff.original_snippet,
+                diff.compare_snippet,
+            ]
+        )
+        return bool(self.business_token_pattern.search(text))
+
+    def _add_review_flags(self, diff: DiffItem, flags: Iterable[str]) -> None:
+        diff.review_flags = sorted(dict.fromkeys([*diff.review_flags, *flags]))
+
+    def _add_affected_diff_id(self, profile: PageOcrQualityProfile, diff_id: str) -> None:
+        profile.affected_diff_ids = sorted(dict.fromkeys([*profile.affected_diff_ids, diff_id]))
 
     def _is_table_page(self, page: Page, page_profile: PageProfile | None) -> bool:
         if page_profile is not None and (page_profile.table_heavy or page_profile.table_block_count > 0):

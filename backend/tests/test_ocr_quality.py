@@ -4,8 +4,10 @@ from pydantic import ValidationError
 from app.models import (
     BBox,
     CompareTask,
+    DiffItem,
     Document,
     DocumentProfile,
+    EvidenceBox,
     LayoutQualityReport,
     Page,
     PageLayoutQualityReport,
@@ -36,6 +38,10 @@ def _block(block_id: str, text: str, confidence: float | None, block_type: str =
         block_type=block_type,
         confidence=confidence,
     )
+
+
+def _evidence(page_no: int) -> EvidenceBox:
+    return EvidenceBox(page_no=page_no, bbox=BBox(x0=1, y0=2, x1=3, y1=4), confidence=0.9)
 
 
 def test_task_ocr_quality_summary_defaults_and_counts() -> None:
@@ -456,3 +462,81 @@ def test_profiler_ignores_empty_string_warnings() -> None:
 
     assert profiles[0].status == "OK"
     assert profiles[0].reasons == []
+
+
+def test_propagates_unreliable_page_to_diff_review_status() -> None:
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        title="付款",
+        original_text="30日付款",
+        compare_text="45日付款",
+        original_evidence=[_evidence(1)],
+    )
+    profiles = [
+        PageOcrQualityProfile(
+            side="original",
+            page_no=1,
+            status="UNRELIABLE",
+            score=0.3,
+            reasons=["LOW_AVG_CONFIDENCE", "READING_ORDER_CONFLICT"],
+        )
+    ]
+
+    summary = OcrQualityProfiler().apply_to_diffs(diffs=[diff], profiles=profiles)
+
+    assert diff.quality_status == "NEEDS_REVIEW"
+    assert "PAGE_UNRELIABLE" in diff.review_flags
+    assert "OCR_LOW_CONFIDENCE" in diff.review_flags
+    assert "READING_ORDER_RISK" in diff.review_flags
+    assert profiles[0].affected_diff_ids == ["D001"]
+    assert summary.affected_diff_count == 1
+
+
+def test_low_confidence_business_diff_needs_review() -> None:
+    diff = DiffItem(
+        diff_id="D002",
+        diff_type="MODIFY",
+        title="付款金额",
+        original_text="付款金额100万元",
+        compare_text="付款金额120万元",
+        compare_evidence=[_evidence(2)],
+    )
+    profiles = [
+        PageOcrQualityProfile(
+            side="compare",
+            page_no=2,
+            status="LOW_TEXT_CONFIDENCE",
+            reasons=["LOW_AVG_CONFIDENCE"],
+        )
+    ]
+
+    OcrQualityProfiler().apply_to_diffs(diffs=[diff], profiles=profiles)
+
+    assert diff.quality_status == "NEEDS_REVIEW"
+    assert "OCR_LOW_CONFIDENCE" in diff.review_flags
+
+
+def test_missing_evidence_with_risk_marks_evidence_unreliable() -> None:
+    diff = DiffItem(
+        diff_id="D003",
+        diff_type="ADD",
+        title="新增条款",
+        compare_text="新增付款条款",
+        source_type="clause",
+    )
+    profiles = [
+        PageOcrQualityProfile(
+            side="compare",
+            page_no=1,
+            status="TABLE_RISK",
+            reasons=["TABLE_CELL_UNMATCHED"],
+        )
+    ]
+
+    summary = OcrQualityProfiler().apply_to_diffs(diffs=[diff], profiles=profiles)
+
+    assert diff.quality_status == "NEEDS_REVIEW"
+    assert diff.review_flags == ["EVIDENCE_UNRELIABLE"]
+    assert profiles[0].affected_diff_ids == ["D003"]
+    assert summary.affected_diff_count == 1
