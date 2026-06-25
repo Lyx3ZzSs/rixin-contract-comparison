@@ -547,6 +547,30 @@ def test_quality_summary_includes_ocr_quality_counts(tmp_path: Path) -> None:
     assert payload["ocr_affected_diff_count"] == 2
 
 
+def test_api_defaults_ocr_quality_for_legacy_task(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TOCRLEGACYAPI",
+            status="COMPLETED",
+        )
+    )
+
+    client = TestClient(app)
+    task_response = client.get("/api/compare/TOCRLEGACYAPI")
+
+    assert task_response.status_code == 200, task_response.text
+    assert task_response.json()["ocr_quality_summary"] is None
+
+    quality_response = client.get("/api/compare/TOCRLEGACYAPI/quality")
+
+    assert quality_response.status_code == 200, quality_response.text
+    quality_payload = quality_response.json()
+    assert quality_payload["ocr_quality_summary"] is None
+    assert quality_payload["ocr_risk_page_count"] == 0
+    assert quality_payload["ocr_affected_diff_count"] == 0
+
+
 def test_api_report_excludes_ignored_audit_item_after_review(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     original = tmp_path / "original.pdf"
@@ -677,7 +701,6 @@ def test_cors_allows_frontend_dev_origin() -> None:
     )
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
-
 
 
 
