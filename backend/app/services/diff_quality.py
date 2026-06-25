@@ -31,6 +31,15 @@ class DiffQualityResult:
 class DiffQualityProcessor:
     mergeable_sources = {"metadata", "table", "header_footer"}
     source_priority = {"metadata": 0, "table": 1, "header_footer": 2}
+    ocr_quality_review_flags = {
+        "PAGE_UNRELIABLE",
+        "OCR_LOW_CONFIDENCE",
+        "LAYOUT_MISMATCH_RISK",
+        "READING_ORDER_RISK",
+        "TABLE_STRUCTURE_UNRELIABLE",
+        "SEAL_OR_SIGNATURE_RISK",
+        "EVIDENCE_UNRELIABLE",
+    }
     critical_pattern = re.compile(
         r"(\d|%|‰|元|万元|v\d|V\d|公司|甲方|乙方|不得|不承担|违约|免责|终止|不可抗力)"
     )
@@ -168,6 +177,9 @@ class DiffQualityProcessor:
         for diff in diffs:
             reason = self._suppression_reason(diff)
             if reason:
+                if self.ocr_quality_review_flags.intersection(diff.review_flags):
+                    kept.append(diff)
+                    continue
                 decisions.append(DiffQualityDecision(action="suppressed_low_value_noise", diff_id=diff.diff_id, detail={"reason": reason}))
                 continue
             kept.append(diff)

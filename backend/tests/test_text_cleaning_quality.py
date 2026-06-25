@@ -613,6 +613,25 @@ def test_diff_quality_suppresses_short_symbol_noise_without_business_tokens() ->
     assert any(decision.action == "suppressed_low_value_noise" and decision.diff_id == "D001" for decision in result.decisions)
 
 
+def test_diff_quality_preserves_ocr_marked_low_value_diff() -> None:
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_snippet="/",
+        compare_snippet="∠",
+        match_score=99,
+        review_flags=["EVIDENCE_UNRELIABLE"],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D001"]
+    assert "EVIDENCE_UNRELIABLE" in result.diffs[0].review_flags
+    assert result.diffs[0].quality_status == "NEEDS_REVIEW"
+
+
 def test_diff_quality_suppresses_layout_reflow_punctuation_equivalent_clause_change() -> None:
     diff = DiffItem(
         diff_id="D001",
