@@ -53,10 +53,17 @@ def test_evaluate_case_root_aggregates_metrics() -> None:
     report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
 
     assert report["case_count"] == 1
+    assert report["aggregate"]["status"] == "COMPLETED"
     assert report["aggregate"]["expected_count"] == 1
+    assert report["aggregate"]["actual_count"] == 1
     assert report["aggregate"]["true_positive_count"] == 1
     assert report["aggregate"]["false_positive_count"] == 0
     assert report["aggregate"]["false_negative_count"] == 0
+    assert report["aggregate"]["evidence_hit_count"] == 1
+    assert report["aggregate"]["low_confidence_count"] == 1
     assert report["aggregate"]["ocr_warning_count"] == 1
     assert report["aggregate"]["task_failure_count"] == 0
     assert report["aggregate"]["recall"] == 1.0
+    assert report["aggregate"]["precision"] == 1.0
+    assert report["aggregate"]["evidence_hit_rate"] == 1.0
+    assert report["aggregate"]["low_confidence_ratio"] == 1.0
