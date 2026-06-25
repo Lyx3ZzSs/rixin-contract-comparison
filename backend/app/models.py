@@ -135,7 +135,7 @@ class PageOcrQualityProfile(BaseModel):
 class TaskOcrQualitySummary(BaseModel):
     status: OcrQualityStatus = "OK"
     requires_review: bool = False
-    page_count_by_status: dict[str, int] = Field(default_factory=dict)
+    page_count_by_status: dict[OcrQualityStatus, int] = Field(default_factory=dict)
     risk_page_count: int = 0
     affected_diff_count: int = 0
     profiles: list[PageOcrQualityProfile] = Field(default_factory=list)
