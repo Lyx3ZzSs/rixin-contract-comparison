@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 from scripts.evaluate_ocr_compare_quality import (
@@ -9,6 +11,7 @@ from scripts.evaluate_ocr_compare_quality import (
     evaluate_case,
     evaluate_case_root,
     load_case_inputs,
+    threshold_failures,
 )
 
 
@@ -152,3 +155,34 @@ def test_evaluate_case_root_empty_directory_reports_no_cases(tmp_path: Path) -> 
 
     assert report["case_count"] == 0
     assert report["aggregate"]["status"] == "NO_CASES"
+
+
+def test_threshold_failures_pass_for_smoke_fixture() -> None:
+    report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
+
+    assert threshold_failures(report) == []
+
+
+def test_cli_writes_json_output(tmp_path: Path) -> None:
+    output = tmp_path / "ocr_compare_quality.json"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_ocr_compare_quality.py",
+            "tests/fixtures/ocr_compare_cases",
+            "--output",
+            str(output),
+            "--fail-on-threshold",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["case_count"] == 1
+    assert payload["threshold_failures"] == []
+    assert payload["aggregate"]["recall"] == 1.0

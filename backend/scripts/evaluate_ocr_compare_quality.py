@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+DEFAULT_THRESHOLDS = {
+    "min_recall": 1.0,
+    "max_false_positive_count": 0,
+    "max_task_failure_count": 0,
+    "min_evidence_hit_rate": 1.0,
+}
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -98,12 +106,15 @@ def evaluate_case_root(case_root: Path) -> dict[str, Any]:
     cases = discover_cases(case_root)
     results = [evaluate_case(case) for case in cases]
     aggregate = _aggregate(results)
-    return {
+    report = {
         "case_root": str(case_root),
         "case_count": len(results),
+        "thresholds": DEFAULT_THRESHOLDS,
         "aggregate": aggregate,
         "cases": [result.to_dict() for result in results],
     }
+    report["threshold_failures"] = threshold_failures(report)
+    return report
 
 
 def evaluate_case(case: OcrCompareCase) -> OcrCompareCaseResult:
@@ -342,3 +353,63 @@ def _safe_div(numerator: float, denominator: float) -> float:
     if denominator <= 0:
         return 0.0
     return round(numerator / denominator, 4)
+
+
+def threshold_failures(report: dict[str, Any]) -> list[str]:
+    aggregate = report["aggregate"]
+    failures: list[str] = []
+    if aggregate["recall"] < DEFAULT_THRESHOLDS["min_recall"]:
+        failures.append(
+            f"recall={aggregate['recall']:.4f} < {DEFAULT_THRESHOLDS['min_recall']:.4f}"
+        )
+    if (
+        aggregate["false_positive_count"]
+        > DEFAULT_THRESHOLDS["max_false_positive_count"]
+    ):
+        failures.append(
+            f"false_positive_count={aggregate['false_positive_count']} > {DEFAULT_THRESHOLDS['max_false_positive_count']}"
+        )
+    if aggregate["task_failure_count"] > DEFAULT_THRESHOLDS["max_task_failure_count"]:
+        failures.append(
+            f"task_failure_count={aggregate['task_failure_count']} > {DEFAULT_THRESHOLDS['max_task_failure_count']}"
+        )
+    if aggregate["evidence_hit_rate"] < DEFAULT_THRESHOLDS["min_evidence_hit_rate"]:
+        failures.append(
+            f"evidence_hit_rate={aggregate['evidence_hit_rate']:.4f} < {DEFAULT_THRESHOLDS['min_evidence_hit_rate']:.4f}"
+        )
+    return failures
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Evaluate OCR-driven contract comparison quality."
+    )
+    parser.add_argument(
+        "case_root",
+        type=Path,
+        help="Directory containing OCR compare case subdirectories.",
+    )
+    parser.add_argument(
+        "--output", type=Path, default=None, help="Optional JSON report path."
+    )
+    parser.add_argument(
+        "--fail-on-threshold",
+        action="store_true",
+        help="Exit 1 if smoke thresholds fail.",
+    )
+    args = parser.parse_args()
+
+    report = evaluate_case_root(args.case_root)
+    content = json.dumps(report, ensure_ascii=False, indent=2)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(content, encoding="utf-8")
+    else:
+        print(content)
+    if args.fail_on_threshold and report["threshold_failures"]:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
