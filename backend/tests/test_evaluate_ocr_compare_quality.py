@@ -12,6 +12,7 @@ from scripts.evaluate_ocr_compare_quality import (
     evaluate_case_root,
     load_case_inputs,
     threshold_failures,
+    write_html_report,
 )
 
 
@@ -186,3 +187,17 @@ def test_cli_writes_json_output(tmp_path: Path) -> None:
     assert payload["case_count"] == 1
     assert payload["threshold_failures"] == []
     assert payload["aggregate"]["recall"] == 1.0
+
+
+def test_write_html_report_creates_index_and_case_pages(tmp_path: Path) -> None:
+    report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
+
+    write_html_report(tmp_path, report)
+
+    index = tmp_path / "index.html"
+    case_page = tmp_path / "simple_scanned.html"
+    assert index.exists()
+    assert case_page.exists()
+    assert "OCR comparison quality report" in index.read_text(encoding="utf-8")
+    assert "simple_scanned" in case_page.read_text(encoding="utf-8")
+    assert "OCR_LOW_CONFIDENCE" in case_page.read_text(encoding="utf-8")

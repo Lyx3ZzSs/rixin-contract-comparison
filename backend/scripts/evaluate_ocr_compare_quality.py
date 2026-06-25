@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import sys
 from dataclasses import dataclass
@@ -380,6 +381,70 @@ def threshold_failures(report: dict[str, Any]) -> list[str]:
     return failures
 
 
+def write_html_report(path: Path, report: dict[str, Any]) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for case in report["cases"]:
+        case_filename = f"{case['case_id']}.html"
+        (path / case_filename).write_text(_case_html(case), encoding="utf-8")
+        rows.append(
+            "<tr>"
+            f"<td><a href='{html.escape(case_filename)}'>{html.escape(case['case_id'])}</a></td>"
+            f"<td>{case['status']}</td>"
+            f"<td>{case['recall']:.2%}</td>"
+            f"<td>{case['precision']:.2%}</td>"
+            f"<td>{case['false_positive_count']}</td>"
+            f"<td>{case['false_negative_count']}</td>"
+            f"<td>{case['low_confidence_count']}</td>"
+            f"<td>{case['ocr_warning_count']}</td>"
+            "</tr>"
+        )
+    failures = "<br>".join(
+        html.escape(item) for item in report["threshold_failures"]
+    ) or "None"
+    index = (
+        "<!doctype html><meta charset='utf-8'>"
+        "<title>OCR comparison quality report</title>"
+        "<style>body{font-family:Arial,sans-serif;margin:24px;color:#1f2933}"
+        "table{border-collapse:collapse;width:100%;margin-top:16px}"
+        "td,th{border:1px solid #cbd5e1;padding:6px;text-align:left}"
+        ".failures{padding:10px;background:#fff7ed;border:1px solid #fed7aa}</style>"
+        "<h1>OCR comparison quality report</h1>"
+        f"<p>Case count: {report['case_count']}</p>"
+        f"<p class='failures'>Threshold failures: {failures}</p>"
+        "<table><tr><th>Case</th><th>Status</th><th>Recall</th><th>Precision</th>"
+        "<th>False positives</th><th>Missed diffs</th><th>Low confidence</th><th>OCR warnings</th></tr>"
+        + "".join(rows)
+        + "</table>"
+    )
+    (path / "index.html").write_text(index, encoding="utf-8")
+
+
+def _case_html(case: dict[str, Any]) -> str:
+    issues = "".join(
+        f"<li>{html.escape(issue)}</li>" for issue in case["issues"]
+    ) or "<li>None</li>"
+    return (
+        "<!doctype html><meta charset='utf-8'>"
+        f"<title>{html.escape(case['case_id'])}</title>"
+        "<style>body{font-family:Arial,sans-serif;margin:24px;color:#1f2933}"
+        "dl{display:grid;grid-template-columns:220px 1fr;gap:6px}"
+        "dt{font-weight:700}</style>"
+        f"<h1>{html.escape(case['case_id'])}</h1>"
+        "<dl>"
+        f"<dt>Status</dt><dd>{html.escape(case['status'])}</dd>"
+        f"<dt>Recall</dt><dd>{case['recall']:.2%}</dd>"
+        f"<dt>Precision</dt><dd>{case['precision']:.2%}</dd>"
+        f"<dt>False positives</dt><dd>{case['false_positive_count']}</dd>"
+        f"<dt>Missed diffs</dt><dd>{case['false_negative_count']}</dd>"
+        f"<dt>Low-confidence diffs</dt><dd>{case['low_confidence_count']}</dd>"
+        f"<dt>OCR warnings</dt><dd>{case['ocr_warning_count']}</dd>"
+        f"<dt>Review signal</dt><dd>{'OCR_LOW_CONFIDENCE' if case['low_confidence_count'] else 'None'}</dd>"
+        "</dl>"
+        f"<h2>Issues</h2><ul>{issues}</ul>"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Evaluate OCR-driven contract comparison quality."
@@ -391,6 +456,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--output", type=Path, default=None, help="Optional JSON report path."
+    )
+    parser.add_argument(
+        "--html-output",
+        type=Path,
+        default=None,
+        help="Optional directory for HTML report.",
     )
     parser.add_argument(
         "--fail-on-threshold",
@@ -406,6 +477,8 @@ def main() -> int:
         args.output.write_text(content, encoding="utf-8")
     else:
         print(content)
+    if args.html_output:
+        write_html_report(args.html_output, report)
     if args.fail_on_threshold and report["threshold_failures"]:
         return 1
     return 0
