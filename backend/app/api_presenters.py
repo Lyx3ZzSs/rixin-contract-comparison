@@ -45,6 +45,7 @@ def compare_task_response(task: CompareTask) -> CompareTaskResponse:
         "parse_warnings": task.parse_warnings,
         "parse_warning_details": [to_jsonable(item) for item in task.parse_warning_details],
         "document_profiles": {side: to_jsonable(profile) for side, profile in task.document_profiles.items()},
+        "ocr_quality_summary": to_jsonable(task.ocr_quality_summary) if task.ocr_quality_summary else None,
         "debug_artifact_paths": artifact_filenames(task.debug_artifact_paths),
         "errors": task.errors,
     }

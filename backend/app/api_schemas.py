@@ -13,6 +13,16 @@ DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
 ExtractionFieldStatus = Literal["found", "not_found", "error"]
 ExtractionMethod = Literal["explicit", "semantic"]
+OcrQualityStatus = Literal[
+    "OK",
+    "LOW_TEXT_CONFIDENCE",
+    "LAYOUT_MISMATCH",
+    "READING_ORDER_RISK",
+    "TABLE_RISK",
+    "SEAL_OR_SIGNATURE_RISK",
+    "UNRELIABLE",
+]
+OcrQualitySide = Literal["original", "compare"]
 
 
 class BBoxResponse(BaseModel):
@@ -31,6 +41,25 @@ class EvidenceBoxResponse(BaseModel):
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     evidence_quality: EvidenceQuality = "MEDIUM"
     text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class PageOcrQualityProfileResponse(BaseModel):
+    side: OcrQualitySide
+    page_no: int
+    status: OcrQualityStatus = "OK"
+    score: float = Field(default=1.0, ge=0.0, le=1.0)
+    reasons: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    affected_diff_ids: list[str] = Field(default_factory=list)
+
+
+class TaskOcrQualitySummaryResponse(BaseModel):
+    status: OcrQualityStatus = "OK"
+    requires_review: bool = False
+    page_count_by_status: dict[str, int] = Field(default_factory=dict)
+    risk_page_count: int = 0
+    affected_diff_count: int = 0
+    profiles: list[PageOcrQualityProfileResponse] = Field(default_factory=list)
 
 
 class TextRangeResponse(BaseModel):
@@ -55,6 +84,7 @@ class CompareTaskResponse(BaseModel):
     parse_warnings: list[str] = Field(default_factory=list)
     parse_warning_details: list[dict[str, Any]] = Field(default_factory=list)
     document_profiles: dict[str, Any] = Field(default_factory=dict)
+    ocr_quality_summary: TaskOcrQualitySummaryResponse | None = None
     debug_artifact_paths: dict[str, str] = Field(default_factory=dict)
     report_url: str
     report_filename: str

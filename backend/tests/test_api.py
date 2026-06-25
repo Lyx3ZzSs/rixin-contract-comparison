@@ -12,7 +12,14 @@ from reportlab.pdfgen import canvas
 from app.config import settings
 from app.infrastructure.task_runner import TaskJob, default_task_runner
 from app.main import app
-from app.models import BBox, CompareTask, DiffItem, EvidenceBox
+from app.models import (
+    BBox,
+    CompareTask,
+    DiffItem,
+    EvidenceBox,
+    PageOcrQualityProfile,
+    TaskOcrQualitySummary,
+)
 from app.models_extraction import ExtractionTask
 from app.utils.json_utils import load_task, save_extraction_task, save_task
 
@@ -468,6 +475,78 @@ def test_api_updates_diff_review_and_quality_summary(tmp_path: Path) -> None:
     assert quality_payload["low_similarity_diffs"][0]["diff_id"] == "D001"
 
 
+def test_api_exposes_ocr_quality_summary(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TOCRAPI",
+            status="COMPLETED",
+            diff_count=1,
+            ocr_quality_summary=TaskOcrQualitySummary(
+                status="LOW_TEXT_CONFIDENCE",
+                requires_review=True,
+                page_count_by_status={"LOW_TEXT_CONFIDENCE": 1},
+                risk_page_count=1,
+                affected_diff_count=1,
+                profiles=[
+                    PageOcrQualityProfile(
+                        side="original",
+                        page_no=1,
+                        status="LOW_TEXT_CONFIDENCE",
+                        score=0.75,
+                        reasons=["LOW_AVG_CONFIDENCE"],
+                        affected_diff_ids=["D001"],
+                    )
+                ],
+            ),
+        )
+    )
+
+    client = TestClient(app)
+    response = client.get("/api/compare/TOCRAPI")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ocr_quality_summary"]["status"] == "LOW_TEXT_CONFIDENCE"
+    assert payload["ocr_quality_summary"]["risk_page_count"] == 1
+    assert payload["ocr_quality_summary"]["profiles"][0]["affected_diff_ids"] == ["D001"]
+
+
+def test_quality_summary_includes_ocr_quality_counts(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TOCRQUALITYAPI",
+            status="COMPLETED",
+            ocr_quality_summary=TaskOcrQualitySummary(
+                status="TABLE_RISK",
+                requires_review=True,
+                page_count_by_status={"TABLE_RISK": 1},
+                risk_page_count=1,
+                affected_diff_count=2,
+                profiles=[
+                    PageOcrQualityProfile(
+                        side="compare",
+                        page_no=2,
+                        status="TABLE_RISK",
+                        score=0.8,
+                        reasons=["TABLE_CELL_UNMATCHED"],
+                    )
+                ],
+            ),
+        )
+    )
+
+    client = TestClient(app)
+    response = client.get("/api/compare/TOCRQUALITYAPI/quality")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ocr_quality_summary"]["status"] == "TABLE_RISK"
+    assert payload["ocr_risk_page_count"] == 1
+    assert payload["ocr_affected_diff_count"] == 2
+
+
 def test_api_report_excludes_ignored_audit_item_after_review(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     original = tmp_path / "original.pdf"
@@ -598,8 +677,6 @@ def test_cors_allows_frontend_dev_origin() -> None:
     )
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
-
-
 
 
 
