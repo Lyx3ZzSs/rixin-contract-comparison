@@ -14,3 +14,21 @@ Optional files for local or internal full runs:
 - `compare.pdf`
 
 Sensitive real contracts must not be committed. For sensitive cases, commit only annotation files and load PDFs from an internal path when running the evaluator locally.
+
+## Expected JSON Fields
+
+- `case_id`: stable case identifier matching the directory name.
+- `tags`: case traits such as `scanned`, `table_heavy`, `seal_page`, or `low_text_confidence`.
+- `critical_fields`: reviewed fields that are sensitive to OCR errors.
+- `expected_diffs`: reviewed diff expectations. Use `diff_type`, `source_type`, `title_contains`, `original_contains`, `compare_contains`, and `expected_evidence`.
+- `quality_expectations`: case-specific expectations used by humans when reviewing the report.
+
+## Smoke Command
+
+```bash
+cd backend
+python scripts/evaluate_ocr_compare_quality.py tests/fixtures/ocr_compare_cases \
+  --output .ocr-compare-quality/ocr_compare_quality.json \
+  --html-output .ocr-compare-quality/html \
+  --fail-on-threshold
+```

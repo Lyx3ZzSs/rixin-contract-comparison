@@ -302,6 +302,10 @@ cd frontend && npm test && npm run build
 - Sensitive PDF storage should be decided before adding real cases.
 - The first retry strategies should be selected from observed baseline failures, not guessed upfront.
 
+## Implementation Plans
+
+- Phase 1 baseline and golden set: `docs/superpowers/plans/2026-06-25-ocr-compare-baseline.md`
+
 ## References
 
 - Litera Compare: https://www.litera.com/products/litera-compare/
