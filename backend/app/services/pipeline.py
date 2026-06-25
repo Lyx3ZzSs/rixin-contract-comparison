@@ -259,6 +259,7 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.parse_warnings = source.parse_warnings
     target.parse_warning_details = source.parse_warning_details
     target.document_profiles = source.document_profiles
+    target.ocr_quality_summary = source.ocr_quality_summary
     target.debug_artifact_paths = source.debug_artifact_paths
     target.diff_count = source.diff_count
     target.audit_item_reviews = source.audit_item_reviews

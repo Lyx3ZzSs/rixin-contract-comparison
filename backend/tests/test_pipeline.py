@@ -20,6 +20,8 @@ from app.models import (
     LayoutQualityReport,
     Page,
     PageLayoutQualityReport,
+    PageOcrQualityProfile,
+    TaskOcrQualitySummary,
     TextBlock,
 )
 from app.services.extractors.base import ExtractionResult
@@ -633,6 +635,44 @@ class TestComparePipeline:
 
         assert result.metrics["custom_stage"] == {"value": True}
         assert "stages" in result.metrics
+
+
+def test_pipeline_completion_preserves_ocr_quality_summary(tmp_path: Path) -> None:
+    ctx = make_ctx(tmp_path)
+    repository = LocalJsonTaskRepository(settings)
+    repository.save_compare_task(CompareTask(task_id=ctx.task.task_id, status="PROCESSING"))
+
+    class OcrQualitySummaryStage:
+        name = "ocr_quality"
+        start_progress = 50
+        progress = 70
+
+        def execute(self, ctx: PipelineContext) -> None:
+            ctx.task.ocr_quality_summary = TaskOcrQualitySummary(
+                status="LOW_TEXT_CONFIDENCE",
+                requires_review=True,
+                page_count_by_status={"LOW_TEXT_CONFIDENCE": 1},
+                risk_page_count=1,
+                affected_diff_count=1,
+                profiles=[
+                    PageOcrQualityProfile(
+                        side="original",
+                        page_no=1,
+                        status="LOW_TEXT_CONFIDENCE",
+                        score=0.6,
+                        reasons=["LOW_AVG_CONFIDENCE"],
+                        affected_diff_ids=["D001"],
+                    )
+                ],
+            )
+
+    ComparePipeline(stages=[OcrQualitySummaryStage()], repository=repository).run(ctx)
+
+    persisted = repository.load_compare_task(ctx.task.task_id)
+    assert persisted.ocr_quality_summary is not None
+    assert persisted.ocr_quality_summary.status == "LOW_TEXT_CONFIDENCE"
+    assert persisted.ocr_quality_summary.risk_page_count == 1
+    assert persisted.ocr_quality_summary.affected_diff_count == 1
 
 
 class TestPipelineStageFailure:
