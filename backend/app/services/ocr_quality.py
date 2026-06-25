@@ -243,7 +243,9 @@ class OcrQualityProfiler:
             if isinstance(warning, ParseWarningDetail):
                 warning_details.append(warning)
             else:
-                warning_details.append(ParseWarningDetail(code="OCR_WARNING", message=str(warning), source="ocr"))
+                message = str(warning).strip()
+                if message:
+                    warning_details.append(ParseWarningDetail(code="OCR_WARNING", message=message, source="ocr"))
         return warning_details
 
     def _warnings_for_page(self, warnings: list[ParseWarningDetail], page_no: int) -> list[ParseWarningDetail]:

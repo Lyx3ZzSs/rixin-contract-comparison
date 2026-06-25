@@ -241,3 +241,31 @@ def test_profiler_flags_error_warning_as_unreliable() -> None:
 
     assert profiles[0].status == "UNRELIABLE"
     assert profiles[0].reasons == ["EXTRACTION_ERROR_WARNING"]
+
+
+def test_profiler_ignores_empty_string_warnings() -> None:
+    profiler = OcrQualityProfiler()
+    document = _document_with_blocks([_block("b1", "clean text", 0.95)])
+    profile = DocumentProfile(
+        filename="sample.pdf",
+        page_count=1,
+        page_profiles=[
+            PageProfile(
+                page_no=1,
+                avg_confidence=0.95,
+                text_block_count=1,
+            )
+        ],
+    )
+
+    profiles = profiler.profile_side(
+        side="original",
+        document=document,
+        document_profile=profile,
+        layout_quality=None,
+        warnings=[""],
+    )
+
+    assert profiles[0].status == "OK"
+    assert profiles[0].reasons == []
+    assert profiler._coerce_warnings([""]) == []
