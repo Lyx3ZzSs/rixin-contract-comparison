@@ -21,6 +21,16 @@ LayoutMatchStatus = Literal[
     "structure_only",
     "not_applicable",
 ]
+OcrQualityStatus = Literal[
+    "OK",
+    "LOW_TEXT_CONFIDENCE",
+    "LAYOUT_MISMATCH",
+    "READING_ORDER_RISK",
+    "TABLE_RISK",
+    "SEAL_OR_SIGNATURE_RISK",
+    "UNRELIABLE",
+]
+OcrQualitySide = Literal["original", "compare"]
 
 
 class NormalizedBBox(BaseModel):
@@ -110,6 +120,25 @@ class LayoutQualityReport(BaseModel):
     reading_order_conflict_count: int = 0
     page_quality: list[PageLayoutQualityReport] = Field(default_factory=list)
     warnings: list[ParseWarningDetail] = Field(default_factory=list)
+
+
+class PageOcrQualityProfile(BaseModel):
+    side: OcrQualitySide
+    page_no: int
+    status: OcrQualityStatus = "OK"
+    score: float = Field(default=1.0, ge=0.0, le=1.0)
+    reasons: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    affected_diff_ids: list[str] = Field(default_factory=list)
+
+
+class TaskOcrQualitySummary(BaseModel):
+    status: OcrQualityStatus = "OK"
+    requires_review: bool = False
+    page_count_by_status: dict[str, int] = Field(default_factory=dict)
+    risk_page_count: int = 0
+    affected_diff_count: int = 0
+    profiles: list[PageOcrQualityProfile] = Field(default_factory=list)
 
 
 class PageProfile(BaseModel):
@@ -351,6 +380,7 @@ class CompareTask(BaseModel):
     parse_warnings: list[str] = Field(default_factory=list)
     parse_warning_details: list[ParseWarningDetail] = Field(default_factory=list)
     document_profiles: dict[str, DocumentProfile] = Field(default_factory=dict)
+    ocr_quality_summary: TaskOcrQualitySummary | None = None
     debug_artifact_paths: dict[str, str] = Field(default_factory=dict)
     diff_count: int = 0
     reviewed_count: int = 0
