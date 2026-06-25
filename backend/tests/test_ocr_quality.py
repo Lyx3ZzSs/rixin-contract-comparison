@@ -183,6 +183,39 @@ def test_profiler_flags_layout_and_reading_order_risks_as_unreliable() -> None:
     assert profiles[0].metrics["reading_order_conflict_count"] == 1
 
 
+def test_profiler_uses_single_page_aggregate_layout_quality_when_page_quality_is_missing() -> None:
+    document = _document_with_blocks([_block("b1", "text", 0.95)])
+    profile = DocumentProfile(filename="sample.pdf", page_count=1, page_profiles=[PageProfile(page_no=1)])
+    layout_quality = LayoutQualityReport(
+        page_count=1,
+        ocr_block_count=4,
+        matched_ocr_block_count=2,
+        meaningful_unmatched_count=1,
+        reading_order_conflict_count=1,
+        page_quality=[],
+    )
+
+    profiles = OcrQualityProfiler().profile_side(
+        side="original",
+        document=document,
+        document_profile=profile,
+        layout_quality=layout_quality,
+        warnings=[],
+    )
+
+    assert profiles[0].status == "UNRELIABLE"
+    assert profiles[0].reasons == [
+        "LOW_LAYOUT_MATCH_RATE",
+        "MEANINGFUL_UNMATCHED_OCR",
+        "READING_ORDER_CONFLICT",
+    ]
+    assert profiles[0].metrics["layout_match_rate"] == 0.5
+    assert profiles[0].metrics["ocr_block_count"] == 4
+    assert profiles[0].metrics["matched_ocr_block_count"] == 2
+    assert profiles[0].metrics["meaningful_unmatched_count"] == 1
+    assert profiles[0].metrics["reading_order_conflict_count"] == 1
+
+
 def test_profiler_flags_table_risk_from_unmatched_cells() -> None:
     document = _document_with_blocks([_block("t1", "table text", 0.95, block_type="table")])
     profile = DocumentProfile(
@@ -218,6 +251,53 @@ def test_profiler_flags_table_risk_from_unmatched_cells() -> None:
     assert profiles[0].metrics["table_cell_unmatched_count"] == 2
 
 
+def test_build_summary_orders_profiles_and_counts_highest_priority_risks() -> None:
+    profiles = [
+        PageOcrQualityProfile(
+            side="compare",
+            page_no=2,
+            status="LOW_TEXT_CONFIDENCE",
+            affected_diff_ids=["D1"],
+        ),
+        PageOcrQualityProfile(
+            side="original",
+            page_no=2,
+            status="OK",
+            affected_diff_ids=["D1"],
+        ),
+        PageOcrQualityProfile(
+            side="compare",
+            page_no=1,
+            status="TABLE_RISK",
+            affected_diff_ids=["D2", "D1"],
+        ),
+        PageOcrQualityProfile(
+            side="original",
+            page_no=1,
+            status="UNRELIABLE",
+        ),
+    ]
+
+    summary = OcrQualityProfiler().build_summary(profiles)
+
+    assert summary.status == "UNRELIABLE"
+    assert summary.requires_review is True
+    assert summary.risk_page_count == 3
+    assert summary.affected_diff_count == 2
+    assert summary.page_count_by_status == {
+        "LOW_TEXT_CONFIDENCE": 1,
+        "OK": 1,
+        "TABLE_RISK": 1,
+        "UNRELIABLE": 1,
+    }
+    assert [(profile.side, profile.page_no) for profile in summary.profiles] == [
+        ("original", 1),
+        ("original", 2),
+        ("compare", 1),
+        ("compare", 2),
+    ]
+
+
 def test_profiler_flags_error_warning_as_unreliable() -> None:
     document = _document_with_blocks([_block("b1", "text", 0.95)])
     profile = DocumentProfile(filename="sample.pdf", page_count=1, page_profiles=[PageProfile(page_no=1)])
@@ -241,6 +321,32 @@ def test_profiler_flags_error_warning_as_unreliable() -> None:
 
     assert profiles[0].status == "UNRELIABLE"
     assert profiles[0].reasons == ["EXTRACTION_ERROR_WARNING"]
+
+
+def test_profiler_accepts_non_empty_string_warning_as_informational() -> None:
+    document = _document_with_blocks([_block("b1", "clean text", 0.95)])
+    profile = DocumentProfile(
+        filename="sample.pdf",
+        page_count=1,
+        page_profiles=[
+            PageProfile(
+                page_no=1,
+                avg_confidence=0.95,
+                text_block_count=1,
+            )
+        ],
+    )
+
+    profiles = OcrQualityProfiler().profile_side(
+        side="original",
+        document=document,
+        document_profile=profile,
+        layout_quality=None,
+        warnings=["legacy warning"],
+    )
+
+    assert profiles[0].status == "OK"
+    assert profiles[0].reasons == []
 
 
 def test_profiler_treats_missing_warnings_as_empty() -> None:

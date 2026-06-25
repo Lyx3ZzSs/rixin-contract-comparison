@@ -67,7 +67,11 @@ class OcrQualityProfiler:
         profiles: list[PageOcrQualityProfile] = []
         for page in sorted(document.pages, key=lambda item: item.page_no):
             page_profile = page_profiles.get(page.page_no)
-            layout_page = layout_pages.get(page.page_no)
+            layout_page = layout_pages.get(page.page_no) or self._single_page_aggregate_layout_page(
+                document,
+                layout_quality,
+                page.page_no,
+            )
             page_warnings = self._warnings_for_page(warning_details, page.page_no)
             metrics = self._metrics(page, page_profile, layout_page, layout_quality)
             reasons, categories = self._reasons(page, page_profile, layout_page, layout_quality, metrics, page_warnings)
@@ -264,6 +268,24 @@ class OcrQualityProfiler:
     def _is_single_page_layout_report(self, layout_quality: LayoutQualityReport) -> bool:
         page_count = layout_quality.page_count or len(layout_quality.page_quality)
         return page_count == 1
+
+    def _single_page_aggregate_layout_page(
+        self,
+        document: Document,
+        layout_quality: LayoutQualityReport | None,
+        page_no: int,
+    ) -> PageLayoutQualityReport | None:
+        if layout_quality is None or layout_quality.page_quality or len(document.pages) != 1:
+            return None
+        if layout_quality.page_count > 1:
+            return None
+        return PageLayoutQualityReport(
+            page_no=page_no,
+            ocr_block_count=layout_quality.ocr_block_count,
+            matched_ocr_block_count=layout_quality.matched_ocr_block_count,
+            meaningful_unmatched_count=layout_quality.meaningful_unmatched_count,
+            reading_order_conflict_count=layout_quality.reading_order_conflict_count,
+        )
 
     def _has_confidence_content(self, block: TextBlock) -> bool:
         if block.confidence is None:
