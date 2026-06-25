@@ -26,6 +26,7 @@ from app.services.extractors.base import ExtractionResult
 from app.services.pipeline import ComparePipeline, PipelineContext
 from app.services.pipeline_stages import (
     ClauseDiffStage,
+    DiffQualityStage,
     MatchStage,
     OcrQualityStage,
     PreClauseDiffStage,
@@ -763,3 +764,120 @@ def test_ocr_quality_stage_writes_artifact_and_flags_diff(tmp_path: Path) -> Non
     assert Path(task.debug_artifact_paths["ocr_quality"]).exists()
     assert ctx.diffs[0].quality_status == "NEEDS_REVIEW"
     assert "OCR_LOW_CONFIDENCE" in ctx.diffs[0].review_flags
+
+
+def test_ocr_quality_survives_diff_quality_cross_source_merge(tmp_path: Path) -> None:
+    artifact_store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    original_doc = Document(
+        filename="original.pdf",
+        path="original.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=600,
+                height=800,
+                blocks=[
+                    TextBlock(
+                        block_id="O1",
+                        page_no=1,
+                        text="付款30日",
+                        bbox=BBox(x0=10, y0=10, x1=100, y1=40),
+                        confidence=0.6,
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=600,
+                height=800,
+                blocks=[
+                    TextBlock(
+                        block_id="O2",
+                        page_no=2,
+                        text="付款30日",
+                        bbox=BBox(x0=10, y0=10, x1=100, y1=40),
+                        confidence=0.95,
+                    )
+                ],
+            ),
+        ],
+    )
+    compare_doc = Document(
+        filename="compare.pdf",
+        path="compare.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=600,
+                height=800,
+                blocks=[
+                    TextBlock(
+                        block_id="C1",
+                        page_no=1,
+                        text="付款45日",
+                        bbox=BBox(x0=10, y0=10, x1=100, y1=40),
+                        confidence=0.95,
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=600,
+                height=800,
+                blocks=[
+                    TextBlock(
+                        block_id="C2",
+                        page_no=2,
+                        text="付款45日",
+                        bbox=BBox(x0=10, y0=10, x1=100, y1=40),
+                        confidence=0.95,
+                    )
+                ],
+            ),
+        ],
+    )
+    task = CompareTask(task_id="TOCRMERGE")
+    ctx = PipelineContext(
+        task=task,
+        original_pdf=tmp_path / "original.pdf",
+        compare_pdf=tmp_path / "compare.pdf",
+    )
+    ctx.set_extractions(
+        ExtractionResult(document=original_doc, extractor_used="ppstructure_ocr_hybrid"),
+        ExtractionResult(document=compare_doc, extractor_used="ppstructure_ocr_hybrid"),
+    )
+    ctx.diffs = [
+        DiffItem(
+            diff_id="D001",
+            diff_type="MODIFY",
+            source_type="metadata",
+            title="付款",
+            original_text="付款30日",
+            compare_text="付款45日",
+            original_evidence=[EvidenceBox(page_no=2, bbox=BBox(x0=10, y0=10, x1=100, y1=40))],
+        ),
+        DiffItem(
+            diff_id="D002",
+            diff_type="MODIFY",
+            source_type="table",
+            title="付款",
+            original_text="付款30日",
+            compare_text="付款45日",
+            original_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=10, y0=10, x1=100, y1=40))],
+        ),
+    ]
+
+    OcrQualityStage(artifact_store=artifact_store).execute(ctx)
+    assert task.ocr_quality_summary is not None
+    assert task.ocr_quality_summary.profiles[0].affected_diff_ids == ["D002"]
+
+    DiffQualityStage(artifact_store=artifact_store).execute(ctx)
+
+    assert [diff.diff_id for diff in ctx.diffs] == ["D001"]
+    winner = ctx.diffs[0]
+    assert winner.quality_status == "NEEDS_REVIEW"
+    assert "OCR_LOW_CONFIDENCE" in winner.review_flags
+    assert task.ocr_quality_summary.profiles[0].affected_diff_ids == ["D001"]
+    assert task.ocr_quality_summary.affected_diff_count == 1

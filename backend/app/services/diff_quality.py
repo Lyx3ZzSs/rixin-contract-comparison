@@ -94,6 +94,9 @@ class DiffQualityProcessor:
                 merged_sources.add(duplicate.source_type)
                 winner.original_evidence = self._merge_evidence(winner.original_evidence, duplicate.original_evidence)
                 winner.compare_evidence = self._merge_evidence(winner.compare_evidence, duplicate.compare_evidence)
+                winner.review_flags = self._merge_flags(winner.review_flags, duplicate.review_flags)
+                if duplicate.quality_status == "NEEDS_REVIEW":
+                    winner.quality_status = "NEEDS_REVIEW"
                 decisions.append(
                     DiffQualityDecision(
                         action="cross_source_merged",
@@ -105,6 +108,10 @@ class DiffQualityProcessor:
             self._add_flag(winner, "CROSS_SOURCE_MERGED")
 
         return [by_id[diff.diff_id] for diff in diffs if diff.diff_id not in remove_ids]
+
+    @staticmethod
+    def _merge_flags(winner_flags: list[str], duplicate_flags: list[str]) -> list[str]:
+        return list(dict.fromkeys([*winner_flags, *duplicate_flags]))
 
     def _classify(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         for diff in diffs:

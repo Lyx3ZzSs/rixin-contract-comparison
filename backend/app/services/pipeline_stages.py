@@ -18,7 +18,7 @@ from app.services.compare_debug import CompareDebugWriter
 from app.services.clause_splitter import ClauseSplitter
 from app.services.cover_metadata import CoverMetadataComparator
 from app.services.diff_engine import DiffEngine
-from app.services.diff_quality import DiffQualityProcessor
+from app.services.diff_quality import DiffQualityProcessor, DiffQualityResult
 from app.services.document_profiler import DocumentProfiler
 from app.services.document_preparation import DocumentPreparer
 from app.services.document_understanding import DocumentUnderstandingService
@@ -667,6 +667,7 @@ class DiffQualityStage:
     def execute(self, ctx: PipelineContext) -> None:
         result = self.processor.process(ctx.require_diffs())
         ctx.diffs = result.diffs
+        self._remap_ocr_quality_summary(ctx, result)
         _write_debug_artifact(
             ctx.task,
             "diff_quality",
@@ -676,6 +677,31 @@ class DiffQualityStage:
             ),
         )
         _emit_progress(ctx, 85, self.name, "diff_quality_done")
+
+    @staticmethod
+    def _remap_ocr_quality_summary(ctx: PipelineContext, result: DiffQualityResult) -> None:
+        summary = ctx.task.ocr_quality_summary
+        if summary is None:
+            return
+
+        final_ids = {diff.diff_id for diff in result.diffs}
+        merged_to_winner = {
+            str(decision.detail["merged_diff_id"]): decision.diff_id
+            for decision in result.decisions
+            if decision.action == "cross_source_merged" and decision.detail.get("merged_diff_id")
+        }
+        affected_ids: set[str] = set()
+        for profile in summary.profiles:
+            remapped_ids = []
+            for diff_id in profile.affected_diff_ids:
+                mapped_id = merged_to_winner.get(diff_id, diff_id)
+                if mapped_id in final_ids:
+                    remapped_ids.append(mapped_id)
+            profile.affected_diff_ids = sorted(set(remapped_ids))
+            affected_ids.update(profile.affected_diff_ids)
+
+        summary.affected_diff_count = len(affected_ids)
+        summary.requires_review = summary.requires_review or bool(affected_ids)
 
 
 class VisualizationStage:
