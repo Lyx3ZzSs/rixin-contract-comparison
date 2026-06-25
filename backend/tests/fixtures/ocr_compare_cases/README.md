@@ -13,7 +13,7 @@ Optional files for local or internal full runs:
 - `original.pdf`
 - `compare.pdf`
 
-Sensitive real contracts must not be committed. For sensitive cases, commit only annotation files and load PDFs from an internal path when running the evaluator locally.
+Sensitive real contracts must not be committed. For sensitive cases, commit only annotation files and documentation if appropriate. When running a local or internal full evaluation, place untracked local copies or symlinks named `original.pdf` and `compare.pdf` inside the case directory. Do not commit sensitive PDFs or extracted payloads.
 
 ## Expected JSON Fields
 
