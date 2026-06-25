@@ -128,7 +128,7 @@ def evaluate_case(case: OcrCompareCase) -> OcrCompareCaseResult:
         ocr_warning_count=sum(
             1
             for warning in actual_task.parse_warning_details
-            if "OCR" in warning.code or "OCR" in warning.message
+            if _is_ocr_warning(warning.model_dump(mode="json"))
         ),
         task_failure_count=0 if actual_task.status == "COMPLETED" else 1,
         issues=issues,
@@ -150,7 +150,11 @@ def _match_expected_diffs(
             if score > best_score:
                 best_index = actual_index
                 best_score = score
-        if best_index is not None and best_score >= 0.72:
+        if (
+            best_index is not None
+            and best_score >= 0.72
+            and _has_matching_signal(expected_diff, actual[best_index])
+        ):
             used_actual.add(best_index)
             matches.append((expected_index, best_index))
     return matches
@@ -182,7 +186,22 @@ def _diff_match_score(expected: dict[str, Any], actual: dict[str, Any]) -> float
 
 
 def _contains(text: str, needle: str) -> bool:
-    return not needle or needle in (text or "")
+    return bool(needle) and needle in (text or "")
+
+
+def _has_matching_signal(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    return (
+        _contains(actual.get("title", ""), expected.get("title_contains", ""))
+        or _contains(
+            actual.get("original_text", "") + actual.get("original_snippet", ""),
+            expected.get("original_contains", ""),
+        )
+        or _contains(
+            actual.get("compare_text", "") + actual.get("compare_snippet", ""),
+            expected.get("compare_contains", ""),
+        )
+        or _expected_evidence_hits(expected, actual)
+    )
 
 
 def _expected_evidence_hits(
@@ -190,7 +209,7 @@ def _expected_evidence_hits(
 ) -> bool:
     expected_evidence = expected.get("expected_evidence", [])
     if not expected_evidence:
-        return True
+        return False
     actual_by_side = {
         "original": actual.get("original_evidence", []),
         "compare": actual.get("compare_evidence", []),
@@ -251,12 +270,17 @@ def _case_issues(
     return issues
 
 
+def _is_ocr_warning(warning: dict[str, Any]) -> bool:
+    return any(
+        "ocr" in str(warning.get(field, "")).lower()
+        for field in ("source", "code", "message")
+    )
+
+
 def _aggregate(results: list[OcrCompareCaseResult]) -> dict[str, Any]:
     aggregate = OcrCompareCaseResult(
         case_id="TOTAL",
-        status="COMPLETED"
-        if all(item.status == "COMPLETED" for item in results)
-        else "FAILED",
+        status=_aggregate_status(results),
         expected_count=sum(item.expected_count for item in results),
         actual_count=sum(item.actual_count for item in results),
         true_positive_count=sum(item.true_positive_count for item in results),
@@ -271,22 +295,47 @@ def _aggregate(results: list[OcrCompareCaseResult]) -> dict[str, Any]:
     return aggregate.to_dict()
 
 
+def _aggregate_status(results: list[OcrCompareCaseResult]) -> str:
+    if not results:
+        return "NO_CASES"
+    if all(item.status == "COMPLETED" for item in results):
+        return "COMPLETED"
+    return "FAILED"
+
+
 def _bbox_iou(left: dict[str, Any] | None, right: dict[str, Any] | None) -> float:
-    if not left or not right:
+    left_box = _parse_bbox(left)
+    right_box = _parse_bbox(right)
+    if left_box is None or right_box is None:
         return 0.0
-    x0 = max(float(left.get("x0", 0)), float(right.get("x0", 0)))
-    y0 = max(float(left.get("y0", 0)), float(right.get("y0", 0)))
-    x1 = min(float(left.get("x1", 0)), float(right.get("x1", 0)))
-    y1 = min(float(left.get("y1", 0)), float(right.get("y1", 0)))
+    left_x0, left_y0, left_x1, left_y1 = left_box
+    right_x0, right_y0, right_x1, right_y1 = right_box
+    x0 = max(left_x0, right_x0)
+    y0 = max(left_y0, right_y0)
+    x1 = min(left_x1, right_x1)
+    y1 = min(left_y1, right_y1)
     intersection = max(0.0, x1 - x0) * max(0.0, y1 - y0)
-    left_area = max(0.0, float(left.get("x1", 0)) - float(left.get("x0", 0))) * max(
-        0.0, float(left.get("y1", 0)) - float(left.get("y0", 0))
-    )
-    right_area = max(0.0, float(right.get("x1", 0)) - float(right.get("x0", 0))) * max(
-        0.0, float(right.get("y1", 0)) - float(right.get("y0", 0))
-    )
+    left_area = (left_x1 - left_x0) * (left_y1 - left_y0)
+    right_area = (right_x1 - right_x0) * (right_y1 - right_y0)
     denominator = left_area + right_area - intersection
-    return _safe_div(intersection, denominator)
+    if denominator <= 0:
+        return 0.0
+    return intersection / denominator
+
+
+def _parse_bbox(bbox: dict[str, Any] | None) -> tuple[float, float, float, float] | None:
+    if not bbox:
+        return None
+    try:
+        x0 = float(bbox["x0"])
+        y0 = float(bbox["y0"])
+        x1 = float(bbox["x1"])
+        y1 = float(bbox["y1"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
 
 
 def _safe_div(numerator: float, denominator: float) -> float:
