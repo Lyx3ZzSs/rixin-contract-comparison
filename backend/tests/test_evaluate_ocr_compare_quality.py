@@ -189,6 +189,28 @@ def test_cli_writes_json_output(tmp_path: Path) -> None:
     assert payload["aggregate"]["recall"] == 1.0
 
 
+def test_cli_writes_html_output(tmp_path: Path) -> None:
+    html_output = tmp_path / "html"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_ocr_compare_quality.py",
+            "tests/fixtures/ocr_compare_cases",
+            "--html-output",
+            str(html_output),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0
+    assert (html_output / "index.html").exists()
+    assert (html_output / "simple_scanned.html").exists()
+
+
 def test_write_html_report_creates_index_and_case_pages(tmp_path: Path) -> None:
     report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
 
@@ -201,3 +223,41 @@ def test_write_html_report_creates_index_and_case_pages(tmp_path: Path) -> None:
     assert "OCR comparison quality report" in index.read_text(encoding="utf-8")
     assert "simple_scanned" in case_page.read_text(encoding="utf-8")
     assert "OCR_LOW_CONFIDENCE" in case_page.read_text(encoding="utf-8")
+
+
+def test_write_html_report_sanitizes_filename_and_escapes_html(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "report"
+    report = {
+        "case_count": 1,
+        "aggregate": {},
+        "cases": [
+            {
+                "case_id": "../case<script>",
+                "status": "BAD<script>",
+                "recall": 0.5,
+                "precision": 0.25,
+                "false_positive_count": 1,
+                "false_negative_count": 2,
+                "low_confidence_count": 0,
+                "ocr_warning_count": 3,
+                "issues": ["<bad>"],
+            }
+        ],
+    }
+
+    write_html_report(output, report)
+
+    assert not (tmp_path / "case<script>.html").exists()
+    case_page = output / "_case_script_.html"
+    assert case_page.exists()
+    index_html = (output / "index.html").read_text(encoding="utf-8")
+    case_html = case_page.read_text(encoding="utf-8")
+    assert "href='_case_script_.html'" in index_html
+    assert "&lt;script&gt;" in index_html
+    assert "BAD&lt;script&gt;" in index_html
+    assert "../case<script>" not in index_html
+    assert "BAD<script>" not in index_html
+    assert "&lt;bad&gt;" in case_html
+    assert "<bad>" not in case_html

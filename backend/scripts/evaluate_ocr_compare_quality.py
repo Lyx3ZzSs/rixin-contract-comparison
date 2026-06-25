@@ -385,12 +385,12 @@ def write_html_report(path: Path, report: dict[str, Any]) -> None:
     path.mkdir(parents=True, exist_ok=True)
     rows = []
     for case in report["cases"]:
-        case_filename = f"{case['case_id']}.html"
+        case_filename = _case_page_filename(str(case["case_id"]))
         (path / case_filename).write_text(_case_html(case), encoding="utf-8")
         rows.append(
             "<tr>"
-            f"<td><a href='{html.escape(case_filename)}'>{html.escape(case['case_id'])}</a></td>"
-            f"<td>{case['status']}</td>"
+            f"<td><a href='{html.escape(case_filename)}'>{html.escape(str(case['case_id']))}</a></td>"
+            f"<td>{html.escape(str(case['status']))}</td>"
             f"<td>{case['recall']:.2%}</td>"
             f"<td>{case['precision']:.2%}</td>"
             f"<td>{case['false_positive_count']}</td>"
@@ -400,7 +400,7 @@ def write_html_report(path: Path, report: dict[str, Any]) -> None:
             "</tr>"
         )
     failures = "<br>".join(
-        html.escape(item) for item in report["threshold_failures"]
+        html.escape(str(item)) for item in report.get("threshold_failures", [])
     ) or "None"
     index = (
         "<!doctype html><meta charset='utf-8'>"
@@ -420,19 +420,27 @@ def write_html_report(path: Path, report: dict[str, Any]) -> None:
     (path / "index.html").write_text(index, encoding="utf-8")
 
 
+def _case_page_filename(case_id: str) -> str:
+    stem = "".join(
+        char if char.isalnum() or char in {"-", "_", "."} else "_"
+        for char in case_id
+    ).lstrip(".")
+    return f"{stem or 'case'}.html"
+
+
 def _case_html(case: dict[str, Any]) -> str:
     issues = "".join(
         f"<li>{html.escape(issue)}</li>" for issue in case["issues"]
     ) or "<li>None</li>"
     return (
         "<!doctype html><meta charset='utf-8'>"
-        f"<title>{html.escape(case['case_id'])}</title>"
+        f"<title>{html.escape(str(case['case_id']))}</title>"
         "<style>body{font-family:Arial,sans-serif;margin:24px;color:#1f2933}"
         "dl{display:grid;grid-template-columns:220px 1fr;gap:6px}"
         "dt{font-weight:700}</style>"
-        f"<h1>{html.escape(case['case_id'])}</h1>"
+        f"<h1>{html.escape(str(case['case_id']))}</h1>"
         "<dl>"
-        f"<dt>Status</dt><dd>{html.escape(case['status'])}</dd>"
+        f"<dt>Status</dt><dd>{html.escape(str(case['status']))}</dd>"
         f"<dt>Recall</dt><dd>{case['recall']:.2%}</dd>"
         f"<dt>Precision</dt><dd>{case['precision']:.2%}</dd>"
         f"<dt>False positives</dt><dd>{case['false_positive_count']}</dd>"
