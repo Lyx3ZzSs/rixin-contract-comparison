@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from app.config import settings
+from app.config import Settings, settings
 from app.errors import PipelineContractError
+from app.infrastructure.artifact_store import LocalArtifactStore
 from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.models import (
     BBox,
@@ -15,7 +16,10 @@ from app.models import (
     CompareTask,
     DiffItem,
     Document,
+    EvidenceBox,
+    LayoutQualityReport,
     Page,
+    PageLayoutQualityReport,
     TextBlock,
 )
 from app.services.extractors.base import ExtractionResult
@@ -23,6 +27,7 @@ from app.services.pipeline import ComparePipeline, PipelineContext
 from app.services.pipeline_stages import (
     ClauseDiffStage,
     MatchStage,
+    OcrQualityStage,
     PreClauseDiffStage,
     SplitStage,
     SummaryStage,
@@ -668,3 +673,93 @@ class TestPipelineStageFailure:
 
         assert ctx.task.metrics["peak_memory_mb"] == 96.0
         assert ctx.task.metrics["stages"][0]["memory_mb_end"] == 96.0
+
+
+def test_ocr_quality_stage_writes_artifact_and_flags_diff(tmp_path: Path) -> None:
+    artifact_store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    original_doc = Document(
+        filename="original.pdf",
+        path="original.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=600,
+                height=800,
+                blocks=[
+                    TextBlock(
+                        block_id="O1",
+                        page_no=1,
+                        text="付款30日",
+                        bbox=BBox(x0=10, y0=10, x1=100, y1=40),
+                        confidence=0.6,
+                    )
+                ],
+            )
+        ],
+    )
+    compare_doc = Document(
+        filename="compare.pdf",
+        path="compare.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=600,
+                height=800,
+                blocks=[
+                    TextBlock(
+                        block_id="C1",
+                        page_no=1,
+                        text="付款45日",
+                        bbox=BBox(x0=10, y0=10, x1=100, y1=40),
+                        confidence=0.95,
+                    )
+                ],
+            )
+        ],
+    )
+    task = CompareTask(task_id="TOCRQUALITY")
+    ctx = PipelineContext(
+        task=task,
+        original_pdf=tmp_path / "original.pdf",
+        compare_pdf=tmp_path / "compare.pdf",
+    )
+    ctx.set_extractions(
+        ExtractionResult(
+            document=original_doc,
+            extractor_used="ppstructure_ocr_hybrid",
+            layout_quality=LayoutQualityReport(
+                page_count=1,
+                page_quality=[
+                    PageLayoutQualityReport(
+                        page_no=1,
+                        ocr_block_count=2,
+                        matched_ocr_block_count=1,
+                        meaningful_unmatched_count=1,
+                    )
+                ],
+            ),
+        ),
+        ExtractionResult(document=compare_doc, extractor_used="ppstructure_ocr_hybrid"),
+    )
+    ctx.diffs = [
+        DiffItem(
+            diff_id="D001",
+            diff_type="MODIFY",
+            title="付款",
+            original_text="付款30日",
+            compare_text="付款45日",
+            original_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=10, y0=10, x1=100, y1=40))],
+        )
+    ]
+
+    OcrQualityStage(artifact_store=artifact_store).execute(ctx)
+
+    assert task.ocr_quality_summary is not None
+    assert task.ocr_quality_summary.risk_page_count == 1
+    assert task.ocr_quality_summary.affected_diff_count == 1
+    assert "ocr_quality" in task.debug_artifact_paths
+    assert Path(task.debug_artifact_paths["ocr_quality"]).exists()
+    assert ctx.diffs[0].quality_status == "NEEDS_REVIEW"
+    assert "OCR_LOW_CONFIDENCE" in ctx.diffs[0].review_flags

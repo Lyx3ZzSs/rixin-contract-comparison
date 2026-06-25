@@ -31,6 +31,7 @@ from app.services.extractors.base import (
 )
 from app.services.header_footer_compare import HeaderFooterComparator
 from app.services.matcher import ClauseMatcher
+from app.services.ocr_quality import OcrQualityProfiler
 from app.services.page_diff import PageDiffConsolidator
 from app.services.pipeline import PipelineContext
 from app.services.seal_comparator import build_seal_diffs
@@ -591,6 +592,67 @@ class EvidenceStage:
             )
             self.evidence_locator.assign_evidence_confidence(ctx.diffs)
         _emit_progress(ctx, 82, self.name, "evidence_confidence_done")
+
+
+class OcrQualityStage:
+    name = "OCR质量评估中"
+    start_progress = 83
+    progress = 84
+
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.profiler = OcrQualityProfiler()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+
+    def execute(self, ctx: PipelineContext) -> None:
+        extractions = ctx.require_extractions()
+        original_extraction = extractions.original
+        compare_extraction = extractions.compare
+        original_profiles = self.profiler.profile_side(
+            side="original",
+            document=original_extraction.document,
+            document_profile=original_extraction.profile,
+            layout_quality=original_extraction.layout_quality,
+            warnings=self._quality_warnings(original_extraction),
+        )
+        compare_profiles = self.profiler.profile_side(
+            side="compare",
+            document=compare_extraction.document,
+            document_profile=compare_extraction.profile,
+            layout_quality=compare_extraction.layout_quality,
+            warnings=self._quality_warnings(compare_extraction),
+        )
+        profiles = [*original_profiles, *compare_profiles]
+        summary = self.profiler.apply_to_diffs(diffs=ctx.diffs, profiles=profiles)
+        ctx.task.ocr_quality_summary = summary
+        _append_warning_details(
+            ctx.task,
+            [
+                ParseWarningDetail(
+                    code=f"OCR_QUALITY_{profile.status}",
+                    message=f"{profile.side} 第 {profile.page_no} 页 OCR 质量风险: {', '.join(profile.reasons)}",
+                    severity="ERROR" if profile.status == "UNRELIABLE" else "WARNING",
+                    page_no=profile.page_no,
+                    source=f"ocr_quality:{profile.side}",
+                )
+                for profile in profiles
+                if profile.status != "OK"
+            ],
+        )
+        _write_debug_artifact(
+            ctx.task,
+            "ocr_quality",
+            lambda: self.debug_writer.write_ocr_quality(ctx.task.task_id, summary),
+        )
+        _emit_progress(ctx, 84, self.name, "ocr_quality_done")
+
+    @staticmethod
+    def _quality_warnings(extraction: ExtractionResult) -> list[ParseWarningDetail | str]:
+        warnings: list[ParseWarningDetail | str] = [*extraction.warnings]
+        if extraction.profile is not None:
+            warnings.extend(extraction.profile.warnings)
+        if extraction.layout_quality is not None:
+            warnings.extend(extraction.layout_quality.warnings)
+        return warnings
 
 
 class DiffQualityStage:
