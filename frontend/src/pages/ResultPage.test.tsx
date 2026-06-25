@@ -119,6 +119,9 @@ const mockDiffs: DiffItem[] = [
       "OCR_LOW_CONFIDENCE",
       "PAGE_UNRELIABLE",
       "TABLE_STRUCTURE_UNRELIABLE",
+      "LAYOUT_MISMATCH_RISK",
+      "READING_ORDER_RISK",
+      "SEAL_OR_SIGNATURE_RISK",
     ],
     quality_status: "NEEDS_REVIEW",
     review_status: "UNREVIEWED",
@@ -492,6 +495,9 @@ describe("ResultPage", () => {
     expect(await screen.findAllByText("低置信 OCR")).not.toHaveLength(0);
     expect(screen.getAllByText("页面不可靠")).not.toHaveLength(0);
     expect(screen.getAllByText("表格识别风险")).not.toHaveLength(0);
+    expect(screen.getAllByText("版面匹配风险")).not.toHaveLength(0);
+    expect(screen.getAllByText("阅读顺序风险")).not.toHaveLength(0);
+    expect(screen.getAllByText("签章识别风险")).not.toHaveLength(0);
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-4:DELETE" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
 

@@ -515,6 +515,15 @@ class TestSummaryStage:
 
 
 class TestComparePipeline:
+    def test_default_stages_include_ocr_quality_before_diff_quality(self) -> None:
+        stage_names = [type(stage).__name__ for stage in ComparePipeline().stages]
+
+        assert stage_names[stage_names.index("EvidenceStage") : stage_names.index("DiffQualityStage") + 1] == [
+            "EvidenceStage",
+            "OcrQualityStage",
+            "DiffQualityStage",
+        ]
+
     def test_pipeline_runs_all_stages_in_order(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         execution_log: list[str] = []

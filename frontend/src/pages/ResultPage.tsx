@@ -832,6 +832,15 @@ function auditQualityBadges(item: AuditChangeItem): Array<{ className: string; l
   if (item.reviewFlags.includes("TABLE_STRUCTURE_UNRELIABLE")) {
     badges.push({ className: "needs-review", label: "表格识别风险" });
   }
+  if (item.reviewFlags.includes("LAYOUT_MISMATCH_RISK")) {
+    badges.push({ className: "needs-review", label: "版面匹配风险" });
+  }
+  if (item.reviewFlags.includes("READING_ORDER_RISK")) {
+    badges.push({ className: "needs-review", label: "阅读顺序风险" });
+  }
+  if (item.reviewFlags.includes("SEAL_OR_SIGNATURE_RISK")) {
+    badges.push({ className: "needs-review", label: "签章识别风险" });
+  }
   if (item.reviewFlags.includes("CROSS_SOURCE_MERGED")) {
     badges.push({ className: "merged", label: "已合并" });
   }
