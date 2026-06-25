@@ -52,7 +52,7 @@ class OcrQualityProfiler:
         document: Document,
         document_profile: DocumentProfile | None,
         layout_quality: LayoutQualityReport | None,
-        warnings: list[ParseWarningDetail] | list[str],
+        warnings: list[ParseWarningDetail | str] | None,
     ) -> list[PageOcrQualityProfile]:
         page_profiles = {
             page_profile.page_no: page_profile
@@ -119,7 +119,7 @@ class OcrQualityProfiler:
     ) -> dict[str, int | float]:
         text_blocks = [block for block in page.blocks if self._block_family(block) == "text"]
         table_blocks = [block for block in page.blocks if self._block_family(block) == "table"]
-        confidence_blocks = [block for block in text_blocks if block.confidence is not None]
+        confidence_blocks = [block for block in page.blocks if self._has_confidence_content(block)]
         low_confidence_blocks = [
             block
             for block in confidence_blocks
@@ -156,7 +156,11 @@ class OcrQualityProfiler:
                     layout_page.matched_ocr_block_count / layout_page.ocr_block_count, 4
                 )
 
-        if layout_quality is not None and self._is_table_page(page, page_profile):
+        if (
+            layout_quality is not None
+            and self._is_single_page_layout_report(layout_quality)
+            and self._is_table_page(page, page_profile)
+        ):
             metrics["table_cell_unmatched_count"] = layout_quality.table_cell_unmatched_count
 
         return metrics
@@ -199,6 +203,7 @@ class OcrQualityProfiler:
 
         if (
             layout_quality is not None
+            and self._is_single_page_layout_report(layout_quality)
             and layout_quality.table_cell_unmatched_count > 0
             and self._is_table_page(page, page_profile)
         ):
@@ -237,9 +242,9 @@ class OcrQualityProfiler:
             score -= 0.1
         return round(max(0.0, score), 4)
 
-    def _coerce_warnings(self, warnings: list[ParseWarningDetail] | list[str]) -> list[ParseWarningDetail]:
+    def _coerce_warnings(self, warnings: list[ParseWarningDetail | str] | None) -> list[ParseWarningDetail]:
         warning_details: list[ParseWarningDetail] = []
-        for warning in warnings:
+        for warning in warnings or []:
             if isinstance(warning, ParseWarningDetail):
                 warning_details.append(warning)
             else:
@@ -255,6 +260,19 @@ class OcrQualityProfiler:
         if page_profile is not None and (page_profile.table_heavy or page_profile.table_block_count > 0):
             return True
         return any(self._block_family(block) == "table" for block in page.blocks)
+
+    def _is_single_page_layout_report(self, layout_quality: LayoutQualityReport) -> bool:
+        page_count = layout_quality.page_count or len(layout_quality.page_quality)
+        return page_count == 1
+
+    def _has_confidence_content(self, block: TextBlock) -> bool:
+        if block.confidence is None:
+            return False
+        if self._block_family(block) == "text":
+            return bool((block.text or "").strip())
+        if self._block_family(block) == "table":
+            return bool((block.text or "").strip() or block.raw_html or block.table_cell_bboxes)
+        return False
 
     def _block_family(self, block: TextBlock) -> str:
         block_type = (block.block_type or "").lower()

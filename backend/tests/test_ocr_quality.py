@@ -243,6 +243,88 @@ def test_profiler_flags_error_warning_as_unreliable() -> None:
     assert profiles[0].reasons == ["EXTRACTION_ERROR_WARNING"]
 
 
+def test_profiler_treats_missing_warnings_as_empty() -> None:
+    document = _document_with_blocks([_block("b1", "clean text", 0.95)])
+    profile = DocumentProfile(
+        filename="sample.pdf",
+        page_count=1,
+        page_profiles=[
+            PageProfile(
+                page_no=1,
+                avg_confidence=0.95,
+                text_block_count=1,
+            )
+        ],
+    )
+
+    profiles = OcrQualityProfiler().profile_side(
+        side="original",
+        document=document,
+        document_profile=profile,
+        layout_quality=None,
+        warnings=None,
+    )
+
+    assert profiles[0].status == "OK"
+    assert profiles[0].reasons == []
+
+
+def test_profiler_uses_table_block_confidence_without_document_profile() -> None:
+    document = _document_with_blocks([_block("t1", "low confidence table", 0.6, block_type="table")])
+
+    profiles = OcrQualityProfiler().profile_side(
+        side="original",
+        document=document,
+        document_profile=None,
+        layout_quality=None,
+        warnings=[],
+    )
+
+    assert profiles[0].status == "LOW_TEXT_CONFIDENCE"
+    assert profiles[0].reasons == ["LOW_AVG_CONFIDENCE"]
+    assert profiles[0].metrics["avg_confidence"] == 0.6
+    assert profiles[0].metrics["table_block_count"] == 1
+
+
+def test_profiler_does_not_apply_global_table_cell_unmatched_count_to_every_page() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(page_no=1, width=600, height=800, blocks=[_block("t1", "page one table", 0.95, block_type="table")]),
+            Page(page_no=2, width=600, height=800, blocks=[_block("t2", "page two table", 0.95, block_type="table")]),
+        ],
+    )
+    profile = DocumentProfile(
+        filename="sample.pdf",
+        page_count=2,
+        table_block_count=2,
+        table_heavy_page_count=2,
+        page_profiles=[
+            PageProfile(page_no=1, avg_confidence=0.95, table_block_count=1, table_heavy=True),
+            PageProfile(page_no=2, avg_confidence=0.95, table_block_count=1, table_heavy=True),
+        ],
+    )
+    layout_quality = LayoutQualityReport(
+        page_count=2,
+        table_cell_unmatched_count=2,
+        page_quality=[PageLayoutQualityReport(page_no=1), PageLayoutQualityReport(page_no=2)],
+    )
+
+    profiles = OcrQualityProfiler().profile_side(
+        side="original",
+        document=document,
+        document_profile=profile,
+        layout_quality=layout_quality,
+        warnings=[],
+    )
+
+    assert [profile.status for profile in profiles] == ["OK", "OK"]
+    assert all("TABLE_CELL_UNMATCHED" not in profile.reasons for profile in profiles)
+    assert all("table_cell_unmatched_count" not in profile.metrics for profile in profiles)
+
+
 def test_profiler_ignores_empty_string_warnings() -> None:
     profiler = OcrQualityProfiler()
     document = _document_with_blocks([_block("b1", "clean text", 0.95)])
@@ -268,4 +350,3 @@ def test_profiler_ignores_empty_string_warnings() -> None:
 
     assert profiles[0].status == "OK"
     assert profiles[0].reasons == []
-    assert profiler._coerce_warnings([""]) == []
