@@ -87,6 +87,23 @@ class OcrCompareCaseResult:
     task_failure_count: int
     issues: list[str]
 
+    @classmethod
+    def failure(cls, case_id: str, error: Exception) -> OcrCompareCaseResult:
+        return cls(
+            case_id=case_id,
+            status="FAILED",
+            expected_count=0,
+            actual_count=0,
+            true_positive_count=0,
+            false_positive_count=0,
+            false_negative_count=0,
+            evidence_hit_count=0,
+            low_confidence_count=0,
+            ocr_warning_count=0,
+            task_failure_count=1,
+            issues=[str(error)],
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__ | self.rates()
 
@@ -96,7 +113,9 @@ class OcrCompareCaseResult:
         return {
             "precision": _safe_div(self.true_positive_count, precision_denominator),
             "recall": _safe_div(self.true_positive_count, recall_denominator),
-            "evidence_hit_rate": _safe_div(self.evidence_hit_count, self.actual_count),
+            "evidence_hit_rate": _safe_div(
+                self.evidence_hit_count, self.true_positive_count
+            ),
             "low_confidence_ratio": _safe_div(
                 self.low_confidence_count, self.actual_count
             ),
@@ -105,7 +124,12 @@ class OcrCompareCaseResult:
 
 def evaluate_case_root(case_root: Path) -> dict[str, Any]:
     cases = discover_cases(case_root)
-    results = [evaluate_case(case) for case in cases]
+    results = []
+    for case in cases:
+        try:
+            results.append(evaluate_case(case))
+        except Exception as error:  # noqa: BLE001
+            results.append(OcrCompareCaseResult.failure(case.case_id, error))
     aggregate = _aggregate(results)
     report = {
         "case_root": str(case_root),
@@ -133,8 +157,8 @@ def evaluate_case(case: OcrCompareCase) -> OcrCompareCaseResult:
         true_positive_count=len(matches),
         false_positive_count=len(actual_diffs) - len(matched_actual_indexes),
         false_negative_count=len(expected_diffs) - len(matches),
-        evidence_hit_count=sum(
-            1 for diff in actual_diffs if _has_high_quality_evidence(diff)
+        evidence_hit_count=_matched_evidence_hit_count(
+            matches, expected_diffs, actual_diffs
         ),
         low_confidence_count=sum(1 for diff in actual_diffs if _is_low_confidence(diff)),
         ocr_warning_count=sum(
@@ -236,12 +260,25 @@ def _expected_evidence_hits(
     )
 
 
-def _has_high_quality_evidence(diff: dict[str, Any]) -> bool:
-    evidences = [*diff.get("original_evidence", []), *diff.get("compare_evidence", [])]
-    return bool(evidences) and any(
-        evidence.get("evidence_quality") in {"MEDIUM", "HIGH"}
-        and float(evidence.get("confidence", 0.0)) >= 0.6
-        for evidence in evidences
+def _matched_evidence_hit_count(
+    matches: list[tuple[int, int]],
+    expected: list[dict[str, Any]],
+    actual: list[dict[str, Any]],
+) -> int:
+    return sum(
+        1
+        for expected_index, actual_index in matches
+        if _expected_evidence_hit_or_not_required(
+            expected[expected_index], actual[actual_index]
+        )
+    )
+
+
+def _expected_evidence_hit_or_not_required(
+    expected: dict[str, Any], actual: dict[str, Any]
+) -> bool:
+    return not expected.get("expected_evidence", []) or _expected_evidence_hits(
+        expected, actual
     )
 
 
@@ -279,7 +316,30 @@ def _case_issues(
         for index, item in enumerate(actual)
         if index not in matched_actual
     )
+    issues.extend(_evidence_drift_issues(matches, expected, actual))
     return issues
+
+
+def _evidence_drift_issues(
+    matches: list[tuple[int, int]],
+    expected: list[dict[str, Any]],
+    actual: list[dict[str, Any]],
+) -> list[str]:
+    return [
+        f"evidence drift for expected diff {expected_index + 1}: {_diff_label(expected_diff)}"
+        for expected_index, actual_index in matches
+        if (expected_diff := expected[expected_index]).get("expected_evidence", [])
+        and not _expected_evidence_hits(expected_diff, actual[actual_index])
+    ]
+
+
+def _diff_label(diff: dict[str, Any]) -> str:
+    return (
+        diff.get("title_contains")
+        or diff.get("source_type")
+        or diff.get("diff_type")
+        or "unknown"
+    )
 
 
 def _is_ocr_warning(warning: dict[str, Any]) -> bool:

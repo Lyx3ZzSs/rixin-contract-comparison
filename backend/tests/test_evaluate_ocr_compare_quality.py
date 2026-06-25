@@ -57,6 +57,78 @@ def test_evaluate_case_reports_ocr_compare_metrics() -> None:
     assert result.rates()["low_confidence_ratio"] == 1.0
 
 
+def test_evaluate_case_reports_evidence_drift_for_matched_diff(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "wrong_evidence"
+    case_dir.mkdir()
+    (case_dir / "expected.json").write_text(
+        json.dumps(
+            {
+                "case_id": "wrong_evidence",
+                "expected_diffs": [
+                    {
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title_contains": "付款",
+                        "original_contains": "30日",
+                        "compare_contains": "45日",
+                        "expected_evidence": [
+                            {
+                                "side": "original",
+                                "page_no": 1,
+                                "bbox": {"x0": 100, "y0": 200, "x1": 180, "y1": 230},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (case_dir / "actual.json").write_text(
+        json.dumps(
+            {
+                "task_id": "EVAL_WRONG_EVIDENCE",
+                "status": "COMPLETED",
+                "parse_warning_details": [],
+                "diffs": [
+                    {
+                        "diff_id": "D001",
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title": "付款",
+                        "original_text": "买方应在验收后30日内付款。",
+                        "compare_text": "买方应在验收后45日内付款。",
+                        "original_evidence": [
+                            {
+                                "page_no": 2,
+                                "bbox": {
+                                    "x0": 300,
+                                    "y0": 400,
+                                    "x1": 380,
+                                    "y1": 430,
+                                },
+                                "confidence": 0.95,
+                                "evidence_quality": "HIGH",
+                            }
+                        ],
+                        "compare_evidence": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_case(discover_cases(tmp_path)[0])
+
+    assert result.true_positive_count == 1
+    assert result.evidence_hit_count == 0
+    assert result.rates()["evidence_hit_rate"] == 0.0
+    assert any("evidence drift" in issue for issue in result.issues)
+
+
 def test_evaluate_case_root_aggregates_metrics() -> None:
     report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
 
@@ -156,6 +228,24 @@ def test_evaluate_case_root_empty_directory_reports_no_cases(tmp_path: Path) -> 
 
     assert report["case_count"] == 0
     assert report["aggregate"]["status"] == "NO_CASES"
+
+
+def test_evaluate_case_root_reports_bad_case_as_failure(tmp_path: Path) -> None:
+    case_dir = tmp_path / "bad_payload"
+    case_dir.mkdir()
+    (case_dir / "expected.json").write_text(
+        json.dumps({"case_id": "bad_payload", "expected_diffs": []}),
+        encoding="utf-8",
+    )
+    (case_dir / "actual.json").write_text("{bad json", encoding="utf-8")
+
+    report = evaluate_case_root(tmp_path)
+
+    assert report["case_count"] == 1
+    assert report["cases"][0]["status"] == "FAILED"
+    assert report["aggregate"]["task_failure_count"] == 1
+    assert report["threshold_failures"]
+    assert any("Expecting property name" in issue for issue in report["cases"][0]["issues"])
 
 
 def test_threshold_failures_pass_for_smoke_fixture() -> None:
