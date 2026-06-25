@@ -1,0 +1,71 @@
+{
+  "task_id": "EVAL_OCR_SIMPLE_SCANNED",
+  "status": "COMPLETED",
+  "stage": "已完成",
+  "progress_percent": 100,
+  "original_filename": "original.pdf",
+  "compare_filename": "compare.pdf",
+  "original_pdf_path": "original.pdf",
+  "compare_pdf_path": "compare.pdf",
+  "diff_count": 1,
+  "high_risk_count": 0,
+  "parse_warnings": ["第1页 OCR 置信度偏低，已进入质量摘要。"],
+  "parse_warning_details": [
+    {
+      "code": "LOW_TEXT_CONFIDENCE",
+      "message": "第1页 OCR 置信度偏低，已进入质量摘要。",
+      "severity": "WARNING",
+      "page_no": 1,
+      "source": "ocr"
+    }
+  ],
+  "debug_artifact_paths": {
+    "layout_quality": "storage/tasks/EVAL_OCR_SIMPLE_SCANNED/debug/layout_quality.json"
+  },
+  "document_profiles": {},
+  "diffs": [
+    {
+      "diff_id": "D001",
+      "diff_type": "MODIFY",
+      "original_clause_id": "O001",
+      "compare_clause_id": "C001",
+      "clause_no": "3.1",
+      "title": "付款",
+      "original_text": "买方应在验收后30日内付款。",
+      "compare_text": "买方应在验收后45日内付款。",
+      "original_snippet": "30日",
+      "compare_snippet": "45日",
+      "readable_change": "付款期限由30日调整为45日。",
+      "source_type": "clause",
+      "match_score": 92.5,
+      "match_method": "same_clause_no_weighted",
+      "review_flags": ["OCR_LOW_CONFIDENCE"],
+      "quality_status": "NEEDS_REVIEW",
+      "text_confidence": 0.72,
+      "original_evidence": [
+        {
+          "page_no": 1,
+          "bbox": { "x0": 102, "y0": 202, "x1": 178, "y1": 228 },
+          "method": "char_exact",
+          "text": "30日",
+          "highlight_type": "MODIFY",
+          "confidence": 0.82,
+          "evidence_quality": "HIGH",
+          "text_confidence": 0.72
+        }
+      ],
+      "compare_evidence": [
+        {
+          "page_no": 1,
+          "bbox": { "x0": 104, "y0": 203, "x1": 179, "y1": 229 },
+          "method": "char_exact",
+          "text": "45日",
+          "highlight_type": "MODIFY",
+          "confidence": 0.81,
+          "evidence_quality": "HIGH",
+          "text_confidence": 0.72
+        }
+      ]
+    }
+  ]
+}
