@@ -2,7 +2,35 @@ export type TaskStatus = "PROCESSING" | "COMPLETED" | "FAILED";
 export type DiffType = "ADD" | "DELETE" | "MODIFY";
 export type EvidenceQuality = "LOW" | "MEDIUM" | "HIGH";
 export type DiffQualityStatus = "NORMAL" | "NEEDS_REVIEW";
+export type OcrQualityStatus =
+  | "OK"
+  | "LOW_TEXT_CONFIDENCE"
+  | "LAYOUT_MISMATCH"
+  | "READING_ORDER_RISK"
+  | "TABLE_RISK"
+  | "SEAL_OR_SIGNATURE_RISK"
+  | "UNRELIABLE";
+export type OcrQualitySide = "original" | "compare";
 export type ReviewStatus = "UNREVIEWED" | "CONFIRMED" | "FALSE_POSITIVE" | "NEEDS_REVIEW" | "IGNORED";
+
+export interface PageOcrQualityProfile {
+  side: OcrQualitySide;
+  page_no: number;
+  status: OcrQualityStatus;
+  score: number;
+  reasons: string[];
+  metrics: Record<string, number | string | boolean>;
+  affected_diff_ids: string[];
+}
+
+export interface TaskOcrQualitySummary {
+  status: OcrQualityStatus;
+  requires_review: boolean;
+  page_count_by_status: Record<string, number>;
+  risk_page_count: number;
+  affected_diff_count: number;
+  profiles: PageOcrQualityProfile[];
+}
 
 export interface ParseWarningDetail {
   code: string;
@@ -59,6 +87,7 @@ export interface CompareResponse {
   parse_warnings?: string[];
   parse_warning_details?: ParseWarningDetail[];
   document_profiles?: Record<string, DocumentProfile>;
+  ocr_quality_summary?: TaskOcrQualitySummary | null;
   debug_artifact_paths?: Record<string, string>;
   report_url: string;
   report_filename: string;
@@ -205,6 +234,9 @@ export interface CompareQualitySummary {
   needs_review_count?: number;
   review_flag_counts?: Record<string, number>;
   cross_source_merged_count?: number;
+  ocr_quality_summary?: TaskOcrQualitySummary | null;
+  ocr_risk_page_count?: number;
+  ocr_affected_diff_count?: number;
   evidence_quality_counts: Record<EvidenceQuality, number>;
   document_profile_summary: Record<string, {
     filename: string;

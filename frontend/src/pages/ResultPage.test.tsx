@@ -114,7 +114,13 @@ const mockDiffs: DiffItem[] = [
     source_type: "clause",
     match_score: 62,
     match_method: "same_clause_no_low_similarity",
-    review_flags: ["SAME_CLAUSE_NO_LOW_SIMILARITY"],
+    review_flags: [
+      "SAME_CLAUSE_NO_LOW_SIMILARITY",
+      "OCR_LOW_CONFIDENCE",
+      "PAGE_UNRELIABLE",
+      "TABLE_STRUCTURE_UNRELIABLE",
+    ],
+    quality_status: "NEEDS_REVIEW",
     review_status: "UNREVIEWED",
     review_comment: "",
     original_evidence: [
@@ -483,6 +489,9 @@ describe("ResultPage", () => {
     expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
     expect(screen.getByLabelText("正文差异")).toBeInTheDocument();
     expect(screen.getByLabelText("结构与质量提示")).toBeInTheDocument();
+    expect(await screen.findAllByText("低置信 OCR")).not.toHaveLength(0);
+    expect(screen.getAllByText("页面不可靠")).not.toHaveLength(0);
+    expect(screen.getAllByText("表格识别风险")).not.toHaveLength(0);
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-4:DELETE" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
 

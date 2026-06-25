@@ -790,7 +790,7 @@ function AuditDiffCard({
           <span className={`audit-type-badge ${item.type.toLowerCase()}`}>{diffTypeLabel(item.type)}</span>
           <span className={`audit-group-badge ${item.group.toLowerCase()}`}>{auditGroupLabels[item.group]}</span>
           {qualityBadges.map((badge) => (
-            <span key={badge.className} className={`audit-quality-badge ${badge.className}`}>
+            <span key={badge.label} className={`audit-quality-badge ${badge.className}`}>
               {badge.label}
             </span>
           ))}
@@ -822,6 +822,15 @@ function auditQualityBadges(item: AuditChangeItem): Array<{ className: string; l
   }
   if (item.qualityStatus === "NEEDS_REVIEW") {
     badges.push({ className: "needs-review", label: "待复核" });
+  }
+  if (item.reviewFlags.includes("OCR_LOW_CONFIDENCE")) {
+    badges.push({ className: "needs-review", label: "低置信 OCR" });
+  }
+  if (item.reviewFlags.includes("PAGE_UNRELIABLE")) {
+    badges.push({ className: "needs-review", label: "页面不可靠" });
+  }
+  if (item.reviewFlags.includes("TABLE_STRUCTURE_UNRELIABLE")) {
+    badges.push({ className: "needs-review", label: "表格识别风险" });
   }
   if (item.reviewFlags.includes("CROSS_SOURCE_MERGED")) {
     badges.push({ className: "merged", label: "已合并" });
