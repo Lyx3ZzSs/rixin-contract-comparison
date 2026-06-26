@@ -116,11 +116,27 @@ def _severity(diff: dict[str, Any]) -> str:
     flags = set(diff.get("review_flags", []))
     source_type = str(diff.get("source_type", ""))
     title = str(diff.get("title", ""))
+    metadata_key_tokens = (
+        "date",
+        "amount",
+        "price",
+        "party",
+        "contract",
+        "number",
+        "签订日期",
+        "合同编号",
+        "合同金额",
+        "金额",
+        "价款",
+        "价格",
+        "当事人",
+        "甲方",
+        "乙方",
+    )
     if "CRITICAL_VALUE_CHANGE" in flags or source_type == "seal":
         return "critical"
     if source_type == "metadata" and any(
-        token in title.lower()
-        for token in ("date", "amount", "price", "party", "contract", "number")
+        token in title.lower() for token in metadata_key_tokens
     ):
         return "critical"
     if diff.get("quality_status") == "NEEDS_REVIEW" or any("OCR" in flag for flag in flags):

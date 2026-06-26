@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.export_ocr_compare_gold_case import export_gold_case
+from scripts.export_ocr_compare_gold_case import _severity, export_gold_case
 
 
 def _write_task(task_dir: Path) -> None:
@@ -154,3 +154,18 @@ def test_export_gold_case_cli_writes_summary(tmp_path: Path) -> None:
     assert "case_gold_001" in completed.stdout
     assert (output_dir / "actual.json").exists()
     assert (output_dir / "expected.json").exists()
+
+
+def test_severity_classifies_chinese_metadata_key_fields_as_critical() -> None:
+    for title in ("封面字段：签订日期", "合同编号", "合同金额"):
+        assert (
+            _severity(
+                {
+                    "source_type": "metadata",
+                    "title": title,
+                    "quality_status": "NORMAL",
+                    "review_flags": [],
+                }
+            )
+            == "critical"
+        )
