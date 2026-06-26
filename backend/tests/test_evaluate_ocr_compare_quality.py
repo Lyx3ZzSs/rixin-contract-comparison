@@ -611,6 +611,66 @@ def test_evaluate_case_counts_only_approved_gold_diffs(tmp_path: Path) -> None:
     }
 
 
+def test_evaluate_case_root_aggregates_annotation_summary(tmp_path: Path) -> None:
+    for case_id, approved, draft, rejected in [
+        ("case_one", 1, 2, 0),
+        ("case_two", 2, 0, 1),
+    ]:
+        case_dir = tmp_path / case_id
+        case_dir.mkdir()
+        expected_diffs = []
+        expected_diffs.extend(
+            {
+                "diff_type": "MODIFY",
+                "source_type": "clause",
+                "title_contains": f"approved-{index}",
+                "review_status": "APPROVED",
+            }
+            for index in range(approved)
+        )
+        expected_diffs.extend(
+            {
+                "diff_type": "MODIFY",
+                "source_type": "clause",
+                "title_contains": f"draft-{index}",
+                "review_status": "DRAFT",
+            }
+            for index in range(draft)
+        )
+        expected_diffs.extend(
+            {
+                "diff_type": "MODIFY",
+                "source_type": "clause",
+                "title_contains": f"rejected-{index}",
+                "review_status": "REJECTED",
+            }
+            for index in range(rejected)
+        )
+        (case_dir / "expected.json").write_text(
+            json.dumps({"case_id": case_id, "expected_diffs": expected_diffs}),
+            encoding="utf-8",
+        )
+        (case_dir / "actual.json").write_text(
+            json.dumps(
+                {
+                    "task_id": f"EVAL_{case_id.upper()}",
+                    "status": "COMPLETED",
+                    "parse_warning_details": [],
+                    "diffs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    report = evaluate_case_root(tmp_path)
+
+    assert report["aggregate"]["annotation_summary"] == {
+        "approved_expected_count": 3,
+        "draft_expected_count": 2,
+        "rejected_expected_count": 1,
+    }
+
+
 def test_evaluate_case_emits_structured_match_details(tmp_path: Path) -> None:
     case_dir = tmp_path / "details_case"
     case_dir.mkdir()

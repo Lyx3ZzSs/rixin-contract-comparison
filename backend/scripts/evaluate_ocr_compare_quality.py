@@ -559,6 +559,7 @@ def _aggregate(results: list[OcrCompareCaseResult]) -> dict[str, Any]:
     )
     payload = aggregate.to_dict()
     payload["route_metrics"] = _aggregate_route_metrics(results)
+    payload["annotation_summary"] = _aggregate_annotation_summary(results)
     return payload
 
 
@@ -614,6 +615,19 @@ def _aggregate_route_metrics(results: list[OcrCompareCaseResult]) -> dict[str, A
         "recall_by_recommendation": {},
         "evidence_hit_rate_by_recommendation": {},
         "low_confidence_ratio_by_recommendation": {},
+    }
+
+
+def _aggregate_annotation_summary(
+    results: list[OcrCompareCaseResult],
+) -> dict[str, int]:
+    summary: Counter[str] = Counter()
+    for result in results:
+        summary.update(result.annotation_summary)
+    return {
+        "approved_expected_count": int(summary.get("approved_expected_count", 0)),
+        "draft_expected_count": int(summary.get("draft_expected_count", 0)),
+        "rejected_expected_count": int(summary.get("rejected_expected_count", 0)),
     }
 
 
