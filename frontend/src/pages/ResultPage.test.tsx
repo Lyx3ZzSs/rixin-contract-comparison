@@ -527,7 +527,7 @@ describe("ResultPage", () => {
     expect(screen.getAllByText("阅读顺序风险")).not.toHaveLength(0);
     expect(screen.getAllByText("签章识别风险")).not.toHaveLength(0);
     expect(screen.getAllByText("证据不可靠")).not.toHaveLength(0);
-    expect(await screen.findByText("处置规划")).toBeInTheDocument();
+    expect(await screen.findAllByText("处置规划")).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-4:DELETE" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
 
@@ -551,6 +551,81 @@ describe("ResultPage", () => {
     expect(screen.getByRole("button", { name: "审计定位改动 diff-3:DELETE" })).toHaveTextContent("删除");
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
   });
+
+  it("uses the highest-severity remediation action for every audit card in a diff", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getTask).mockResolvedValueOnce({
+      ...mockTask,
+      ocr_remediation_summary: {
+        ...mockTask.ocr_remediation_summary!,
+        actions: [
+          {
+            action_id: "original:1:diff-1:RELOCATE_EVIDENCE:SUCCEEDED",
+            action_type: "RELOCATE_EVIDENCE",
+            reason: "EVIDENCE_UNRELIABLE",
+            status: "SUCCEEDED",
+            side: "original",
+            page_no: 1,
+            diff_id: "diff-1",
+            before_quality: {},
+            after_quality: {},
+            changed_evidence: false,
+            changed_diff_text: false,
+            review_flags_added: [],
+            notes: [],
+          },
+          {
+            action_id: "original:1:diff-1:RELOCATE_EVIDENCE:FAILED",
+            action_type: "RELOCATE_EVIDENCE",
+            reason: "EVIDENCE_UNRELIABLE",
+            status: "FAILED",
+            side: "original",
+            page_no: 1,
+            diff_id: "diff-1",
+            before_quality: {},
+            after_quality: {},
+            changed_evidence: false,
+            changed_diff_text: false,
+            review_flags_added: [],
+            notes: [],
+          },
+        ],
+      },
+    });
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    expect(await screen.findAllByText("处置未完成")).toHaveLength(2);
+    expect(screen.queryByText("已自动处置")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["missing", (() => {
+      const { ocr_remediation_summary: _summary, ...taskWithoutSummary } = mockTask;
+      return taskWithoutSummary;
+    })()],
+    ["null", { ...mockTask, ocr_remediation_summary: null }],
+    ["empty", { ...mockTask, ocr_remediation_summary: { ...mockTask.ocr_remediation_summary!, actions: [] } }],
+  ] satisfies Array<[string, CompareTask]>)(
+    "does not render remediation badges when the remediation summary is %s",
+    async (_caseName, taskPayload) => {
+      const user = userEvent.setup();
+      vi.mocked(getTask).mockResolvedValueOnce(taskPayload);
+
+      render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+      await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+      expect(screen.queryByText("处置规划")).not.toBeInTheDocument();
+      expect(screen.queryByText("需人工处置")).not.toBeInTheDocument();
+      expect(screen.queryByText("已自动处置")).not.toBeInTheDocument();
+      expect(screen.queryByText("处置未完成")).not.toBeInTheDocument();
+    },
+  );
 
   it("submits an ignored review decision from the audit panel", async () => {
     const user = userEvent.setup();

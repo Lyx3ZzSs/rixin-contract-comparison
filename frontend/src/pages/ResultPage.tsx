@@ -506,11 +506,12 @@ function auditItemsForDiff(
   const deleteText = evidenceText(deleteEvidence);
   const originalModifyText = evidenceText(originalModifyEvidence);
   const compareModifyText = evidenceText(compareModifyEvidence);
+  const remediationBadge = remediationBadgeForDiff(diff.diff_id, remediationSummary);
   if (addEvidence.length > 0) {
-    items.push(auditItem(diff, "ADD", addText, addEvidence, auditItemReviews, remediationSummary));
+    items.push(auditItem(diff, "ADD", addText, addEvidence, auditItemReviews, remediationBadge));
   }
   if (deleteEvidence.length > 0) {
-    items.push(auditItem(diff, "DELETE", deleteText, deleteEvidence, auditItemReviews, remediationSummary));
+    items.push(auditItem(diff, "DELETE", deleteText, deleteEvidence, auditItemReviews, remediationBadge));
   }
   if (originalModifyEvidence.length > 0 || compareModifyEvidence.length > 0) {
     items.push(
@@ -520,13 +521,13 @@ function auditItemsForDiff(
         modifySummary(originalModifyText, compareModifyText),
         [...originalModifyEvidence, ...compareModifyEvidence],
         auditItemReviews,
-        remediationSummary,
+        remediationBadge,
       ),
     );
   }
   return items.length > 0
     ? items
-    : [auditItem(diff, diff.diff_type, diffSummary(diff), [...originalEvidence, ...compareEvidence], auditItemReviews, remediationSummary)];
+    : [auditItem(diff, diff.diff_type, diffSummary(diff), [...originalEvidence, ...compareEvidence], auditItemReviews, remediationBadge)];
 }
 
 function auditItem(
@@ -535,7 +536,7 @@ function auditItem(
   summary: string,
   evidenceList: NonNullable<DiffItem["compare_evidence"]>,
   auditItemReviews: NonNullable<CompareTask["audit_item_reviews"]>,
-  remediationSummary: TaskOcrRemediationSummary | null,
+  remediationBadge: AuditChangeItem["remediationBadge"],
 ): AuditChangeItem {
   const location = evidenceLocation(evidenceList);
   const id = `${diff.diff_id}:${type}`;
@@ -553,7 +554,7 @@ function auditItem(
     reviewComment: review?.review_comment ?? "",
     qualityStatus: diff.quality_status ?? "NORMAL",
     reviewFlags: diff.review_flags ?? [],
-    remediationBadge: type === diff.diff_type ? remediationBadgeForDiff(diff.diff_id, remediationSummary) : null,
+    remediationBadge,
   };
 }
 
@@ -865,7 +866,9 @@ function remediationBadgeForDiff(
   diffId: string,
   summary?: TaskOcrRemediationSummary | null,
 ): { className: string; label: string } | null {
-  const action = summary?.actions.find((item) => item.diff_id === diffId);
+  const action = summary?.actions
+    .filter((item) => item.diff_id === diffId)
+    .sort((left, right) => remediationStatusPriority(right.status) - remediationStatusPriority(left.status))[0];
   if (!action) {
     return null;
   }
@@ -879,6 +882,25 @@ function remediationBadgeForDiff(
     return { className: "merged", label: "已自动处置" };
   }
   return { className: "needs-review", label: "处置未完成" };
+}
+
+function remediationStatusPriority(status: TaskOcrRemediationSummary["actions"][number]["status"]): number {
+  if (status === "MANUAL_REVIEW_REQUIRED") {
+    return 5;
+  }
+  if (status === "FAILED") {
+    return 4;
+  }
+  if (status === "PLANNED") {
+    return 3;
+  }
+  if (status === "SKIPPED") {
+    return 2;
+  }
+  if (status === "SUCCEEDED") {
+    return 1;
+  }
+  return 0;
 }
 
 function diffTypeLabel(type: DiffFilter): string {
