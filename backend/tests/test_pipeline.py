@@ -22,15 +22,17 @@ from app.models import (
     PageLayoutQualityReport,
     PageOcrQualityProfile,
     TaskOcrQualitySummary,
+    TaskOcrRemediationSummary,
     TextBlock,
 )
 from app.services.extractors.base import ExtractionResult
-from app.services.pipeline import ComparePipeline, PipelineContext
+from app.services.pipeline import ComparePipeline, PipelineContext, _copy_processing_result
 from app.services.pipeline_stages import (
     ClauseDiffStage,
     DiffQualityStage,
     MatchStage,
     OcrQualityStage,
+    OcrRemediationStage,
     PreClauseDiffStage,
     SplitStage,
     SummaryStage,
@@ -521,6 +523,7 @@ class TestComparePipeline:
         assert stage_names[stage_names.index("EvidenceStage") : stage_names.index("DiffQualityStage") + 1] == [
             "EvidenceStage",
             "OcrQualityStage",
+            "OcrRemediationStage",
             "DiffQualityStage",
         ]
 
@@ -684,6 +687,21 @@ def test_pipeline_completion_preserves_ocr_quality_summary(tmp_path: Path) -> No
     assert persisted.ocr_quality_summary.affected_diff_count == 1
 
 
+def test_copy_processing_result_persists_ocr_remediation_summary() -> None:
+    target = CompareTask(task_id="task-copy")
+    source = CompareTask(task_id="task-copy")
+    source.ocr_remediation_summary = TaskOcrRemediationSummary(
+        status="ACTIONS_PLANNED",
+        attempted_action_count=1,
+        unresolved_action_count=1,
+    )
+
+    _copy_processing_result(target, source)
+
+    assert target.ocr_remediation_summary is not None
+    assert target.ocr_remediation_summary.attempted_action_count == 1
+
+
 class TestPipelineStageFailure:
     def test_pipeline_error_propagates(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
@@ -813,6 +831,41 @@ def test_ocr_quality_stage_writes_artifact_and_flags_diff(tmp_path: Path) -> Non
     assert Path(task.debug_artifact_paths["ocr_quality"]).exists()
     assert ctx.diffs[0].quality_status == "NEEDS_REVIEW"
     assert "OCR_LOW_CONFIDENCE" in ctx.diffs[0].review_flags
+
+
+def test_ocr_remediation_stage_plans_actions_and_marks_diffs(tmp_path: Path) -> None:
+    task = CompareTask(task_id="task-remediation")
+    task.ocr_quality_summary = TaskOcrQualitySummary(
+        status="LAYOUT_MISMATCH",
+        requires_review=True,
+        risk_page_count=1,
+        affected_diff_count=1,
+        profiles=[
+            PageOcrQualityProfile(
+                side="original",
+                page_no=1,
+                status="LAYOUT_MISMATCH",
+                reasons=["LOW_LAYOUT_MATCH_RATE"],
+                affected_diff_ids=["diff-1"],
+            )
+        ],
+    )
+    diff = DiffItem(
+        diff_id="diff-1",
+        diff_type="MODIFY",
+        source_type="clause",
+        review_flags=["EVIDENCE_UNRELIABLE"],
+        quality_status="NEEDS_REVIEW",
+    )
+    ctx = PipelineContext(task=task, original_pdf=tmp_path / "o.pdf", compare_pdf=tmp_path / "c.pdf")
+    ctx.diffs = [diff]
+
+    OcrRemediationStage().execute(ctx)
+
+    assert task.ocr_remediation_summary is not None
+    assert task.ocr_remediation_summary.attempted_action_count == 1
+    assert task.debug_artifact_paths["ocr_remediation"].endswith("ocr_remediation.json")
+    assert "OCR_REMEDIATION_PLANNED" in ctx.diffs[0].review_flags
 
 
 def test_ocr_quality_survives_diff_quality_cross_source_merge(tmp_path: Path) -> None:

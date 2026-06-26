@@ -11,6 +11,7 @@ from app.models import (
     DiffItem,
     Document,
     DocumentProfile,
+    OcrRemediationAction,
     OcrRawResultPaths,
     ParseWarningDetail,
 )
@@ -32,6 +33,7 @@ from app.services.extractors.base import (
 from app.services.header_footer_compare import HeaderFooterComparator
 from app.services.matcher import ClauseMatcher
 from app.services.ocr_quality import OcrQualityProfiler
+from app.services.ocr_remediation import OcrRemediationPlanner
 from app.services.page_diff import PageDiffConsolidator
 from app.services.pipeline import PipelineContext
 from app.services.seal_comparator import build_seal_diffs
@@ -653,6 +655,46 @@ class OcrQualityStage:
         if extraction.layout_quality is not None:
             warnings.extend(extraction.layout_quality.warnings)
         return warnings
+
+
+class OcrRemediationStage:
+    name = "OCR风险处置规划中"
+    start_progress = 84
+    progress = 85
+
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.planner = OcrRemediationPlanner()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+
+    def execute(self, ctx: PipelineContext) -> None:
+        summary = self.planner.plan(ctx.task.ocr_quality_summary, ctx.diffs)
+        ctx.task.ocr_remediation_summary = summary
+        self._apply_planning_flags(ctx.diffs, summary.actions)
+        _write_debug_artifact(
+            ctx.task,
+            "ocr_remediation",
+            lambda: self.debug_writer.write_ocr_remediation(ctx.task.task_id, summary),
+        )
+        _emit_progress(ctx, 85, self.name, "ocr_remediation_planned")
+
+    @staticmethod
+    def _apply_planning_flags(diffs: list[DiffItem], actions: list[OcrRemediationAction]) -> None:
+        flags_by_diff: dict[str, set[str]] = {}
+        for action in actions:
+            if not action.diff_id:
+                continue
+            flags_by_diff.setdefault(action.diff_id, set()).update(action.review_flags_added)
+            if action.status == "MANUAL_REVIEW_REQUIRED":
+                flags_by_diff[action.diff_id].add("OCR_REMEDIATION_MANUAL_REVIEW")
+
+        for diff in diffs:
+            flags = flags_by_diff.get(diff.diff_id)
+            if not flags:
+                continue
+            for flag in sorted(flags):
+                if flag not in diff.review_flags:
+                    diff.review_flags.append(flag)
+            diff.quality_status = "NEEDS_REVIEW"
 
 
 class DiffQualityStage:

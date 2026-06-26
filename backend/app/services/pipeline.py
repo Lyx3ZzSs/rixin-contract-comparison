@@ -260,6 +260,7 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.parse_warning_details = source.parse_warning_details
     target.document_profiles = source.document_profiles
     target.ocr_quality_summary = source.ocr_quality_summary
+    target.ocr_remediation_summary = source.ocr_remediation_summary
     target.debug_artifact_paths = source.debug_artifact_paths
     target.diff_count = source.diff_count
     target.audit_item_reviews = source.audit_item_reviews
@@ -308,6 +309,7 @@ def _default_stages() -> list[PipelineStage]:
         ExtractionStage,
         MatchStage,
         OcrQualityStage,
+        OcrRemediationStage,
         PreClauseDiffStage,
         SplitStage,
         SummaryStage,
@@ -324,6 +326,7 @@ def _default_stages() -> list[PipelineStage]:
         ClauseDiffStage(),
         EvidenceStage(),
         OcrQualityStage(),
+        OcrRemediationStage(),
         DiffQualityStage(),
         VisualizationStage(),
         SummaryStage(),
