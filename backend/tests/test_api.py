@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from urllib.parse import unquote
@@ -578,18 +579,25 @@ def test_quality_summary_includes_ocr_quality_counts(tmp_path: Path) -> None:
 
 def test_api_defaults_ocr_quality_for_legacy_task(tmp_path: Path) -> None:
     configure_storage(tmp_path)
-    save_task(
-        CompareTask(
-            task_id="TOCRLEGACYAPI",
-            status="COMPLETED",
-        )
+    task_dir = settings.tasks_dir / "TOCRLEGACYAPI"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.json").write_text(
+        json.dumps(
+            {
+                "task_id": "TOCRLEGACYAPI",
+                "status": "COMPLETED",
+            }
+        ),
+        encoding="utf-8",
     )
 
     client = TestClient(app)
     task_response = client.get("/api/compare/TOCRLEGACYAPI")
 
     assert task_response.status_code == 200, task_response.text
-    assert task_response.json()["ocr_quality_summary"] is None
+    task_payload = task_response.json()
+    assert task_payload["ocr_quality_summary"] is None
+    assert task_payload["ocr_remediation_summary"] is None
 
     quality_response = client.get("/api/compare/TOCRLEGACYAPI/quality")
 
@@ -598,6 +606,10 @@ def test_api_defaults_ocr_quality_for_legacy_task(tmp_path: Path) -> None:
     assert quality_payload["ocr_quality_summary"] is None
     assert quality_payload["ocr_risk_page_count"] == 0
     assert quality_payload["ocr_affected_diff_count"] == 0
+    assert quality_payload["ocr_remediation_summary"] is None
+    assert quality_payload["ocr_remediation_action_count"] == 0
+    assert quality_payload["ocr_remediation_unresolved_count"] == 0
+    assert quality_payload["manual_review_required_count"] == 0
 
 
 def test_compare_quality_summary_includes_ocr_remediation_counts() -> None:
@@ -747,7 +759,6 @@ def test_cors_allows_frontend_dev_origin() -> None:
     )
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
-
 
 
 
