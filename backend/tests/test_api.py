@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
+from app.api_presenters import compare_task_response
 from app.config import settings
 from app.infrastructure.task_runner import TaskJob, default_task_runner
 from app.main import app
@@ -17,10 +18,13 @@ from app.models import (
     CompareTask,
     DiffItem,
     EvidenceBox,
+    OcrRemediationAction,
     PageOcrQualityProfile,
+    TaskOcrRemediationSummary,
     TaskOcrQualitySummary,
 )
 from app.models_extraction import ExtractionTask
+from app.services.review_service import CompareQualityService
 from app.utils.json_utils import load_task, save_extraction_task, save_task
 
 
@@ -512,6 +516,31 @@ def test_api_exposes_ocr_quality_summary(tmp_path: Path) -> None:
     assert payload["ocr_quality_summary"]["profiles"][0]["affected_diff_ids"] == ["D001"]
 
 
+def test_compare_task_response_includes_ocr_remediation_summary() -> None:
+    task = CompareTask(task_id="task-api", status="COMPLETED")
+    task.ocr_remediation_summary = TaskOcrRemediationSummary(
+        status="ACTIONS_PLANNED",
+        attempted_action_count=1,
+        unresolved_action_count=1,
+        actions=[
+            OcrRemediationAction(
+                action_id="original:1:diff-1:RELOCATE_EVIDENCE",
+                action_type="RELOCATE_EVIDENCE",
+                reason="EVIDENCE_UNRELIABLE",
+                side="original",
+                page_no=1,
+                diff_id="diff-1",
+            )
+        ],
+    )
+
+    response = compare_task_response(task)
+
+    assert response.ocr_remediation_summary is not None
+    assert response.ocr_remediation_summary.attempted_action_count == 1
+    assert response.ocr_remediation_summary.actions[0].action_type == "RELOCATE_EVIDENCE"
+
+
 def test_quality_summary_includes_ocr_quality_counts(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     save_task(
@@ -569,6 +598,23 @@ def test_api_defaults_ocr_quality_for_legacy_task(tmp_path: Path) -> None:
     assert quality_payload["ocr_quality_summary"] is None
     assert quality_payload["ocr_risk_page_count"] == 0
     assert quality_payload["ocr_affected_diff_count"] == 0
+
+
+def test_compare_quality_summary_includes_ocr_remediation_counts() -> None:
+    task = CompareTask(task_id="task-quality", status="COMPLETED")
+    task.ocr_remediation_summary = TaskOcrRemediationSummary(
+        status="MANUAL_REVIEW_REQUIRED",
+        attempted_action_count=2,
+        unresolved_action_count=2,
+        manual_review_required_count=1,
+    )
+
+    summary = CompareQualityService().build_summary(task)
+
+    assert summary["ocr_remediation_summary"]["status"] == "MANUAL_REVIEW_REQUIRED"
+    assert summary["ocr_remediation_action_count"] == 2
+    assert summary["ocr_remediation_unresolved_count"] == 2
+    assert summary["manual_review_required_count"] == 1
 
 
 def test_api_report_excludes_ignored_audit_item_after_review(tmp_path: Path) -> None:
@@ -701,7 +747,6 @@ def test_cors_allows_frontend_dev_origin() -> None:
     )
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
-
 
 
 

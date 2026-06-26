@@ -23,6 +23,26 @@ OcrQualityStatus = Literal[
     "UNRELIABLE",
 ]
 OcrQualitySide = Literal["original", "compare"]
+OcrRemediationActionType = Literal[
+    "NO_ACTION",
+    "MARK_REVIEW",
+    "RELOCATE_EVIDENCE",
+    "REPAIR_TABLE",
+    "RETRY_OCR_PAGE",
+    "ESCALATE_MANUAL_REVIEW",
+]
+OcrRemediationStatus = Literal[
+    "PLANNED",
+    "SKIPPED",
+    "SUCCEEDED",
+    "FAILED",
+    "MANUAL_REVIEW_REQUIRED",
+]
+OcrRemediationSummaryStatus = Literal[
+    "OK",
+    "ACTIONS_PLANNED",
+    "MANUAL_REVIEW_REQUIRED",
+]
 
 
 class BBoxResponse(BaseModel):
@@ -62,6 +82,34 @@ class TaskOcrQualitySummaryResponse(BaseModel):
     profiles: list[PageOcrQualityProfileResponse] = Field(default_factory=list)
 
 
+class OcrRemediationActionResponse(BaseModel):
+    action_id: str
+    action_type: OcrRemediationActionType
+    reason: str
+    status: OcrRemediationStatus = "PLANNED"
+    side: OcrQualitySide | None = None
+    page_no: int | None = None
+    diff_id: str | None = None
+    before_quality: dict[str, Any] = Field(default_factory=dict)
+    after_quality: dict[str, Any] = Field(default_factory=dict)
+    changed_evidence: bool = False
+    changed_diff_text: bool = False
+    review_flags_added: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class TaskOcrRemediationSummaryResponse(BaseModel):
+    status: OcrRemediationSummaryStatus = "OK"
+    requires_manual_review: bool = False
+    attempted_action_count: int = 0
+    successful_action_count: int = 0
+    unresolved_action_count: int = 0
+    risk_reduced_page_count: int = 0
+    risk_reduced_diff_count: int = 0
+    manual_review_required_count: int = 0
+    actions: list[OcrRemediationActionResponse] = Field(default_factory=list)
+
+
 class TextRangeResponse(BaseModel):
     start: int
     end: int
@@ -85,6 +133,7 @@ class CompareTaskResponse(BaseModel):
     parse_warning_details: list[dict[str, Any]] = Field(default_factory=list)
     document_profiles: dict[str, Any] = Field(default_factory=dict)
     ocr_quality_summary: TaskOcrQualitySummaryResponse | None = None
+    ocr_remediation_summary: TaskOcrRemediationSummaryResponse | None = None
     debug_artifact_paths: dict[str, str] = Field(default_factory=dict)
     report_url: str
     report_filename: str

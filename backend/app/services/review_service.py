@@ -161,6 +161,18 @@ class CompareQualityService:
             "ocr_quality_summary": to_jsonable(task.ocr_quality_summary) if task.ocr_quality_summary else None,
             "ocr_risk_page_count": task.ocr_quality_summary.risk_page_count if task.ocr_quality_summary else 0,
             "ocr_affected_diff_count": task.ocr_quality_summary.affected_diff_count if task.ocr_quality_summary else 0,
+            "ocr_remediation_summary": (
+                to_jsonable(task.ocr_remediation_summary) if task.ocr_remediation_summary else None
+            ),
+            "ocr_remediation_action_count": (
+                task.ocr_remediation_summary.attempted_action_count if task.ocr_remediation_summary else 0
+            ),
+            "ocr_remediation_unresolved_count": (
+                task.ocr_remediation_summary.unresolved_action_count if task.ocr_remediation_summary else 0
+            ),
+            "manual_review_required_count": (
+                task.ocr_remediation_summary.manual_review_required_count if task.ocr_remediation_summary else 0
+            ),
             "low_confidence_diffs": low_confidence_diffs,
             "low_similarity_diffs": low_similarity_diffs,
             "debug_artifacts": self._debug_artifacts(task),
