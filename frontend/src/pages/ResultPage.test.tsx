@@ -602,6 +602,41 @@ describe("ResultPage", () => {
     expect(screen.queryByText("已自动处置")).not.toBeInTheDocument();
   });
 
+  it("shows successful remediation badges for every audit card in a remediated diff", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getTask).mockResolvedValueOnce({
+      ...mockTask,
+      ocr_remediation_summary: {
+        ...mockTask.ocr_remediation_summary!,
+        actions: [
+          {
+            action_id: "original:1:diff-1:RELOCATE_EVIDENCE:SUCCEEDED",
+            action_type: "RELOCATE_EVIDENCE",
+            reason: "EVIDENCE_UNRELIABLE",
+            status: "SUCCEEDED",
+            side: "original",
+            page_no: 1,
+            diff_id: "diff-1",
+            before_quality: { max_confidence: 0.46 },
+            after_quality: { max_confidence: 0.98 },
+            changed_evidence: true,
+            changed_diff_text: false,
+            review_flags_added: ["OCR_REMEDIATION_EVIDENCE_RELOCATED"],
+            notes: [],
+          },
+        ],
+      },
+    });
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    expect(await screen.findAllByText("已自动处置")).toHaveLength(2);
+    expect(screen.queryByText("处置规划")).not.toBeInTheDocument();
+  });
+
   it.each([
     ["missing", (() => {
       const { ocr_remediation_summary: _summary, ...taskWithoutSummary } = mockTask;
