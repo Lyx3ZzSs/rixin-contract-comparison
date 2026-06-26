@@ -1089,6 +1089,60 @@ def test_ocr_remediation_stage_keeps_unresolved_state_when_relocation_fails(tmp_
     assert task.ocr_remediation_summary.unresolved_action_count == 1
 
 
+def test_ocr_remediation_stage_reports_terminal_status_when_relocation_skipped(tmp_path: Path) -> None:
+    original_pdf = tmp_path / "original.pdf"
+    compare_pdf = tmp_path / "compare.pdf"
+    _write_text_pdf(original_pdf, "付款金额为100元")
+    _write_text_pdf(compare_pdf, "付款金额为120元")
+    artifact_store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    task = CompareTask(
+        task_id="task-relocate-skipped",
+        ocr_quality_summary=TaskOcrQualitySummary(
+            status="LAYOUT_MISMATCH",
+            requires_review=True,
+            risk_page_count=1,
+            affected_diff_count=1,
+            profiles=[
+                PageOcrQualityProfile(
+                    side="original",
+                    page_no=1,
+                    status="LAYOUT_MISMATCH",
+                    affected_diff_ids=["D001"],
+                )
+            ],
+        ),
+    )
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_snippet="付款金额为100元",
+        original_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=10, y0=10, x1=80, y1=30),
+                method="text_exact",
+                text="付款金额为100元",
+                highlight_type="MODIFY",
+                confidence=0.95,
+                evidence_quality="HIGH",
+            )
+        ],
+        review_flags=["EVIDENCE_UNRELIABLE"],
+        quality_status="NEEDS_REVIEW",
+    )
+    ctx = PipelineContext(task=task, original_pdf=original_pdf, compare_pdf=compare_pdf)
+    ctx.diffs = [diff]
+
+    OcrRemediationStage(artifact_store=artifact_store).execute(ctx)
+
+    action = task.ocr_remediation_summary.actions[0]
+    assert action.status == "SKIPPED"
+    assert task.ocr_remediation_summary.unresolved_action_count == 0
+    assert task.ocr_remediation_summary.successful_action_count == 0
+    assert task.ocr_remediation_summary.status == "OK"
+
+
 def test_ocr_remediation_actions_survive_diff_quality_cross_source_merge(tmp_path: Path) -> None:
     artifact_store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
     task = CompareTask(

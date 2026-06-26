@@ -770,12 +770,10 @@ class OcrRemediationStage:
         summary.manual_review_required_count = manual_count
         summary.requires_manual_review = bool(manual_count)
 
-        if not actions:
-            summary.status = "OK"
-        elif summary.successful_action_count > 0 and unresolved_count == 0:
-            summary.status = "OK"
-        elif manual_count:
+        if manual_count:
             summary.status = "MANUAL_REVIEW_REQUIRED"
+        elif not actions or unresolved_count == 0:
+            summary.status = "OK"
         else:
             summary.status = "ACTIONS_PLANNED"
 
