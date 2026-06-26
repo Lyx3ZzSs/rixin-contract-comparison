@@ -1,8 +1,12 @@
 from app.models import (
-    OcrRemediationAction,
-    TaskOcrRemediationSummary,
     CompareTask,
+    DiffItem,
+    OcrRemediationAction,
+    PageOcrQualityProfile,
+    TaskOcrRemediationSummary,
+    TaskOcrQualitySummary,
 )
+from app.services.ocr_remediation import OcrRemediationPlanner
 
 
 def test_ocr_remediation_action_defaults_are_planning_safe():
@@ -37,10 +41,6 @@ def test_compare_task_accepts_missing_ocr_remediation_summary():
     task = CompareTask(task_id="task-1")
 
     assert task.ocr_remediation_summary is None
-
-
-from app.models import DiffItem, PageOcrQualityProfile, TaskOcrQualitySummary
-from app.services.ocr_remediation import OcrRemediationPlanner
 
 
 def test_planner_creates_relocate_action_for_unreliable_evidence():
@@ -78,6 +78,45 @@ def test_planner_creates_relocate_action_for_unreliable_evidence():
     assert remediation.actions[0].page_no == 2
     assert remediation.actions[0].diff_id == "diff-1"
     assert remediation.actions[0].before_quality["ocr_status"] == "LAYOUT_MISMATCH"
+
+
+def test_planner_snapshots_before_quality_from_profile_data():
+    diff = DiffItem(
+        diff_id="diff-1",
+        diff_type="MODIFY",
+        source_type="clause",
+        review_flags=["EVIDENCE_UNRELIABLE"],
+        quality_status="NEEDS_REVIEW",
+    )
+    summary = TaskOcrQualitySummary(
+        status="LAYOUT_MISMATCH",
+        requires_review=True,
+        risk_page_count=1,
+        affected_diff_count=1,
+        profiles=[
+            PageOcrQualityProfile(
+                side="original",
+                page_no=2,
+                status="LAYOUT_MISMATCH",
+                reasons=["LOW_LAYOUT_MATCH_RATE"],
+                affected_diff_ids=["diff-1"],
+                metrics={"layout_match_rate": 0.5, "nested": {"score": 0.7}},
+            )
+        ],
+    )
+
+    remediation = OcrRemediationPlanner().plan(summary, [diff])
+    action = remediation.actions[0]
+
+    summary.profiles[0].reasons.append("MUTATED_REASON")
+    summary.profiles[0].metrics["layout_match_rate"] = 0.1
+    summary.profiles[0].metrics["nested"]["score"] = 0.2
+
+    assert action.before_quality["ocr_reasons"] == ["LOW_LAYOUT_MATCH_RATE"]
+    assert action.before_quality["ocr_metrics"] == {
+        "layout_match_rate": 0.5,
+        "nested": {"score": 0.7},
+    }
 
 
 def test_planner_escalates_page_unreliable_once_per_diff():

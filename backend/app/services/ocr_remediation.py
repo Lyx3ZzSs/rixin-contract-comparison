@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from app.models import (
     DiffItem,
     OcrRemediationAction,
@@ -100,8 +102,8 @@ class OcrRemediationPlanner:
             before_quality = {
                 "ocr_status": profile.status,
                 "ocr_score": profile.score,
-                "ocr_reasons": profile.reasons,
-                "ocr_metrics": profile.metrics,
+                "ocr_reasons": list(profile.reasons),
+                "ocr_metrics": deepcopy(profile.metrics),
             }
         return OcrRemediationAction(
             action_id=action_id,
