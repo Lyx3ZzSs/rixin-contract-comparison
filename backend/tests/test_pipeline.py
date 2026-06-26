@@ -26,6 +26,7 @@ from app.models import (
     TextBlock,
 )
 from app.services.extractors.base import ExtractionResult
+from app.services.compare_service import CompareService
 from app.services.pipeline import ComparePipeline, PipelineContext, _copy_processing_result
 from app.services.pipeline_stages import (
     ClauseDiffStage,
@@ -522,6 +523,15 @@ class TestComparePipeline:
 
         assert stage_names[stage_names.index("EvidenceStage") : stage_names.index("DiffQualityStage") + 1] == [
             "EvidenceStage",
+            "OcrQualityStage",
+            "OcrRemediationStage",
+            "DiffQualityStage",
+        ]
+
+    def test_compare_service_pipeline_includes_ocr_remediation_before_diff_quality(self) -> None:
+        stage_names = [type(stage).__name__ for stage in CompareService()._build_pipeline().stages]
+
+        assert stage_names[stage_names.index("OcrQualityStage") : stage_names.index("DiffQualityStage") + 1] == [
             "OcrQualityStage",
             "OcrRemediationStage",
             "DiffQualityStage",
