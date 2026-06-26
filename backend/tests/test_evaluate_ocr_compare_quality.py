@@ -3,6 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from app.models import PageOcrQualityProfile, TaskOcrQualitySummary
 from scripts.evaluate_ocr_compare_quality import (
     _bbox_iou,
     _expected_evidence_hits,
@@ -55,6 +56,76 @@ def test_evaluate_case_reports_ocr_compare_metrics() -> None:
     assert result.rates()["precision"] == 1.0
     assert result.rates()["evidence_hit_rate"] == 1.0
     assert result.rates()["low_confidence_ratio"] == 1.0
+
+
+def test_evaluate_case_includes_model_route_records(tmp_path: Path) -> None:
+    case_dir = tmp_path / "route_case"
+    case_dir.mkdir()
+    (case_dir / "expected.json").write_text(
+        json.dumps(
+            {
+                "case_id": "route_case",
+                "expected_diffs": [
+                    {
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title_contains": "付款",
+                        "original_contains": "100元",
+                        "compare_contains": "120元",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (case_dir / "actual.json").write_text(
+        json.dumps(
+            {
+                "task_id": "EVAL_ROUTE_CASE",
+                "status": "COMPLETED",
+                "parse_warning_details": [],
+                "ocr_quality_summary": TaskOcrQualitySummary(
+                    status="LOW_TEXT_CONFIDENCE",
+                    requires_review=True,
+                    profiles=[
+                        PageOcrQualityProfile(
+                            side="original",
+                            page_no=1,
+                            status="LOW_TEXT_CONFIDENCE",
+                            reasons=["LOW_AVG_CONFIDENCE"],
+                            affected_diff_ids=["D001"],
+                        )
+                    ],
+                ).model_dump(mode="json"),
+                "diffs": [
+                    {
+                        "diff_id": "D001",
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title": "付款",
+                        "original_text": "付款金额为100元",
+                        "compare_text": "付款金额为120元",
+                        "review_flags": ["OCR_LOW_CONFIDENCE"],
+                        "quality_status": "NEEDS_REVIEW",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_case(discover_cases(tmp_path)[0]).to_dict()
+
+    assert result["model_routing"]["route_count"] == 1
+    assert (
+        result["model_routing"]["routes"][0]["recommended_route"]
+        == "HIGH_DPI_PAGE_RETRY"
+    )
+    assert result["route_metrics"]["route_count_by_recommendation"] == {
+        "HIGH_DPI_PAGE_RETRY": 1
+    }
+    assert result["route_metrics"]["page_count_by_type"] == {"scan_low_quality": 1}
+    assert result["route_metrics"]["precision_by_recommendation"] == {}
 
 
 def test_evaluate_case_reports_evidence_drift_for_matched_diff(
@@ -147,6 +218,16 @@ def test_evaluate_case_root_aggregates_metrics() -> None:
     assert report["aggregate"]["precision"] == 1.0
     assert report["aggregate"]["evidence_hit_rate"] == 1.0
     assert report["aggregate"]["low_confidence_ratio"] == 1.0
+
+
+def test_evaluate_case_root_aggregates_route_metrics() -> None:
+    report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
+
+    assert "route_metrics" in report["aggregate"]
+    assert isinstance(
+        report["aggregate"]["route_metrics"]["route_count_by_recommendation"], dict
+    )
+    assert "route_metrics" in report["cases"][0]
 
 
 def test_matching_requires_semantic_or_evidence_signal() -> None:

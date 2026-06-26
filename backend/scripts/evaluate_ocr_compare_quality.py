@@ -4,6 +4,7 @@ import argparse
 import html
 import json
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,8 @@ if str(ROOT) not in sys.path:
 
 from app.models import CompareTask  # noqa: E402
 from app.services.compare_service import CompareService  # noqa: E402
+from app.services.model_routing import ModelRoutingAnalyzer  # noqa: E402
+from app.utils.json_utils import to_jsonable  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,8 @@ class OcrCompareCaseResult:
     low_confidence_count: int
     ocr_warning_count: int
     task_failure_count: int
+    model_routing: dict[str, Any]
+    route_metrics: dict[str, Any]
     issues: list[str]
 
     @classmethod
@@ -101,6 +106,8 @@ class OcrCompareCaseResult:
             low_confidence_count=0,
             ocr_warning_count=0,
             task_failure_count=1,
+            model_routing={"status": "OK", "route_count": 0, "routes": []},
+            route_metrics=_empty_route_metrics(),
             issues=[str(error)],
         )
 
@@ -149,6 +156,13 @@ def evaluate_case(case: OcrCompareCase) -> OcrCompareCaseResult:
     matches = _match_expected_diffs(expected_diffs, actual_diffs)
     matched_actual_indexes = {actual_index for _, actual_index in matches}
     issues = _case_issues(expected_diffs, actual_diffs, matches)
+    routing_summary = ModelRoutingAnalyzer().analyze(
+        actual_task.ocr_quality_summary,
+        actual_task.diffs,
+        actual_task.parse_warning_details,
+    )
+    routing_payload = to_jsonable(routing_summary)
+    route_metrics = _route_metrics(routing_payload)
     return OcrCompareCaseResult(
         case_id=case.case_id,
         status=actual_task.status,
@@ -167,6 +181,8 @@ def evaluate_case(case: OcrCompareCase) -> OcrCompareCaseResult:
             if _is_ocr_warning(warning.model_dump(mode="json"))
         ),
         task_failure_count=0 if actual_task.status == "COMPLETED" else 1,
+        model_routing=routing_payload,
+        route_metrics=route_metrics,
         issues=issues,
     )
 
@@ -362,9 +378,68 @@ def _aggregate(results: list[OcrCompareCaseResult]) -> dict[str, Any]:
         low_confidence_count=sum(item.low_confidence_count for item in results),
         ocr_warning_count=sum(item.ocr_warning_count for item in results),
         task_failure_count=sum(item.task_failure_count for item in results),
+        model_routing={"status": "OK", "route_count": 0, "routes": []},
+        route_metrics=_empty_route_metrics(),
         issues=[issue for item in results for issue in item.issues],
     )
-    return aggregate.to_dict()
+    payload = aggregate.to_dict()
+    payload["route_metrics"] = _aggregate_route_metrics(results)
+    return payload
+
+
+def _empty_route_metrics() -> dict[str, Any]:
+    return {
+        "route_count_by_recommendation": {},
+        "page_count_by_type": {},
+        "retry_recommended_count": 0,
+        "manual_review_recommended_count": 0,
+        "precision_by_recommendation": {},
+        "recall_by_recommendation": {},
+        "evidence_hit_rate_by_recommendation": {},
+        "low_confidence_ratio_by_recommendation": {},
+    }
+
+
+def _route_metrics(model_routing: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "route_count_by_recommendation": dict(
+            model_routing.get("route_count_by_recommendation", {})
+        ),
+        "page_count_by_type": dict(model_routing.get("page_count_by_type", {})),
+        "retry_recommended_count": int(
+            model_routing.get("retry_recommended_count", 0)
+        ),
+        "manual_review_recommended_count": int(
+            model_routing.get("manual_review_recommended_count", 0)
+        ),
+        "precision_by_recommendation": {},
+        "recall_by_recommendation": {},
+        "evidence_hit_rate_by_recommendation": {},
+        "low_confidence_ratio_by_recommendation": {},
+    }
+
+
+def _aggregate_route_metrics(results: list[OcrCompareCaseResult]) -> dict[str, Any]:
+    route_counts: Counter[str] = Counter()
+    page_counts: Counter[str] = Counter()
+    retry_count = 0
+    manual_count = 0
+    for result in results:
+        route_metrics = result.route_metrics
+        route_counts.update(route_metrics.get("route_count_by_recommendation", {}))
+        page_counts.update(route_metrics.get("page_count_by_type", {}))
+        retry_count += int(route_metrics.get("retry_recommended_count", 0))
+        manual_count += int(route_metrics.get("manual_review_recommended_count", 0))
+    return {
+        "route_count_by_recommendation": dict(route_counts),
+        "page_count_by_type": dict(page_counts),
+        "retry_recommended_count": retry_count,
+        "manual_review_recommended_count": manual_count,
+        "precision_by_recommendation": {},
+        "recall_by_recommendation": {},
+        "evidence_hit_rate_by_recommendation": {},
+        "low_confidence_ratio_by_recommendation": {},
+    }
 
 
 def _aggregate_status(results: list[OcrCompareCaseResult]) -> str:
