@@ -206,6 +206,12 @@ def evaluate_case(case: OcrCompareCase) -> OcrCompareCaseResult:
 
 
 @dataclass(frozen=True)
+class ApprovedExpectedDiff:
+    source_index: int
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class DiffMatch:
     expected_index: int
     actual_index: int
@@ -213,29 +219,30 @@ class DiffMatch:
 
 
 def _match_expected_diffs(
-    expected: list[dict[str, Any]], actual: list[dict[str, Any]]
+    expected: list[ApprovedExpectedDiff] | list[dict[str, Any]],
+    actual: list[dict[str, Any]],
 ) -> list[DiffMatch]:
     matches: list[DiffMatch] = []
     used_actual: set[int] = set()
-    for expected_index, expected_diff in enumerate(expected):
+    for expected_record in _expected_records(expected):
         best_index = None
         best_score = 0.0
         for actual_index, actual_diff in enumerate(actual):
             if actual_index in used_actual:
                 continue
-            score = _diff_match_score(expected_diff, actual_diff)
+            score = _diff_match_score(expected_record.payload, actual_diff)
             if score > best_score:
                 best_index = actual_index
                 best_score = score
         if (
             best_index is not None
             and best_score >= 0.72
-            and _has_matching_signal(expected_diff, actual[best_index])
+            and _has_matching_signal(expected_record.payload, actual[best_index])
         ):
             used_actual.add(best_index)
             matches.append(
                 DiffMatch(
-                    expected_index=expected_index,
+                    expected_index=expected_record.source_index,
                     actual_index=best_index,
                     score=round(best_score, 4),
                 )
@@ -243,10 +250,23 @@ def _match_expected_diffs(
     return matches
 
 
-def _approved_expected_diffs(expected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _expected_records(
+    expected: list[ApprovedExpectedDiff] | list[dict[str, Any]],
+) -> list[ApprovedExpectedDiff]:
     return [
         item
-        for item in expected
+        if isinstance(item, ApprovedExpectedDiff)
+        else ApprovedExpectedDiff(source_index=index, payload=item)
+        for index, item in enumerate(expected)
+    ]
+
+
+def _approved_expected_diffs(
+    expected: list[dict[str, Any]],
+) -> list[ApprovedExpectedDiff]:
+    return [
+        ApprovedExpectedDiff(source_index=index, payload=item)
+        for index, item in enumerate(expected)
         if item.get("review_status") in (None, "", "APPROVED")
     ]
 
@@ -275,9 +295,10 @@ def _empty_annotation_summary() -> dict[str, int]:
 
 def _match_details(
     matches: list[DiffMatch],
-    expected: list[dict[str, Any]],
+    expected: list[ApprovedExpectedDiff],
     actual: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    expected_by_source_index = _expected_by_source_index(expected)
     return [
         {
             "expected_index": match.expected_index,
@@ -285,7 +306,7 @@ def _match_details(
             "actual_diff_id": str(actual[match.actual_index].get("diff_id", "")),
             "score": match.score,
             "evidence_hit": _expected_evidence_hit_or_not_required(
-                expected[match.expected_index],
+                expected_by_source_index[match.expected_index].payload,
                 actual[match.actual_index],
             ),
         }
@@ -294,18 +315,18 @@ def _match_details(
 
 
 def _missed_expected_details(
-    expected: list[dict[str, Any]], matches: list[DiffMatch]
+    expected: list[ApprovedExpectedDiff], matches: list[DiffMatch]
 ) -> list[dict[str, Any]]:
     matched_expected = {match.expected_index for match in matches}
     return [
         {
-            "expected_index": index,
-            "label": _diff_label(item),
-            "diff_type": str(item.get("diff_type", "")),
-            "source_type": str(item.get("source_type", "")),
+            "expected_index": item.source_index,
+            "label": _diff_label(item.payload),
+            "diff_type": str(item.payload.get("diff_type", "")),
+            "source_type": str(item.payload.get("source_type", "")),
         }
-        for index, item in enumerate(expected)
-        if index not in matched_expected
+        for item in expected
+        if item.source_index not in matched_expected
     ]
 
 
@@ -329,22 +350,31 @@ def _unexpected_actual_details(
 
 def _evidence_drift_details(
     matches: list[DiffMatch],
-    expected: list[dict[str, Any]],
+    expected: list[ApprovedExpectedDiff],
     actual: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    expected_by_source_index = _expected_by_source_index(expected)
     return [
         {
             "expected_index": match.expected_index,
             "actual_diff_id": str(actual[match.actual_index].get("diff_id", "")),
-            "label": _diff_label(expected[match.expected_index]),
+            "label": _diff_label(expected_by_source_index[match.expected_index].payload),
         }
         for match in matches
-        if expected[match.expected_index].get("expected_evidence", [])
+        if expected_by_source_index[match.expected_index].payload.get(
+            "expected_evidence", []
+        )
         and not _expected_evidence_hits(
-            expected[match.expected_index],
+            expected_by_source_index[match.expected_index].payload,
             actual[match.actual_index],
         )
     ]
+
+
+def _expected_by_source_index(
+    expected: list[ApprovedExpectedDiff],
+) -> dict[int, ApprovedExpectedDiff]:
+    return {item.source_index: item for item in expected}
 
 
 def _diff_match_score(expected: dict[str, Any], actual: dict[str, Any]) -> float:
@@ -413,14 +443,16 @@ def _expected_evidence_hits(
 
 def _matched_evidence_hit_count(
     matches: list[DiffMatch],
-    expected: list[dict[str, Any]],
+    expected: list[ApprovedExpectedDiff],
     actual: list[dict[str, Any]],
 ) -> int:
+    expected_by_source_index = _expected_by_source_index(expected)
     return sum(
         1
         for match in matches
         if _expected_evidence_hit_or_not_required(
-            expected[match.expected_index], actual[match.actual_index]
+            expected_by_source_index[match.expected_index].payload,
+            actual[match.actual_index],
         )
     )
 
@@ -451,16 +483,16 @@ def _is_low_confidence(diff: dict[str, Any]) -> bool:
 
 
 def _case_issues(
-    expected: list[dict[str, Any]],
+    expected: list[ApprovedExpectedDiff],
     actual: list[dict[str, Any]],
     matches: list[DiffMatch],
 ) -> list[str]:
     matched_expected = {match.expected_index for match in matches}
     matched_actual = {match.actual_index for match in matches}
     issues = [
-        f"missed expected diff {index + 1}: {item.get('title_contains') or item.get('source_type') or item.get('diff_type')}"
-        for index, item in enumerate(expected)
-        if index not in matched_expected
+        f"missed expected diff {item.source_index + 1}: {item.payload.get('title_contains') or item.payload.get('source_type') or item.payload.get('diff_type')}"
+        for item in expected
+        if item.source_index not in matched_expected
     ]
     issues.extend(
         f"unexpected actual diff {index + 1}: {item.get('title') or item.get('source_type') or item.get('diff_type')}"
@@ -473,13 +505,16 @@ def _case_issues(
 
 def _evidence_drift_issues(
     matches: list[DiffMatch],
-    expected: list[dict[str, Any]],
+    expected: list[ApprovedExpectedDiff],
     actual: list[dict[str, Any]],
 ) -> list[str]:
+    expected_by_source_index = _expected_by_source_index(expected)
     return [
         f"evidence drift for expected diff {match.expected_index + 1}: {_diff_label(expected_diff)}"
         for match in matches
-        if (expected_diff := expected[match.expected_index]).get("expected_evidence", [])
+        if (
+            expected_diff := expected_by_source_index[match.expected_index].payload
+        ).get("expected_evidence", [])
         and not _expected_evidence_hits(expected_diff, actual[match.actual_index])
     ]
 

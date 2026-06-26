@@ -705,3 +705,85 @@ def test_evaluate_case_emits_structured_match_details(tmp_path: Path) -> None:
     assert result["evidence_drift_diffs"] == [
         {"expected_index": 0, "actual_diff_id": "D001", "label": "Payment"}
     ]
+
+
+def test_evaluate_case_structured_details_preserve_expected_source_indexes(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "source_index_case"
+    case_dir.mkdir()
+    (case_dir / "expected.json").write_text(
+        json.dumps(
+            {
+                "case_id": "source_index_case",
+                "expected_diffs": [
+                    {
+                        "diff_type": "ADD",
+                        "source_type": "metadata",
+                        "title_contains": "Draft row",
+                        "review_status": "DRAFT",
+                    },
+                    {
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title_contains": "Payment",
+                        "original_contains": "30 days",
+                        "compare_contains": "45 days",
+                        "review_status": "APPROVED",
+                        "expected_evidence": [
+                            {
+                                "side": "original",
+                                "page_no": 1,
+                                "bbox": {"x0": 10, "y0": 10, "x1": 60, "y1": 30},
+                            }
+                        ],
+                    },
+                    {
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title_contains": "Delivery",
+                        "original_contains": "May",
+                        "compare_contains": "June",
+                        "review_status": "APPROVED",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (case_dir / "actual.json").write_text(
+        json.dumps(
+            {
+                "task_id": "EVAL_SOURCE_INDEX_CASE",
+                "status": "COMPLETED",
+                "parse_warning_details": [],
+                "diffs": [
+                    {
+                        "diff_id": "D001",
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title": "Payment term",
+                        "original_text": "Payment is due in 30 days.",
+                        "compare_text": "Payment is due in 45 days.",
+                        "original_evidence": [
+                            {
+                                "page_no": 2,
+                                "bbox": {"x0": 10, "y0": 10, "x1": 60, "y1": 30},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_case(discover_cases(tmp_path)[0]).to_dict()
+
+    assert result["expected_count"] == 2
+    assert result["true_positive_count"] == 1
+    assert result["false_negative_count"] == 1
+    assert result["matches"][0]["expected_index"] == 1
+    assert result["missed_expected_diffs"][0]["expected_index"] == 2
+    assert result["evidence_drift_diffs"][0]["expected_index"] == 1
+    assert any("expected diff 3" in issue for issue in result["issues"])
