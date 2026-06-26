@@ -36,9 +36,11 @@ class EvidenceRelocator:
         *,
         side: RelocationSide,
         page_no: int | None,
-        original_pdf: Path,
-        compare_pdf: Path,
+        original_pdf: str | Path,
+        compare_pdf: str | Path,
     ) -> EvidenceRelocationResult:
+        original_pdf = Path(original_pdf)
+        compare_pdf = Path(compare_pdf)
         current_evidence = self._side_evidence(diff, side)
         before_quality = self._quality_snapshot(current_evidence)
 
@@ -47,7 +49,7 @@ class EvidenceRelocator:
                 status="SKIPPED",
                 reason="EXISTING_EVIDENCE_HIGH_CONFIDENCE",
                 before_quality=before_quality,
-                after_quality=before_quality,
+                after_quality=dict(before_quality),
             )
 
         query = self._side_query(diff, side)
@@ -56,7 +58,7 @@ class EvidenceRelocator:
                 status="FAILED",
                 reason="NO_SIDE_TEXT_SIGNAL",
                 before_quality=before_quality,
-                after_quality=before_quality,
+                after_quality=dict(before_quality),
             )
 
         pdf_path = original_pdf if side == "original" else compare_pdf
@@ -72,7 +74,7 @@ class EvidenceRelocator:
                 status="FAILED",
                 reason="NO_ACCEPTED_CANDIDATE",
                 before_quality=before_quality,
-                after_quality=before_quality,
+                after_quality=dict(before_quality),
             )
 
         return EvidenceRelocationResult(

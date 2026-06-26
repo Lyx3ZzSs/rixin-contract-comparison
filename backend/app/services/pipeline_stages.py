@@ -34,6 +34,7 @@ from app.services.header_footer_compare import HeaderFooterComparator
 from app.services.matcher import ClauseMatcher
 from app.services.ocr_quality import OcrQualityProfiler
 from app.services.ocr_remediation import OcrRemediationPlanner
+from app.services.evidence_relocator import EvidenceRelocationResult, EvidenceRelocator
 from app.services.page_diff import PageDiffConsolidator
 from app.services.pipeline import PipelineContext
 from app.services.seal_comparator import build_seal_diffs
@@ -664,11 +665,14 @@ class OcrRemediationStage:
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.planner = OcrRemediationPlanner()
+        self.relocator = EvidenceRelocator()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
         summary = self.planner.plan(ctx.task.ocr_quality_summary, ctx.diffs)
         ctx.task.ocr_remediation_summary = summary
+        self._execute_relocation_actions(ctx, summary.actions)
+        self._refresh_summary_counts(summary)
         self._apply_planning_flags(ctx.diffs, summary.actions)
         _write_debug_artifact(
             ctx.task,
@@ -677,15 +681,116 @@ class OcrRemediationStage:
         )
         _emit_progress(ctx, 85, self.name, "ocr_remediation_planned")
 
+    def _execute_relocation_actions(
+        self,
+        ctx: PipelineContext,
+        actions: list[OcrRemediationAction],
+    ) -> None:
+        diffs_by_id = {diff.diff_id: diff for diff in ctx.diffs}
+        for action in actions:
+            if action.action_type != "RELOCATE_EVIDENCE" or action.status != "PLANNED":
+                continue
+            if action.side not in {"original", "compare"}:
+                self._mark_relocation_skipped(action, "ACTION_NOT_ELIGIBLE")
+                continue
+            if not action.diff_id or action.diff_id not in diffs_by_id:
+                self._mark_relocation_skipped(action, "DIFF_NOT_FOUND")
+                continue
+
+            diff = diffs_by_id[action.diff_id]
+            result = self.relocator.relocate(
+                diff,
+                side=action.side,
+                page_no=action.page_no,
+                original_pdf=ctx.original_pdf,
+                compare_pdf=ctx.compare_pdf,
+            )
+            self._apply_relocation_result(diff, action, result)
+
+    @staticmethod
+    def _mark_relocation_skipped(action: OcrRemediationAction, reason: str) -> None:
+        action.status = "SKIPPED"
+        action.changed_evidence = False
+        action.changed_diff_text = False
+        action.notes.append(reason)
+
+    @staticmethod
+    def _apply_relocation_result(
+        diff: DiffItem,
+        action: OcrRemediationAction,
+        result: EvidenceRelocationResult,
+    ) -> None:
+        action.status = result.status
+        action.changed_evidence = result.changed_evidence
+        action.changed_diff_text = False
+        action.before_quality = dict(result.before_quality)
+        action.after_quality = dict(result.after_quality)
+        action.notes.append(result.reason)
+
+        if result.status == "SUCCEEDED":
+            if action.side == "original":
+                diff.original_evidence = result.evidence
+            elif action.side == "compare":
+                diff.compare_evidence = result.evidence
+            OcrRemediationStage._append_action_flag(
+                action,
+                "OCR_REMEDIATION_EVIDENCE_RELOCATED",
+            )
+            return
+
+        if result.status == "FAILED":
+            action.changed_evidence = False
+            OcrRemediationStage._append_action_flag(action, "OCR_REMEDIATION_UNRESOLVED")
+            diff.quality_status = "NEEDS_REVIEW"
+
+    @staticmethod
+    def _append_action_flag(action: OcrRemediationAction, flag: str) -> None:
+        if flag not in action.review_flags_added:
+            action.review_flags_added.append(flag)
+
+    @staticmethod
+    def _refresh_summary_counts(summary) -> None:
+        actions = summary.actions
+        successful_diff_ids = {
+            action.diff_id
+            for action in actions
+            if action.status == "SUCCEEDED" and action.diff_id
+        }
+        manual_count = sum(1 for action in actions if action.status == "MANUAL_REVIEW_REQUIRED")
+        unresolved_count = sum(
+            1
+            for action in actions
+            if action.status in {"PLANNED", "FAILED", "MANUAL_REVIEW_REQUIRED"}
+        )
+
+        summary.attempted_action_count = len(actions)
+        summary.successful_action_count = sum(1 for action in actions if action.status == "SUCCEEDED")
+        summary.unresolved_action_count = unresolved_count
+        summary.risk_reduced_diff_count = len(successful_diff_ids)
+        summary.manual_review_required_count = manual_count
+        summary.requires_manual_review = bool(manual_count)
+
+        if not actions:
+            summary.status = "OK"
+        elif summary.successful_action_count > 0 and unresolved_count == 0:
+            summary.status = "OK"
+        elif manual_count:
+            summary.status = "MANUAL_REVIEW_REQUIRED"
+        else:
+            summary.status = "ACTIONS_PLANNED"
+
     @staticmethod
     def _apply_planning_flags(diffs: list[DiffItem], actions: list[OcrRemediationAction]) -> None:
         flags_by_diff: dict[str, set[str]] = {}
+        review_required_diff_ids: set[str] = set()
         for action in actions:
             if not action.diff_id:
                 continue
             flags_by_diff.setdefault(action.diff_id, set()).update(action.review_flags_added)
             if action.status == "MANUAL_REVIEW_REQUIRED":
                 flags_by_diff[action.diff_id].add("OCR_REMEDIATION_MANUAL_REVIEW")
+            if action.status in {"PLANNED", "FAILED", "MANUAL_REVIEW_REQUIRED"}:
+                review_required_diff_ids.add(action.diff_id)
 
         for diff in diffs:
             flags = flags_by_diff.get(diff.diff_id)
@@ -694,7 +799,8 @@ class OcrRemediationStage:
             for flag in sorted(flags):
                 if flag not in diff.review_flags:
                     diff.review_flags.append(flag)
-            diff.quality_status = "NEEDS_REVIEW"
+            if diff.diff_id in review_required_diff_ids:
+                diff.quality_status = "NEEDS_REVIEW"
 
 
 class DiffQualityStage:
