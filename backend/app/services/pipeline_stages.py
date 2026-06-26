@@ -699,8 +699,8 @@ class OcrRemediationStage:
 
 class DiffQualityStage:
     name = "差异质量评估中"
-    start_progress = 84
-    progress = 85
+    start_progress = 85
+    progress = 86
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.processor = DiffQualityProcessor()
@@ -709,7 +709,9 @@ class DiffQualityStage:
     def execute(self, ctx: PipelineContext) -> None:
         result = self.processor.process(ctx.require_diffs())
         ctx.diffs = result.diffs
-        self._remap_ocr_quality_summary(ctx, result)
+        merged_to_winner = self._merged_to_winner(result)
+        self._remap_ocr_quality_summary(ctx, result, merged_to_winner)
+        self._remap_ocr_remediation_summary(ctx, merged_to_winner)
         _write_debug_artifact(
             ctx.task,
             "diff_quality",
@@ -718,20 +720,27 @@ class DiffQualityStage:
                 result.to_debug_payload(),
             ),
         )
-        _emit_progress(ctx, 85, self.name, "diff_quality_done")
+        _emit_progress(ctx, 86, self.name, "diff_quality_done")
 
     @staticmethod
-    def _remap_ocr_quality_summary(ctx: PipelineContext, result: DiffQualityResult) -> None:
+    def _merged_to_winner(result: DiffQualityResult) -> dict[str, str]:
+        return {
+            str(decision.detail["merged_diff_id"]): decision.diff_id
+            for decision in result.decisions
+            if decision.action == "cross_source_merged" and decision.detail.get("merged_diff_id")
+        }
+
+    @staticmethod
+    def _remap_ocr_quality_summary(
+        ctx: PipelineContext,
+        result: DiffQualityResult,
+        merged_to_winner: dict[str, str],
+    ) -> None:
         summary = ctx.task.ocr_quality_summary
         if summary is None:
             return
 
         final_ids = {diff.diff_id for diff in result.diffs}
-        merged_to_winner = {
-            str(decision.detail["merged_diff_id"]): decision.diff_id
-            for decision in result.decisions
-            if decision.action == "cross_source_merged" and decision.detail.get("merged_diff_id")
-        }
         affected_ids: set[str] = set()
         for profile in summary.profiles:
             remapped_ids = []
@@ -745,11 +754,52 @@ class DiffQualityStage:
         summary.affected_diff_count = len(affected_ids)
         summary.requires_review = summary.requires_review or bool(affected_ids)
 
+    @staticmethod
+    def _remap_ocr_remediation_summary(ctx: PipelineContext, merged_to_winner: dict[str, str]) -> None:
+        summary = ctx.task.ocr_remediation_summary
+        if summary is None or not merged_to_winner:
+            return
+
+        for action in summary.actions:
+            if not action.diff_id:
+                continue
+            original_diff_id = action.diff_id
+            remapped_diff_id = merged_to_winner.get(original_diff_id)
+            if not remapped_diff_id:
+                continue
+            action.diff_id = remapped_diff_id
+            action.action_id = DiffQualityStage._remapped_ocr_action_id(
+                action,
+                original_diff_id,
+                remapped_diff_id,
+            )
+
+    @staticmethod
+    def _remapped_ocr_action_id(
+        action: OcrRemediationAction,
+        original_diff_id: str,
+        remapped_diff_id: str,
+    ) -> str:
+        parts = action.action_id.split(":")
+        if len(parts) >= 4 and parts[2] == original_diff_id:
+            parts[2] = remapped_diff_id
+            return ":".join(parts)
+        if original_diff_id in action.action_id:
+            return action.action_id.replace(original_diff_id, remapped_diff_id, 1)
+        return ":".join(
+            [
+                action.side or "unknown",
+                str(action.page_no) if action.page_no is not None else "unknown",
+                remapped_diff_id,
+                action.action_type,
+            ]
+        )
+
 
 class VisualizationStage:
     name = "高亮信息准备中"
-    start_progress = 85
-    progress = 86
+    start_progress = 86
+    progress = 87
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.artifact_store = artifact_store

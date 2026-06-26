@@ -18,6 +18,7 @@ from app.models import (
     Document,
     EvidenceBox,
     LayoutQualityReport,
+    OcrRemediationAction,
     Page,
     PageLayoutQualityReport,
     PageOcrQualityProfile,
@@ -527,6 +528,14 @@ class TestComparePipeline:
             "OcrRemediationStage",
             "DiffQualityStage",
         ]
+        progress_values = {
+            type(stage).__name__: (stage.start_progress, stage.progress)
+            for stage in ComparePipeline().stages
+        }
+        assert progress_values["OcrQualityStage"] == (83, 84)
+        assert progress_values["OcrRemediationStage"] == (84, 85)
+        assert progress_values["DiffQualityStage"] == (85, 86)
+        assert progress_values["VisualizationStage"] == (86, 87)
 
     def test_compare_service_pipeline_includes_ocr_remediation_before_diff_quality(self) -> None:
         stage_names = [type(stage).__name__ for stage in CompareService()._build_pipeline().stages]
@@ -844,6 +853,7 @@ def test_ocr_quality_stage_writes_artifact_and_flags_diff(tmp_path: Path) -> Non
 
 
 def test_ocr_remediation_stage_plans_actions_and_marks_diffs(tmp_path: Path) -> None:
+    artifact_store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
     task = CompareTask(task_id="task-remediation")
     task.ocr_quality_summary = TaskOcrQualitySummary(
         status="LAYOUT_MISMATCH",
@@ -870,12 +880,73 @@ def test_ocr_remediation_stage_plans_actions_and_marks_diffs(tmp_path: Path) -> 
     ctx = PipelineContext(task=task, original_pdf=tmp_path / "o.pdf", compare_pdf=tmp_path / "c.pdf")
     ctx.diffs = [diff]
 
-    OcrRemediationStage().execute(ctx)
+    OcrRemediationStage(artifact_store=artifact_store).execute(ctx)
 
     assert task.ocr_remediation_summary is not None
     assert task.ocr_remediation_summary.attempted_action_count == 1
-    assert task.debug_artifact_paths["ocr_remediation"].endswith("ocr_remediation.json")
+    artifact_path = Path(task.debug_artifact_paths["ocr_remediation"])
+    assert artifact_path == tmp_path / "storage" / "tasks" / "task-remediation" / "debug" / "ocr_remediation.json"
+    assert artifact_path.exists()
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert payload["attempted_action_count"] == 1
+    assert payload["actions"][0]["diff_id"] == "diff-1"
     assert "OCR_REMEDIATION_PLANNED" in ctx.diffs[0].review_flags
+
+
+def test_ocr_remediation_actions_survive_diff_quality_cross_source_merge(tmp_path: Path) -> None:
+    artifact_store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    task = CompareTask(
+        task_id="TOCRREMEDIATIONMERGE",
+        ocr_remediation_summary=TaskOcrRemediationSummary(
+            status="ACTIONS_PLANNED",
+            attempted_action_count=1,
+            unresolved_action_count=1,
+            actions=[
+                OcrRemediationAction(
+                    action_id="original:1:D002:RELOCATE_EVIDENCE",
+                    action_type="RELOCATE_EVIDENCE",
+                    reason="EVIDENCE_UNRELIABLE",
+                    side="original",
+                    page_no=1,
+                    diff_id="D002",
+                    review_flags_added=["OCR_REMEDIATION_PLANNED"],
+                )
+            ],
+        ),
+    )
+    ctx = PipelineContext(
+        task=task,
+        original_pdf=tmp_path / "original.pdf",
+        compare_pdf=tmp_path / "compare.pdf",
+    )
+    ctx.diffs = [
+        DiffItem(
+            diff_id="D001",
+            diff_type="MODIFY",
+            source_type="metadata",
+            title="付款",
+            original_text="付款30日",
+            compare_text="付款45日",
+        ),
+        DiffItem(
+            diff_id="D002",
+            diff_type="MODIFY",
+            source_type="table",
+            title="付款",
+            original_text="付款30日",
+            compare_text="付款45日",
+            review_flags=["OCR_REMEDIATION_PLANNED"],
+            quality_status="NEEDS_REVIEW",
+        ),
+    ]
+
+    DiffQualityStage(artifact_store=artifact_store).execute(ctx)
+
+    assert [diff.diff_id for diff in ctx.diffs] == ["D001"]
+    assert task.ocr_remediation_summary is not None
+    action = task.ocr_remediation_summary.actions[0]
+    assert action.diff_id == "D001"
+    assert action.action_id == "original:1:D001:RELOCATE_EVIDENCE"
 
 
 def test_ocr_quality_survives_diff_quality_cross_source_merge(tmp_path: Path) -> None:
