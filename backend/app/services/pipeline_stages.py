@@ -847,13 +847,15 @@ def _refresh_stats(task: CompareTask) -> None:
 
 
 def _dedupe_final_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str, str]]:
-    seen_ids: dict[str, str] = {}
-    seen_content: dict[tuple[str, str, str, str, str, str], str] = {}
+    seen_ids: dict[str, DiffItem] = {}
+    seen_content: dict[tuple[str, str, str, str, str, str], DiffItem] = {}
     remap: dict[str, str] = {}
     result: list[DiffItem] = []
     for diff in diffs:
         if diff.diff_id in seen_ids:
-            remap[diff.diff_id] = seen_ids[diff.diff_id]
+            survivor = seen_ids[diff.diff_id]
+            remap[diff.diff_id] = survivor.diff_id
+            _merge_final_dedupe_review_state(survivor, diff)
             continue
         content_key = (
             diff.source_type,
@@ -864,12 +866,22 @@ def _dedupe_final_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str
             diff.compare_text or diff.compare_snippet,
         )
         if content_key in seen_content:
-            remap[diff.diff_id] = seen_content[content_key]
+            survivor = seen_content[content_key]
+            remap[diff.diff_id] = survivor.diff_id
+            _merge_final_dedupe_review_state(survivor, diff)
             continue
-        seen_ids[diff.diff_id] = diff.diff_id
-        seen_content[content_key] = diff.diff_id
+        seen_ids[diff.diff_id] = diff
+        seen_content[content_key] = diff
         result.append(diff)
     return result, remap
+
+
+def _merge_final_dedupe_review_state(survivor: DiffItem, dropped: DiffItem) -> None:
+    for flag in dropped.review_flags:
+        if flag not in survivor.review_flags:
+            survivor.review_flags.append(flag)
+    if dropped.quality_status == "NEEDS_REVIEW":
+        survivor.quality_status = "NEEDS_REVIEW"
 
 
 def _remap_ocr_quality_summary_after_final_dedupe(

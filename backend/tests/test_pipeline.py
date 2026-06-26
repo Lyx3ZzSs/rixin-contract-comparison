@@ -573,6 +573,9 @@ class TestSummaryStage:
         SummaryStage().execute(ctx)
 
         assert [diff.diff_id for diff in ctx.task.diffs] == ["D001"]
+        survivor = ctx.task.diffs[0]
+        assert survivor.review_flags == ["OCR_REMEDIATION_PLANNED"]
+        assert survivor.quality_status == "NEEDS_REVIEW"
         assert ctx.task.ocr_remediation_summary is not None
         action = ctx.task.ocr_remediation_summary.actions[0]
         assert action.diff_id == "D001"
