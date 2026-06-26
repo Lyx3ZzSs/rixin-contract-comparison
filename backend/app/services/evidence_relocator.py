@@ -110,7 +110,7 @@ class EvidenceRelocator:
             evidences: list[EvidenceBox] = []
             for page_index in pages:
                 page = doc[page_index]
-                for rect in self._search_page(page, query):
+                for rect in page.search_for(query):
                     evidences.append(
                         EvidenceBox(
                             page_no=page_index + 1,
@@ -130,16 +130,6 @@ class EvidenceRelocator:
             return evidences
         finally:
             doc.close()
-
-    def _search_page(self, page: fitz.Page, query: str) -> list[fitz.Rect]:
-        rects = page.search_for(query)
-        if rects:
-            return rects
-
-        degraded_query = self._degrade_non_ascii_query(query)
-        if degraded_query == query:
-            return []
-        return page.search_for(degraded_query)
 
     def _pages_to_search(self, doc: fitz.Document, page_no: int | None) -> list[int]:
         if page_no is None:
@@ -167,10 +157,6 @@ class EvidenceRelocator:
     @staticmethod
     def _normalize_query(text: str) -> str:
         return re.sub(r"\s+", " ", text).strip()
-
-    @staticmethod
-    def _degrade_non_ascii_query(text: str) -> str:
-        return "".join("·" if ord(char) > 127 and not char.isspace() else char for char in text)
 
     @staticmethod
     def _quality_snapshot(evidences: list[EvidenceBox]) -> QualitySnapshot:

@@ -9,7 +9,7 @@ from app.services.evidence_relocator import EvidenceRelocator
 def _write_pdf(path: Path, text: str) -> None:
     doc = fitz.open()
     page = doc.new_page()
-    page.insert_text((72, 96), text)
+    page.insert_text((72, 96), text, fontname="china-s")
     doc.save(path)
     doc.close()
 
@@ -145,3 +145,30 @@ def test_relocator_fails_without_side_text_signal(tmp_path: Path):
     assert result.status == "FAILED"
     assert result.reason == "NO_SIDE_TEXT_SIGNAL"
     assert result.changed_evidence is False
+
+
+def test_relocator_rejects_degraded_placeholder_text(tmp_path: Path):
+    original_pdf = tmp_path / "original.pdf"
+    compare_pdf = tmp_path / "compare.pdf"
+    _write_pdf(original_pdf, "····")
+    _write_pdf(compare_pdf, "付款金额为120元")
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        original_snippet="付款金额",
+        original_evidence=[_low_original_evidence()],
+        review_flags=["EVIDENCE_UNRELIABLE"],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = EvidenceRelocator().relocate(
+        diff,
+        side="original",
+        page_no=1,
+        original_pdf=original_pdf,
+        compare_pdf=compare_pdf,
+    )
+
+    assert result.status == "FAILED"
+    assert result.reason == "NO_ACCEPTED_CANDIDATE"
+    assert result.evidence == []
