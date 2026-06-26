@@ -520,9 +520,11 @@ def test_api_exposes_ocr_quality_summary(tmp_path: Path) -> None:
 def test_compare_task_response_includes_ocr_remediation_summary() -> None:
     task = CompareTask(task_id="task-api", status="COMPLETED")
     task.ocr_remediation_summary = TaskOcrRemediationSummary(
-        status="ACTIONS_PLANNED",
+        status="OK",
         attempted_action_count=1,
-        unresolved_action_count=1,
+        successful_action_count=1,
+        unresolved_action_count=0,
+        risk_reduced_diff_count=1,
         actions=[
             OcrRemediationAction(
                 action_id="original:1:diff-1:RELOCATE_EVIDENCE",
@@ -531,15 +533,39 @@ def test_compare_task_response_includes_ocr_remediation_summary() -> None:
                 side="original",
                 page_no=1,
                 diff_id="diff-1",
+                status="SUCCEEDED",
+                before_quality={"max_confidence": 0.46, "methods": ["block_fallback"]},
+                after_quality={"max_confidence": 0.98, "methods": ["text_exact"]},
+                changed_evidence=True,
+                changed_diff_text=False,
+                review_flags_added=["OCR_REMEDIATION_EVIDENCE_RELOCATED"],
             )
         ],
     )
 
     response = compare_task_response(task)
 
-    assert response.ocr_remediation_summary is not None
-    assert response.ocr_remediation_summary.attempted_action_count == 1
-    assert response.ocr_remediation_summary.actions[0].action_type == "RELOCATE_EVIDENCE"
+    summary = response.ocr_remediation_summary
+    assert summary is not None
+    assert summary.status == "OK"
+    assert summary.attempted_action_count == 1
+    assert summary.successful_action_count == 1
+    assert summary.unresolved_action_count == 0
+    assert summary.risk_reduced_diff_count == 1
+
+    action = summary.actions[0]
+    assert action.action_id == "original:1:diff-1:RELOCATE_EVIDENCE"
+    assert action.action_type == "RELOCATE_EVIDENCE"
+    assert action.reason == "EVIDENCE_UNRELIABLE"
+    assert action.side == "original"
+    assert action.page_no == 1
+    assert action.diff_id == "diff-1"
+    assert action.status == "SUCCEEDED"
+    assert action.before_quality == {"max_confidence": 0.46, "methods": ["block_fallback"]}
+    assert action.after_quality == {"max_confidence": 0.98, "methods": ["text_exact"]}
+    assert action.changed_evidence is True
+    assert action.changed_diff_text is False
+    assert action.review_flags_added == ["OCR_REMEDIATION_EVIDENCE_RELOCATED"]
 
 
 def test_quality_summary_includes_ocr_quality_counts(tmp_path: Path) -> None:
@@ -759,7 +785,6 @@ def test_cors_allows_frontend_dev_origin() -> None:
     )
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
-
 
 
 
