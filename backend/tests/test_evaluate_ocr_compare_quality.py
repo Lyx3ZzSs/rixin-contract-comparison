@@ -545,6 +545,109 @@ def test_write_html_report_sanitizes_filename_and_escapes_html(
     assert "<bad>" not in case_html
 
 
+def test_write_html_report_renders_gold_detail_sections(tmp_path: Path) -> None:
+    report = {
+        "case_count": 1,
+        "threshold_failures": [],
+        "aggregate": {
+            "annotation_summary": {
+                "approved_expected_count": 1,
+                "draft_expected_count": 1,
+                "rejected_expected_count": 0,
+            },
+            "route_metrics": {
+                "route_count_by_recommendation": {"MANUAL_REVIEW": 1},
+                "page_count_by_type": {"mixed": 1},
+                "retry_recommended_count": 0,
+                "manual_review_recommended_count": 1,
+            },
+        },
+        "cases": [
+            {
+                "case_id": "gold_case",
+                "status": "COMPLETED",
+                "expected_count": 1,
+                "actual_count": 2,
+                "recall": 0.5,
+                "precision": 0.5,
+                "false_positive_count": 1,
+                "false_negative_count": 1,
+                "low_confidence_count": 1,
+                "ocr_warning_count": 1,
+                "issues": ["missed expected diff 1: Payment"],
+                "annotation_summary": {
+                    "approved_expected_count": 1,
+                    "draft_expected_count": 1,
+                    "rejected_expected_count": 0,
+                },
+                "route_metrics": {
+                    "retry_recommended_count": 0,
+                    "manual_review_recommended_count": 1,
+                },
+                "model_routing": {
+                    "routes": [
+                        {
+                            "side": "compare",
+                            "page_no": 1,
+                            "page_type": "mixed",
+                            "recommended_route": "MANUAL_REVIEW",
+                        }
+                    ]
+                },
+                "matches": [
+                    {
+                        "expected_index": 0,
+                        "actual_index": 0,
+                        "actual_diff_id": "D001",
+                        "score": 0.95,
+                        "evidence_hit": True,
+                    }
+                ],
+                "missed_expected_diffs": [
+                    {
+                        "expected_index": 1,
+                        "label": "Payment<script>",
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                    }
+                ],
+                "unexpected_actual_diffs": [
+                    {
+                        "actual_index": 1,
+                        "diff_id": "D999",
+                        "title": "Unexpected <b>cover</b>",
+                        "source_type": "metadata",
+                        "quality_status": "NEEDS_REVIEW",
+                        "review_flags": ["POSSIBLE_COVER_OCR_FRAGMENT"],
+                    }
+                ],
+                "evidence_drift_diffs": [
+                    {
+                        "expected_index": 0,
+                        "actual_diff_id": "D001",
+                        "label": "Payment",
+                    }
+                ],
+            }
+        ],
+    }
+
+    write_html_report(tmp_path, report)
+
+    index_html = (tmp_path / "index.html").read_text(encoding="utf-8")
+    case_html = (tmp_path / "gold_case.html").read_text(encoding="utf-8")
+    assert "Annotation summary" in index_html
+    assert "Expected" in index_html
+    assert "Actual" in index_html
+    assert "Evidence drift" in index_html
+    assert "Matched diffs" in case_html
+    assert "Missed expected diffs" in case_html
+    assert "Unexpected actual diffs" in case_html
+    assert "Evidence drift" in case_html
+    assert "Payment&lt;script&gt;" in case_html
+    assert "Unexpected &lt;b&gt;cover&lt;/b&gt;" in case_html
+
+
 def test_evaluate_case_counts_only_approved_gold_diffs(tmp_path: Path) -> None:
     case_dir = tmp_path / "annotation_case"
     case_dir.mkdir()

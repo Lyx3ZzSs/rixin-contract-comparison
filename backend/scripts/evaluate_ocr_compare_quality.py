@@ -715,10 +715,13 @@ def write_html_report(path: Path, report: dict[str, Any]) -> None:
             "<tr>"
             f"<td><a href='{html.escape(case_filename)}'>{html.escape(str(case['case_id']))}</a></td>"
             f"<td>{html.escape(str(case['status']))}</td>"
+            f"<td>{case.get('expected_count', 0)}</td>"
+            f"<td>{case.get('actual_count', 0)}</td>"
             f"<td>{case['recall']:.2%}</td>"
             f"<td>{case['precision']:.2%}</td>"
             f"<td>{case['false_positive_count']}</td>"
             f"<td>{case['false_negative_count']}</td>"
+            f"<td>{len(case.get('evidence_drift_diffs', []))}</td>"
             f"<td>{case['low_confidence_count']}</td>"
             f"<td>{case['ocr_warning_count']}</td>"
             f"<td>{case.get('route_metrics', {}).get('retry_recommended_count', 0)}</td>"
@@ -735,6 +738,13 @@ def write_html_report(path: Path, report: dict[str, Any]) -> None:
             indent=2,
         )
     )
+    annotation_summary = html.escape(
+        json.dumps(
+            report.get("aggregate", {}).get("annotation_summary", {}),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     index = (
         "<!doctype html><meta charset='utf-8'>"
         "<title>OCR comparison quality report</title>"
@@ -746,8 +756,11 @@ def write_html_report(path: Path, report: dict[str, Any]) -> None:
         f"<p>Case count: {report['case_count']}</p>"
         f"<p class='failures'>Threshold failures: {failures}</p>"
         f"<h2>Route recommendations</h2><pre>{route_metrics}</pre>"
-        "<table><tr><th>Case</th><th>Status</th><th>Recall</th><th>Precision</th>"
-        "<th>False positives</th><th>Missed diffs</th><th>Low confidence</th>"
+        f"<h2>Annotation summary</h2><pre>{annotation_summary}</pre>"
+        "<table><tr><th>Case</th><th>Status</th><th>Expected</th><th>Actual</th>"
+        "<th>Recall</th><th>Precision</th>"
+        "<th>False positives</th><th>Missed diffs</th><th>Evidence drift</th>"
+        "<th>Low confidence</th>"
         "<th>OCR warnings</th><th>Retry routes</th><th>Manual routes</th></tr>"
         + "".join(rows)
         + "</table>"
@@ -775,11 +788,63 @@ def _case_html(case: dict[str, Any]) -> str:
         "</li>"
         for route in routes
     ) or "<li>None</li>"
+    matches_table = _html_table(
+        ["Expected index", "Actual index", "Actual diff", "Score", "Evidence hit"],
+        [
+            [
+                item.get("expected_index", ""),
+                item.get("actual_index", ""),
+                item.get("actual_diff_id", ""),
+                item.get("score", ""),
+                item.get("evidence_hit", ""),
+            ]
+            for item in case.get("matches", [])
+        ],
+    )
+    missed_table = _html_table(
+        ["Expected index", "Label", "Diff type", "Source type"],
+        [
+            [
+                item.get("expected_index", ""),
+                item.get("label", ""),
+                item.get("diff_type", ""),
+                item.get("source_type", ""),
+            ]
+            for item in case.get("missed_expected_diffs", [])
+        ],
+    )
+    unexpected_table = _html_table(
+        ["Actual index", "Diff ID", "Title", "Source type", "Quality", "Flags"],
+        [
+            [
+                item.get("actual_index", ""),
+                item.get("diff_id", ""),
+                item.get("title", ""),
+                item.get("source_type", ""),
+                item.get("quality_status", ""),
+                item.get("review_flags", []),
+            ]
+            for item in case.get("unexpected_actual_diffs", [])
+        ],
+    )
+    drift_table = _html_table(
+        ["Expected index", "Actual diff", "Label"],
+        [
+            [
+                item.get("expected_index", ""),
+                item.get("actual_diff_id", ""),
+                item.get("label", ""),
+            ]
+            for item in case.get("evidence_drift_diffs", [])
+        ],
+    )
     return (
         "<!doctype html><meta charset='utf-8'>"
         f"<title>{html.escape(str(case['case_id']))}</title>"
         "<style>body{font-family:Arial,sans-serif;margin:24px;color:#1f2933}"
         "dl{display:grid;grid-template-columns:220px 1fr;gap:6px}"
+        "table{border-collapse:collapse;width:100%;margin-top:16px}"
+        "td,th{border:1px solid #cbd5e1;padding:6px;text-align:left}"
         "dt{font-weight:700}</style>"
         f"<h1>{html.escape(str(case['case_id']))}</h1>"
         "<dl>"
@@ -793,8 +858,31 @@ def _case_html(case: dict[str, Any]) -> str:
         f"<dt>Review signal</dt><dd>{'OCR_LOW_CONFIDENCE' if case['low_confidence_count'] else 'None'}</dd>"
         "</dl>"
         f"<h2>Model routing</h2><ul>{route_items}</ul>"
+        f"<h2>Matched diffs</h2>{matches_table}"
+        f"<h2>Missed expected diffs</h2>{missed_table}"
+        f"<h2>Unexpected actual diffs</h2>{unexpected_table}"
+        f"<h2>Evidence drift</h2>{drift_table}"
         f"<h2>Issues</h2><ul>{issues}</ul>"
     )
+
+
+def _html_table(headers: list[str], rows: list[list[Any]]) -> str:
+    head = "".join(f"<th>{html.escape(header)}</th>" for header in headers)
+    body = "".join(
+        "<tr>"
+        + "".join(f"<td>{html.escape(_format_cell(cell))}</td>" for cell in row)
+        + "</tr>"
+        for row in rows
+    )
+    return f"<table><tr>{head}</tr>{body}</table>"
+
+
+def _format_cell(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
 
 
 def main() -> int:
