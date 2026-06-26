@@ -32,6 +32,7 @@ from app.services.extractors.base import (
 )
 from app.services.header_footer_compare import HeaderFooterComparator
 from app.services.matcher import ClauseMatcher
+from app.services.model_routing import ModelRoutingAnalyzer
 from app.services.ocr_quality import OcrQualityProfiler
 from app.services.ocr_remediation import OcrRemediationPlanner
 from app.services.evidence_relocator import EvidenceRelocationResult, EvidenceRelocator
@@ -799,6 +800,29 @@ class OcrRemediationStage:
                     diff.review_flags.append(flag)
             if diff.diff_id in review_required_diff_ids:
                 diff.quality_status = "NEEDS_REVIEW"
+
+
+class ModelRoutingStage:
+    name = "OCR模型路由评估中"
+    start_progress = 85
+    progress = 85
+
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.analyzer = ModelRoutingAnalyzer()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+
+    def execute(self, ctx: PipelineContext) -> None:
+        summary = self.analyzer.analyze(
+            ctx.task.ocr_quality_summary,
+            ctx.diffs,
+            ctx.task.parse_warning_details,
+        )
+        _write_debug_artifact(
+            ctx.task,
+            "ocr_model_routing",
+            lambda: self.debug_writer.write_model_routing(ctx.task.task_id, summary),
+        )
+        _emit_progress(ctx, 85, self.name, "model_routing_evaluated")
 
 
 class DiffQualityStage:

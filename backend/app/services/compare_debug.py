@@ -94,6 +94,9 @@ class CompareDebugWriter:
     def write_ocr_remediation(self, task_id: str, summary) -> str:
         return str(self._write_json(task_id, "ocr_remediation.json", to_jsonable(summary)))
 
+    def write_model_routing(self, task_id: str, summary) -> str:
+        return str(self._write_json(task_id, "ocr_model_routing.json", to_jsonable(summary)))
+
     def write_table_repair(self, task_id: str, payload: dict[str, Any]) -> str:
         return str(self._write_json(task_id, "table_repair.json", payload))
 

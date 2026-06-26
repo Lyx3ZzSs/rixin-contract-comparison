@@ -34,6 +34,7 @@ from app.services.pipeline_stages import (
     ClauseDiffStage,
     DiffQualityStage,
     MatchStage,
+    ModelRoutingStage,
     OcrQualityStage,
     OcrRemediationStage,
     PreClauseDiffStage,
@@ -602,6 +603,7 @@ class TestComparePipeline:
             "EvidenceStage",
             "OcrQualityStage",
             "OcrRemediationStage",
+            "ModelRoutingStage",
             "DiffQualityStage",
         ]
         progress_values = {
@@ -610,15 +612,17 @@ class TestComparePipeline:
         }
         assert progress_values["OcrQualityStage"] == (83, 84)
         assert progress_values["OcrRemediationStage"] == (84, 85)
+        assert progress_values["ModelRoutingStage"] == (85, 85)
         assert progress_values["DiffQualityStage"] == (85, 86)
         assert progress_values["VisualizationStage"] == (86, 87)
 
-    def test_compare_service_pipeline_includes_ocr_remediation_before_diff_quality(self) -> None:
+    def test_compare_service_pipeline_includes_model_routing_before_diff_quality(self) -> None:
         stage_names = [type(stage).__name__ for stage in CompareService()._build_pipeline().stages]
 
         assert stage_names[stage_names.index("OcrQualityStage") : stage_names.index("DiffQualityStage") + 1] == [
             "OcrQualityStage",
             "OcrRemediationStage",
+            "ModelRoutingStage",
             "DiffQualityStage",
         ]
 
@@ -967,6 +971,47 @@ def test_ocr_remediation_stage_plans_actions_and_marks_diffs(tmp_path: Path) -> 
     assert payload["attempted_action_count"] == 1
     assert payload["actions"][0]["diff_id"] == "diff-1"
     assert "OCR_REMEDIATION_PLANNED" in ctx.diffs[0].review_flags
+
+
+def test_model_routing_stage_writes_debug_artifact_without_mutating_diffs(tmp_path: Path) -> None:
+    artifact_store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    task = CompareTask(
+        task_id="task-model-routing",
+        ocr_quality_summary=TaskOcrQualitySummary(
+            status="LOW_TEXT_CONFIDENCE",
+            requires_review=True,
+            profiles=[
+                PageOcrQualityProfile(
+                    side="original",
+                    page_no=1,
+                    status="LOW_TEXT_CONFIDENCE",
+                    reasons=["LOW_AVG_CONFIDENCE"],
+                    affected_diff_ids=["D001"],
+                )
+            ],
+        ),
+    )
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="付款金额为100元",
+        compare_text="付款金额为120元",
+        review_flags=["OCR_LOW_CONFIDENCE"],
+        quality_status="NEEDS_REVIEW",
+    )
+    ctx = PipelineContext(task=task, original_pdf=tmp_path / "o.pdf", compare_pdf=tmp_path / "c.pdf")
+    ctx.diffs = [diff]
+
+    ModelRoutingStage(artifact_store=artifact_store).execute(ctx)
+
+    assert ctx.diffs == [diff]
+    artifact_path = Path(task.debug_artifact_paths["ocr_model_routing"])
+    assert artifact_path == tmp_path / "storage" / "tasks" / "task-model-routing" / "debug" / "ocr_model_routing.json"
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "RETRY_RECOMMENDED"
+    assert payload["routes"][0]["recommended_route"] == "HIGH_DPI_PAGE_RETRY"
+    assert payload["routes"][0]["should_execute"] is False
 
 
 def test_ocr_remediation_stage_executes_evidence_relocation(tmp_path: Path) -> None:
