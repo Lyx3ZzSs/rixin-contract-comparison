@@ -93,4 +93,4 @@ JSON reports are best for automation, threshold checks, and comparing exact metr
 
 ## Sensitive Data
 
-Do not commit sensitive real contracts, local PDFs, customer data, or unapproved extracted payloads. Keep sensitive `original.pdf`, `compare.pdf`, and exported real task cases local unless they have been explicitly approved for version control.
+Do not commit sensitive real contracts, local PDFs, customer data, extracted `actual.json`, or other unapproved extracted payloads. Snippets in `expected.json`, including `title_contains`, `original_contains`, and `compare_contains`, may contain real contract content and must not be committed unless explicitly approved. Keep sensitive `original.pdf`, `compare.pdf`, and exported real task cases local unless they have been approved for version control.
