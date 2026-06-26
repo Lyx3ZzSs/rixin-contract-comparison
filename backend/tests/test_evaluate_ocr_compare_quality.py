@@ -640,10 +640,19 @@ def test_write_html_report_renders_gold_detail_sections(tmp_path: Path) -> None:
     assert "Expected" in index_html
     assert "Actual" in index_html
     assert "Evidence drift" in index_html
+    assert (
+        "<td><a href='gold_case.html'>gold_case</a></td><td>COMPLETED</td>"
+        "<td>1</td><td>2</td><td>50.00%</td><td>50.00%</td>"
+        "<td>1</td><td>1</td><td>1</td>"
+    ) in index_html
     assert "Matched diffs" in case_html
     assert "Missed expected diffs" in case_html
     assert "Unexpected actual diffs" in case_html
     assert "Evidence drift" in case_html
+    assert (
+        "<td>0</td><td>0</td><td>D001</td><td>0.95</td><td>True</td>"
+    ) in case_html
+    assert "<td>0</td><td>D001</td><td>Payment</td>" in case_html
     assert "Payment&lt;script&gt;" in case_html
     assert "Unexpected &lt;b&gt;cover&lt;/b&gt;" in case_html
 
