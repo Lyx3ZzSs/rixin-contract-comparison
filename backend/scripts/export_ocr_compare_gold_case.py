@@ -17,7 +17,7 @@ def export_gold_case(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     expected_path = output_dir / "expected.json"
-    if expected_path.exists() and _has_reviewed_expected(expected_path) and not force:
+    if expected_path.exists() and _has_protected_expected(expected_path) and not force:
         raise FileExistsError(
             f"{expected_path} contains reviewed expected.json entries; "
             "pass --force to overwrite"
@@ -57,10 +57,10 @@ def _validate_task(task: dict[str, Any]) -> None:
         raise ValueError("task.json is missing diffs list")
 
 
-def _has_reviewed_expected(path: Path) -> bool:
+def _has_protected_expected(path: Path) -> bool:
     payload = _read_json(path)
     return any(
-        item.get("review_status") == "APPROVED"
+        item.get("review_status") != "DRAFT"
         for item in payload.get("expected_diffs", [])
     )
 
@@ -165,7 +165,9 @@ def _readme(case_id: str, task: dict[str, Any]) -> str:
             "2. Remove generated entries that are not true contract differences.",
             "3. Add missing expected differences found by human review.",
             "4. Change validated entries from `DRAFT` to `APPROVED`.",
-            "5. Keep sensitive PDFs out of Git unless explicitly approved.",
+            "5. Treat `actual.json` and `expected.json` as sensitive because they may "
+            "contain sensitive contract or business data.",
+            "6. Keep sensitive PDFs out of Git unless explicitly approved.",
             "",
         ]
     )

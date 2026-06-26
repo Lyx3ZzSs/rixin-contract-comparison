@@ -88,6 +88,9 @@ def test_export_gold_case_creates_review_draft_files(tmp_path: Path) -> None:
     assert expected["expected_diffs"][1]["severity"] == "critical"
     assert expected["quality_expectations"]["max_task_failures"] == 0
     assert "Generated draft, not reviewed gold" in readme
+    assert "actual.json" in readme
+    assert "expected.json" in readme
+    assert "sensitive contract or business data" in readme
     assert "task-gold-001" in readme
 
 
@@ -103,6 +106,48 @@ def test_export_gold_case_refuses_to_overwrite_reviewed_expected(
             {
                 "case_id": "case_gold_001",
                 "expected_diffs": [{"review_status": "APPROVED"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileExistsError, match="reviewed expected.json"):
+        export_gold_case(task_dir, output_dir)
+
+
+def test_export_gold_case_refuses_to_overwrite_rejected_expected(
+    tmp_path: Path,
+) -> None:
+    task_dir = tmp_path / "task"
+    output_dir = tmp_path / "case_gold_001"
+    _write_task(task_dir)
+    output_dir.mkdir()
+    (output_dir / "expected.json").write_text(
+        json.dumps(
+            {
+                "case_id": "case_gold_001",
+                "expected_diffs": [{"review_status": "REJECTED"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileExistsError, match="reviewed expected.json"):
+        export_gold_case(task_dir, output_dir)
+
+
+def test_export_gold_case_refuses_to_overwrite_legacy_reviewed_expected(
+    tmp_path: Path,
+) -> None:
+    task_dir = tmp_path / "task"
+    output_dir = tmp_path / "case_gold_001"
+    _write_task(task_dir)
+    output_dir.mkdir()
+    (output_dir / "expected.json").write_text(
+        json.dumps(
+            {
+                "case_id": "case_gold_001",
+                "expected_diffs": [{"title_contains": "Legacy reviewed diff"}],
             }
         ),
         encoding="utf-8",
