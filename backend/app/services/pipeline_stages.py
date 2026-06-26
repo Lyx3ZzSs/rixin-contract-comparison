@@ -819,7 +819,9 @@ class SummaryStage:
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
-        task.diffs = _dedupe_final_diffs(ctx.require_diffs())
+        task.diffs, dedupe_remap = _dedupe_final_diffs(ctx.require_diffs())
+        _remap_ocr_quality_summary_after_final_dedupe(task, dedupe_remap)
+        DiffQualityStage._remap_ocr_remediation_summary(ctx, dedupe_remap)
         _write_debug_artifact(
             task,
             "diff_decisions",
@@ -844,12 +846,14 @@ def _refresh_stats(task: CompareTask) -> None:
     task.diff_count = len(task.diffs)
 
 
-def _dedupe_final_diffs(diffs: list[DiffItem]) -> list[DiffItem]:
-    seen_ids: set[str] = set()
-    seen_content: set[tuple[str, str, str, str, str, str]] = set()
+def _dedupe_final_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str, str]]:
+    seen_ids: dict[str, str] = {}
+    seen_content: dict[tuple[str, str, str, str, str, str], str] = {}
+    remap: dict[str, str] = {}
     result: list[DiffItem] = []
     for diff in diffs:
         if diff.diff_id in seen_ids:
+            remap[diff.diff_id] = seen_ids[diff.diff_id]
             continue
         content_key = (
             diff.source_type,
@@ -860,8 +864,32 @@ def _dedupe_final_diffs(diffs: list[DiffItem]) -> list[DiffItem]:
             diff.compare_text or diff.compare_snippet,
         )
         if content_key in seen_content:
+            remap[diff.diff_id] = seen_content[content_key]
             continue
-        seen_ids.add(diff.diff_id)
-        seen_content.add(content_key)
+        seen_ids[diff.diff_id] = diff.diff_id
+        seen_content[content_key] = diff.diff_id
         result.append(diff)
-    return result
+    return result, remap
+
+
+def _remap_ocr_quality_summary_after_final_dedupe(
+    task: CompareTask,
+    dedupe_remap: dict[str, str],
+) -> None:
+    summary = task.ocr_quality_summary
+    if summary is None or not dedupe_remap:
+        return
+
+    final_ids = {diff.diff_id for diff in task.diffs}
+    affected_ids: set[str] = set()
+    for profile in summary.profiles:
+        remapped_ids = []
+        for diff_id in profile.affected_diff_ids:
+            mapped_id = dedupe_remap.get(diff_id, diff_id)
+            if mapped_id in final_ids:
+                remapped_ids.append(mapped_id)
+        profile.affected_diff_ids = sorted(set(remapped_ids))
+        affected_ids.update(profile.affected_diff_ids)
+
+    summary.affected_diff_count = len(affected_ids)
+    summary.requires_review = summary.requires_review or bool(affected_ids)

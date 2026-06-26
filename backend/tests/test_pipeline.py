@@ -517,6 +517,70 @@ class TestSummaryStage:
         assert [diff.diff_id for diff in ctx.task.diffs] == ["D001"]
         assert ctx.task.diff_count == 1
 
+    def test_final_dedupe_remaps_ocr_summaries(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.task.ocr_quality_summary = TaskOcrQualitySummary(
+            status="LOW_TEXT_CONFIDENCE",
+            requires_review=True,
+            risk_page_count=1,
+            affected_diff_count=1,
+            profiles=[
+                PageOcrQualityProfile(
+                    side="original",
+                    page_no=1,
+                    status="LOW_TEXT_CONFIDENCE",
+                    affected_diff_ids=["D002"],
+                )
+            ],
+        )
+        ctx.task.ocr_remediation_summary = TaskOcrRemediationSummary(
+            status="ACTIONS_PLANNED",
+            attempted_action_count=1,
+            unresolved_action_count=1,
+            actions=[
+                OcrRemediationAction(
+                    action_id="original:1:D002:RELOCATE_EVIDENCE",
+                    action_type="RELOCATE_EVIDENCE",
+                    reason="LOW_TEXT_CONFIDENCE",
+                    side="original",
+                    page_no=1,
+                    diff_id="D002",
+                    review_flags_added=["OCR_REMEDIATION_PLANNED"],
+                )
+            ],
+        )
+        ctx.diffs = [
+            DiffItem(
+                diff_id="D001",
+                diff_type="MODIFY",
+                source_type="table",
+                title="付款",
+                original_text="付款30日",
+                compare_text="付款45日",
+            ),
+            DiffItem(
+                diff_id="D002",
+                diff_type="MODIFY",
+                source_type="table",
+                title="付款",
+                original_text="付款30日",
+                compare_text="付款45日",
+                review_flags=["OCR_REMEDIATION_PLANNED"],
+                quality_status="NEEDS_REVIEW",
+            ),
+        ]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D001"]
+        assert ctx.task.ocr_remediation_summary is not None
+        action = ctx.task.ocr_remediation_summary.actions[0]
+        assert action.diff_id == "D001"
+        assert "D001" in action.action_id
+        assert "D002" not in action.action_id
+        assert ctx.task.ocr_quality_summary is not None
+        assert ctx.task.ocr_quality_summary.profiles[0].affected_diff_ids == ["D001"]
+
 
 class TestComparePipeline:
     def test_default_stages_include_ocr_quality_before_diff_quality(self) -> None:
