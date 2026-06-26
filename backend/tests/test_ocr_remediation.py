@@ -37,3 +37,85 @@ def test_compare_task_accepts_missing_ocr_remediation_summary():
     task = CompareTask(task_id="task-1")
 
     assert task.ocr_remediation_summary is None
+
+
+from app.models import DiffItem, PageOcrQualityProfile, TaskOcrQualitySummary
+from app.services.ocr_remediation import OcrRemediationPlanner
+
+
+def test_planner_creates_relocate_action_for_unreliable_evidence():
+    diff = DiffItem(
+        diff_id="diff-1",
+        diff_type="MODIFY",
+        source_type="clause",
+        review_flags=["EVIDENCE_UNRELIABLE"],
+        quality_status="NEEDS_REVIEW",
+    )
+    summary = TaskOcrQualitySummary(
+        status="LAYOUT_MISMATCH",
+        requires_review=True,
+        risk_page_count=1,
+        affected_diff_count=1,
+        profiles=[
+            PageOcrQualityProfile(
+                side="original",
+                page_no=2,
+                status="LAYOUT_MISMATCH",
+                reasons=["LOW_LAYOUT_MATCH_RATE"],
+                affected_diff_ids=["diff-1"],
+                metrics={"layout_match_rate": 0.5},
+            )
+        ],
+    )
+
+    remediation = OcrRemediationPlanner().plan(summary, [diff])
+
+    assert remediation.status == "ACTIONS_PLANNED"
+    assert remediation.attempted_action_count == 1
+    assert remediation.unresolved_action_count == 1
+    assert remediation.actions[0].action_type == "RELOCATE_EVIDENCE"
+    assert remediation.actions[0].side == "original"
+    assert remediation.actions[0].page_no == 2
+    assert remediation.actions[0].diff_id == "diff-1"
+    assert remediation.actions[0].before_quality["ocr_status"] == "LAYOUT_MISMATCH"
+
+
+def test_planner_escalates_page_unreliable_once_per_diff():
+    diff = DiffItem(
+        diff_id="diff-1",
+        diff_type="MODIFY",
+        source_type="table",
+        review_flags=["PAGE_UNRELIABLE", "TABLE_STRUCTURE_UNRELIABLE"],
+        quality_status="NEEDS_REVIEW",
+    )
+    summary = TaskOcrQualitySummary(
+        status="UNRELIABLE",
+        requires_review=True,
+        risk_page_count=1,
+        affected_diff_count=1,
+        profiles=[
+            PageOcrQualityProfile(
+                side="compare",
+                page_no=3,
+                status="UNRELIABLE",
+                reasons=["TABLE_CELL_UNMATCHED", "LOW_AVG_CONFIDENCE"],
+                affected_diff_ids=["diff-1"],
+                metrics={"avg_confidence": 0.52},
+            )
+        ],
+    )
+
+    remediation = OcrRemediationPlanner().plan(summary, [diff])
+    action_types = [action.action_type for action in remediation.actions]
+
+    assert action_types == ["ESCALATE_MANUAL_REVIEW"]
+    assert remediation.status == "MANUAL_REVIEW_REQUIRED"
+    assert remediation.requires_manual_review is True
+    assert remediation.manual_review_required_count == 1
+
+
+def test_planner_returns_ok_summary_without_ocr_risk():
+    remediation = OcrRemediationPlanner().plan(None, [])
+
+    assert remediation.status == "OK"
+    assert remediation.actions == []
