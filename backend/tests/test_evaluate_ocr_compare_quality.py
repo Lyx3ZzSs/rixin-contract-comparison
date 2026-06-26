@@ -498,9 +498,13 @@ def test_write_html_report_creates_index_and_case_pages(tmp_path: Path) -> None:
     case_page = tmp_path / "simple_scanned.html"
     assert index.exists()
     assert case_page.exists()
-    assert "OCR comparison quality report" in index.read_text(encoding="utf-8")
-    assert "simple_scanned" in case_page.read_text(encoding="utf-8")
-    assert "OCR_LOW_CONFIDENCE" in case_page.read_text(encoding="utf-8")
+    index_html = index.read_text(encoding="utf-8")
+    case_html = case_page.read_text(encoding="utf-8")
+    assert "OCR comparison quality report" in index_html
+    assert "Route recommendations" in index_html
+    assert "simple_scanned" in case_html
+    assert "OCR_LOW_CONFIDENCE" in case_html
+    assert "Model routing" in case_html
 
 
 def test_write_html_report_sanitizes_filename_and_escapes_html(

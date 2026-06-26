@@ -532,11 +532,20 @@ def write_html_report(path: Path, report: dict[str, Any]) -> None:
             f"<td>{case['false_negative_count']}</td>"
             f"<td>{case['low_confidence_count']}</td>"
             f"<td>{case['ocr_warning_count']}</td>"
+            f"<td>{case.get('route_metrics', {}).get('retry_recommended_count', 0)}</td>"
+            f"<td>{case.get('route_metrics', {}).get('manual_review_recommended_count', 0)}</td>"
             "</tr>"
         )
     failures = "<br>".join(
         html.escape(str(item)) for item in report.get("threshold_failures", [])
     ) or "None"
+    route_metrics = html.escape(
+        json.dumps(
+            report.get("aggregate", {}).get("route_metrics", {}),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     index = (
         "<!doctype html><meta charset='utf-8'>"
         "<title>OCR comparison quality report</title>"
@@ -547,8 +556,10 @@ def write_html_report(path: Path, report: dict[str, Any]) -> None:
         "<h1>OCR comparison quality report</h1>"
         f"<p>Case count: {report['case_count']}</p>"
         f"<p class='failures'>Threshold failures: {failures}</p>"
+        f"<h2>Route recommendations</h2><pre>{route_metrics}</pre>"
         "<table><tr><th>Case</th><th>Status</th><th>Recall</th><th>Precision</th>"
-        "<th>False positives</th><th>Missed diffs</th><th>Low confidence</th><th>OCR warnings</th></tr>"
+        "<th>False positives</th><th>Missed diffs</th><th>Low confidence</th>"
+        "<th>OCR warnings</th><th>Retry routes</th><th>Manual routes</th></tr>"
         + "".join(rows)
         + "</table>"
     )
@@ -567,6 +578,14 @@ def _case_html(case: dict[str, Any]) -> str:
     issues = "".join(
         f"<li>{html.escape(issue)}</li>" for issue in case["issues"]
     ) or "<li>None</li>"
+    routes = case.get("model_routing", {}).get("routes", [])
+    route_items = "".join(
+        "<li>"
+        f"{html.escape(str(route.get('side')))} page {html.escape(str(route.get('page_no')))}: "
+        f"{html.escape(str(route.get('page_type')))} -&gt; {html.escape(str(route.get('recommended_route')))}"
+        "</li>"
+        for route in routes
+    ) or "<li>None</li>"
     return (
         "<!doctype html><meta charset='utf-8'>"
         f"<title>{html.escape(str(case['case_id']))}</title>"
@@ -584,6 +603,7 @@ def _case_html(case: dict[str, Any]) -> str:
         f"<dt>OCR warnings</dt><dd>{case['ocr_warning_count']}</dd>"
         f"<dt>Review signal</dt><dd>{'OCR_LOW_CONFIDENCE' if case['low_confidence_count'] else 'None'}</dd>"
         "</dl>"
+        f"<h2>Model routing</h2><ul>{route_items}</ul>"
         f"<h2>Issues</h2><ul>{issues}</ul>"
     )
 
