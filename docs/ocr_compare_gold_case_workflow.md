@@ -50,14 +50,16 @@ Each approved expected diff should include the matching fields that apply to tha
 
 ## Evidence Boxes
 
-Add `expected_evidence` when location matters:
+Add `expected_evidence` as a list of evidence boxes when location matters:
 
 ```json
-{
-  "side": "original",
-  "page_no": 1,
-  "bbox": { "x0": 100, "y0": 200, "x1": 260, "y1": 230 }
-}
+"expected_evidence": [
+  {
+    "side": "original",
+    "page_no": 1,
+    "bbox": { "x0": 100, "y0": 200, "x1": 260, "y1": 230 }
+  }
+]
 ```
 
 The evaluator treats evidence as matched when the actual evidence box overlaps the expected box with IoU at least 0.5.
