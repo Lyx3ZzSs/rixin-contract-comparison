@@ -543,3 +543,165 @@ def test_write_html_report_sanitizes_filename_and_escapes_html(
     assert "BAD<script>" not in index_html
     assert "&lt;bad&gt;" in case_html
     assert "<bad>" not in case_html
+
+
+def test_evaluate_case_counts_only_approved_gold_diffs(tmp_path: Path) -> None:
+    case_dir = tmp_path / "annotation_case"
+    case_dir.mkdir()
+    (case_dir / "expected.json").write_text(
+        json.dumps(
+            {
+                "case_id": "annotation_case",
+                "expected_diffs": [
+                    {
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title_contains": "Payment",
+                        "original_contains": "30 days",
+                        "compare_contains": "45 days",
+                        "review_status": "APPROVED",
+                    },
+                    {
+                        "diff_type": "ADD",
+                        "source_type": "metadata",
+                        "title_contains": "Generated draft",
+                        "review_status": "DRAFT",
+                    },
+                    {
+                        "diff_type": "DELETE",
+                        "source_type": "clause",
+                        "title_contains": "Rejected",
+                        "review_status": "REJECTED",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (case_dir / "actual.json").write_text(
+        json.dumps(
+            {
+                "task_id": "EVAL_ANNOTATION_CASE",
+                "status": "COMPLETED",
+                "parse_warning_details": [],
+                "diffs": [
+                    {
+                        "diff_id": "D001",
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title": "Payment term",
+                        "original_text": "Payment is due in 30 days.",
+                        "compare_text": "Payment is due in 45 days.",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_case(discover_cases(tmp_path)[0]).to_dict()
+
+    assert result["expected_count"] == 1
+    assert result["true_positive_count"] == 1
+    assert result["false_negative_count"] == 0
+    assert result["annotation_summary"] == {
+        "approved_expected_count": 1,
+        "draft_expected_count": 1,
+        "rejected_expected_count": 1,
+    }
+
+
+def test_evaluate_case_emits_structured_match_details(tmp_path: Path) -> None:
+    case_dir = tmp_path / "details_case"
+    case_dir.mkdir()
+    (case_dir / "expected.json").write_text(
+        json.dumps(
+            {
+                "case_id": "details_case",
+                "expected_diffs": [
+                    {
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title_contains": "Payment",
+                        "original_contains": "30 days",
+                        "compare_contains": "45 days",
+                        "expected_evidence": [
+                            {
+                                "side": "original",
+                                "page_no": 1,
+                                "bbox": {"x0": 10, "y0": 10, "x1": 60, "y1": 30},
+                            }
+                        ],
+                    },
+                    {
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title_contains": "Delivery",
+                        "original_contains": "May",
+                        "compare_contains": "June",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (case_dir / "actual.json").write_text(
+        json.dumps(
+            {
+                "task_id": "EVAL_DETAILS_CASE",
+                "status": "COMPLETED",
+                "parse_warning_details": [],
+                "diffs": [
+                    {
+                        "diff_id": "D001",
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title": "Payment term",
+                        "original_text": "Payment is due in 30 days.",
+                        "compare_text": "Payment is due in 45 days.",
+                        "original_evidence": [
+                            {
+                                "page_no": 2,
+                                "bbox": {"x0": 10, "y0": 10, "x1": 60, "y1": 30},
+                            }
+                        ],
+                    },
+                    {
+                        "diff_id": "D999",
+                        "diff_type": "ADD",
+                        "source_type": "metadata",
+                        "title": "Unexpected cover text",
+                        "quality_status": "NEEDS_REVIEW",
+                        "review_flags": ["POSSIBLE_COVER_OCR_FRAGMENT"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_case(discover_cases(tmp_path)[0]).to_dict()
+
+    assert result["matches"] == [
+        {
+            "expected_index": 0,
+            "actual_index": 0,
+            "actual_diff_id": "D001",
+            "score": 0.95,
+            "evidence_hit": False,
+        }
+    ]
+    assert result["missed_expected_diffs"][0]["label"] == "Delivery"
+    assert result["unexpected_actual_diffs"] == [
+        {
+            "actual_index": 1,
+            "diff_id": "D999",
+            "title": "Unexpected cover text",
+            "source_type": "metadata",
+            "quality_status": "NEEDS_REVIEW",
+            "review_flags": ["POSSIBLE_COVER_OCR_FRAGMENT"],
+        }
+    ]
+    assert result["evidence_drift_diffs"] == [
+        {"expected_index": 0, "actual_diff_id": "D001", "label": "Payment"}
+    ]
