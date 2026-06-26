@@ -1002,16 +1002,33 @@ def test_model_routing_stage_writes_debug_artifact_without_mutating_diffs(tmp_pa
     )
     ctx = PipelineContext(task=task, original_pdf=tmp_path / "o.pdf", compare_pdf=tmp_path / "c.pdf")
     ctx.diffs = [diff]
+    before_diff_payload = [item.model_dump(mode="json") for item in ctx.diffs]
 
     ModelRoutingStage(artifact_store=artifact_store).execute(ctx)
 
-    assert ctx.diffs == [diff]
+    assert [item.model_dump(mode="json") for item in ctx.diffs] == before_diff_payload
     artifact_path = Path(task.debug_artifact_paths["ocr_model_routing"])
     assert artifact_path == tmp_path / "storage" / "tasks" / "task-model-routing" / "debug" / "ocr_model_routing.json"
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert payload["status"] == "RETRY_RECOMMENDED"
     assert payload["routes"][0]["recommended_route"] == "HIGH_DPI_PAGE_RETRY"
     assert payload["routes"][0]["should_execute"] is False
+
+
+def test_model_routing_stage_isolates_analyzer_failure(tmp_path: Path) -> None:
+    class FailingAnalyzer:
+        def analyze(self, *_args, **_kwargs):
+            raise RuntimeError("routing analyzer failed")
+
+    artifact_store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    task = CompareTask(task_id="task-model-routing-failure")
+    ctx = PipelineContext(task=task, original_pdf=tmp_path / "o.pdf", compare_pdf=tmp_path / "c.pdf")
+    stage = ModelRoutingStage(artifact_store=artifact_store)
+    stage.analyzer = FailingAnalyzer()
+
+    stage.execute(ctx)
+
+    assert "ocr_model_routing" not in task.debug_artifact_paths
 
 
 def test_ocr_remediation_stage_executes_evidence_relocation(tmp_path: Path) -> None:

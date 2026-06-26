@@ -812,16 +812,19 @@ class ModelRoutingStage:
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
-        summary = self.analyzer.analyze(
-            ctx.task.ocr_quality_summary,
-            ctx.diffs,
-            ctx.task.parse_warning_details,
-        )
-        _write_debug_artifact(
-            ctx.task,
-            "ocr_model_routing",
-            lambda: self.debug_writer.write_model_routing(ctx.task.task_id, summary),
-        )
+        try:
+            summary = self.analyzer.analyze(
+                ctx.task.ocr_quality_summary,
+                ctx.diffs,
+                ctx.task.parse_warning_details,
+            )
+            _write_debug_artifact(
+                ctx.task,
+                "ocr_model_routing",
+                lambda: self.debug_writer.write_model_routing(ctx.task.task_id, summary),
+            )
+        except Exception:
+            logger.debug("OCR model routing debug artifact generation failed", exc_info=True)
         _emit_progress(ctx, 85, self.name, "model_routing_evaluated")
 
 
