@@ -32,6 +32,54 @@ export interface TaskOcrQualitySummary {
   profiles: PageOcrQualityProfile[];
 }
 
+export type OcrRemediationActionType =
+  | "NO_ACTION"
+  | "MARK_REVIEW"
+  | "RELOCATE_EVIDENCE"
+  | "REPAIR_TABLE"
+  | "RETRY_OCR_PAGE"
+  | "ESCALATE_MANUAL_REVIEW";
+
+export type OcrRemediationStatus =
+  | "PLANNED"
+  | "SKIPPED"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "MANUAL_REVIEW_REQUIRED";
+
+export type OcrRemediationSummaryStatus =
+  | "OK"
+  | "ACTIONS_PLANNED"
+  | "MANUAL_REVIEW_REQUIRED";
+
+export interface OcrRemediationAction {
+  action_id: string;
+  action_type: OcrRemediationActionType;
+  reason: string;
+  status: OcrRemediationStatus;
+  side?: OcrQualitySide | null;
+  page_no?: number | null;
+  diff_id?: string | null;
+  before_quality: Record<string, unknown>;
+  after_quality: Record<string, unknown>;
+  changed_evidence: boolean;
+  changed_diff_text: boolean;
+  review_flags_added: string[];
+  notes: string[];
+}
+
+export interface TaskOcrRemediationSummary {
+  status: OcrRemediationSummaryStatus;
+  requires_manual_review: boolean;
+  attempted_action_count: number;
+  successful_action_count: number;
+  unresolved_action_count: number;
+  risk_reduced_page_count: number;
+  risk_reduced_diff_count: number;
+  manual_review_required_count: number;
+  actions: OcrRemediationAction[];
+}
+
 export interface ParseWarningDetail {
   code: string;
   message: string;
@@ -88,6 +136,7 @@ export interface CompareResponse {
   parse_warning_details?: ParseWarningDetail[];
   document_profiles?: Record<string, DocumentProfile>;
   ocr_quality_summary?: TaskOcrQualitySummary | null;
+  ocr_remediation_summary?: TaskOcrRemediationSummary | null;
   debug_artifact_paths?: Record<string, string>;
   report_url: string;
   report_filename: string;
@@ -235,6 +284,10 @@ export interface CompareQualitySummary {
   review_flag_counts?: Record<string, number>;
   cross_source_merged_count?: number;
   ocr_quality_summary?: TaskOcrQualitySummary | null;
+  ocr_remediation_summary?: TaskOcrRemediationSummary | null;
+  ocr_remediation_action_count?: number;
+  ocr_remediation_unresolved_count?: number;
+  manual_review_required_count?: number;
   ocr_risk_page_count?: number;
   ocr_affected_diff_count?: number;
   evidence_quality_counts: Record<EvidenceQuality, number>;

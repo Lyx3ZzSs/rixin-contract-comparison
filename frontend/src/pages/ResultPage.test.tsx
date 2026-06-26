@@ -91,6 +91,33 @@ const mockTask: CompareTask = {
   manual_review_count: 0,
   ignored_count: 0,
   audit_item_reviews: {},
+  ocr_remediation_summary: {
+    status: "ACTIONS_PLANNED",
+    requires_manual_review: false,
+    attempted_action_count: 1,
+    successful_action_count: 0,
+    unresolved_action_count: 1,
+    risk_reduced_page_count: 0,
+    risk_reduced_diff_count: 0,
+    manual_review_required_count: 0,
+    actions: [
+      {
+        action_id: "original:1:diff-1:RELOCATE_EVIDENCE",
+        action_type: "RELOCATE_EVIDENCE",
+        reason: "EVIDENCE_UNRELIABLE",
+        status: "PLANNED",
+        side: "original",
+        page_no: 1,
+        diff_id: "diff-1",
+        before_quality: {},
+        after_quality: {},
+        changed_evidence: false,
+        changed_diff_text: false,
+        review_flags_added: ["OCR_REMEDIATION_PLANNED"],
+        notes: ["Planning-only action for EVIDENCE_UNRELIABLE."],
+      },
+    ],
+  },
   report_url: "/api/compare/task-1/report",
   report_filename: "销售合同差异分析报告.pdf",
   original_pdf_url: "/api/compare/task-1/original",
@@ -500,6 +527,7 @@ describe("ResultPage", () => {
     expect(screen.getAllByText("阅读顺序风险")).not.toHaveLength(0);
     expect(screen.getAllByText("签章识别风险")).not.toHaveLength(0);
     expect(screen.getAllByText("证据不可靠")).not.toHaveLength(0);
+    expect(await screen.findByText("处置规划")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-4:DELETE" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
 
