@@ -220,13 +220,120 @@ def test_evaluate_case_root_aggregates_metrics() -> None:
     assert report["aggregate"]["low_confidence_ratio"] == 1.0
 
 
-def test_evaluate_case_root_aggregates_route_metrics() -> None:
-    report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
-
-    assert "route_metrics" in report["aggregate"]
-    assert isinstance(
-        report["aggregate"]["route_metrics"]["route_count_by_recommendation"], dict
+def test_evaluate_case_root_aggregates_route_metrics(tmp_path: Path) -> None:
+    first_case = tmp_path / "first_route_case"
+    first_case.mkdir()
+    (first_case / "expected.json").write_text(
+        json.dumps({"case_id": "first_route_case", "expected_diffs": []}),
+        encoding="utf-8",
     )
+    (first_case / "actual.json").write_text(
+        json.dumps(
+            {
+                "task_id": "EVAL_FIRST_ROUTE_CASE",
+                "status": "COMPLETED",
+                "parse_warning_details": [],
+                "ocr_quality_summary": TaskOcrQualitySummary(
+                    status="LOW_TEXT_CONFIDENCE",
+                    requires_review=True,
+                    profiles=[
+                        PageOcrQualityProfile(
+                            side="original",
+                            page_no=1,
+                            status="LOW_TEXT_CONFIDENCE",
+                            reasons=["LOW_AVG_CONFIDENCE"],
+                            affected_diff_ids=["D001"],
+                        ),
+                        PageOcrQualityProfile(
+                            side="compare",
+                            page_no=2,
+                            status="TABLE_RISK",
+                            reasons=["TABLE_CELL_UNMATCHED"],
+                            affected_diff_ids=["D002"],
+                        ),
+                    ],
+                ).model_dump(mode="json"),
+                "diffs": [
+                    {
+                        "diff_id": "D001",
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title": "付款",
+                        "original_text": "付款金额为100元",
+                        "compare_text": "付款金额为120元",
+                    },
+                    {
+                        "diff_id": "D002",
+                        "diff_type": "MODIFY",
+                        "source_type": "table",
+                        "title": "报价表",
+                        "original_text": "单价100元",
+                        "compare_text": "单价120元",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    second_case = tmp_path / "second_route_case"
+    second_case.mkdir()
+    (second_case / "expected.json").write_text(
+        json.dumps({"case_id": "second_route_case", "expected_diffs": []}),
+        encoding="utf-8",
+    )
+    (second_case / "actual.json").write_text(
+        json.dumps(
+            {
+                "task_id": "EVAL_SECOND_ROUTE_CASE",
+                "status": "COMPLETED",
+                "parse_warning_details": [],
+                "ocr_quality_summary": TaskOcrQualitySummary(
+                    status="SEAL_OR_SIGNATURE_RISK",
+                    requires_review=True,
+                    profiles=[
+                        PageOcrQualityProfile(
+                            side="original",
+                            page_no=1,
+                            status="SEAL_OR_SIGNATURE_RISK",
+                            reasons=["SEAL_DETECTED"],
+                            affected_diff_ids=["D003"],
+                        )
+                    ],
+                ).model_dump(mode="json"),
+                "diffs": [
+                    {
+                        "diff_id": "D003",
+                        "diff_type": "MODIFY",
+                        "source_type": "seal",
+                        "title": "签章",
+                        "original_text": "已盖章",
+                        "compare_text": "未盖章",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = evaluate_case_root(tmp_path)
+    route_metrics = report["aggregate"]["route_metrics"]
+
+    assert route_metrics["route_count_by_recommendation"] == {
+        "HIGH_DPI_PAGE_RETRY": 1,
+        "TABLE_REGION_RETRY": 1,
+        "MANUAL_REVIEW": 1,
+    }
+    assert route_metrics["page_count_by_type"] == {
+        "scan_low_quality": 1,
+        "table_heavy": 1,
+        "seal_signature": 1,
+    }
+    assert route_metrics["retry_recommended_count"] == 2
+    assert route_metrics["manual_review_recommended_count"] == 1
+    assert route_metrics["precision_by_recommendation"] == {}
+    assert route_metrics["recall_by_recommendation"] == {}
+    assert route_metrics["evidence_hit_rate_by_recommendation"] == {}
+    assert route_metrics["low_confidence_ratio_by_recommendation"] == {}
     assert "route_metrics" in report["cases"][0]
 
 
