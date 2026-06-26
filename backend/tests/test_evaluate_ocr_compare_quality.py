@@ -518,6 +518,8 @@ def test_write_html_report_sanitizes_filename_and_escapes_html(
             {
                 "case_id": "../case<script>",
                 "status": "BAD<script>",
+                "expected_count": "<img src=x onerror=alert(1)>",
+                "actual_count": "<script>alert(2)</script>",
                 "recall": 0.5,
                 "precision": 0.25,
                 "false_positive_count": 1,
@@ -539,8 +541,12 @@ def test_write_html_report_sanitizes_filename_and_escapes_html(
     assert "href='_case_script_.html'" in index_html
     assert "&lt;script&gt;" in index_html
     assert "BAD&lt;script&gt;" in index_html
+    assert "&lt;img src=x onerror=alert(1)&gt;" in index_html
+    assert "&lt;script&gt;alert(2)&lt;/script&gt;" in index_html
     assert "../case<script>" not in index_html
     assert "BAD<script>" not in index_html
+    assert "<img src=x onerror=alert(1)>" not in index_html
+    assert "<script>alert(2)</script>" not in index_html
     assert "&lt;bad&gt;" in case_html
     assert "<bad>" not in case_html
 
