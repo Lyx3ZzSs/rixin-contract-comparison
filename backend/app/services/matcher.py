@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover - fallback for minimal environments
     fuzz = None
 
 from app.models import Clause, ClausePair
+from app.services.clause_alignment import ClauseAlignmentAnalyzer
 from app.services.clause_numbering import ClauseNumberParser
 from app.services.normalizer import TextNormalizer
 
@@ -356,6 +357,7 @@ class ClauseMatcher:
     ) -> None:
         self.threshold = threshold
         self.normalizer = TextNormalizer()
+        self.alignment_analyzer = ClauseAlignmentAnalyzer(self.normalizer)
         self.number_parser = ClauseNumberParser()
         self._use_prefilter = use_prefilter
         self.body_top_k = body_top_k
@@ -880,6 +882,7 @@ class ClauseMatcher:
             "assignment_strategy_optimal": 1.0 if self.assignment_strategy == "optimal" else 0.0,
         }
         details.update({key: round(value, 2) for key, value in body_details.items()})
+        details["alignment"] = self.alignment_analyzer.diagnostics(left, right)
         return details
 
     def _weighted_score(self, details: dict[str, Any]) -> float:

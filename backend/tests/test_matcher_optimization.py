@@ -131,6 +131,19 @@ def test_prefilter_uses_body_top_k_for_far_reordered_clause_without_same_number(
     assert matched.score_details["candidate_source_body_top_k"] == 1.0
 
 
+def test_clause_matcher_includes_alignment_diagnostics() -> None:
+    original = [clause("O001", "3.1", "付款条款", "甲方应在2026年6月30日前支付人民币1000元。")]
+    compare = [clause("N001", "3.1", "付款条款", "甲方应在2026年6月30日前支付人民币1000元。")]
+
+    pair = ClauseMatcher().match(original, compare)[0]
+
+    alignment = pair.score_details["alignment"]
+    assert alignment["number_match"] is True
+    assert alignment["critical_token_overlap"] == 1.0
+    assert alignment["risk_flags"] == []
+    assert pair.match_candidates[0]["score_details"]["alignment"]["number_match"] is True
+
+
 def test_optimal_assignment_prefers_two_good_pairs_over_one_greedy_pair() -> None:
     original = [
         clause("O001", "", "A", "Template service scope with payment support."),

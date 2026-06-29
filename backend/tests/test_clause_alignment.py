@@ -161,3 +161,27 @@ def test_token_overlap_handles_empty_and_set_boundaries() -> None:
     assert analyzer.token_overlap(("amount:1000.00",), ()) == 0.0
     assert analyzer.token_overlap(("a", "b"), ("b", "c")) == 0.3333
     assert analyzer.token_overlap(("a",), ("b",)) == 0.0
+
+
+def test_alignment_diagnostics_reports_match_signals() -> None:
+    analyzer = ClauseAlignmentAnalyzer()
+    left = _clause("甲方应在2026年6月30日前支付人民币1000元。")
+    right = _clause("甲方应在2026年6月30日前支付人民币1000元。")
+
+    diagnostics = analyzer.diagnostics(left, right)
+
+    assert diagnostics["number_match"] is True
+    assert diagnostics["title_match"] is True
+    assert diagnostics["body_similarity"] == 1.0
+    assert diagnostics["critical_token_overlap"] == 1.0
+    assert diagnostics["section_type_match"] is True
+    assert diagnostics["risk_flags"] == []
+
+
+def test_alignment_diagnostics_reports_page_distance() -> None:
+    analyzer = ClauseAlignmentAnalyzer()
+
+    assert analyzer.diagnostics(_clause("正文", page_numbers=[2]), _clause("正文", page_numbers=[2]))["page_distance"] == 0
+    assert analyzer.diagnostics(_clause("正文", page_numbers=[2, 3]), _clause("正文", page_numbers=[3, 4]))["page_distance"] == 0
+    assert analyzer.diagnostics(_clause("正文", page_numbers=[]), _clause("正文", page_numbers=[1]))["page_distance"] is None
+    assert analyzer.diagnostics(_clause("正文", page_numbers=[1, 2]), _clause("正文", page_numbers=[5, 6]))["page_distance"] == 3

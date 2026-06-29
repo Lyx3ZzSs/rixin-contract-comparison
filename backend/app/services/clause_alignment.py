@@ -5,6 +5,7 @@ from difflib import SequenceMatcher
 import re
 import unicodedata
 from collections.abc import Iterable
+from typing import Any
 
 from app.models import Clause
 from app.services.normalizer import TextNormalizer
@@ -96,6 +97,64 @@ class ClauseAlignmentAnalyzer:
             return 0.0
         return round(len(left & right) / len(left | right), 4)
 
+    def diagnostics(self, original: Clause, compare: Clause) -> dict[str, Any]:
+        original_fingerprint = self.fingerprint(original)
+        compare_fingerprint = self.fingerprint(compare)
+        body_similarity = self.text_similarity(original, compare)
+        critical_token_overlap = self.token_overlap(
+            original_fingerprint.critical_tokens,
+            compare_fingerprint.critical_tokens,
+        )
+
+        return {
+            "number_match": original_fingerprint.clause_no_key == compare_fingerprint.clause_no_key,
+            "title_match": original_fingerprint.title_key == compare_fingerprint.title_key,
+            "body_similarity": body_similarity,
+            "critical_token_overlap": critical_token_overlap,
+            "section_type_match": original_fingerprint.structure_key == compare_fingerprint.structure_key,
+            "page_distance": self._page_distance(original_fingerprint.page_span, compare_fingerprint.page_span),
+            "risk_flags": self.risk_flags(
+                original,
+                compare,
+                body_similarity=body_similarity,
+                critical_token_overlap=critical_token_overlap,
+                original_fingerprint=original_fingerprint,
+                compare_fingerprint=compare_fingerprint,
+            ),
+        }
+
+    def risk_flags(
+        self,
+        original: Clause,
+        compare: Clause,
+        *,
+        body_similarity: float | None = None,
+        critical_token_overlap: float | None = None,
+        original_fingerprint: ClauseAlignmentFingerprint | None = None,
+        compare_fingerprint: ClauseAlignmentFingerprint | None = None,
+    ) -> list[str]:
+        original_fingerprint = original_fingerprint or self.fingerprint(original)
+        compare_fingerprint = compare_fingerprint or self.fingerprint(compare)
+        body_similarity = self.text_similarity(original, compare) if body_similarity is None else body_similarity
+        critical_token_overlap = (
+            self.token_overlap(original_fingerprint.critical_tokens, compare_fingerprint.critical_tokens)
+            if critical_token_overlap is None
+            else critical_token_overlap
+        )
+
+        flags: list[str] = []
+        original_clause_no = original_fingerprint.clause_no_key
+        compare_clause_no = compare_fingerprint.clause_no_key
+        if original_clause_no and compare_clause_no and original_clause_no != compare_clause_no and body_similarity >= 0.78:
+            flags.append("TEXT_MATCH_NUMBER_MISMATCH")
+        if original_clause_no and compare_clause_no and original_clause_no == compare_clause_no and body_similarity < 0.45:
+            flags.append("TITLE_MATCH_TEXT_MISMATCH")
+        if original_fingerprint.critical_tokens and compare_fingerprint.critical_tokens and critical_token_overlap < 0.5:
+            flags.append("CRITICAL_TOKEN_MISMATCH")
+        if flags:
+            flags.append("POSSIBLE_CLAUSE_MISALIGNMENT")
+        return flags
+
     def _normalized_body(self, text: str) -> str:
         normalized = self.normalizer.normalize_for_diff(text)
         normalized = unicodedata.normalize("NFKC", normalized)
@@ -161,6 +220,21 @@ class ClauseAlignmentAnalyzer:
         if not page_numbers:
             return None
         return (min(page_numbers), max(page_numbers))
+
+    def _page_distance(
+        self,
+        left: tuple[int, int] | None,
+        right: tuple[int, int] | None,
+    ) -> int | None:
+        if left is None or right is None:
+            return None
+        left_start, left_end = left
+        right_start, right_end = right
+        if left_start <= right_end and right_start <= left_end:
+            return 0
+        if left_end < right_start:
+            return right_start - left_end
+        return left_start - right_end
 
     def _text_value(self, value: str | Clause) -> str:
         if isinstance(value, Clause):
