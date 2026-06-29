@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from scripts.run_quality_regression import (
     DEFAULT_REGRESSION_THRESHOLDS,
     compare_reports,
@@ -55,6 +57,12 @@ def test_load_thresholds_uses_defaults_when_path_is_none() -> None:
     thresholds = load_thresholds(None)
 
     assert thresholds == DEFAULT_REGRESSION_THRESHOLDS
+    assert thresholds["min_recall"] == 0.95
+    assert "max_false_positive_increase" in thresholds
+    assert "max_false_negative_increase" in thresholds
+    assert "max_task_failure_increase" in thresholds
+    assert "max_false_positive_count_increase" not in thresholds
+    assert "max_false_negative_count_increase" not in thresholds
 
 
 def test_load_thresholds_merges_json_file_with_defaults(tmp_path: Path) -> None:
@@ -65,6 +73,30 @@ def test_load_thresholds_merges_json_file_with_defaults(tmp_path: Path) -> None:
 
     assert thresholds["min_recall"] == 0.92
     assert thresholds["min_precision"] == DEFAULT_REGRESSION_THRESHOLDS["min_precision"]
+
+
+def test_load_thresholds_rejects_unknown_key(tmp_path: Path) -> None:
+    path = tmp_path / "thresholds.json"
+    path.write_text(json.dumps({"unknown_threshold": 1}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unknown regression threshold"):
+        load_thresholds(path)
+
+
+def test_load_thresholds_rejects_non_object_file(tmp_path: Path) -> None:
+    path = tmp_path / "thresholds.json"
+    path.write_text(json.dumps(["min_recall", 0.92]), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must contain a JSON object"):
+        load_thresholds(path)
+
+
+def test_load_thresholds_rejects_non_numeric_value(tmp_path: Path) -> None:
+    path = tmp_path / "thresholds.json"
+    path.write_text(json.dumps({"min_recall": "0.92"}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must be numeric"):
+        load_thresholds(path)
 
 
 def test_compare_reports_returns_aggregate_and_case_deltas() -> None:
@@ -88,6 +120,7 @@ def test_compare_reports_returns_aggregate_and_case_deltas() -> None:
     comparison = compare_reports(current, baseline)
 
     assert comparison["baseline_available"] is True
+    assert comparison["failed_gates"] == []
     assert comparison["aggregate_delta"]["precision"] == -0.05
     assert comparison["aggregate_delta"]["recall"] == -0.2
     assert comparison["aggregate_delta"]["evidence_hit_rate"] == -0.05
@@ -96,6 +129,10 @@ def test_compare_reports_returns_aggregate_and_case_deltas() -> None:
     assert comparison["case_deltas"][0]["case_id"] == "case_a"
     assert comparison["case_deltas"][0]["precision_delta"] == -0.15
     assert comparison["case_deltas"][0]["recall_delta"] == -0.25
+    assert comparison["case_deltas"][0]["false_positive_delta"] == 0
+    assert comparison["case_deltas"][0]["false_negative_delta"] == 0
+    assert "false_positive_count_delta" not in comparison["case_deltas"][0]
+    assert "false_negative_count_delta" not in comparison["case_deltas"][0]
 
 
 def test_compare_reports_returns_empty_baseline_comparison_without_baseline() -> None:
@@ -105,3 +142,54 @@ def test_compare_reports_returns_empty_baseline_comparison_without_baseline() ->
     assert comparison["aggregate_delta"] == {}
     assert comparison["case_deltas"] == []
     assert comparison["failed_gates"] == []
+
+
+def test_compare_reports_returns_none_delta_for_missing_none_or_non_numeric_metrics() -> None:
+    baseline = _quality_report(precision=0.95)
+    current = _quality_report(precision=0.9)
+    del baseline["aggregate"]["precision"]
+    baseline["aggregate"]["recall"] = None
+    current["aggregate"]["evidence_hit_rate"] = "n/a"
+
+    comparison = compare_reports(current, baseline)
+
+    assert comparison["aggregate_delta"]["precision"] is None
+    assert comparison["aggregate_delta"]["recall"] is None
+    assert comparison["aggregate_delta"]["evidence_hit_rate"] is None
+
+
+def test_compare_reports_sorts_case_deltas_by_regression_risk() -> None:
+    baseline = _quality_report(
+        cases=[
+            _case_report("case_recall", precision=0.9, recall=0.9),
+            _case_report("case_precision", precision=0.9, recall=0.9),
+            _case_report("case_fn", precision=0.9, recall=0.9),
+            _case_report("case_fp", precision=0.9, recall=0.9),
+            _case_report("case_evidence", precision=0.9, recall=0.9, evidence_hit_rate=0.9),
+            _case_report("case_a", precision=0.9, recall=0.9),
+            _case_report("case_b", precision=0.9, recall=0.9),
+        ]
+    )
+    current = _quality_report(
+        cases=[
+            _case_report("case_evidence", precision=0.9, recall=0.9, evidence_hit_rate=0.2),
+            _case_report("case_b", precision=0.9, recall=0.9),
+            _case_report("case_fp", precision=0.9, recall=0.9, false_positive_count=5),
+            _case_report("case_a", precision=0.9, recall=0.9),
+            _case_report("case_fn", precision=0.9, recall=0.9, false_negative_count=3),
+            _case_report("case_precision", precision=0.1, recall=0.9),
+            _case_report("case_recall", precision=0.9, recall=0.1),
+        ]
+    )
+
+    comparison = compare_reports(current, baseline)
+
+    assert [case["case_id"] for case in comparison["case_deltas"]] == [
+        "case_recall",
+        "case_precision",
+        "case_fn",
+        "case_fp",
+        "case_evidence",
+        "case_a",
+        "case_b",
+    ]
