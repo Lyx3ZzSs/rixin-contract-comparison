@@ -256,6 +256,67 @@ def test_clause_splitter_keeps_deep_decimal_clause_number() -> None:
     assert "五级正文内容" in clauses[0].text
 
 
+def test_clause_splitter_writes_stable_clause_alignment_key() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="payment",
+                        page_no=1,
+                        text="3.1 付款 条款：甲方应在 2026 年 06 月 30 日前支付人民币 1,000.00 元。",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                    )
+                ],
+            )
+        ],
+    )
+
+    clause = ClauseSplitter().split(document, "O")[0]
+
+    assert clause.clause_key.startswith("main_contract/")
+    assert "n3_1" in clause.clause_key
+    assert "amount:1000.00" in clause.clause_key
+    assert "date:2026-06-30" in clause.clause_key
+
+    article_document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="payment-article",
+                        page_no=1,
+                        text="第3.1条 付款 条款：甲方应在 2026 年 06 月 30 日前支付人民币 1,000.00 元。",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                    )
+                ],
+            )
+        ],
+    )
+
+    article_clause = ClauseSplitter().split(article_document, "O")[0]
+
+    assert "main_contract/n3_1" in clause.clause_key
+    assert "main_contract/n3_1" in article_clause.clause_key
+    assert "第31条" not in article_clause.clause_key
+
+    for token in ("n3_1", "amount:1000.00", "date:2026-06-30"):
+        assert token in article_clause.clause_key
+        assert token in clause.clause_key
+
+
 def test_clause_splitter_keeps_single_numeric_inline_body_clause_number() -> None:
     document = Document(
         filename="sample.pdf",

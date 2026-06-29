@@ -6,10 +6,11 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from app.models import BBox, CharBox, Clause, Document, EvidenceBox, TextBlock
+from app.services.clause_alignment import ClauseAlignmentAnalyzer, ClauseAlignmentFingerprint
 from app.services.clause_numbering import ClauseNumberParser
 from app.services.clause_paragraphs import ParagraphBuilder
-from app.services.table_compare import TableComparator
 from app.services.normalizer import TextNormalizer
+from app.services.table_compare import TableComparator
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ class HeadingCandidate:
 
 class ClauseSplitter:
     clause_start_pattern = re.compile(
-        r"^\s*((第[零〇一二两三四五六七八九十百千万0-9]+[章节条])|([零〇一二两三四五六七八九十百千万]+[、.．])|(（[零〇一二两三四五六七八九十百千万0-9]+）)|(\d+(?:\.\d+)*[\.、．]?))\s*(.*)$"
+        r"^\s*((第[零〇一二两三四五六七八九十百千万0-9]+(?:\.\d+)*[章节条])|([零〇一二两三四五六七八九十百千万]+[、.．])|(（[零〇一二两三四五六七八九十百千万0-9]+）)|(\d+(?:\.\d+)*[\.、．]?))\s*(.*)$"
     )
     skip_block_types = {
         "footer",
@@ -87,8 +88,9 @@ class ClauseSplitter:
     toc_dot_leader_pattern = re.compile(r"\.{2,}\s*\d*$|…{2,}\s*\d*$")
     short_symbol_noise_pattern = re.compile(r"^[/\\∠_.,，。·•\-—~～\s]{1,8}$")
     inline_clause_marker_pattern = re.compile(
-        r"(第[零〇一二两三四五六七八九十百千万0-9]+[章节条]|[零〇一二两三四五六七八九十百千万]+[、.．]|[（(][零〇一二两三四五六七八九十百千万0-9]+[)）]|[①②③④⑤⑥⑦⑧⑨⑩]|\d+(?:\.\d+)*[\.、．])"
+        r"(第[零〇一二两三四五六七八九十百千万0-9]+(?:\.\d+)*[章节条]|[零〇一二两三四五六七八九十百千万]+[、.．]|[（(][零〇一二两三四五六七八九十百千万0-9]+[)）]|[①②③④⑤⑥⑦⑧⑨⑩]|\d+(?:\.\d+)*[\.、．])"
     )
+    formal_decimal_marker_pattern = re.compile(r"^\s*(?P<marker>第\d+(?:\.\d+)+[章节条])\s*(?P<title>.*)$")
     heading_accept_score = 0.68
     weak_heading_review_score = 0.55
     heading_business_terms = {
@@ -117,6 +119,7 @@ class ClauseSplitter:
 
     def __init__(self, text_normalizer: TextNormalizer | None = None) -> None:
         self.normalizer = text_normalizer or TextNormalizer()
+        self.alignment_analyzer = ClauseAlignmentAnalyzer(self.normalizer)
         self.table_detector = TableComparator()
         self.number_parser = ClauseNumberParser()
         self.paragraph_builder = ParagraphBuilder()
@@ -875,27 +878,30 @@ class ClauseSplitter:
         for index, item in enumerate(clauses, start=1):
             text = "\n".join(item["texts"]).strip()
             char_boxes = self._join_char_boxes(item["char_boxes"])
-            result.append(
-                Clause(
-                    clause_id=f"{prefix}C{index:03d}",
-                    clause_no=item["clause_no"],
-                    title=item["title"] or self._title_from_text(text),
-                    text=text,
-                    normalized_text=self.normalizer.normalize_for_diff(text),
-                    match_text=self.normalizer.normalize_for_match(text),
-                    page_numbers=sorted(set(item["page_numbers"])),
-                    bboxes=item["bboxes"],
-                    source_block_ids=list(dict.fromkeys(item["source_block_ids"])),
-                    char_boxes=char_boxes,
-                    segmentation_reason=item.get("segmentation_reason", ""),
-                    segmentation_confidence=item.get("segmentation_confidence", 0.8),
-                    section_type=item.get("section_type", "main_contract"),
-                    section_path=item.get("section_path", []),
-                    clause_key=self._clause_key(item.get("section_type", "main_contract"), item.get("section_path", []), item["clause_no"], text),
-                    order_index=index,
-                    split_flags=list(dict.fromkeys(item.get("split_flags", []))),
-                )
+            section_type = item.get("section_type", "main_contract")
+            section_path = item.get("section_path", [])
+            base_key = self._clause_key(section_type, section_path, item["clause_no"], text)
+            clause = Clause(
+                clause_id=f"{prefix}C{index:03d}",
+                clause_no=item["clause_no"],
+                title=item["title"] or self._title_from_text(text),
+                text=text,
+                normalized_text=self.normalizer.normalize_for_diff(text),
+                match_text=self.normalizer.normalize_for_match(text),
+                page_numbers=sorted(set(item["page_numbers"])),
+                bboxes=item["bboxes"],
+                source_block_ids=list(dict.fromkeys(item["source_block_ids"])),
+                char_boxes=char_boxes,
+                segmentation_reason=item.get("segmentation_reason", ""),
+                segmentation_confidence=item.get("segmentation_confidence", 0.8),
+                section_type=section_type,
+                section_path=section_path,
+                clause_key=base_key,
+                order_index=index,
+                split_flags=list(dict.fromkeys(item.get("split_flags", []))),
             )
+            fingerprint = self.alignment_analyzer.fingerprint(clause)
+            result.append(clause.model_copy(update={"clause_key": self._alignment_clause_key(base_key, fingerprint)}))
         return result
 
     def _section_path(
@@ -941,9 +947,45 @@ class ClauseSplitter:
             parts.append(self.normalizer.normalize_for_match(self._title_from_text(text))[:32])
         return "/".join(part for part in parts if part)
 
+    def _alignment_clause_key(self, base_key: str, fingerprint: ClauseAlignmentFingerprint) -> str:
+        parts = [base_key]
+        clause_no_key = self._alignment_clause_no_key(fingerprint.clause_no_key)
+        if clause_no_key and clause_no_key not in base_key:
+            parts.append(clause_no_key)
+        parts.extend(self._bounded_alignment_tokens(fingerprint.critical_tokens))
+        return "|".join(parts)
+
+    def _alignment_clause_no_key(self, clause_no_key: str) -> str:
+        if not clause_no_key:
+            return ""
+        return self.normalizer.normalize_for_match(f"n{clause_no_key.replace('.', '_')}")
+
+    def _bounded_alignment_tokens(self, tokens: tuple[str, ...]) -> list[str]:
+        bounded: list[str] = []
+        total_length = 0
+        max_total_length = 180
+        max_token_length = 72
+        for token in tokens:
+            clean_token = token.strip()[:max_token_length]
+            if not clean_token:
+                continue
+            next_length = total_length + len(clean_token)
+            if next_length > max_total_length:
+                break
+            bounded.append(clean_token)
+            total_length = next_length
+        return bounded
+
     def _canonical_path_label(self, label: str) -> str:
         parsed = self.number_parser.parse_line(label)
         if parsed is None:
+            formal_decimal = self.formal_decimal_marker_pattern.match(unicodedata.normalize("NFKC", label or ""))
+            if formal_decimal is not None:
+                canonical = self.number_parser.normalize_number(formal_decimal.group("marker")).replace(".", "_")
+                title = formal_decimal.group("title").strip()
+                if title:
+                    return f"n{canonical} {title}"
+                return f"n{canonical}"
             return label
         canonical = f"n{parsed.canonical_number.replace('.', '_')}"
         if parsed.title:
@@ -1114,11 +1156,17 @@ class ClauseSplitter:
     def _parse_marker(self, text: str) -> tuple[str, str] | None:
         parsed = self.number_parser.parse_line(text)
         if parsed is None:
-            return None
+            match = self.formal_decimal_marker_pattern.match(unicodedata.normalize("NFKC", text or ""))
+            if match is None:
+                return None
+            title = re.sub(r"\s+", " ", match.group("title").strip())[:40]
+            return match.group("marker"), title
         return parsed.raw_number, parsed.title
 
     def _is_formal_clause_marker(self, clause_no: str) -> bool:
-        return self.number_parser.is_formal_number(clause_no)
+        return self.number_parser.is_formal_number(clause_no) or bool(
+            self.formal_decimal_marker_pattern.match(unicodedata.normalize("NFKC", clause_no or ""))
+        )
 
     def _is_quantity_or_amount_marker(self, text: str, marker: tuple[str, str]) -> bool:
         clause_no, _ = marker
