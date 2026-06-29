@@ -262,3 +262,83 @@ def test_apply_gates_detects_regressions_against_baseline() -> None:
     assert "max_false_positive_increase" in {item["gate"] for item in failures}
     assert "max_false_negative_increase" in {item["gate"] for item in failures}
     assert "max_task_failure_increase" in {item["gate"] for item in failures}
+
+
+def test_apply_gates_allows_metrics_that_exactly_meet_limits() -> None:
+    thresholds = {
+        "min_recall": 0.95,
+        "min_precision": 0.9,
+        "min_evidence_hit_rate": 0.9,
+        "max_task_failure_count": 0,
+        "max_false_positive_count": 1,
+        "max_false_negative_count": 0,
+        "max_recall_drop": 0.02,
+        "max_precision_drop": 0.02,
+        "max_evidence_hit_rate_drop": 0.02,
+        "max_false_positive_increase": 1,
+        "max_false_negative_increase": 0,
+        "max_task_failure_increase": 0,
+    }
+    baseline = _quality_report(
+        precision=0.92,
+        recall=0.97,
+        evidence_hit_rate=0.92,
+        false_positive_count=0,
+        false_negative_count=0,
+        task_failure_count=0,
+    )
+    current = _quality_report(
+        precision=0.9,
+        recall=0.95,
+        evidence_hit_rate=0.9,
+        false_positive_count=1,
+        false_negative_count=0,
+        task_failure_count=0,
+    )
+    comparison = compare_reports(current, baseline)
+
+    failures = apply_gates(current, comparison, thresholds)
+
+    assert failures == []
+    assert comparison["failed_gates"] == []
+
+
+def test_apply_gates_reports_drop_failure_value_as_positive_magnitude() -> None:
+    baseline = _quality_report(recall=1.0)
+    current = _quality_report(recall=0.9)
+    comparison = compare_reports(current, baseline)
+
+    failures = apply_gates(current, comparison, DEFAULT_REGRESSION_THRESHOLDS)
+
+    recall_failure = next(item for item in failures if item["gate"] == "max_recall_drop")
+    assert recall_failure == {
+        "gate": "max_recall_drop",
+        "value": 0.1,
+        "delta": -0.1,
+        "limit": 0.02,
+    }
+    assert comparison["aggregate_delta"]["recall"] == -0.1
+
+
+def test_apply_gates_ignores_non_numeric_or_missing_regression_deltas() -> None:
+    baseline = _quality_report()
+    current = _quality_report()
+    comparison = compare_reports(current, baseline)
+    comparison["aggregate_delta"]["recall"] = None
+    comparison["aggregate_delta"]["precision"] = "n/a"
+    comparison["aggregate_delta"].pop("evidence_hit_rate")
+
+    failures = apply_gates(current, comparison, DEFAULT_REGRESSION_THRESHOLDS)
+
+    assert failures == []
+    assert comparison["failed_gates"] == []
+
+
+def test_apply_gates_fails_fast_for_incomplete_thresholds() -> None:
+    current = _quality_report(recall=0.7)
+    comparison = compare_reports(current, None)
+    thresholds = dict(DEFAULT_REGRESSION_THRESHOLDS)
+    del thresholds["min_recall"]
+
+    with pytest.raises(KeyError, match="min_recall"):
+        apply_gates(current, comparison, thresholds)

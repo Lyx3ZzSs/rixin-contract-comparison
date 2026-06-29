@@ -73,6 +73,7 @@ def apply_gates(
     comparison: dict[str, Any],
     thresholds: dict[str, float | int],
 ) -> list[dict[str, Any]]:
+    _validate_threshold_keys(thresholds)
     failures: list[dict[str, Any]] = []
     aggregate = current_report.get("aggregate", {})
 
@@ -146,13 +147,19 @@ def apply_gates(
     return failures
 
 
+def _validate_threshold_keys(thresholds: dict[str, float | int]) -> None:
+    for gate in DEFAULT_REGRESSION_THRESHOLDS:
+        if gate not in thresholds:
+            raise KeyError(gate)
+
+
 def _check_min_gate(
     failures: list[dict[str, Any]],
     gate: str,
     value: Any,
     thresholds: dict[str, float | int],
 ) -> None:
-    limit = thresholds.get(gate)
+    limit = thresholds[gate]
     if _is_number(value) and _is_number(limit) and value < limit:
         failures.append({"gate": gate, "value": value, "limit": limit})
 
@@ -163,7 +170,7 @@ def _check_max_gate(
     value: Any,
     thresholds: dict[str, float | int],
 ) -> None:
-    limit = thresholds.get(gate)
+    limit = thresholds[gate]
     if _is_number(value) and _is_number(limit) and value > limit:
         failures.append({"gate": gate, "value": value, "limit": limit})
 
@@ -174,9 +181,9 @@ def _check_drop_gate(
     delta: Any,
     thresholds: dict[str, float | int],
 ) -> None:
-    limit = thresholds.get(gate)
+    limit = thresholds[gate]
     if _is_number(delta) and _is_number(limit) and delta < -limit:
-        failures.append({"gate": gate, "value": delta, "limit": limit})
+        failures.append({"gate": gate, "value": abs(delta), "delta": delta, "limit": limit})
 
 
 def _check_increase_gate(
@@ -185,7 +192,7 @@ def _check_increase_gate(
     delta: Any,
     thresholds: dict[str, float | int],
 ) -> None:
-    limit = thresholds.get(gate)
+    limit = thresholds[gate]
     if _is_number(delta) and _is_number(limit) and delta > limit:
         failures.append({"gate": gate, "value": delta, "limit": limit})
 
