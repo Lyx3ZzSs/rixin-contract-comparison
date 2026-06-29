@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import fitz
@@ -8,8 +9,10 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from app.config import settings
+from app.infrastructure.artifact_store import ArtifactStore, LocalArtifactStore
 from app.infrastructure.task_repository import LocalJsonTaskRepository
-from app.models import BBox, Document, Page, TextBlock
+from app.models import BBox, Clause, ClausePair, Document, Page, TextBlock
+from app.services.compare_debug import CompareDebugWriter
 from app.services.compare_service import CompareService
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.pymupdf import PyMuPDFExtractor
@@ -39,6 +42,41 @@ def configure_storage(tmp_path: Path) -> None:
     settings.compare_require_structured_ocr = True
     settings.align_structured_extraction = True
     settings.ensure_storage()
+
+
+def test_match_matrix_summary_counts_alignment_risks(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    artifact_store: ArtifactStore = LocalArtifactStore(settings)
+    writer = CompareDebugWriter(artifact_store)
+    pairs = [
+        ClausePair(
+            original=Clause(clause_id="O001", text="付款1000元", normalized_text="付款1000元"),
+            compare=Clause(clause_id="N001", text="付款5000元", normalized_text="付款5000元"),
+            match_method="body",
+            match_confidence="LOW",
+            score_details={
+                "alignment": {
+                    "risk_flags": ["CRITICAL_TOKEN_MISMATCH", "POSSIBLE_CLAUSE_MISALIGNMENT"]
+                }
+            },
+        ),
+        ClausePair(
+            original=Clause(clause_id="O002", text="交付", normalized_text="交付"),
+            compare=Clause(clause_id="N002", text="交付", normalized_text="交付"),
+            match_method="body",
+            match_confidence="NORMAL",
+            score_details={"alignment": {"risk_flags": []}},
+        ),
+    ]
+
+    path = Path(writer.write_match_matrix_summary("task-1", pairs))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["low_confidence_alignment_count"] == 1
+    assert payload["alignment_risk_flag_counts"] == {
+        "CRITICAL_TOKEN_MISMATCH": 1,
+        "POSSIBLE_CLAUSE_MISALIGNMENT": 1,
+    }
 
 
 def test_compare_service_generates_artifacts(tmp_path: Path) -> None:

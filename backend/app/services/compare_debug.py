@@ -128,6 +128,8 @@ class CompareDebugWriter:
         method_counts: Counter[str] = Counter(pair.match_method for pair in pairs)
         confidence_counts: Counter[str] = Counter(pair.match_confidence for pair in pairs if pair.match_confidence)
         section_counts: Counter[str] = Counter()
+        alignment_risk_flag_counts: Counter[str] = Counter()
+        low_confidence_alignment_count = 0
         low_confidence = []
         for pair in pairs:
             section_type = (
@@ -137,6 +139,10 @@ class CompareDebugWriter:
             )
             if section_type:
                 section_counts[section_type] += 1
+            alignment_risk_flags = self._alignment_risk_flags(pair.score_details)
+            if alignment_risk_flags:
+                low_confidence_alignment_count += 1
+                alignment_risk_flag_counts.update(alignment_risk_flags)
             if pair.match_confidence == "LOW":
                 low_confidence.append(
                     {
@@ -156,10 +162,23 @@ class CompareDebugWriter:
                     "method_counts": dict(method_counts),
                     "confidence_counts": dict(confidence_counts),
                     "section_counts": dict(section_counts),
+                    "low_confidence_alignment_count": low_confidence_alignment_count,
+                    "alignment_risk_flag_counts": dict(alignment_risk_flag_counts),
                     "low_confidence_pairs": low_confidence[:50],
                 },
             )
         )
+
+    def _alignment_risk_flags(self, score_details: Any) -> list[str]:
+        if not isinstance(score_details, dict):
+            return []
+        alignment = score_details.get("alignment")
+        if not isinstance(alignment, dict):
+            return []
+        risk_flags = alignment.get("risk_flags")
+        if not isinstance(risk_flags, (list, tuple, set)):
+            return []
+        return [flag for flag in risk_flags if isinstance(flag, str) and flag]
 
     def write_diffs(self, task_id: str, diffs: list[DiffItem]) -> str:
         payload = []
