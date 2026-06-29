@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -648,3 +650,133 @@ def test_main_returns_one_when_gates_fail_with_fail_flag(
     )
 
     assert exit_code == 1
+
+
+def test_direct_script_help_succeeds_from_backend_cwd() -> None:
+    backend_dir = Path(__file__).resolve().parents[1]
+
+    result = subprocess.run(
+        [sys.executable, "scripts/run_quality_regression.py", "--help"],
+        cwd=backend_dir,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "Run OCR compare quality regression" in result.stdout
+
+
+def test_main_returns_zero_when_fail_flag_has_no_failed_gates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    case_root = tmp_path / "cases"
+    case_root.mkdir()
+    output_dir = tmp_path / "run"
+
+    monkeypatch.setattr(
+        run_quality_regression,
+        "evaluate_case_root",
+        lambda path: _quality_report(),
+    )
+    monkeypatch.setattr(
+        run_quality_regression,
+        "write_html_report",
+        _write_stub_html_report,
+    )
+
+    exit_code = run_quality_regression.main(
+        [
+            "--case-root",
+            str(case_root),
+            "--output-dir",
+            str(output_dir),
+            "--fail-on-regression",
+        ]
+    )
+
+    assert exit_code == 0
+
+
+def test_main_forwards_optional_paths_to_run_regression(
+    tmp_path: Path, monkeypatch
+) -> None:
+    case_root = tmp_path / "cases"
+    output_dir = tmp_path / "run"
+    baseline = tmp_path / "baseline.json"
+    thresholds = tmp_path / "thresholds.json"
+    html_output = tmp_path / "html"
+    write_baseline = tmp_path / "new-baseline.json"
+    captured: dict[str, object] = {}
+
+    def capture_run_regression(**kwargs: object) -> dict:
+        captured.update(kwargs)
+        return {
+            "run_id": "forwarded-run",
+            "status": "PASSED",
+            "failed_gates": [],
+        }
+
+    monkeypatch.setattr(
+        run_quality_regression,
+        "run_regression",
+        capture_run_regression,
+    )
+
+    exit_code = run_quality_regression.main(
+        [
+            "--case-root",
+            str(case_root),
+            "--output-dir",
+            str(output_dir),
+            "--baseline",
+            str(baseline),
+            "--thresholds",
+            str(thresholds),
+            "--run-id",
+            "forwarded-run",
+            "--html-output",
+            str(html_output),
+            "--write-baseline",
+            str(write_baseline),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured == {
+        "case_root": case_root,
+        "output_dir": output_dir,
+        "baseline_path": baseline,
+        "thresholds_path": thresholds,
+        "run_id": "forwarded-run",
+        "html_output": html_output,
+        "write_baseline": write_baseline,
+    }
+
+
+def test_main_prints_json_summary(capsys, monkeypatch, tmp_path: Path) -> None:
+    case_root = tmp_path / "cases"
+    output_dir = tmp_path / "run"
+    summary = {
+        "run_id": "stdout-run",
+        "status": "PASSED",
+        "failed_gates": [],
+    }
+
+    monkeypatch.setattr(
+        run_quality_regression,
+        "run_regression",
+        lambda **kwargs: summary,
+    )
+
+    exit_code = run_quality_regression.main(
+        [
+            "--case-root",
+            str(case_root),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == summary
