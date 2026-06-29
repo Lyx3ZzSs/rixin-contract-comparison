@@ -582,3 +582,69 @@ def test_git_metadata_returns_empty_values_when_git_commands_fail(
     metadata = run_quality_regression.git_metadata()
 
     assert metadata == {"branch": "", "commit": "", "dirty": False}
+
+
+def test_main_returns_zero_when_gates_fail_without_fail_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
+    case_root = tmp_path / "cases"
+    case_root.mkdir()
+    output_dir = tmp_path / "run"
+
+    monkeypatch.setattr(
+        run_quality_regression,
+        "evaluate_case_root",
+        lambda path: _quality_report(precision=0.1, recall=0.1, evidence_hit_rate=0.1),
+    )
+    monkeypatch.setattr(
+        run_quality_regression,
+        "write_html_report",
+        _write_stub_html_report,
+    )
+
+    exit_code = run_quality_regression.main(
+        [
+            "--case-root",
+            str(case_root),
+            "--output-dir",
+            str(output_dir),
+            "--run-id",
+            "cli-run",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))[
+        "status"
+    ] == "FAILED"
+
+
+def test_main_returns_one_when_gates_fail_with_fail_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
+    case_root = tmp_path / "cases"
+    case_root.mkdir()
+    output_dir = tmp_path / "run"
+
+    monkeypatch.setattr(
+        run_quality_regression,
+        "evaluate_case_root",
+        lambda path: _quality_report(precision=0.1, recall=0.1, evidence_hit_rate=0.1),
+    )
+    monkeypatch.setattr(
+        run_quality_regression,
+        "write_html_report",
+        _write_stub_html_report,
+    )
+
+    exit_code = run_quality_regression.main(
+        [
+            "--case-root",
+            str(case_root),
+            "--output-dir",
+            str(output_dir),
+            "--fail-on-regression",
+        ]
+    )
+
+    assert exit_code == 1

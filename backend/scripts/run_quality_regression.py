@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import subprocess
@@ -370,3 +371,36 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Run OCR compare quality regression against approved gold cases."
+    )
+    parser.add_argument("--case-root", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--baseline", type=Path, default=None)
+    parser.add_argument("--thresholds", type=Path, default=None)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--html-output", type=Path, default=None)
+    parser.add_argument("--write-baseline", type=Path, default=None)
+    parser.add_argument("--fail-on-regression", action="store_true")
+    args = parser.parse_args(argv)
+
+    summary = run_regression(
+        case_root=args.case_root,
+        output_dir=args.output_dir,
+        baseline_path=args.baseline,
+        thresholds_path=args.thresholds,
+        run_id=args.run_id,
+        html_output=args.html_output,
+        write_baseline=args.write_baseline,
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if args.fail_on_regression and summary["failed_gates"]:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
