@@ -731,6 +731,7 @@ def write_html_report(path: Path, report: dict[str, Any]) -> None:
     failures = "<br>".join(
         html.escape(str(item)) for item in report.get("threshold_failures", [])
     ) or "None"
+    regression_section = _regression_html(report.get("regression"))
     route_metrics = html.escape(
         json.dumps(
             report.get("aggregate", {}).get("route_metrics", {}),
@@ -755,6 +756,7 @@ def write_html_report(path: Path, report: dict[str, Any]) -> None:
         "<h1>OCR comparison quality report</h1>"
         f"<p>Case count: {report['case_count']}</p>"
         f"<p class='failures'>Threshold failures: {failures}</p>"
+        f"{regression_section}"
         f"<h2>Route recommendations</h2><pre>{route_metrics}</pre>"
         f"<h2>Annotation summary</h2><pre>{annotation_summary}</pre>"
         "<table><tr><th>Case</th><th>Status</th><th>Expected</th><th>Actual</th>"
@@ -766,6 +768,61 @@ def write_html_report(path: Path, report: dict[str, Any]) -> None:
         + "</table>"
     )
     (path / "index.html").write_text(index, encoding="utf-8")
+
+
+def _regression_html(regression: dict[str, Any] | None) -> str:
+    if not regression:
+        return ""
+    failed_gates = regression.get("failed_gates", [])
+    gate_rows = _html_table(
+        ["Gate", "Value", "Limit"],
+        [
+            [item.get("gate", ""), item.get("value", ""), item.get("limit", "")]
+            for item in failed_gates
+        ],
+    )
+    comparison = regression.get("comparison", {})
+    aggregate_delta = comparison.get("aggregate_delta", {})
+    aggregate_rows = [
+        [metric, aggregate_delta.get(metric, "")]
+        for metric in [
+            "precision",
+            "recall",
+            "evidence_hit_rate",
+            "false_positive_count",
+            "false_negative_count",
+            "task_failure_count",
+        ]
+    ]
+    case_rows = [
+        [
+            item.get("case_id", ""),
+            item.get("recall_delta", ""),
+            item.get("precision_delta", ""),
+            item.get("false_negative_delta", ""),
+            item.get("false_positive_delta", ""),
+            item.get("evidence_hit_rate_delta", ""),
+        ]
+        for item in comparison.get("case_deltas", [])
+    ]
+    git = regression.get("git", {})
+    return (
+        "<h2>Quality regression</h2>"
+        "<dl>"
+        f"<dt>Run ID</dt><dd>{html.escape(str(regression.get('run_id', '')))}</dd>"
+        f"<dt>Status</dt><dd>{html.escape(str(regression.get('status', '')))}</dd>"
+        f"<dt>Branch</dt><dd>{html.escape(str(git.get('branch', '')))}</dd>"
+        f"<dt>Commit</dt><dd>{html.escape(str(git.get('commit', '')))}</dd>"
+        f"<dt>Dirty</dt><dd>{html.escape(str(git.get('dirty', '')))}</dd>"
+        f"<dt>Baseline</dt><dd>{html.escape(str(regression.get('baseline_path') or 'None'))}</dd>"
+        "</dl>"
+        "<h3>Failed gates</h3>"
+        f"{gate_rows}"
+        "<h3>Aggregate delta</h3>"
+        f"{_html_table(['Metric', 'Delta'], aggregate_rows)}"
+        "<h3>Case regression ranking</h3>"
+        f"{_html_table(['Case', 'Recall delta', 'Precision delta', 'False negative delta', 'False positive delta', 'Evidence delta'], case_rows)}"
+    )
 
 
 def _case_page_filename(case_id: str) -> str:

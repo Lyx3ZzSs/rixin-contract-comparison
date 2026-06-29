@@ -507,6 +507,49 @@ def test_write_html_report_creates_index_and_case_pages(tmp_path: Path) -> None:
     assert "Model routing" in case_html
 
 
+def test_write_html_report_includes_regression_summary(tmp_path: Path) -> None:
+    report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
+    report["regression"] = {
+        "run_id": "phase5-run",
+        "git": {"branch": "v0.0.2", "commit": "abc123", "dirty": True},
+        "baseline_path": "baseline.json",
+        "status": "FAILED",
+        "failed_gates": [
+            {"gate": "max_recall_drop", "value": 0.1, "limit": 0.02}
+        ],
+        "comparison": {
+            "baseline_available": True,
+            "aggregate_delta": {
+                "precision": -0.01,
+                "recall": -0.1,
+                "evidence_hit_rate": 0.0,
+                "false_positive_count": 1,
+                "false_negative_count": 2,
+                "task_failure_count": 0,
+            },
+            "case_deltas": [
+                {
+                    "case_id": "simple_scanned",
+                    "precision_delta": -0.01,
+                    "recall_delta": -0.1,
+                    "evidence_hit_rate_delta": 0.0,
+                    "false_positive_delta": 1,
+                    "false_negative_delta": 2,
+                }
+            ],
+            "failed_gates": [],
+        },
+    }
+
+    write_html_report(tmp_path, report)
+
+    index = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "Quality regression" in index
+    assert "phase5-run" in index
+    assert "max_recall_drop" in index
+    assert "simple_scanned" in index
+
+
 def test_write_html_report_sanitizes_filename_and_escapes_html(
     tmp_path: Path,
 ) -> None:
