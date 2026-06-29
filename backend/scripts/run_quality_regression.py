@@ -68,6 +68,128 @@ def compare_reports(
     }
 
 
+def apply_gates(
+    current_report: dict[str, Any],
+    comparison: dict[str, Any],
+    thresholds: dict[str, float | int],
+) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    aggregate = current_report.get("aggregate", {})
+
+    _check_min_gate(failures, "min_recall", aggregate.get("recall"), thresholds)
+    _check_min_gate(failures, "min_precision", aggregate.get("precision"), thresholds)
+    _check_min_gate(
+        failures,
+        "min_evidence_hit_rate",
+        aggregate.get("evidence_hit_rate"),
+        thresholds,
+    )
+    _check_max_gate(
+        failures,
+        "max_task_failure_count",
+        aggregate.get("task_failure_count"),
+        thresholds,
+    )
+    _check_max_gate(
+        failures,
+        "max_false_positive_count",
+        aggregate.get("false_positive_count"),
+        thresholds,
+    )
+    _check_max_gate(
+        failures,
+        "max_false_negative_count",
+        aggregate.get("false_negative_count"),
+        thresholds,
+    )
+
+    if comparison.get("baseline_available") is True:
+        aggregate_delta = comparison.get("aggregate_delta", {})
+        _check_drop_gate(
+            failures,
+            "max_recall_drop",
+            aggregate_delta.get("recall"),
+            thresholds,
+        )
+        _check_drop_gate(
+            failures,
+            "max_precision_drop",
+            aggregate_delta.get("precision"),
+            thresholds,
+        )
+        _check_drop_gate(
+            failures,
+            "max_evidence_hit_rate_drop",
+            aggregate_delta.get("evidence_hit_rate"),
+            thresholds,
+        )
+        _check_increase_gate(
+            failures,
+            "max_false_positive_increase",
+            aggregate_delta.get("false_positive_count"),
+            thresholds,
+        )
+        _check_increase_gate(
+            failures,
+            "max_false_negative_increase",
+            aggregate_delta.get("false_negative_count"),
+            thresholds,
+        )
+        _check_increase_gate(
+            failures,
+            "max_task_failure_increase",
+            aggregate_delta.get("task_failure_count"),
+            thresholds,
+        )
+
+    comparison["failed_gates"] = failures
+    return failures
+
+
+def _check_min_gate(
+    failures: list[dict[str, Any]],
+    gate: str,
+    value: Any,
+    thresholds: dict[str, float | int],
+) -> None:
+    limit = thresholds.get(gate)
+    if _is_number(value) and _is_number(limit) and value < limit:
+        failures.append({"gate": gate, "value": value, "limit": limit})
+
+
+def _check_max_gate(
+    failures: list[dict[str, Any]],
+    gate: str,
+    value: Any,
+    thresholds: dict[str, float | int],
+) -> None:
+    limit = thresholds.get(gate)
+    if _is_number(value) and _is_number(limit) and value > limit:
+        failures.append({"gate": gate, "value": value, "limit": limit})
+
+
+def _check_drop_gate(
+    failures: list[dict[str, Any]],
+    gate: str,
+    delta: Any,
+    thresholds: dict[str, float | int],
+) -> None:
+    limit = thresholds.get(gate)
+    if _is_number(delta) and _is_number(limit) and delta < -limit:
+        failures.append({"gate": gate, "value": delta, "limit": limit})
+
+
+def _check_increase_gate(
+    failures: list[dict[str, Any]],
+    gate: str,
+    delta: Any,
+    thresholds: dict[str, float | int],
+) -> None:
+    limit = thresholds.get(gate)
+    if _is_number(delta) and _is_number(limit) and delta > limit:
+        failures.append({"gate": gate, "value": delta, "limit": limit})
+
+
 def _case_deltas(
     current_cases: list[dict[str, Any]],
     baseline_cases: list[dict[str, Any]],

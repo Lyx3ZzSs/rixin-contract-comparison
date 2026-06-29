@@ -5,6 +5,7 @@ import pytest
 
 from scripts.run_quality_regression import (
     DEFAULT_REGRESSION_THRESHOLDS,
+    apply_gates,
     compare_reports,
     load_thresholds,
 )
@@ -194,3 +195,70 @@ def test_compare_reports_sorts_case_deltas_by_regression_risk() -> None:
         "case_a",
         "case_b",
     ]
+
+
+def test_apply_gates_detects_absolute_failures_without_baseline() -> None:
+    current = _quality_report(
+        precision=0.8,
+        recall=0.7,
+        evidence_hit_rate=0.6,
+        false_positive_count=2,
+        false_negative_count=1,
+        task_failure_count=1,
+    )
+    comparison = compare_reports(current, None)
+
+    failures = apply_gates(
+        current,
+        comparison,
+        {
+            "min_recall": 0.95,
+            "min_precision": 0.9,
+            "min_evidence_hit_rate": 0.9,
+            "max_task_failure_count": 0,
+            "max_false_positive_count": 0,
+            "max_false_negative_count": 0,
+            "max_recall_drop": 0.02,
+            "max_precision_drop": 0.02,
+            "max_evidence_hit_rate_drop": 0.02,
+            "max_false_positive_increase": 1,
+            "max_false_negative_increase": 0,
+            "max_task_failure_increase": 0,
+        },
+    )
+
+    assert "min_recall" in {item["gate"] for item in failures}
+    assert "min_precision" in {item["gate"] for item in failures}
+    assert "min_evidence_hit_rate" in {item["gate"] for item in failures}
+    assert "max_task_failure_count" in {item["gate"] for item in failures}
+    assert "max_false_positive_count" in {item["gate"] for item in failures}
+    assert "max_false_negative_count" in {item["gate"] for item in failures}
+
+
+def test_apply_gates_detects_regressions_against_baseline() -> None:
+    baseline = _quality_report(
+        precision=1.0,
+        recall=1.0,
+        evidence_hit_rate=1.0,
+        false_positive_count=0,
+        false_negative_count=0,
+        task_failure_count=0,
+    )
+    current = _quality_report(
+        precision=0.9,
+        recall=0.8,
+        evidence_hit_rate=0.85,
+        false_positive_count=2,
+        false_negative_count=1,
+        task_failure_count=1,
+    )
+    comparison = compare_reports(current, baseline)
+
+    failures = apply_gates(current, comparison, DEFAULT_REGRESSION_THRESHOLDS)
+
+    assert "max_recall_drop" in {item["gate"] for item in failures}
+    assert "max_precision_drop" in {item["gate"] for item in failures}
+    assert "max_evidence_hit_rate_drop" in {item["gate"] for item in failures}
+    assert "max_false_positive_increase" in {item["gate"] for item in failures}
+    assert "max_false_negative_increase" in {item["gate"] for item in failures}
+    assert "max_task_failure_increase" in {item["gate"] for item in failures}
