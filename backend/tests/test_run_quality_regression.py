@@ -346,7 +346,7 @@ def test_apply_gates_fails_fast_for_incomplete_thresholds() -> None:
         apply_gates(current, comparison, thresholds)
 
 
-def _write_stub_html_report(path: Path, payload: dict) -> None:
+def _write_stub_html_report(path: Path, _payload: dict) -> None:
     path.mkdir(parents=True, exist_ok=True)
     (path / "index.html").write_text("html", encoding="utf-8")
 
@@ -399,3 +399,186 @@ def test_run_regression_writes_artifacts_and_baseline(
     assert summary["run_id"] == "manual-run"
     assert summary["git"]["commit"] == "abc123"
     assert summary["current_report_path"] == "quality.json"
+    written_quality = json.loads((output_dir / "quality.json").read_text(encoding="utf-8"))
+    written_baseline = json.loads(write_baseline.read_text(encoding="utf-8"))
+    assert written_baseline == written_quality
+
+
+def test_run_regression_compares_existing_baseline(
+    tmp_path: Path, monkeypatch
+) -> None:
+    case_root = tmp_path / "cases"
+    case_root.mkdir()
+    output_dir = tmp_path / "run"
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        json.dumps(_quality_report(precision=0.9, recall=0.95)),
+        encoding="utf-8",
+    )
+    current_report = _quality_report(precision=1.0, recall=1.0)
+
+    monkeypatch.setattr(
+        run_quality_regression,
+        "evaluate_case_root",
+        lambda path: dict(current_report),
+    )
+    monkeypatch.setattr(
+        run_quality_regression,
+        "write_html_report",
+        _write_stub_html_report,
+    )
+    monkeypatch.setattr(
+        run_quality_regression,
+        "git_metadata",
+        lambda: {"branch": "v0.0.2", "commit": "abc123", "dirty": False},
+    )
+
+    run_regression(
+        case_root=case_root,
+        output_dir=output_dir,
+        baseline_path=baseline_path,
+        thresholds_path=None,
+        run_id="baseline-run",
+        html_output=None,
+        write_baseline=None,
+    )
+
+    comparison = json.loads(
+        (output_dir / "baseline_comparison.json").read_text(encoding="utf-8")
+    )
+    assert comparison["baseline_available"] is True
+    assert comparison["aggregate_delta"]["precision"] == 0.1
+    assert comparison["aggregate_delta"]["recall"] == 0.05
+
+
+def test_run_regression_marks_failed_gate_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    case_root = tmp_path / "cases"
+    case_root.mkdir()
+    output_dir = tmp_path / "run"
+    current_report = _quality_report(precision=0.8, recall=0.7)
+
+    monkeypatch.setattr(
+        run_quality_regression,
+        "evaluate_case_root",
+        lambda path: dict(current_report),
+    )
+    monkeypatch.setattr(
+        run_quality_regression,
+        "write_html_report",
+        _write_stub_html_report,
+    )
+    monkeypatch.setattr(
+        run_quality_regression,
+        "git_metadata",
+        lambda: {"branch": "v0.0.2", "commit": "abc123", "dirty": False},
+    )
+
+    summary = run_regression(
+        case_root=case_root,
+        output_dir=output_dir,
+        baseline_path=None,
+        thresholds_path=None,
+        run_id="failed-run",
+        html_output=None,
+        write_baseline=None,
+    )
+
+    written_summary = json.loads(
+        (output_dir / "run_summary.json").read_text(encoding="utf-8")
+    )
+    quality = json.loads((output_dir / "quality.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "FAILED"
+    assert written_summary["status"] == "FAILED"
+    assert quality["regression"]["status"] == "FAILED"
+    assert {item["gate"] for item in summary["failed_gates"]} >= {
+        "min_precision",
+        "min_recall",
+    }
+
+
+def test_run_regression_uses_html_output_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    case_root = tmp_path / "cases"
+    case_root.mkdir()
+    output_dir = tmp_path / "run"
+    html_output = tmp_path / "custom-html"
+    current_report = _quality_report()
+
+    monkeypatch.setattr(
+        run_quality_regression,
+        "evaluate_case_root",
+        lambda path: dict(current_report),
+    )
+    monkeypatch.setattr(
+        run_quality_regression,
+        "write_html_report",
+        _write_stub_html_report,
+    )
+    monkeypatch.setattr(
+        run_quality_regression,
+        "git_metadata",
+        lambda: {"branch": "v0.0.2", "commit": "abc123", "dirty": False},
+    )
+
+    summary = run_regression(
+        case_root=case_root,
+        output_dir=output_dir,
+        baseline_path=None,
+        thresholds_path=None,
+        run_id="html-run",
+        html_output=html_output,
+        write_baseline=None,
+    )
+
+    assert (html_output / "index.html").exists()
+    assert not (output_dir / "html" / "index.html").exists()
+    assert summary["html_report_path"] == str(html_output / "index.html")
+
+
+def test_run_regression_rejects_missing_case_root(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="case root does not exist"):
+        run_regression(
+            case_root=tmp_path / "missing-cases",
+            output_dir=tmp_path / "run",
+            baseline_path=None,
+            thresholds_path=None,
+            run_id=None,
+            html_output=None,
+            write_baseline=None,
+        )
+
+
+def test_run_regression_rejects_missing_baseline_path(tmp_path: Path) -> None:
+    case_root = tmp_path / "cases"
+    case_root.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="baseline report does not exist"):
+        run_regression(
+            case_root=case_root,
+            output_dir=tmp_path / "run",
+            baseline_path=tmp_path / "missing-baseline.json",
+            thresholds_path=None,
+            run_id=None,
+            html_output=None,
+            write_baseline=None,
+        )
+
+
+def test_git_metadata_returns_empty_values_when_git_commands_fail(
+    monkeypatch,
+) -> None:
+    def raise_os_error(command: list[str], *, text: bool) -> str:
+        raise OSError("git unavailable")
+
+    monkeypatch.setattr(
+        run_quality_regression.subprocess,
+        "check_output",
+        raise_os_error,
+    )
+
+    metadata = run_quality_regression.git_metadata()
+
+    assert metadata == {"branch": "", "commit": "", "dirty": False}
