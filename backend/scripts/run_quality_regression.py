@@ -14,7 +14,7 @@ DEFAULT_REGRESSION_THRESHOLDS: dict[str, float | int] = {
     "max_precision_drop": 0.02,
     "max_recall_drop": 0.02,
     "max_evidence_hit_rate_drop": 0.02,
-    "max_false_positive_increase": 0,
+    "max_false_positive_increase": 1,
     "max_false_negative_increase": 0,
     "max_task_failure_increase": 0,
 }

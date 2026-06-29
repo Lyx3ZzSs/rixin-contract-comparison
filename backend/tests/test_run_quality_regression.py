@@ -58,6 +58,7 @@ def test_load_thresholds_uses_defaults_when_path_is_none() -> None:
 
     assert thresholds == DEFAULT_REGRESSION_THRESHOLDS
     assert thresholds["min_recall"] == 0.95
+    assert thresholds["max_false_positive_increase"] == 1
     assert "max_false_positive_increase" in thresholds
     assert "max_false_negative_increase" in thresholds
     assert "max_task_failure_increase" in thresholds
