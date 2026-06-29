@@ -42,6 +42,7 @@ def compare_reports(
             "baseline_available": False,
             "aggregate_delta": {},
             "case_deltas": [],
+            "failed_gates": [],
         }
 
     return {

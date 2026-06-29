@@ -96,3 +96,12 @@ def test_compare_reports_returns_aggregate_and_case_deltas() -> None:
     assert comparison["case_deltas"][0]["case_id"] == "case_a"
     assert comparison["case_deltas"][0]["precision_delta"] == -0.15
     assert comparison["case_deltas"][0]["recall_delta"] == -0.25
+
+
+def test_compare_reports_returns_empty_baseline_comparison_without_baseline() -> None:
+    comparison = compare_reports(_quality_report(), None)
+
+    assert comparison["baseline_available"] is False
+    assert comparison["aggregate_delta"] == {}
+    assert comparison["case_deltas"] == []
+    assert comparison["failed_gates"] == []
