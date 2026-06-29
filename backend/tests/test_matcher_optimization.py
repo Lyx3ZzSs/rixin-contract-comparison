@@ -144,6 +144,18 @@ def test_clause_matcher_includes_alignment_diagnostics() -> None:
     assert pair.match_candidates[0]["score_details"]["alignment"]["number_match"] is True
 
 
+def test_clause_matcher_marks_low_confidence_alignment_for_token_conflict() -> None:
+    original = [clause("O001", "3.1", "付款条款", "甲方应在2026年6月30日前支付人民币1000元。")]
+    compare = [clause("N001", "3.1", "付款条款", "甲方应在2026年6月30日前支付人民币5000元。")]
+
+    pair = ClauseMatcher().match(original, compare)[0]
+
+    flags = pair.score_details["alignment"]["risk_flags"]
+    assert "CRITICAL_TOKEN_MISMATCH" in flags
+    assert "POSSIBLE_CLAUSE_MISALIGNMENT" in flags
+    assert pair.match_confidence == "LOW"
+
+
 def test_optimal_assignment_prefers_two_good_pairs_over_one_greedy_pair() -> None:
     original = [
         clause("O001", "", "A", "Template service scope with payment support."),

@@ -1027,6 +1027,9 @@ class ClauseMatcher:
 
     def _match_confidence(self, candidate: MatchCandidate) -> str:
         details = candidate.details
+        alignment = details.get("alignment")
+        if isinstance(alignment, dict) and alignment.get("risk_flags"):
+            return "LOW"
         if candidate.score < self.low_confidence_review_threshold:
             return "LOW"
         if details.get("body_length_coverage", 1.0) < 0.50:
