@@ -3,11 +3,13 @@ from pathlib import Path
 
 import pytest
 
+from scripts import run_quality_regression
 from scripts.run_quality_regression import (
     DEFAULT_REGRESSION_THRESHOLDS,
     apply_gates,
     compare_reports,
     load_thresholds,
+    run_regression,
 )
 
 
@@ -342,3 +344,58 @@ def test_apply_gates_fails_fast_for_incomplete_thresholds() -> None:
 
     with pytest.raises(KeyError, match="min_recall"):
         apply_gates(current, comparison, thresholds)
+
+
+def _write_stub_html_report(path: Path, payload: dict) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "index.html").write_text("html", encoding="utf-8")
+
+
+def test_run_regression_writes_artifacts_and_baseline(
+    tmp_path: Path, monkeypatch
+) -> None:
+    case_root = tmp_path / "cases"
+    case_root.mkdir()
+    output_dir = tmp_path / "run"
+    write_baseline = tmp_path / "baseline.json"
+    report = _quality_report(
+        precision=1.0,
+        recall=1.0,
+        evidence_hit_rate=1.0,
+        cases=[_case_report("case_a")],
+    )
+
+    monkeypatch.setattr(
+        run_quality_regression, "evaluate_case_root", lambda path: dict(report)
+    )
+    monkeypatch.setattr(
+        run_quality_regression,
+        "write_html_report",
+        _write_stub_html_report,
+    )
+    monkeypatch.setattr(
+        run_quality_regression,
+        "git_metadata",
+        lambda: {"branch": "v0.0.2", "commit": "abc123", "dirty": False},
+    )
+
+    result = run_regression(
+        case_root=case_root,
+        output_dir=output_dir,
+        baseline_path=None,
+        thresholds_path=None,
+        run_id="manual-run",
+        html_output=None,
+        write_baseline=write_baseline,
+    )
+
+    assert result["status"] == "PASSED"
+    assert (output_dir / "quality.json").exists()
+    assert (output_dir / "baseline_comparison.json").exists()
+    assert (output_dir / "run_summary.json").exists()
+    assert (output_dir / "html" / "index.html").exists()
+    assert write_baseline.exists()
+    summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["run_id"] == "manual-run"
+    assert summary["git"]["commit"] == "abc123"
+    assert summary["current_report_path"] == "quality.json"

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from scripts.evaluate_ocr_compare_quality import evaluate_case_root, write_html_report
 
 DEFAULT_REGRESSION_THRESHOLDS: dict[str, float | int] = {
     "min_precision": 0.9,
@@ -283,6 +288,84 @@ def _high_sort_value(value: Any) -> float:
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def run_regression(
+    *,
+    case_root: Path,
+    output_dir: Path,
+    baseline_path: Path | None,
+    thresholds_path: Path | None,
+    run_id: str | None,
+    html_output: Path | None,
+    write_baseline: Path | None,
+) -> dict[str, Any]:
+    if not case_root.exists():
+        raise FileNotFoundError(f"case root does not exist: {case_root}")
+    if baseline_path is not None and not baseline_path.exists():
+        raise FileNotFoundError(f"baseline report does not exist: {baseline_path}")
+    thresholds = load_thresholds(thresholds_path)
+    current_report = evaluate_case_root(case_root)
+    baseline_report = _read_json(baseline_path) if baseline_path else None
+    comparison = compare_reports(current_report, baseline_report)
+    failed_gates = apply_gates(current_report, comparison, thresholds)
+    current_run_id = run_id or _default_run_id()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    html_dir = html_output or output_dir / "html"
+    current_report["regression"] = {
+        "run_id": current_run_id,
+        "git": git_metadata(),
+        "baseline_path": str(baseline_path) if baseline_path else None,
+        "thresholds": thresholds,
+        "comparison": comparison,
+        "failed_gates": failed_gates,
+        "status": "FAILED" if failed_gates else "PASSED",
+    }
+    _write_json(output_dir / "quality.json", current_report)
+    _write_json(output_dir / "baseline_comparison.json", comparison)
+    write_html_report(html_dir, current_report)
+    summary = {
+        "run_id": current_run_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "git": current_report["regression"]["git"],
+        "case_root": str(case_root),
+        "baseline_path": str(baseline_path) if baseline_path else None,
+        "thresholds": thresholds,
+        "current_report_path": "quality.json",
+        "baseline_comparison_path": "baseline_comparison.json",
+        "html_report_path": str(html_dir / "index.html"),
+        "status": current_report["regression"]["status"],
+        "failed_gates": failed_gates,
+    }
+    _write_json(output_dir / "run_summary.json", summary)
+    if write_baseline:
+        write_baseline.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(output_dir / "quality.json", write_baseline)
+    return summary
+
+
+def git_metadata() -> dict[str, Any]:
+    return {
+        "branch": _git_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
+        "commit": _git_output(["git", "rev-parse", "HEAD"]),
+        "dirty": bool(_git_output(["git", "status", "--porcelain"])),
+    }
+
+
+def _git_output(command: list[str]) -> str:
+    try:
+        return subprocess.check_output(command, text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
+def _default_run_id() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _read_json(path: Path) -> dict[str, Any]:
