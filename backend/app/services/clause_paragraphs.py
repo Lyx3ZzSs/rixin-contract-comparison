@@ -109,9 +109,11 @@ class ParagraphBuilder:
         compact = cls._compact_text(text)
         if not compact:
             return True
-        if "以下无正文" in compact:
+        if "以下无正文" in compact or "此页无正文" in compact or "本页无正文" in compact:
             return True
         if compact in {"签署页", "签字页"}:
+            return True
+        if len(compact) <= 24 and re.search(r"(签署页|签字页).{0,12}无正文", compact):
             return True
         if len(compact) <= 20 and re.search(r"(甲方|乙方|买方|卖方).{0,8}(盖章|签章|签字)", compact):
             return True

@@ -1062,7 +1062,9 @@ class ClauseSplitter:
         if marker is not None or unit.block_type != "paragraph_title":
             return False
         compact = re.sub(r"\s+", "", unit.text or "")
-        if not compact or len(compact) < 4:
+        if not compact:
+            return False
+        if len(compact) < 4 and not self._has_heading_business_term(compact):
             return False
         if self._is_cover_noise_text(compact) or self._is_attachment_title(compact):
             return False
