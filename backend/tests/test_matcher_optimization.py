@@ -226,11 +226,13 @@ def test_low_coverage_same_key_with_weak_body_and_title_is_not_accepted_by_key_o
 
 def test_critical_token_conflict_caps_score_but_keeps_modify_candidate() -> None:
     original = [clause("O001", "3.1", "付款条款", "甲方应在2026年6月30日前支付人民币1000元。")]
-    compare = [clause("N001", "3.1", "付款条款", "甲方应在2027年7月31日前支付人民币5000元。")]
+    compare = [clause("N001", "3.1", "付款条款", "乙方应在2027年7月31日前支付人民币5000元。")]
 
     pair = ClauseMatcher().match(original, compare)[0]
 
     assert pair.compare is not None
+    assert pair.score_details["body_score"] < 85
+    assert pair.score_details["alignment"]["critical_token_overlap"] == 0.0
     assert pair.score <= 84.0
     assert "CRITICAL_TOKEN_CONFLICT" in pair.score_details["matcher_risk_flags"]
     assert pair.match_confidence == "LOW"
