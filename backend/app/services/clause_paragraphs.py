@@ -153,6 +153,8 @@ class ParagraphBuilder:
         previous_section = getattr(previous, "section_type", "main_contract")
         if previous_section == "signature" and self._looks_like_signing_boundary(current_text):
             return self._replace_unit(current, section_type="signature")
+        if self.cross_page_merged_flag in getattr(previous, "split_flags", ()):
+            return current
         if not self._visually_continues_across_adjacent_pages(previous, current):
             return current
         if self._looks_like_signing_boundary(current_text):

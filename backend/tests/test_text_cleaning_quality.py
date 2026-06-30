@@ -805,6 +805,62 @@ def test_clause_splitter_keeps_short_business_word_cross_page_continuation() -> 
     assert "CROSS_PAGE_CONTINUATION_MERGED" not in clauses[0].split_flags
 
 
+def test_clause_splitter_does_not_promote_short_word_after_cross_page_merge() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1",
+                        page_no=1,
+                        text="5.2 乙方应保证",
+                        bbox=BBox(x0=50, y0=760, x1=520, y1=790),
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p2-line1",
+                        page_no=2,
+                        text="服务质量，",
+                        bbox=BBox(x0=70, y0=72, x1=520, y1=102),
+                    ),
+                    TextBlock(
+                        block_id="p2-word",
+                        page_no=2,
+                        text="安全",
+                        bbox=BBox(x0=70, y0=116, x1=120, y1=146),
+                    ),
+                    TextBlock(
+                        block_id="p2-body",
+                        page_no=2,
+                        text="符合合同约定。",
+                        bbox=BBox(x0=90, y0=160, x1=520, y1=190),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert len(clauses) == 1
+    assert "服务质量" in clauses[0].text
+    assert "安全\n符合合同约定" in clauses[0].text
+    assert clauses[0].source_block_ids == ["p1", "p2-line1", "p2-word", "p2-body"]
+    assert "CROSS_PAGE_CONTINUATION_MERGED" in clauses[0].split_flags
+
+
 def test_clause_splitter_merges_cross_page_amount_value_continuation() -> None:
     document = Document(
         filename="sample.pdf",
