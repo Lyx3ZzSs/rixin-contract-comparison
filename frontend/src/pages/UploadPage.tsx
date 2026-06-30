@@ -122,32 +122,35 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
           />
         </div>
 
-        <div className="compare-options" aria-label="排除对比项">
+        <fieldset className="compare-options">
+          <legend>排除对比项</legend>
           <label className="compare-option">
             <input
               type="checkbox"
-              aria-label="排除签章区域"
+              aria-labelledby="ignore-stamps-label"
+              aria-describedby="ignore-stamps-helper"
               checked={ignoreStamps}
               onChange={(event) => setIgnoreStamps(event.target.checked)}
             />
             <span>
-              <strong>排除签章区域</strong>
-              <small>不生成印章、签字等签章区域差异</small>
+              <strong id="ignore-stamps-label">排除签章区域</strong>
+              <small id="ignore-stamps-helper">不生成印章、签字等签章区域差异</small>
             </span>
           </label>
           <label className="compare-option">
             <input
               type="checkbox"
-              aria-label="排除页眉页脚差异项"
+              aria-labelledby="ignore-headers-footers-label"
+              aria-describedby="ignore-headers-footers-helper"
               checked={ignoreHeadersFooters}
               onChange={(event) => setIgnoreHeadersFooters(event.target.checked)}
             />
             <span>
-              <strong>排除页眉页脚差异项</strong>
-              <small>不生成页眉、页脚、页码等差异</small>
+              <strong id="ignore-headers-footers-label">排除页眉页脚差异项</strong>
+              <small id="ignore-headers-footers-helper">不生成页眉、页脚、页码等差异</small>
             </span>
           </label>
-        </div>
+        </fieldset>
 
         <div className="compare-actions">
           <button className="compare-submit" type="submit" disabled={!canSubmit}>
