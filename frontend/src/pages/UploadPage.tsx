@@ -18,6 +18,8 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
   const [error, setError] = useState("");
   const [createdTask, setCreatedTask] = useState<CompareResponse | null>(null);
   const [isTaskToastVisible, setIsTaskToastVisible] = useState(false);
+  const [ignoreStamps, setIgnoreStamps] = useState(false);
+  const [ignoreHeadersFooters, setIgnoreHeadersFooters] = useState(false);
 
   const canSubmit = useMemo(
     () => Boolean(originalFile && compareFile && !isSubmitting),
@@ -48,7 +50,7 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
     setIsTaskToastVisible(false);
     setMessage("正在上传并创建合同对比任务...");
     try {
-      const payload = await compareContracts(originalFile, compareFile);
+      const payload = await compareContracts(originalFile, compareFile, { ignoreStamps, ignoreHeadersFooters });
       setOriginalFile(null);
       setCompareFile(null);
       setCreatedTask(payload);
@@ -118,6 +120,33 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
             file={compareFile}
             onChange={setCompareFile}
           />
+        </div>
+
+        <div className="compare-options" aria-label="排除对比项">
+          <label className="compare-option">
+            <input
+              type="checkbox"
+              aria-label="排除签章区域"
+              checked={ignoreStamps}
+              onChange={(event) => setIgnoreStamps(event.target.checked)}
+            />
+            <span>
+              <strong>排除签章区域</strong>
+              <small>不生成印章、签字等签章区域差异</small>
+            </span>
+          </label>
+          <label className="compare-option">
+            <input
+              type="checkbox"
+              aria-label="排除页眉页脚差异项"
+              checked={ignoreHeadersFooters}
+              onChange={(event) => setIgnoreHeadersFooters(event.target.checked)}
+            />
+            <span>
+              <strong>排除页眉页脚差异项</strong>
+              <small>不生成页眉、页脚、页码等差异</small>
+            </span>
+          </label>
         </div>
 
         <div className="compare-actions">

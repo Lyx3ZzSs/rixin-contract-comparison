@@ -2125,6 +2125,58 @@ h2 {
   font-size: 0.9rem;
 }
 
+.compare-options {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin: 18px 0 0;
+}
+
+.compare-option {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid #d9e7e7;
+  border-radius: 6px;
+  background: #f8fbfb;
+  color: #26383b;
+  cursor: pointer;
+}
+
+.compare-option:hover,
+.compare-option:focus-within {
+  border-color: rgba(73, 170, 160, 0.56);
+  background: rgba(73, 170, 160, 0.06);
+}
+
+.compare-option input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  accent-color: var(--teal);
+}
+
+.compare-option span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.compare-option strong {
+  overflow-wrap: anywhere;
+  font-size: 0.9rem;
+  line-height: 1.25;
+}
+
+.compare-option small {
+  color: #718082;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .compare-actions {
   display: flex;
   width: min(100%, 520px);
@@ -4619,6 +4671,14 @@ h2 {
   .compare-actions {
     width: 100%;
     flex-wrap: wrap;
+  }
+
+  .compare-options {
+    justify-content: stretch;
+  }
+
+  .compare-option {
+    width: 100%;
   }
 
   .compare-submit {
