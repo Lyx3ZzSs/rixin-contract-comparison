@@ -40,6 +40,7 @@ class DiffQualityProcessor:
         "SEAL_OR_SIGNATURE_RISK",
         "EVIDENCE_UNRELIABLE",
     }
+    critical_field_flag = "CRITICAL_FIELD_CHANGE"
     critical_pattern = re.compile(
         r"(\d|%|‰|元|万元|v\d|V\d|公司|甲方|乙方|不得|不承担|违约|免责|终止|不可抗力)"
     )
@@ -136,6 +137,10 @@ class DiffQualityProcessor:
                     )
                 )
                 continue
+            if self._has_critical_field_change(diff):
+                self._add_flag(diff, "CRITICAL_VALUE_CHANGE")
+                decisions.append(DiffQualityDecision(action="critical_field_change", diff_id=diff.diff_id))
+                continue
             if self._looks_like_minor_ocr_noise(diff) or self._looks_like_short_symbol_noise(diff):
                 self._add_flag(diff, "POSSIBLE_OCR_NOISE")
                 diff.quality_status = "NEEDS_REVIEW"
@@ -188,6 +193,8 @@ class DiffQualityProcessor:
     def _suppression_reason(self, diff: DiffItem) -> str:
         if self._looks_like_header_footer_noise(diff):
             return "header_footer_noise"
+        if self._has_critical_field_change(diff):
+            return ""
         if self._is_layout_punctuation_equivalent_clause_change(diff):
             return "layout_punctuation_equivalent"
         if self._has_business_token(diff):
@@ -339,12 +346,17 @@ class DiffQualityProcessor:
         return len(self._compact(diff.original_snippet or diff.compare_snippet)) <= 3
 
     def _is_critical_change(self, diff: DiffItem) -> bool:
+        if self._has_critical_field_change(diff):
+            return True
         if self._looks_like_short_symbol_noise(diff):
             return False
         if self._should_downgrade_non_body_change(diff):
             return False
         changed = self._changed_text(diff)
         return bool(self.critical_pattern.search(changed or ""))
+
+    def _has_critical_field_change(self, diff: DiffItem) -> bool:
+        return self.critical_field_flag in diff.review_flags
 
     def _has_business_token(self, diff: DiffItem) -> bool:
         text = f"{self._changed_text(diff)} {diff.original_text} {diff.compare_text}"

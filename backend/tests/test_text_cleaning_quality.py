@@ -674,6 +674,51 @@ def test_diff_quality_suppresses_short_symbol_noise_without_business_tokens() ->
     assert any(decision.action == "suppressed_low_value_noise" and decision.diff_id == "D001" for decision in result.decisions)
 
 
+def test_diff_quality_preserves_critical_field_change_from_low_value_suppression() -> None:
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_snippet="/",
+        compare_snippet="∠",
+        match_score=99,
+        review_flags=["CRITICAL_FIELD_CHANGE", "CRITICAL_FIELD_AMOUNT_CHANGE"],
+        match_score_details={
+            "critical_field_diff_types": ["AMOUNT"],
+            "critical_field_guard_applied": 1.0,
+        },
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D001"]
+    assert "CRITICAL_FIELD_CHANGE" in result.diffs[0].review_flags
+    assert "CRITICAL_VALUE_CHANGE" in result.diffs[0].review_flags
+    assert not any(decision.action == "suppressed_low_value_noise" for decision in result.decisions)
+
+
+def test_diff_quality_keeps_ocr_review_status_on_critical_field_change() -> None:
+    diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_snippet="1000元",
+        compare_snippet="5000元",
+        review_flags=[
+            "CRITICAL_FIELD_CHANGE",
+            "CRITICAL_FIELD_AMOUNT_CHANGE",
+            "EVIDENCE_UNRELIABLE",
+        ],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process([diff]).diffs[0]
+
+    assert result.quality_status == "NEEDS_REVIEW"
+    assert "CRITICAL_VALUE_CHANGE" in result.review_flags
+    assert "EVIDENCE_UNRELIABLE" in result.review_flags
+
+
 def test_diff_quality_preserves_ocr_marked_low_value_diff() -> None:
     diff = DiffItem(
         diff_id="D001",
