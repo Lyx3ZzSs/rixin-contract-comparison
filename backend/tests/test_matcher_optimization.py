@@ -238,6 +238,20 @@ def test_critical_token_conflict_caps_score_but_keeps_modify_candidate() -> None
     assert pair.match_confidence == "LOW"
 
 
+def test_high_similarity_critical_token_conflict_does_not_score_as_full_match() -> None:
+    original = [clause("O001", "3.1", "付款条款", "甲方应在2026年6月30日前支付人民币1000元。")]
+    compare = [clause("N001", "3.1", "付款条款", "甲方应在2027年7月31日前支付人民币5000元。")]
+
+    pair = ClauseMatcher().match(original, compare)[0]
+
+    assert pair.compare is not None
+    assert pair.score_details["body_score"] >= 85
+    assert pair.score_details["alignment"]["critical_token_overlap"] == 0.0
+    assert "CRITICAL_TOKEN_CONFLICT" in pair.score_details["matcher_risk_flags"]
+    assert pair.score <= 84.0
+    assert pair.match_confidence == "LOW"
+
+
 def test_optimal_assignment_prefers_two_good_pairs_over_one_greedy_pair() -> None:
     original = [
         clause("O001", "", "A", "Template service scope with payment support."),

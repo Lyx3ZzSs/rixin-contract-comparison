@@ -984,7 +984,6 @@ class ClauseMatcher:
         if (
             CRITICAL_TOKEN_CONFLICT in risk_flags
             and self._alignment_number(details.get("alignment"), "critical_token_overlap", default=1.0) <= 0.0
-            and details["body_score"] < 85
         ):
             weighted = min(weighted, 84.0)
         if (
