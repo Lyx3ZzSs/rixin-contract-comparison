@@ -356,7 +356,7 @@ class DiffQualityProcessor:
         return bool(self.critical_pattern.search(changed or ""))
 
     def _has_critical_field_change(self, diff: DiffItem) -> bool:
-        return self.critical_field_flag in diff.review_flags
+        return diff.source_type == "clause" and self.critical_field_flag in diff.review_flags
 
     def _has_business_token(self, diff: DiffItem) -> bool:
         text = f"{self._changed_text(diff)} {diff.original_text} {diff.compare_text}"
