@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.analyze_quality_attribution import analyze_run_dir
+from scripts.analyze_quality_attribution import analyze_run_dir, write_attribution_report
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -310,3 +310,43 @@ def test_analyze_run_dir_ignores_bool_debug_counts(tmp_path: Path) -> None:
     assert case["match_method_counts"] == {"same_clause_key_weighted": 1}
     assert case["alignment_risk_flag_counts"] == {"TEXT_MATCH_NUMBER_MISMATCH": 1}
     assert case["low_confidence_alignment_count"] == 0
+
+
+def test_write_attribution_report_writes_quality_attribution_json(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    path = write_attribution_report(run_dir, {"run_id": "run", "cases": []})
+
+    assert path == run_dir / "quality_attribution.json"
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "run_id": "run",
+        "cases": [],
+    }
+
+
+def test_main_writes_report_and_prints_summary(tmp_path: Path, capsys) -> None:
+    from scripts import analyze_quality_attribution
+
+    run_dir = tmp_path / "run"
+    _write_quality_report(run_dir)
+
+    exit_code = analyze_quality_attribution.main(["--run-dir", str(run_dir)])
+
+    assert exit_code == 0
+    payload = json.loads((run_dir / "quality_attribution.json").read_text(encoding="utf-8"))
+    assert payload["case_count"] == 1
+    captured = json.loads(capsys.readouterr().out)
+    assert captured["output_path"] == str(run_dir / "quality_attribution.json")
+    assert captured["case_count"] == 1
+
+
+def test_main_returns_error_for_missing_run_dir(tmp_path: Path, capsys) -> None:
+    from scripts import analyze_quality_attribution
+
+    exit_code = analyze_quality_attribution.main(["--run-dir", str(tmp_path / "missing")])
+
+    assert exit_code == 1
+    captured = json.loads(capsys.readouterr().out)
+    assert "run directory does not exist" in captured["error"]

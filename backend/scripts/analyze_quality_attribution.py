@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from collections import Counter
 from pathlib import Path
@@ -15,6 +16,9 @@ SUSPICIOUS_MATCH_METHODS = {
 
 
 def analyze_run_dir(run_dir: Path) -> dict[str, Any]:
+    if not run_dir.exists():
+        raise FileNotFoundError(f"run directory does not exist: {run_dir}")
+
     quality_path = run_dir / "quality.json"
     if not quality_path.exists():
         raise FileNotFoundError(f"quality report does not exist: {quality_path}")
@@ -27,6 +31,47 @@ def analyze_run_dir(run_dir: Path) -> dict[str, Any]:
         "aggregate": _aggregate_report(quality, cases),
         "cases": cases,
     }
+
+
+def write_attribution_report(run_dir: Path, report: dict[str, Any]) -> Path:
+    path = run_dir / "quality_attribution.json"
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Analyze quality attribution from an OCR compare regression run directory.",
+    )
+    parser.add_argument("--run-dir", type=Path, required=True)
+    args = parser.parse_args(argv)
+
+    try:
+        report = analyze_run_dir(args.run_dir)
+        output_path = write_attribution_report(args.run_dir, report)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
+        print(
+            json.dumps(
+                {"status": "FAILED", "error": str(error)},
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        return 1
+
+    print(
+        json.dumps(
+            {
+                "status": "PASSED",
+                "run_id": report["run_id"],
+                "case_count": report["case_count"],
+                "output_path": str(output_path),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
+    return 0
 
 
 def _quality_cases(quality: dict[str, Any]) -> list[dict[str, Any]]:
@@ -406,3 +451,7 @@ def _string_value(value: Any) -> str:
     if isinstance(value, str):
         return value
     return ""
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
