@@ -22,7 +22,7 @@
 | 标签 | 含义 | 默认处理 |
 | --- | --- | --- |
 | `SAME_KEY_LOW_BODY_COVERAGE` | clause key 相同但正文覆盖不足 | 不允许普通高置信；弱正文且标题不强时不靠 key 接受 |
-| `CRITICAL_TOKEN_CONFLICT` | 金额、日期、期限等关键 token 冲突 | `match_confidence=LOW`；关键 token 完全不重合且正文分低时限制分数 |
+| `CRITICAL_TOKEN_CONFLICT` | 金额、日期、期限等关键 token 冲突 | `match_confidence=LOW`；关键 token 完全不重合时限制分数，不依赖正文分高低 |
 | `SAME_NUMBER_LOW_BODY_SIMILARITY` | 编号相同但正文相似度过低 | `match_confidence=LOW`；标题不强时限制强匹配 |
 | `BODY_ONLY_ALIGNMENT_RISK` | body-only 候选存在 alignment 风险 | `match_confidence=LOW`，保留候选给 attribution 定位 |
 
