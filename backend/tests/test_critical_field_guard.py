@@ -15,6 +15,24 @@ def test_detects_amount_change_from_numeric_snippet_and_full_context() -> None:
     ) == ["AMOUNT"]
 
 
+def test_detects_one_sided_amount_deletion_in_modify_diff() -> None:
+    assert critical_field_diff_types(
+        "付款金额为1000元。",
+        "付款金额为元。",
+        "1000",
+        "",
+    ) == ["AMOUNT"]
+
+
+def test_numeric_snippet_does_not_pull_unrelated_duration_with_same_digits() -> None:
+    assert critical_field_diff_types(
+        "付款金额为1000元,宽限期1000日。",
+        "付款金额为5000元,宽限期1000日。",
+        "1000",
+        "5000",
+    ) == ["AMOUNT"]
+
+
 def test_detects_date_change() -> None:
     assert critical_field_diff_types(
         "甲方应在2026年6月30日前付款。",

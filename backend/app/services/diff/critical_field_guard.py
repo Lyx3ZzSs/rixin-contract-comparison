@@ -69,18 +69,42 @@ class FieldToken:
     normalized: str
 
 
+@dataclass(frozen=True)
+class PatternMatch:
+    raw: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class ChangeSpan:
+    start: int
+    end: int
+
+
 def critical_field_diff_types(
     original_text: str,
     compare_text: str,
     original_snippet: str,
     compare_snippet: str,
 ) -> list[str]:
-    if not _compact(original_snippet) or not _compact(compare_snippet):
+    if not _compact(original_snippet) and not _compact(compare_snippet):
         return []
+    original_change_span, compare_change_span = _changed_spans(original_text, compare_text)
     field_types: list[str] = []
     for field_type in FIELD_ORDER:
-        left_tokens = _changed_field_tokens(original_text, original_snippet, field_type)
-        right_tokens = _changed_field_tokens(compare_text, compare_snippet, field_type)
+        left_tokens = _changed_field_tokens(
+            original_text,
+            original_snippet,
+            field_type,
+            original_change_span,
+        )
+        right_tokens = _changed_field_tokens(
+            compare_text,
+            compare_snippet,
+            field_type,
+            compare_change_span,
+        )
         if not left_tokens and not right_tokens:
             continue
         if _token_values(left_tokens) != _token_values(right_tokens):
@@ -99,34 +123,99 @@ def critical_field_review_flags(field_types: list[str]) -> list[str]:
     return [CRITICAL_FIELD_CHANGE, *flags]
 
 
-def _changed_field_tokens(text: str, snippet: str, field_type: str) -> list[FieldToken]:
+def _changed_field_tokens(
+    text: str,
+    snippet: str,
+    field_type: str,
+    change_span: ChangeSpan,
+) -> list[FieldToken]:
     pattern = FIELD_PATTERNS[field_type]
     if field_type == FIELD_DURATION:
         text = _strip_dates(text)
         snippet = _strip_dates(snippet)
     tokens: list[FieldToken] = []
-    for raw in _pattern_values(pattern, text):
-        if _token_touches_change(raw, snippet):
-            tokens.append(FieldToken(field_type, raw, _normalize_token(field_type, raw)))
-    for raw in _pattern_values(pattern, snippet):
-        tokens.append(FieldToken(field_type, raw, _normalize_token(field_type, raw)))
+    for match in _pattern_matches(pattern, text):
+        if _token_touches_change(match, text, snippet, change_span):
+            tokens.append(FieldToken(field_type, match.raw, _normalize_token(field_type, match.raw)))
+    for match in _pattern_matches(pattern, snippet):
+        tokens.append(FieldToken(field_type, match.raw, _normalize_token(field_type, match.raw)))
     return _dedupe_tokens(tokens)
 
 
-def _pattern_values(pattern: re.Pattern[str], text: str) -> list[str]:
-    return [match.group(0) for match in pattern.finditer(text or "")]
+def _pattern_matches(pattern: re.Pattern[str], text: str) -> list[PatternMatch]:
+    return [PatternMatch(match.group(0), match.start(), match.end()) for match in pattern.finditer(text or "")]
 
 
-def _token_touches_change(raw_token: str, snippet: str) -> bool:
-    token = _compact(raw_token)
+def _token_touches_change(
+    token_match: PatternMatch,
+    text: str,
+    snippet: str,
+    change_span: ChangeSpan,
+) -> bool:
+    token = _compact(token_match.raw)
     changed = _compact(snippet)
     if not token or not changed:
         return False
-    if token in changed or changed in token:
+    if _spans_touch(token_match.start, token_match.end, change_span.start, change_span.end, text):
+        return token in changed or changed in token
+    return any(
+        token in changed or changed in token
+        for occurrence in _snippet_occurrences(text, snippet)
+        if _spans_touch(token_match.start, token_match.end, occurrence.start, occurrence.end, text)
+        and _spans_touch(occurrence.start, occurrence.end, change_span.start, change_span.end, text)
+    )
+
+
+def _changed_spans(original_text: str, compare_text: str) -> tuple[ChangeSpan, ChangeSpan]:
+    original = original_text or ""
+    compare = compare_text or ""
+    prefix_length = 0
+    max_prefix_length = min(len(original), len(compare))
+    while prefix_length < max_prefix_length and original[prefix_length] == compare[prefix_length]:
+        prefix_length += 1
+
+    original_suffix = len(original)
+    compare_suffix = len(compare)
+    while (
+        original_suffix > prefix_length
+        and compare_suffix > prefix_length
+        and original[original_suffix - 1] == compare[compare_suffix - 1]
+    ):
+        original_suffix -= 1
+        compare_suffix -= 1
+
+    return (
+        ChangeSpan(prefix_length, original_suffix),
+        ChangeSpan(prefix_length, compare_suffix),
+    )
+
+
+def _snippet_occurrences(text: str, snippet: str) -> list[ChangeSpan]:
+    if not snippet:
+        return []
+    return [ChangeSpan(match.start(), match.end()) for match in re.finditer(re.escape(snippet), text or "")]
+
+
+def _spans_touch(
+    token_start: int,
+    token_end: int,
+    changed_start: int,
+    changed_end: int,
+    text: str,
+) -> bool:
+    if token_start < changed_end and changed_start < token_end:
         return True
-    token_numbers = set(re.findall(r"\d+(?:\.\d+)?", token))
-    snippet_numbers = set(re.findall(r"\d+(?:\.\d+)?", changed))
-    return bool(token_numbers and snippet_numbers and token_numbers.intersection(snippet_numbers))
+    if changed_start == changed_end and token_start <= changed_start <= token_end:
+        return True
+    gap_start = min(token_end, changed_end)
+    gap_end = max(token_start, changed_start)
+    if gap_start > gap_end:
+        return False
+    return _is_weak_gap(text[gap_start:gap_end])
+
+
+def _is_weak_gap(text: str) -> bool:
+    return all(not char.isalnum() or char in "年月日天元%‰￥¥,，.。;；:：()（）[]【】 " for char in text)
 
 
 def _token_values(tokens: list[FieldToken]) -> list[str]:
@@ -171,7 +260,7 @@ def _date_key(match: re.Match[str]) -> str:
 
 
 def _strip_dates(text: str) -> str:
-    return DATE_PATTERN.sub("", text or "")
+    return DATE_PATTERN.sub(lambda match: " " * len(match.group(0)), text or "")
 
 
 def _compact(text: str) -> str:
