@@ -156,6 +156,59 @@ def test_clause_matcher_marks_low_confidence_alignment_for_token_conflict() -> N
     assert pair.match_confidence == "LOW"
 
 
+def test_same_number_low_body_similarity_is_low_confidence_guarded_match() -> None:
+    original = [
+        clause(
+            "O001",
+            "5.1",
+            "验收",
+            "甲方应在系统上线后十个工作日内完成验收并出具书面验收意见。",
+        )
+    ]
+    compare = [
+        clause(
+            "N001",
+            "5.1",
+            "验收",
+            "乙方逾期交付的,应按合同总价每日千分之一向甲方支付违约金。",
+        )
+    ]
+
+    pair = ClauseMatcher().match(original, compare)[0]
+
+    assert pair.compare is not None
+    assert "SAME_NUMBER_LOW_BODY_SIMILARITY" in pair.score_details["matcher_risk_flags"]
+    assert pair.match_confidence == "LOW"
+    assert pair.match_method in {"same_clause_no_low_similarity", "same_clause_no_weighted"}
+
+
+def test_body_only_alignment_risk_is_low_confidence() -> None:
+    original = [
+        clause(
+            "O001",
+            "",
+            "付款",
+            "甲方应在2026年6月30日前支付人民币1000元,逾期应承担违约责任。",
+        )
+    ]
+    compare = [
+        clause(
+            "N001",
+            "",
+            "结算",
+            "甲方应在2027年7月31日前支付人民币5000元,逾期应承担违约责任。",
+        )
+    ]
+
+    pair = ClauseMatcher(threshold=70).match(original, compare)[0]
+
+    assert pair.compare is not None
+    assert pair.match_method == "body_weighted_similarity"
+    assert "BODY_ONLY_ALIGNMENT_RISK" in pair.score_details["matcher_risk_flags"]
+    assert "CRITICAL_TOKEN_CONFLICT" in pair.score_details["matcher_risk_flags"]
+    assert pair.match_confidence == "LOW"
+
+
 def test_clause_matcher_writes_matcher_guard_for_low_coverage_same_key() -> None:
     original = [
         clause(

@@ -1116,6 +1116,8 @@ class ClauseMatcher:
 
     def _match_confidence(self, candidate: MatchCandidate) -> str:
         details = candidate.details
+        if details.get("matcher_risk_flags"):
+            return "LOW"
         alignment = details.get("alignment")
         if isinstance(alignment, dict) and alignment.get("risk_flags"):
             return "LOW"
