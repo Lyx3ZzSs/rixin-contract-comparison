@@ -246,3 +246,67 @@ def test_analyze_run_dir_records_warnings_for_malformed_clause_match_shapes(
         "same_clause_key_weighted": 1,
         "partial_body_similarity": 1,
     }
+
+
+def test_analyze_run_dir_ignores_malformed_alignment_shapes(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_quality_report(run_dir)
+    _write_json(
+        run_dir / "debug" / "case_a" / "match_matrix_summary.json",
+        {
+            "method_counts": {"body_weighted_similarity": 1},
+            "alignment_risk_flag_counts": "not-a-dict",
+            "low_confidence_alignment_count": "not-a-number",
+        },
+    )
+    _write_json(
+        run_dir / "debug" / "case_a" / "clause_matches.json",
+        [
+            {
+                "match_method": "body_weighted_similarity",
+                "score_details": {"alignment": "bad"},
+            },
+            {
+                "match_method": "same_clause_key_weighted",
+                "score_details": {"alignment": {"risk_flags": "bad"}},
+            },
+        ],
+    )
+
+    report = analyze_run_dir(run_dir)
+
+    case = report["cases"][0]
+    assert case["alignment_risk_flag_counts"] == {}
+    assert case["match_method_counts"] == {"body_weighted_similarity": 1}
+    assert "SUSPICIOUS_MATCH_METHOD" in case["attribution_tags"]
+    assert any("invalid alignment" in warning for warning in case["warnings"])
+    assert any("invalid risk_flags" in warning for warning in case["warnings"])
+
+
+def test_analyze_run_dir_ignores_bool_debug_counts(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_quality_report(run_dir)
+    _write_json(
+        run_dir / "debug" / "case_a" / "match_matrix_summary.json",
+        {
+            "method_counts": {
+                "body_weighted_similarity": True,
+                "same_clause_key_weighted": 1,
+            },
+            "alignment_risk_flag_counts": {
+                "CRITICAL_TOKEN_MISMATCH": True,
+                "TEXT_MATCH_NUMBER_MISMATCH": 1,
+            },
+            "low_confidence_alignment_count": True,
+        },
+    )
+    _write_json(run_dir / "debug" / "case_a" / "clause_matches.json", [])
+
+    report = analyze_run_dir(run_dir)
+
+    case = report["cases"][0]
+    assert case["match_method_counts"] == {"same_clause_key_weighted": 1}
+    assert case["alignment_risk_flag_counts"] == {"TEXT_MATCH_NUMBER_MISMATCH": 1}
+    assert case["low_confidence_alignment_count"] == 0
