@@ -147,6 +147,7 @@ def test_compare_service_progress_callback_persists_monotonic_progress(tmp_path:
         compare_pdf=tmp_path / "compare.pdf",
         original_filename="original.pdf",
         compare_filename="compare.pdf",
+        compare_options=None,
     ))
     service = CompareService(repository=repository)
     callback = service._make_progress_callback("TPROGRESS_CALLBACK")
@@ -172,6 +173,7 @@ def test_compare_service_progress_callback_clamps_processing_progress_below_comp
         compare_pdf=tmp_path / "compare.pdf",
         original_filename="original.pdf",
         compare_filename="compare.pdf",
+        compare_options=None,
     )
     repository.save_compare_task(task)
 
