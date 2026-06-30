@@ -156,6 +156,45 @@ def test_clause_matcher_marks_low_confidence_alignment_for_token_conflict() -> N
     assert pair.match_confidence == "LOW"
 
 
+def test_clause_matcher_writes_matcher_guard_for_low_coverage_same_key() -> None:
+    original = [
+        clause(
+            "O001",
+            "",
+            "签署页",
+            "甲方:国家电网有限公司华北分部\n乙方:国能日新科技股份有限公司\n地址:北京市海淀区建材城中路2482号",
+            section_type="main_contract",
+            clause_key="main_contract/签署页",
+        )
+    ]
+    compare = [
+        clause(
+            "N001",
+            "",
+            "签署页",
+            "地址:北京市海淀区建材城中路2482号",
+            section_type="main_contract",
+            clause_key="main_contract/签署页",
+        )
+    ]
+
+    pair = ClauseMatcher().match(original, compare)[0]
+
+    assert pair.score_details["matcher_risk_flags"] == ["SAME_KEY_LOW_BODY_COVERAGE"]
+    assert pair.score_details["matcher_guard_applied"] == 1.0
+    assert pair.match_candidates[0]["score_details"]["matcher_risk_flags"] == ["SAME_KEY_LOW_BODY_COVERAGE"]
+
+
+def test_clause_matcher_writes_matcher_guard_for_critical_token_conflict() -> None:
+    original = [clause("O001", "3.1", "付款条款", "甲方应在2026年6月30日前支付人民币1000元。")]
+    compare = [clause("N001", "3.1", "付款条款", "甲方应在2026年6月30日前支付人民币5000元。")]
+
+    pair = ClauseMatcher().match(original, compare)[0]
+
+    assert "CRITICAL_TOKEN_CONFLICT" in pair.score_details["matcher_risk_flags"]
+    assert pair.score_details["matcher_guard_applied"] == 1.0
+
+
 def test_optimal_assignment_prefers_two_good_pairs_over_one_greedy_pair() -> None:
     original = [
         clause("O001", "", "A", "Template service scope with payment support."),

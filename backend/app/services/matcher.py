@@ -22,6 +22,11 @@ from app.services.normalizer import TextNormalizer
 
 logger = logging.getLogger(__name__)
 
+SAME_KEY_LOW_BODY_COVERAGE = "SAME_KEY_LOW_BODY_COVERAGE"
+CRITICAL_TOKEN_CONFLICT = "CRITICAL_TOKEN_CONFLICT"
+SAME_NUMBER_LOW_BODY_SIMILARITY = "SAME_NUMBER_LOW_BODY_SIMILARITY"
+BODY_ONLY_ALIGNMENT_RISK = "BODY_ONLY_ALIGNMENT_RISK"
+
 
 @dataclass(frozen=True)
 class MatchCandidate:
@@ -883,7 +888,62 @@ class ClauseMatcher:
         }
         details.update({key: round(value, 2) for key, value in body_details.items()})
         details["alignment"] = self.alignment_analyzer.diagnostics(left, right)
+        self._apply_matcher_guard_details(details)
         return details
+
+    def _apply_matcher_guard_details(self, details: dict[str, Any]) -> None:
+        flags = self._matcher_risk_flags(details)
+        details["matcher_risk_flags"] = flags
+        details["matcher_guard_applied"] = 1.0 if flags else 0.0
+
+    def _matcher_risk_flags(self, details: dict[str, Any]) -> list[str]:
+        flags: list[str] = []
+        alignment = details.get("alignment")
+        alignment_flags = self._alignment_risk_flags(alignment)
+        body_similarity = self._alignment_number(alignment, "body_similarity", default=1.0)
+
+        if (
+            details.get("clause_key_score", 0.0) >= 96
+            and details.get("body_length_coverage", 1.0) < 0.70
+        ):
+            flags.append(SAME_KEY_LOW_BODY_COVERAGE)
+
+        if "CRITICAL_TOKEN_MISMATCH" in alignment_flags:
+            flags.append(CRITICAL_TOKEN_CONFLICT)
+
+        if (
+            details.get("clause_no_score", 0.0) >= 100
+            and body_similarity < 0.45
+        ):
+            flags.append(SAME_NUMBER_LOW_BODY_SIMILARITY)
+
+        if (
+            alignment_flags
+            and details.get("clause_key_score", 0.0) < 96
+            and details.get("clause_no_score", 0.0) < 100
+            and details.get("body_score", 0.0) >= min(self.threshold, 78)
+        ):
+            flags.append(BODY_ONLY_ALIGNMENT_RISK)
+
+        return flags
+
+    @staticmethod
+    def _alignment_risk_flags(alignment: Any) -> set[str]:
+        if not isinstance(alignment, dict):
+            return set()
+        raw_flags = alignment.get("risk_flags")
+        if not isinstance(raw_flags, list | tuple | set):
+            return set()
+        return {flag for flag in raw_flags if isinstance(flag, str) and flag}
+
+    @staticmethod
+    def _alignment_number(alignment: Any, field: str, *, default: float) -> float:
+        if not isinstance(alignment, dict):
+            return default
+        value = alignment.get(field)
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return float(value)
+        return default
 
     def _weighted_score(self, details: dict[str, Any]) -> float:
         weighted = (
