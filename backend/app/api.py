@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.api_errors import http_error
@@ -28,7 +28,7 @@ from app.api_schemas import (
     DiffReviewResponse,
     TaskExecutionResponse,
 )
-from app.models import CompareTask
+from app.models import CompareOptions, CompareTask
 from app.services.review_service import (
     AuditItemNotFoundError,
     CompareQualityService,
@@ -76,6 +76,7 @@ async def compare_contracts(
         task_id=task_id,
         original_filename=original_file.filename,
         compare_filename=compare_file.filename,
+        compare_options=compare_options,
     )
     return compare_task_response(task)
 
