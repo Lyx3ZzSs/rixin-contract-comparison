@@ -115,12 +115,14 @@ def _analyze_case(run_dir: Path, case: dict[str, Any]) -> dict[str, Any]:
     _record_malformed_match_warnings(case_id, matches, warnings)
 
     risk_counts = _alignment_risk_flag_counts(summary, matches)
+    matcher_risk_counts = _matcher_risk_flag_counts(summary, matches)
     method_counts = _match_method_counts(summary, matches)
     low_confidence_count = _low_confidence_alignment_count(summary, matches)
     suspicious_matches = _suspicious_matches(matches)
     attribution_tags = _attribution_tags(
         case=case,
         risk_counts=risk_counts,
+        matcher_risk_counts=matcher_risk_counts,
         method_counts=method_counts,
         low_confidence_count=low_confidence_count,
         suspicious_matches=suspicious_matches,
@@ -133,6 +135,7 @@ def _analyze_case(run_dir: Path, case: dict[str, Any]) -> dict[str, Any]:
         "false_negative_count": _int_value(case.get("false_negative_count")),
         "low_confidence_alignment_count": low_confidence_count,
         "alignment_risk_flag_counts": dict(risk_counts),
+        "matcher_risk_flag_counts": dict(matcher_risk_counts),
         "match_method_counts": dict(method_counts),
         "suspicious_matches": suspicious_matches,
         "attribution_tags": attribution_tags,
@@ -209,6 +212,20 @@ def _alignment_risk_flag_counts(
     return counts
 
 
+def _matcher_risk_flag_counts(
+    summary: dict[str, Any],
+    matches: list[Any],
+) -> Counter[str]:
+    summary_counts = _counter_from_mapping(summary.get("matcher_risk_flag_counts"))
+    if summary_counts:
+        return summary_counts
+
+    counts: Counter[str] = Counter()
+    for match in matches:
+        counts.update(_matcher_risk_flags_from_match(match))
+    return counts
+
+
 def _match_method_counts(summary: dict[str, Any], matches: list[Any]) -> Counter[str]:
     summary_counts = _counter_from_mapping(summary.get("method_counts"))
     if summary_counts:
@@ -241,8 +258,14 @@ def _suspicious_matches(matches: list[Any]) -> list[dict[str, Any]]:
         method = _string_value(match.get("match_method"))
         confidence = _string_value(match.get("match_confidence"))
         risk_flags = _risk_flags_from_match(match)
+        matcher_risk_flags = _matcher_risk_flags_from_match(match)
         body_length_coverage = _body_length_coverage(match)
-        if not _is_suspicious_match(method, confidence, risk_flags):
+        if not _is_suspicious_match(
+            method,
+            confidence,
+            risk_flags,
+            matcher_risk_flags,
+        ):
             continue
         suspicious.append(
             {
@@ -251,6 +274,7 @@ def _suspicious_matches(matches: list[Any]) -> list[dict[str, Any]]:
                 "match_method": method,
                 "match_confidence": confidence,
                 "risk_flags": risk_flags,
+                "matcher_risk_flags": matcher_risk_flags,
                 "body_similarity": _alignment_number(match, "body_similarity"),
                 "critical_token_overlap": _alignment_number(
                     match,
@@ -266,8 +290,14 @@ def _is_suspicious_match(
     method: str,
     confidence: str,
     risk_flags: list[str],
+    matcher_risk_flags: list[str],
 ) -> bool:
-    return confidence == "LOW" or bool(risk_flags) or method in SUSPICIOUS_MATCH_METHODS
+    return (
+        confidence == "LOW"
+        or bool(risk_flags)
+        or bool(matcher_risk_flags)
+        or method in SUSPICIOUS_MATCH_METHODS
+    )
 
 
 def _has_low_confidence_alignment(match: Any) -> bool:
@@ -280,6 +310,7 @@ def _attribution_tags(
     *,
     case: dict[str, Any],
     risk_counts: Counter[str],
+    matcher_risk_counts: Counter[str],
     method_counts: Counter[str],
     low_confidence_count: int,
     suspicious_matches: list[dict[str, Any]],
@@ -288,6 +319,7 @@ def _attribution_tags(
     if low_confidence_count > 0 or risk_counts:
         tags.add("LOW_CONFIDENCE_ALIGNMENT")
     tags.update(_raw_risk_flag_tags(risk_counts))
+    tags.update(_raw_matcher_risk_flag_tags(matcher_risk_counts))
     if risk_counts.get("CRITICAL_TOKEN_MISMATCH", 0) > 0:
         tags.add("KEY_TOKEN_CONFLICT")
     if any(
@@ -339,6 +371,19 @@ def _raw_risk_flag_tags(risk_counts: Counter[str]) -> set[str]:
     }
 
 
+def _raw_matcher_risk_flag_tags(matcher_risk_counts: Counter[str]) -> set[str]:
+    return {
+        flag
+        for flag in (
+            "SAME_KEY_LOW_BODY_COVERAGE",
+            "CRITICAL_TOKEN_CONFLICT",
+            "SAME_NUMBER_LOW_BODY_SIMILARITY",
+            "BODY_ONLY_ALIGNMENT_RISK",
+        )
+        if matcher_risk_counts.get(flag, 0) > 0
+    }
+
+
 def _has_missed_expected_diffs(case: dict[str, Any]) -> bool:
     missed_expected = case.get("missed_expected_diffs")
     return isinstance(missed_expected, list) and len(missed_expected) > 0
@@ -370,6 +415,9 @@ def _aggregate_report(
         "alignment_risk_flag_counts": dict(
             _sum_case_counters(cases, "alignment_risk_flag_counts"),
         ),
+        "matcher_risk_flag_counts": dict(
+            _sum_case_counters(cases, "matcher_risk_flag_counts"),
+        ),
         "match_method_counts": dict(_sum_case_counters(cases, "match_method_counts")),
         "attribution_counts": dict(attribution_counts),
     }
@@ -398,6 +446,18 @@ def _risk_flags_from_match(match: Any) -> list[str]:
     if not isinstance(risk_flags, list | tuple | set):
         return []
     return [flag for flag in risk_flags if isinstance(flag, str) and flag]
+
+
+def _matcher_risk_flags_from_match(match: Any) -> list[str]:
+    if not isinstance(match, dict):
+        return []
+    score_details = match.get("score_details")
+    if not isinstance(score_details, dict):
+        return []
+    raw_flags = score_details.get("matcher_risk_flags")
+    if not isinstance(raw_flags, list | tuple | set):
+        return []
+    return [flag for flag in raw_flags if isinstance(flag, str) and flag]
 
 
 def _alignment_details(match: Any) -> dict[str, Any]:

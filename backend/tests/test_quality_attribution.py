@@ -345,6 +345,66 @@ def test_analyze_run_dir_ignores_bool_debug_counts(tmp_path: Path) -> None:
     assert case["low_confidence_alignment_count"] == 0
 
 
+def test_analyze_run_dir_counts_matcher_risk_flags(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_quality_report(run_dir)
+    _write_json(run_dir / "debug" / "case_a" / "match_matrix_summary.json", {})
+    _write_json(
+        run_dir / "debug" / "case_a" / "clause_matches.json",
+        [
+            {
+                "original_clause_id": "O001",
+                "compare_clause_id": "N001",
+                "match_method": "same_clause_key_weighted",
+                "match_confidence": "LOW",
+                "score_details": {
+                    "matcher_risk_flags": [
+                        "SAME_KEY_LOW_BODY_COVERAGE",
+                        "CRITICAL_TOKEN_CONFLICT",
+                    ],
+                    "matcher_guard_applied": 1.0,
+                    "body_length_coverage": 0.42,
+                    "alignment": {
+                        "body_similarity": 0.44,
+                        "critical_token_overlap": 0.0,
+                        "risk_flags": ["CRITICAL_TOKEN_MISMATCH"],
+                    },
+                },
+            },
+            {
+                "original_clause_id": "O002",
+                "compare_clause_id": "N002",
+                "match_method": "body_weighted_similarity",
+                "match_confidence": "LOW",
+                "score_details": {
+                    "matcher_risk_flags": ["BODY_ONLY_ALIGNMENT_RISK"],
+                    "matcher_guard_applied": 1.0,
+                    "alignment": {"risk_flags": ["TEXT_MATCH_NUMBER_MISMATCH"]},
+                },
+            },
+        ],
+    )
+
+    report = analyze_run_dir(run_dir)
+
+    case = report["cases"][0]
+    assert case["matcher_risk_flag_counts"] == {
+        "SAME_KEY_LOW_BODY_COVERAGE": 1,
+        "CRITICAL_TOKEN_CONFLICT": 1,
+        "BODY_ONLY_ALIGNMENT_RISK": 1,
+    }
+    assert report["aggregate"]["matcher_risk_flag_counts"] == case[
+        "matcher_risk_flag_counts"
+    ]
+    assert case["suspicious_matches"][0]["matcher_risk_flags"] == [
+        "SAME_KEY_LOW_BODY_COVERAGE",
+        "CRITICAL_TOKEN_CONFLICT",
+    ]
+    assert "SAME_KEY_LOW_BODY_COVERAGE" in case["attribution_tags"]
+    assert "CRITICAL_TOKEN_CONFLICT" in case["attribution_tags"]
+    assert "BODY_ONLY_ALIGNMENT_RISK" in case["attribution_tags"]
+
+
 def test_write_attribution_report_writes_quality_attribution_json(
     tmp_path: Path,
 ) -> None:
