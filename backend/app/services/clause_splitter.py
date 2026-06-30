@@ -1062,9 +1062,10 @@ class ClauseSplitter:
         if marker is not None or unit.block_type != "paragraph_title":
             return False
         compact = re.sub(r"\s+", "", unit.text or "")
+        cross_page_title_boundary = "CROSS_PAGE_TITLE_BOUNDARY" in unit.split_flags
         if not compact:
             return False
-        if len(compact) < 4 and not self._has_heading_business_term(compact):
+        if len(compact) < 4 and not cross_page_title_boundary:
             return False
         if self._is_cover_noise_text(compact) or self._is_attachment_title(compact):
             return False

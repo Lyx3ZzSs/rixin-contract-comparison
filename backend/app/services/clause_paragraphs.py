@@ -13,6 +13,7 @@ class ParagraphBuilder:
     continuation_punctuation = tuple("，,、：:（(")
     paragraph_merged_flag = "PARAGRAPH_MERGED"
     cross_page_merged_flag = "CROSS_PAGE_CONTINUATION_MERGED"
+    cross_page_title_boundary_flag = "CROSS_PAGE_TITLE_BOUNDARY"
     title_block_types = {"paragraph_title", "doc_title", "title"}
     boundary_block_types = {
         "footer",
@@ -35,9 +36,11 @@ class ParagraphBuilder:
         parse_marker: Callable[[str], object | None],
     ) -> list[Any]:
         result: list[Any] = []
-        for unit in units:
+        unit_list = list(units)
+        for index, unit in enumerate(unit_list):
             if result:
-                unit = self._with_boundary_metadata(result[-1], unit, parse_marker)
+                next_unit = unit_list[index + 1] if index + 1 < len(unit_list) else None
+                unit = self._with_boundary_metadata(result[-1], unit, parse_marker, next_unit)
             if result and self._is_continuation(result[-1], unit, parse_marker):
                 result[-1] = self._merge_units(result[-1], unit)
             else:
@@ -142,6 +145,7 @@ class ParagraphBuilder:
         previous: Any,
         current: Any,
         parse_marker: Callable[[str], object | None],
+        next_unit: Any | None = None,
     ) -> Any:
         current_text = str(getattr(current, "text", "") or "").strip()
         if not current_text:
@@ -157,9 +161,27 @@ class ParagraphBuilder:
             parse_marker(current_text) is None
             and self._looks_like_standalone_label(current_text)
             and not self._looks_like_numeric_value_continuation(current_text)
+            and self._looks_like_cross_page_title_boundary(current, next_unit)
         ):
-            return self._replace_unit(current, block_type="paragraph_title")
+            return self._with_flag(
+                self._replace_unit(current, block_type="paragraph_title"),
+                self.cross_page_title_boundary_flag,
+            )
         return current
+
+    @staticmethod
+    def _looks_like_cross_page_title_boundary(current: Any, next_unit: Any | None) -> bool:
+        if next_unit is None or getattr(current, "page_no", None) != getattr(next_unit, "page_no", None):
+            return False
+        current_bbox = getattr(current, "bbox", None)
+        next_bbox = getattr(next_unit, "bbox", None)
+        if current_bbox is None or next_bbox is None:
+            return False
+        current_height = max(1.0, current_bbox.y1 - current_bbox.y0)
+        vertical_gap = next_bbox.y0 - current_bbox.y1
+        if vertical_gap < 0 or vertical_gap > current_height * 2.2:
+            return False
+        return next_bbox.x0 > current_bbox.x0 + max(current_height * 0.5, 12.0)
 
     @staticmethod
     def _replace_unit(unit: Any, **changes: Any) -> Any:
