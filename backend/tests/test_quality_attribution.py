@@ -318,6 +318,34 @@ def test_analyze_run_dir_ignores_malformed_alignment_shapes(
     assert any("invalid risk_flags" in warning for warning in case["warnings"])
 
 
+def test_analyze_run_dir_warns_for_malformed_matcher_risk_flags(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_quality_report(run_dir)
+    _write_json(run_dir / "debug" / "case_a" / "match_matrix_summary.json", {})
+    _write_json(
+        run_dir / "debug" / "case_a" / "clause_matches.json",
+        [
+            {
+                "match_method": "same_clause_key_weighted",
+                "score_details": {
+                    "matcher_risk_flags": "not-a-list",
+                    "alignment": {"risk_flags": []},
+                },
+            }
+        ],
+    )
+
+    report = analyze_run_dir(run_dir)
+
+    assert report["cases"][0]["matcher_risk_flag_counts"] == {}
+    assert any(
+        "invalid matcher_risk_flags" in warning
+        for warning in report["cases"][0]["warnings"]
+    )
+
+
 def test_analyze_run_dir_ignores_bool_debug_counts(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_quality_report(run_dir)

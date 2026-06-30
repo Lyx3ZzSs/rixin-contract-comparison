@@ -187,6 +187,14 @@ def _record_malformed_match_warnings(
                 f"{case_id}: invalid score_details in clause_matches[{index}]",
             )
             continue
+        matcher_risk_flags = score_details.get("matcher_risk_flags")
+        if "matcher_risk_flags" in score_details and not isinstance(
+            matcher_risk_flags,
+            list | tuple | set,
+        ):
+            warnings.append(
+                f"{case_id}: invalid matcher_risk_flags in clause_matches[{index}]",
+            )
         if "alignment" not in score_details:
             continue
         alignment = score_details.get("alignment")
