@@ -211,6 +211,39 @@ def test_analyze_run_dir_records_warnings_for_missing_debug_artifacts(
     assert case["alignment_risk_flag_counts"] == {}
 
 
+def test_analyze_run_dir_records_warnings_for_malformed_top_level_debug_artifacts(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_quality_report(run_dir)
+    _write_json(run_dir / "debug" / "case_a" / "match_matrix_summary.json", ["not-object"])
+    _write_json(run_dir / "debug" / "case_a" / "clause_matches.json", {"not": "array"})
+
+    report = analyze_run_dir(run_dir)
+
+    warnings = report["cases"][0]["warnings"]
+    assert any("invalid match_matrix_summary.json" in warning for warning in warnings)
+    assert any("invalid clause_matches.json" in warning for warning in warnings)
+    assert report["cases"][0]["alignment_risk_flag_counts"] == {}
+    assert report["cases"][0]["suspicious_matches"] == []
+
+
+def test_analyze_run_dir_records_warnings_for_non_object_clause_match_items(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_quality_report(run_dir)
+    _write_json(run_dir / "debug" / "case_a" / "match_matrix_summary.json", {})
+    _write_json(run_dir / "debug" / "case_a" / "clause_matches.json", ["bad-item"])
+
+    report = analyze_run_dir(run_dir)
+
+    assert any(
+        "invalid clause_matches[0]" in warning
+        for warning in report["cases"][0]["warnings"]
+    )
+
+
 def test_analyze_run_dir_records_warnings_for_malformed_clause_match_shapes(
     tmp_path: Path,
 ) -> None:

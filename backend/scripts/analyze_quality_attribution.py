@@ -106,6 +106,10 @@ def _analyze_case(run_dir: Path, case: dict[str, Any]) -> dict[str, Any]:
         "clause_matches.json",
         warnings,
     )
+    if summary_payload is not None and not isinstance(summary_payload, dict):
+        warnings.append(f"{case_id}: invalid match_matrix_summary.json: expected object")
+    if matches_payload is not None and not isinstance(matches_payload, list):
+        warnings.append(f"{case_id}: invalid clause_matches.json: expected array")
     summary = summary_payload if isinstance(summary_payload, dict) else {}
     matches = matches_payload if isinstance(matches_payload, list) else []
     _record_malformed_match_warnings(case_id, matches, warnings)
@@ -170,6 +174,7 @@ def _record_malformed_match_warnings(
 ) -> None:
     for index, match in enumerate(matches):
         if not isinstance(match, dict):
+            warnings.append(f"{case_id}: invalid clause_matches[{index}]: expected object")
             continue
         if "score_details" not in match:
             continue
