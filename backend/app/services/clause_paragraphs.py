@@ -151,14 +151,16 @@ class ParagraphBuilder:
         if not current_text:
             return current
         previous_section = getattr(previous, "section_type", "main_contract")
-        if previous_section == "signature" and self._looks_like_signing_boundary(current_text):
+        has_cross_page_signature_context = self._visually_continues_across_adjacent_pages(previous, current)
+        is_signing_boundary = self._looks_like_signing_boundary(current_text)
+        if previous_section == "signature" and is_signing_boundary:
+            return self._replace_unit(current, section_type="signature")
+        if is_signing_boundary and has_cross_page_signature_context:
             return self._replace_unit(current, section_type="signature")
         if self.cross_page_merged_flag in getattr(previous, "split_flags", ()):
             return current
         if not self._visually_continues_across_adjacent_pages(previous, current):
             return current
-        if self._looks_like_signing_boundary(current_text):
-            return self._replace_unit(current, section_type="signature")
         if (
             parse_marker(current_text) is None
             and self._looks_like_standalone_label(current_text)
@@ -179,11 +181,29 @@ class ParagraphBuilder:
         next_bbox = getattr(next_unit, "bbox", None)
         if current_bbox is None or next_bbox is None:
             return False
-        current_height = max(1.0, current_bbox.y1 - current_bbox.y0)
+        current_height = max(0.0, current_bbox.y1 - current_bbox.y0)
         vertical_gap = next_bbox.y0 - current_bbox.y1
-        if vertical_gap < 0 or vertical_gap > current_height * 2.2:
+        if vertical_gap < 0:
             return False
-        return next_bbox.x0 > current_bbox.x0 + max(current_height * 0.5, 12.0)
+        max_coordinate = max(
+            abs(current_bbox.y0),
+            abs(current_bbox.y1),
+            abs(next_bbox.y0),
+            abs(next_bbox.y1),
+            abs(current_bbox.x0),
+            abs(current_bbox.x1),
+            abs(next_bbox.x0),
+            abs(next_bbox.x1),
+        )
+        if max_coordinate <= 2.0:
+            indent_threshold = max(current_height * 0.5, 0.05)
+            if vertical_gap > max(current_height * 2.2, 0.08):
+                return False
+        else:
+            indent_threshold = max(current_height * 0.5, 12.0)
+            if vertical_gap > max(current_height, 1.0) * 2.2:
+                return False
+        return next_bbox.x0 > current_bbox.x0 + indent_threshold
 
     @staticmethod
     def _replace_unit(unit: Any, **changes: Any) -> Any:

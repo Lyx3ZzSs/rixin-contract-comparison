@@ -1000,6 +1000,111 @@ def test_clause_splitter_does_not_merge_cross_page_signing_page_variant() -> Non
     assert "CROSS_PAGE_CONTINUATION_MERGED" not in clauses[0].split_flags
 
 
+def test_clause_splitter_keeps_signature_boundary_after_cross_page_merge() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1",
+                        page_no=1,
+                        text="5.2 乙方应保证服务",
+                        bbox=BBox(x0=50, y0=760, x1=520, y1=790),
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p2-body",
+                        page_no=2,
+                        text="服务质量，",
+                        bbox=BBox(x0=70, y0=72, x1=520, y1=102),
+                    ),
+                    TextBlock(
+                        block_id="sign-none",
+                        page_no=2,
+                        text="以下无正文",
+                        bbox=BBox(x0=50, y0=130, x1=220, y1=160),
+                    ),
+                    TextBlock(
+                        block_id="sign-party",
+                        page_no=2,
+                        text="甲方（盖章）：",
+                        bbox=BBox(x0=50, y0=190, x1=220, y1=220),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert len(clauses) >= 2
+    assert "服务质量" in clauses[0].text
+    assert "以下无正文" not in clauses[0].text
+    assert clauses[0].source_block_ids == ["p1", "p2-body"]
+    assert "CROSS_PAGE_CONTINUATION_MERGED" in clauses[0].split_flags
+    assert clauses[1].source_block_ids == ["sign-none", "sign-party"]
+
+
+def test_clause_splitter_does_not_merge_normalized_bbox_short_title_boundary() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=1,
+                height=1,
+                blocks=[
+                    TextBlock(
+                        block_id="p1",
+                        page_no=1,
+                        text="5.2 乙方应持续提供服务",
+                        bbox=BBox(x0=0.08, y0=0.88, x1=0.86, y1=0.92),
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=1,
+                height=1,
+                blocks=[
+                    TextBlock(
+                        block_id="p2-title",
+                        page_no=2,
+                        text="付款",
+                        bbox=BBox(x0=0.08, y0=0.06, x1=0.22, y1=0.10),
+                    ),
+                    TextBlock(
+                        block_id="p2-body",
+                        page_no=2,
+                        text="乙方应按月付款。",
+                        bbox=BBox(x0=0.20, y0=0.12, x1=0.88, y1=0.16),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert len(clauses) == 2
+    assert "付款" not in clauses[0].text
+    assert clauses[1].source_block_ids == ["p2-title", "p2-body"]
+
+
 def test_clause_splitter_builds_hierarchy_path_from_heading_levels() -> None:
     document = Document(
         filename="sample.pdf",
