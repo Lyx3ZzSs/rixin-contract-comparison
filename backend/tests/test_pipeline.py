@@ -15,6 +15,7 @@ from app.models import (
     Clause,
     ClausePair,
     CompareTask,
+    CompareOptions,
     DiffItem,
     Document,
     EvidenceBox,
@@ -371,6 +372,38 @@ class TestPreClauseDiffStage:
         assert any(block.block_type == "header" for block in ctx.original_extraction.document.pages[0].blocks)
         assert any(block.block_type == "header" for block in ctx.compare_extraction.document.pages[0].blocks)
 
+    def test_filters_header_footer_diffs_when_option_enabled(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.task.compare_options = CompareOptions(ignore_headers_footers=True)
+        original = make_document("正文条款一致。")
+        compare = make_document("正文条款一致。")
+        original.pages[0].blocks.insert(
+            0,
+            TextBlock(
+                block_id="o_header",
+                page_no=1,
+                text="合同编号：A-001",
+                bbox=BBox(x0=40, y0=20, x1=180, y1=36),
+                block_type="header",
+            ),
+        )
+        compare.pages[0].blocks.insert(
+            0,
+            TextBlock(
+                block_id="c_header",
+                page_no=1,
+                text="合同编号：B-002",
+                bbox=BBox(x0=40, y0=20, x1=180, y1=36),
+                block_type="header",
+            ),
+        )
+        ctx.original_extraction = ExtractionResult(document=original, extractor_used="test")
+        ctx.compare_extraction = ExtractionResult(document=compare, extractor_used="test")
+
+        PreClauseDiffStage().execute(ctx)
+
+        assert ctx.header_footer_diffs == []
+
     def test_keeps_stamp_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         original = make_document("正文条款一致。")
@@ -402,6 +435,36 @@ class TestPreClauseDiffStage:
         assert ctx.seal_diffs[0].source_type == "seal"
         assert any(block.block_type == "seal" for block in ctx.original_extraction.document.pages[0].blocks)
         assert any(block.block_type == "seal" for block in ctx.compare_extraction.document.pages[0].blocks)
+
+    def test_filters_stamp_diffs_when_option_enabled(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.task.compare_options = CompareOptions(ignore_stamps=True)
+        original = make_document("正文条款一致。")
+        compare = make_document("正文条款一致。")
+        original.pages[0].blocks.append(
+            TextBlock(
+                block_id="o_seal",
+                page_no=1,
+                text="原印章",
+                bbox=BBox(x0=350, y0=600, x1=430, y1=680),
+                block_type="seal",
+            ),
+        )
+        compare.pages[0].blocks.append(
+            TextBlock(
+                block_id="c_seal",
+                page_no=1,
+                text="新印章",
+                bbox=BBox(x0=350, y0=600, x1=430, y1=680),
+                block_type="seal",
+            ),
+        )
+        ctx.original_extraction = ExtractionResult(document=original, extractor_used="test")
+        ctx.compare_extraction = ExtractionResult(document=compare, extractor_used="test")
+
+        PreClauseDiffStage().execute(ctx)
+
+        assert ctx.seal_diffs == []
 
     def test_writes_table_repair_debug_artifact(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
@@ -500,6 +563,32 @@ class TestSummaryStage:
         assert ctx.task.diffs == ctx.diffs
         assert ctx.task.diff_count == 1
         assert "diff_decisions" in ctx.task.debug_artifact_paths
+
+    def test_filters_header_footer_diffs_when_option_enabled(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.task.compare_options = CompareOptions(ignore_headers_footers=True)
+        header_diff = DiffItem(
+            diff_id="D001",
+            diff_type="MODIFY",
+            title="页眉",
+            source_type="header_footer",
+            original_text="合同编号：A-001",
+            compare_text="合同编号：B-002",
+        )
+        clause_diff = DiffItem(
+            diff_id="D002",
+            diff_type="MODIFY",
+            title="正文",
+            source_type="clause",
+            original_text="30日",
+            compare_text="45日",
+        )
+        ctx.diffs = [header_diff, clause_diff]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D002"]
+        assert ctx.task.diff_count == 1
 
     def test_deduplicates_final_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)

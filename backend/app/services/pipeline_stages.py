@@ -348,11 +348,19 @@ class PreClauseDiffStage:
         original_doc = extractions.original.document
         compare_doc = extractions.compare.document
 
-        self._recognize_seals(ctx, original_doc, compare_doc)
-        _emit_progress(ctx, 37, self.name, "seal_recognition_done")
+        if task.compare_options.ignore_stamps:
+            seal_diffs: list[DiffItem] = []
+            _emit_progress(ctx, 37, self.name, "seal_recognition_skipped")
+        else:
+            self._recognize_seals(ctx, original_doc, compare_doc)
+            _emit_progress(ctx, 37, self.name, "seal_recognition_done")
 
-        header_footer_diffs = self.header_footer.build_diffs(original_doc, compare_doc)
-        _emit_progress(ctx, 38, self.name, "header_footer_diff_done")
+        if task.compare_options.ignore_headers_footers:
+            header_footer_diffs = []
+            _emit_progress(ctx, 38, self.name, "header_footer_diff_skipped")
+        else:
+            header_footer_diffs = self.header_footer.build_diffs(original_doc, compare_doc)
+            _emit_progress(ctx, 38, self.name, "header_footer_diff_done")
         metadata_diffs = self.cover_metadata.build_diffs(
             original_doc,
             compare_doc,
@@ -371,10 +379,11 @@ class PreClauseDiffStage:
                 self.table_comparator.last_debug_payload,
             ),
         )
-        seal_diffs = build_seal_diffs(
-            original_doc, compare_doc,
-            start_index=len(header_footer_diffs) + len(metadata_diffs) + len(table_diffs) + 1,
-        )
+        if not task.compare_options.ignore_stamps:
+            seal_diffs = build_seal_diffs(
+                original_doc, compare_doc,
+                start_index=len(header_footer_diffs) + len(metadata_diffs) + len(table_diffs) + 1,
+            )
         result = ctx.set_table_diffs(
             header_footer_diffs=header_footer_diffs,
             metadata_diffs=metadata_diffs,
@@ -950,7 +959,7 @@ class SummaryStage:
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
-        task.diffs, dedupe_remap = _dedupe_final_diffs(ctx.require_diffs())
+        task.diffs, dedupe_remap = _dedupe_final_diffs(_filter_compare_option_diffs(task, ctx.require_diffs()))
         _remap_ocr_quality_summary_after_final_dedupe(task, dedupe_remap)
         DiffQualityStage._remap_ocr_remediation_summary(ctx, dedupe_remap)
         _write_debug_artifact(
@@ -975,6 +984,17 @@ def _clauses_for_evidence(
 
 def _refresh_stats(task: CompareTask) -> None:
     task.diff_count = len(task.diffs)
+
+
+def _filter_compare_option_diffs(task: CompareTask, diffs: list[DiffItem]) -> list[DiffItem]:
+    excluded_source_types: set[str] = set()
+    if task.compare_options.ignore_stamps:
+        excluded_source_types.add("seal")
+    if task.compare_options.ignore_headers_footers:
+        excluded_source_types.add("header_footer")
+    if not excluded_source_types:
+        return diffs
+    return [diff for diff in diffs if diff.source_type not in excluded_source_types]
 
 
 def _dedupe_final_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str, str]]:
