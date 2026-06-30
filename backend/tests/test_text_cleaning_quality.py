@@ -471,6 +471,240 @@ def test_clause_splitter_merges_decimal_amount_continuation_into_previous_clause
     assert "19350.00元" in clauses[0].text
 
 
+def test_clause_splitter_merges_cross_page_clause_continuation_with_evidence() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1-heading",
+                        page_no=1,
+                        text="5.2 服务期限",
+                        bbox=BBox(x0=50, y0=720, x1=500, y1=748),
+                    ),
+                    TextBlock(
+                        block_id="p1-body",
+                        page_no=1,
+                        text="乙方应在收到甲方书面通知后提供连续运维服务",
+                        bbox=BBox(x0=70, y0=760, x1=520, y1=790),
+                    ),
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p2-body",
+                        page_no=2,
+                        text="并按照本合同约定提交服务报告。",
+                        bbox=BBox(x0=70, y0=72, x1=520, y1=102),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["5.2"]
+    assert "连续运维服务" in clauses[0].text
+    assert "提交服务报告" in clauses[0].text
+    assert clauses[0].page_numbers == [1, 2]
+    assert clauses[0].source_block_ids == ["p1-heading", "p1-body", "p2-body"]
+    assert "PARAGRAPH_MERGED" in clauses[0].split_flags
+    assert "CROSS_PAGE_CONTINUATION_MERGED" in clauses[0].split_flags
+    assert [box.page_no for box in clauses[0].bboxes] == [1, 1, 2]
+
+
+def test_clause_splitter_does_not_merge_cross_page_explicit_new_clause() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1",
+                        page_no=1,
+                        text="5.2 乙方应持续提供服务",
+                        bbox=BBox(x0=50, y0=760, x1=520, y1=790),
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p2",
+                        page_no=2,
+                        text="第六条 违约责任",
+                        bbox=BBox(x0=50, y0=72, x1=520, y1=102),
+                    )
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["5.2", "第六条"]
+    assert "违约责任" not in clauses[0].text
+    assert "CROSS_PAGE_CONTINUATION_MERGED" not in clauses[0].split_flags
+
+
+def test_clause_splitter_does_not_merge_cross_page_standalone_title() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1",
+                        page_no=1,
+                        text="5.2 乙方应持续提供服务",
+                        bbox=BBox(x0=50, y0=760, x1=520, y1=790),
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p2-title",
+                        page_no=2,
+                        text="违约责任",
+                        bbox=BBox(x0=50, y0=72, x1=180, y1=102),
+                    ),
+                    TextBlock(
+                        block_id="p2-body",
+                        page_no=2,
+                        text="任何一方违约均应承担赔偿责任。",
+                        bbox=BBox(x0=70, y0=116, x1=520, y1=146),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert len(clauses) == 2
+    assert "违约责任" not in clauses[0].text
+    assert "CROSS_PAGE_CONTINUATION_MERGED" not in clauses[0].split_flags
+
+
+def test_clause_splitter_merges_cross_page_amount_value_continuation() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1",
+                        page_no=1,
+                        text="5.3 合同总价为人民币",
+                        bbox=BBox(x0=50, y0=760, x1=520, y1=790),
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p2",
+                        page_no=2,
+                        text="100000元整，包含税费及安装调试费用。",
+                        bbox=BBox(x0=70, y0=72, x1=520, y1=102),
+                    )
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["5.3"]
+    assert "100000元整" in clauses[0].text
+    assert clauses[0].page_numbers == [1, 2]
+    assert "CROSS_PAGE_CONTINUATION_MERGED" in clauses[0].split_flags
+
+
+def test_clause_splitter_does_not_merge_cross_page_no正文_signing_boundary() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1",
+                        page_no=1,
+                        text="5.4 本合同附件与正文具有同等法律效力",
+                        bbox=BBox(x0=50, y0=760, x1=520, y1=790),
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="sign-none",
+                        page_no=2,
+                        text="以下无正文",
+                        bbox=BBox(x0=50, y0=72, x1=220, y1=102),
+                    ),
+                    TextBlock(
+                        block_id="sign-party",
+                        page_no=2,
+                        text="甲方（盖章）：",
+                        bbox=BBox(x0=50, y0=130, x1=220, y1=160),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert len(clauses) >= 2
+    assert "以下无正文" not in clauses[0].text
+    assert "CROSS_PAGE_CONTINUATION_MERGED" not in clauses[0].split_flags
+
+
 def test_clause_splitter_builds_hierarchy_path_from_heading_levels() -> None:
     document = Document(
         filename="sample.pdf",

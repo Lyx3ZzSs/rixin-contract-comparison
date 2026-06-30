@@ -11,6 +11,22 @@ class ParagraphBuilder:
 
     terminal_punctuation = tuple("。；;！？!?")
     continuation_punctuation = tuple("，,、：:（(")
+    paragraph_merged_flag = "PARAGRAPH_MERGED"
+    cross_page_merged_flag = "CROSS_PAGE_CONTINUATION_MERGED"
+    title_block_types = {"paragraph_title", "doc_title", "title"}
+    boundary_block_types = {
+        "footer",
+        "header",
+        "page_footer",
+        "page_header",
+        "footnote",
+        "vision_footnote",
+        "table",
+        "table_title",
+        "seal",
+        "image",
+        "figure",
+    }
 
     def build(
         self,
@@ -20,6 +36,8 @@ class ParagraphBuilder:
     ) -> list[Any]:
         result: list[Any] = []
         for unit in units:
+            if result:
+                unit = self._with_boundary_metadata(result[-1], unit, parse_marker)
             if result and self._is_continuation(result[-1], unit, parse_marker):
                 result[-1] = self._merge_units(result[-1], unit)
             else:
@@ -34,28 +52,116 @@ class ParagraphBuilder:
     ) -> bool:
         if getattr(previous, "section_type", "main_contract") != getattr(current, "section_type", "main_contract"):
             return False
-        if parse_marker(getattr(current, "text", "")) is not None:
-            return False
+
         previous_text = str(getattr(previous, "text", "") or "").strip()
         current_text = str(getattr(current, "text", "") or "").strip()
         if not previous_text or not current_text:
             return False
+        if self._has_strong_boundary_block_type(current):
+            return False
+        if self._looks_like_signing_boundary(current_text):
+            return False
+
+        current_marker = parse_marker(current_text)
+        if self._current_marker_blocks_continuation(current_marker, current_text):
+            return False
+
         previous_marker = parse_marker(previous_text)
         if previous_marker is not None and not self._marker_title(previous_marker):
             return True
-        if previous_text.endswith(self.continuation_punctuation):
-            return True
+
+        current_is_standalone_label = (
+            self._looks_like_standalone_label(current_text)
+            and not self._looks_like_numeric_value_continuation(current_text)
+        )
+        if parse_marker(previous_text) is None and self._looks_like_standalone_label(previous_text):
+            return False
         if previous_text.endswith(self.terminal_punctuation):
             return False
         if self._same_block(previous, current):
             return True
-        return self._visually_close(previous, current) and not self._looks_like_standalone_label(current_text)
+        if getattr(previous, "page_no", None) == getattr(current, "page_no", None):
+            if previous_text.endswith(self.continuation_punctuation):
+                return True
+            return self._visually_close(previous, current) and not current_is_standalone_label
+        return self._visually_continues_across_adjacent_pages(previous, current) and not current_is_standalone_label
 
     @staticmethod
     def _marker_title(marker: object) -> str:
         if isinstance(marker, tuple) and len(marker) >= 2:
             return str(marker[1] or "")
         return ""
+
+    @classmethod
+    def _has_strong_boundary_block_type(cls, unit: Any) -> bool:
+        block_type = str(getattr(unit, "block_type", "") or "").lower()
+        return block_type in cls.boundary_block_types or block_type in cls.title_block_types
+
+    @staticmethod
+    def _compact_text(text: str) -> str:
+        return re.sub(r"\s+", "", text or "")
+
+    @classmethod
+    def _looks_like_signing_boundary(cls, text: str) -> bool:
+        compact = cls._compact_text(text)
+        if not compact:
+            return True
+        if "以下无正文" in compact:
+            return True
+        if compact in {"签署页", "签字页"}:
+            return True
+        if len(compact) <= 20 and re.search(r"(甲方|乙方|买方|卖方).{0,8}(盖章|签章|签字)", compact):
+            return True
+        if len(compact) <= 20 and re.fullmatch(r"(甲方|乙方|买方|卖方)[:：]?", compact):
+            return True
+        return False
+
+    @staticmethod
+    def _looks_like_numeric_value_continuation(text: str) -> bool:
+        first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+        return bool(
+            re.match(
+                r"^\s*\d+(?:,\d{3})*(?:\.\d+)?\s*(?:元整|元|万元|亿元|%|‰|天|日|个月|月|年|台|套|个|项|批|份|件)",
+                first_line,
+                re.IGNORECASE,
+            )
+            or re.match(r"^\s*(?:人民币|¥|￥)\s*\d", first_line, re.IGNORECASE)
+        )
+
+    @classmethod
+    def _current_marker_blocks_continuation(cls, marker: object | None, text: str) -> bool:
+        return marker is not None and not cls._looks_like_numeric_value_continuation(text)
+
+    def _with_boundary_metadata(
+        self,
+        previous: Any,
+        current: Any,
+        parse_marker: Callable[[str], object | None],
+    ) -> Any:
+        current_text = str(getattr(current, "text", "") or "").strip()
+        if not current_text:
+            return current
+        previous_section = getattr(previous, "section_type", "main_contract")
+        if previous_section == "signature" and self._looks_like_signing_boundary(current_text):
+            return self._replace_unit(current, section_type="signature")
+        if not self._visually_continues_across_adjacent_pages(previous, current):
+            return current
+        if self._looks_like_signing_boundary(current_text):
+            return self._replace_unit(current, section_type="signature")
+        if (
+            parse_marker(current_text) is None
+            and self._looks_like_standalone_label(current_text)
+            and not self._looks_like_numeric_value_continuation(current_text)
+        ):
+            return self._replace_unit(current, block_type="paragraph_title")
+        return current
+
+    @staticmethod
+    def _replace_unit(unit: Any, **changes: Any) -> Any:
+        try:
+            return replace(unit, **changes)
+        except TypeError:
+            return unit
 
     @staticmethod
     def _same_block(previous: Any, current: Any) -> bool:
@@ -73,6 +179,37 @@ class ParagraphBuilder:
         vertical_gap = current_bbox.y0 - previous_bbox.y1
         indent_delta = abs(current_bbox.x0 - previous_bbox.x0)
         return vertical_gap <= previous_height * 1.4 and indent_delta <= max(previous_height * 2.5, 24.0)
+
+    @staticmethod
+    def _visually_continues_across_adjacent_pages(previous: Any, current: Any) -> bool:
+        previous_page = getattr(previous, "page_no", None)
+        current_page = getattr(current, "page_no", None)
+        if previous_page is None or current_page is None or current_page != previous_page + 1:
+            return False
+        previous_bbox = getattr(previous, "bbox", None)
+        current_bbox = getattr(current, "bbox", None)
+        if previous_bbox is None or current_bbox is None:
+            return False
+
+        previous_height = max(1.0, previous_bbox.y1 - previous_bbox.y0)
+        current_height = max(1.0, current_bbox.y1 - current_bbox.y0)
+        indent_delta = abs(current_bbox.x0 - previous_bbox.x0)
+        if indent_delta > max(previous_height * 3.0, current_height * 3.0, 36.0):
+            return False
+
+        max_coordinate = max(
+            abs(previous_bbox.y0),
+            abs(previous_bbox.y1),
+            abs(current_bbox.y0),
+            abs(current_bbox.y1),
+        )
+        if max_coordinate <= 2.0:
+            previous_near_bottom = previous_bbox.y0 >= 0.55 or previous_bbox.y1 >= 0.68
+            current_near_top = current_bbox.y0 <= 0.35
+        else:
+            previous_near_bottom = previous_bbox.y0 >= 500.0 or previous_bbox.y1 >= 650.0
+            current_near_top = current_bbox.y0 <= 180.0
+        return previous_near_bottom and current_near_top
 
     @staticmethod
     def _looks_like_standalone_label(text: str) -> bool:
@@ -111,11 +248,14 @@ class ParagraphBuilder:
                 *self._tuple_attr(current, "source_block_ids", getattr(current, "block_id", None)),
             ])
         )
+        merge_flags = [self.paragraph_merged_flag]
+        if getattr(previous, "page_no", None) != getattr(current, "page_no", None):
+            merge_flags.append(self.cross_page_merged_flag)
         split_flags = tuple(
             dict.fromkeys([
                 *getattr(previous, "split_flags", ()),
                 *getattr(current, "split_flags", ()),
-                "PARAGRAPH_MERGED",
+                *merge_flags,
             ])
         )
         try:
@@ -132,7 +272,10 @@ class ParagraphBuilder:
                 source_block_ids=source_block_ids,
             )
         except TypeError:
-            return self._with_flag(previous, "PARAGRAPH_MERGED")
+            fallback = self._with_flag(previous, self.paragraph_merged_flag)
+            if getattr(previous, "page_no", None) != getattr(current, "page_no", None):
+                fallback = self._with_flag(fallback, self.cross_page_merged_flag)
+            return fallback
 
     @staticmethod
     def _tuple_attr(unit: Any, attr: str, fallback: Any = None) -> tuple[Any, ...]:
