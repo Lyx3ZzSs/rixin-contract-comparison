@@ -4,6 +4,10 @@ from app.models import ClausePair, DiffItem, TextRange
 from app.utils.id_utils import generate_diff_id
 
 from app.services.diff.cross_column_prefix import repair_cross_column_prefix_fragments
+from app.services.diff.critical_field_guard import (
+    critical_field_diff_types,
+    critical_field_review_flags,
+)
 from app.services.diff.range_refiner import changed_snippets
 from app.services.diff.spatial_line_pairing import repair_spatial_line_pairing
 from app.services.diff.spatial_repair import rebuild_change_text, repair_spatial_duplicate_ranges
@@ -12,6 +16,7 @@ from app.services.diff.spatial_value_coverage import repair_spatial_value_covera
 from app.services.diff.text_utils import shorten
 
 LOW_CONFIDENCE_MATCH_THRESHOLD = 75.0
+CRITICAL_FIELD_CONTEXT_CHARS = set("0123456789,.-/%‰¥￥人民币年月日天个工作万元亿元")
 
 
 def build_diffs(pairs: list[ClausePair], start_index: int = 1) -> list[DiffItem]:
@@ -135,6 +140,19 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
     else:
         readable_change = f"原文：{original_snippet}\n修改后：{compare_snippet}"
     flags = review_flags(pair)
+    score_details = dict(pair.score_details)
+    original_field_snippet = critical_field_guard_snippet(left.text, original_ranges, original_snippet)
+    compare_field_snippet = critical_field_guard_snippet(right.text, compare_ranges, compare_snippet)
+    field_types = critical_field_diff_types(
+        left.text,
+        right.text,
+        original_field_snippet,
+        compare_field_snippet,
+    )
+    if field_types:
+        flags.extend(critical_field_review_flags(field_types))
+        score_details["critical_field_diff_types"] = field_types
+        score_details["critical_field_guard_applied"] = 1.0
     if line_pairing_reasons:
         flags.append("SPATIAL_LINE_PAIRING_REPAIRED")
     if cross_column_reasons:
@@ -162,7 +180,7 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
         section_path=right.section_path or left.section_path,
         match_score=pair.score,
         match_method=pair.match_method,
-        match_score_details=pair.score_details,
+        match_score_details=score_details,
         match_candidates=pair.match_candidates,
         match_confidence=pair.match_confidence,
         structural_flags=list(dict.fromkeys([*left.split_flags, *right.split_flags])),
@@ -172,6 +190,19 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
         original_change_ranges=original_ranges,
         compare_change_ranges=compare_ranges,
     )
+
+
+def critical_field_guard_snippet(text: str, ranges: list[TextRange], fallback: str) -> str:
+    if not ranges:
+        return fallback
+    start = min(item.start for item in ranges)
+    end = max(item.end for item in ranges)
+    while start > 0 and text[start - 1] in CRITICAL_FIELD_CONTEXT_CHARS:
+        start -= 1
+    while end < len(text) and text[end] in CRITICAL_FIELD_CONTEXT_CHARS:
+        end += 1
+    snippet = text[start:end]
+    return snippet or fallback
 
 
 def review_flags(pair: ClausePair) -> list[str]:
