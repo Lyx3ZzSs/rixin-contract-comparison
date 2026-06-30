@@ -524,6 +524,55 @@ def test_clause_splitter_merges_cross_page_clause_continuation_with_evidence() -
     assert [box.page_no for box in clauses[0].bboxes] == [1, 1, 2]
 
 
+def test_clause_splitter_merges_normalized_bbox_cross_page_continuation() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=1,
+                height=1,
+                blocks=[
+                    TextBlock(
+                        block_id="p1-heading",
+                        page_no=1,
+                        text="5.5 服务交付",
+                        bbox=BBox(x0=0.08, y0=0.88, x1=0.86, y1=0.92),
+                    ),
+                    TextBlock(
+                        block_id="p1-body",
+                        page_no=1,
+                        text="乙方应完成系统部署并提供",
+                        bbox=BBox(x0=0.12, y0=0.94, x1=0.88, y1=0.98),
+                    ),
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=1,
+                height=1,
+                blocks=[
+                    TextBlock(
+                        block_id="p2-body",
+                        page_no=2,
+                        text="不少于三十日的试运行支持。",
+                        bbox=BBox(x0=0.12, y0=0.06, x1=0.88, y1=0.10),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["5.5"]
+    assert "试运行支持" in clauses[0].text
+    assert clauses[0].page_numbers == [1, 2]
+    assert "CROSS_PAGE_CONTINUATION_MERGED" in clauses[0].split_flags
+
+
 def test_clause_splitter_does_not_merge_cross_page_explicit_new_clause() -> None:
     document = Document(
         filename="sample.pdf",
