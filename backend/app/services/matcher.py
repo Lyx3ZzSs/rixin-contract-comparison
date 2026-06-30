@@ -988,12 +988,6 @@ class ClauseMatcher:
         ):
             weighted = min(weighted, 84.0)
         if (
-            CRITICAL_TOKEN_CONFLICT in risk_flags
-            and self._alignment_number(details.get("alignment"), "critical_token_overlap", default=1.0) <= 0.0
-            and details.get("business_token_mismatch", 0.0) >= 1
-        ):
-            weighted = min(weighted, 84.0)
-        if (
             SAME_NUMBER_LOW_BODY_SIMILARITY in risk_flags
             and details["title_score"] < 80
         ):
