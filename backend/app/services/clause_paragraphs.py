@@ -68,7 +68,10 @@ class ParagraphBuilder:
 
         previous_marker = parse_marker(previous_text)
         if previous_marker is not None and not self._marker_title(previous_marker):
-            return True
+            return self._same_block(previous, current) or self._visually_close(previous, current) or (
+                self._visually_continues_across_adjacent_pages(previous, current)
+                and not self._looks_like_standalone_label(current_text)
+            )
 
         current_is_standalone_label = (
             self._looks_like_standalone_label(current_text)
@@ -249,7 +252,7 @@ class ParagraphBuilder:
             ])
         )
         merge_flags = [self.paragraph_merged_flag]
-        if getattr(previous, "page_no", None) != getattr(current, "page_no", None):
+        if self._is_adjacent_page_pair(previous, current):
             merge_flags.append(self.cross_page_merged_flag)
         split_flags = tuple(
             dict.fromkeys([
@@ -273,9 +276,15 @@ class ParagraphBuilder:
             )
         except TypeError:
             fallback = self._with_flag(previous, self.paragraph_merged_flag)
-            if getattr(previous, "page_no", None) != getattr(current, "page_no", None):
+            if self._is_adjacent_page_pair(previous, current):
                 fallback = self._with_flag(fallback, self.cross_page_merged_flag)
             return fallback
+
+    @staticmethod
+    def _is_adjacent_page_pair(previous: Any, current: Any) -> bool:
+        previous_page = getattr(previous, "page_no", None)
+        current_page = getattr(current, "page_no", None)
+        return previous_page is not None and current_page == previous_page + 1
 
     @staticmethod
     def _tuple_attr(unit: Any, attr: str, fallback: Any = None) -> tuple[Any, ...]:

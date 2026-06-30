@@ -566,6 +566,50 @@ def test_clause_splitter_does_not_merge_cross_page_explicit_new_clause() -> None
     assert "CROSS_PAGE_CONTINUATION_MERGED" not in clauses[0].split_flags
 
 
+def test_clause_splitter_does_not_merge_non_adjacent_page_bare_marker_continuation() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=3,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p1-marker",
+                        page_no=1,
+                        text="5.3",
+                        bbox=BBox(x0=50, y0=760, x1=120, y1=790),
+                    )
+                ],
+            ),
+            Page(page_no=2, width=595, height=842, blocks=[]),
+            Page(
+                page_no=3,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="p3-body",
+                        page_no=3,
+                        text="乙方应持续提供服务。",
+                        bbox=BBox(x0=70, y0=72, x1=520, y1=102),
+                    )
+                ],
+            ),
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert len(clauses) == 2
+    assert clauses[0].page_numbers == [1]
+    assert clauses[1].page_numbers == [3]
+    assert all("CROSS_PAGE_CONTINUATION_MERGED" not in clause.split_flags for clause in clauses)
+
+
 def test_clause_splitter_does_not_merge_cross_page_standalone_title() -> None:
     document = Document(
         filename="sample.pdf",
