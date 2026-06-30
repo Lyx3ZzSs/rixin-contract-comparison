@@ -33,6 +33,15 @@ def test_numeric_snippet_does_not_pull_unrelated_duration_with_same_digits() -> 
     ) == ["AMOUNT"]
 
 
+def test_detects_multiple_field_types_from_concatenated_snippets() -> None:
+    assert critical_field_diff_types(
+        "付款金额为1000元，期限1000日，甲方负责。",
+        "付款金额为5000元，期限1000日，乙方负责。",
+        "1000甲",
+        "5000乙",
+    ) == ["AMOUNT", "PARTY_ROLE"]
+
+
 def test_detects_date_change() -> None:
     assert critical_field_diff_types(
         "甲方应在2026年6月30日前付款。",

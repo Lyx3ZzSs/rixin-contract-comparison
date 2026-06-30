@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -51,6 +52,11 @@ QUANTITY_PATTERN = re.compile(
     r"\d+(?:\.\d+)?\s*(?:台|套|个|项|批|份|件|人天)"
 )
 PARTY_ROLE_PATTERN = re.compile(r"甲方|乙方|买方|卖方|供应商|客户")
+PARTY_ROLE_FRAGMENT_PATTERN = re.compile(r"甲|乙|买|卖|供应商|客户")
+CHINESE_NUMERAL_CHARS = "一二三四五六七八九十百千万零〇两"
+CHINESE_PERCENT_FRAGMENT_PATTERN = re.compile(rf"千分之[{CHINESE_NUMERAL_CHARS}\d]+")
+CHINESE_DURATION_FRAGMENT_PATTERN = re.compile(rf"[{CHINESE_NUMERAL_CHARS}]+个工作日")
+NUMERIC_FRAGMENT_PATTERN = re.compile(r"\d+(?:\.\d+)?")
 
 FIELD_PATTERNS = {
     FIELD_AMOUNT: AMOUNT_PATTERN,
@@ -127,7 +133,7 @@ def _changed_field_tokens(
     text: str,
     snippet: str,
     field_type: str,
-    change_span: ChangeSpan,
+    change_spans: list[ChangeSpan],
 ) -> list[FieldToken]:
     pattern = FIELD_PATTERNS[field_type]
     if field_type == FIELD_DURATION:
@@ -135,7 +141,7 @@ def _changed_field_tokens(
         snippet = _strip_dates(snippet)
     tokens: list[FieldToken] = []
     for match in _pattern_matches(pattern, text):
-        if _token_touches_change(match, text, snippet, change_span):
+        if _token_touches_change(match, text, snippet, change_spans):
             tokens.append(FieldToken(field_type, match.raw, _normalize_token(field_type, match.raw)))
     for match in _pattern_matches(pattern, snippet):
         tokens.append(FieldToken(field_type, match.raw, _normalize_token(field_type, match.raw)))
@@ -150,72 +156,90 @@ def _token_touches_change(
     token_match: PatternMatch,
     text: str,
     snippet: str,
-    change_span: ChangeSpan,
+    change_spans: list[ChangeSpan],
 ) -> bool:
     token = _compact(token_match.raw)
-    changed = _compact(snippet)
-    if not token or not changed:
+    fragments = _snippet_candidate_fragments(snippet)
+    if not token or not fragments:
         return False
-    if _spans_touch(token_match.start, token_match.end, change_span.start, change_span.end, text):
-        return token in changed or changed in token
     return any(
-        token in changed or changed in token
-        for occurrence in _snippet_occurrences(text, snippet)
-        if _spans_touch(token_match.start, token_match.end, occurrence.start, occurrence.end, text)
-        and _spans_touch(occurrence.start, occurrence.end, change_span.start, change_span.end, text)
+        _fragment_touches_token(fragment, token)
+        and _fragment_overlaps_change_in_token(fragment, token_match, text, change_spans)
+        for fragment in fragments
     )
 
 
-def _changed_spans(original_text: str, compare_text: str) -> tuple[ChangeSpan, ChangeSpan]:
+def _changed_spans(original_text: str, compare_text: str) -> tuple[list[ChangeSpan], list[ChangeSpan]]:
     original = original_text or ""
     compare = compare_text or ""
-    prefix_length = 0
-    max_prefix_length = min(len(original), len(compare))
-    while prefix_length < max_prefix_length and original[prefix_length] == compare[prefix_length]:
-        prefix_length += 1
+    original_spans: list[ChangeSpan] = []
+    compare_spans: list[ChangeSpan] = []
+    matcher = difflib.SequenceMatcher(a=original, b=compare, autojunk=False)
+    for tag, original_start, original_end, compare_start, compare_end in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        original_spans.append(ChangeSpan(original_start, original_end))
+        compare_spans.append(ChangeSpan(compare_start, compare_end))
+    return original_spans, compare_spans
 
-    original_suffix = len(original)
-    compare_suffix = len(compare)
-    while (
-        original_suffix > prefix_length
-        and compare_suffix > prefix_length
-        and original[original_suffix - 1] == compare[compare_suffix - 1]
+
+def _snippet_candidate_fragments(snippet: str) -> list[str]:
+    compact = _compact(snippet)
+    if not compact:
+        return []
+    fragments = [compact]
+    for pattern in (
+        NUMERIC_FRAGMENT_PATTERN,
+        PARTY_ROLE_FRAGMENT_PATTERN,
+        CHINESE_PERCENT_FRAGMENT_PATTERN,
+        CHINESE_DURATION_FRAGMENT_PATTERN,
     ):
-        original_suffix -= 1
-        compare_suffix -= 1
+        fragments.extend(match.group(0) for match in pattern.finditer(compact))
+    return _dedupe_strings(fragments)
 
-    return (
-        ChangeSpan(prefix_length, original_suffix),
-        ChangeSpan(prefix_length, compare_suffix),
+
+def _fragment_touches_token(fragment: str, token: str) -> bool:
+    return bool(fragment) and (fragment == token or fragment in token)
+
+
+def _fragment_overlaps_change_in_token(
+    fragment: str,
+    token_match: PatternMatch,
+    text: str,
+    change_spans: list[ChangeSpan],
+) -> bool:
+    for occurrence in re.finditer(re.escape(fragment), text or ""):
+        if occurrence.start() < token_match.start or occurrence.end() > token_match.end:
+            continue
+        if _any_span_overlaps(occurrence.start(), occurrence.end(), change_spans):
+            return True
+    return fragment == _compact(token_match.raw) and _any_span_overlaps(
+        token_match.start,
+        token_match.end,
+        change_spans,
     )
 
 
-def _snippet_occurrences(text: str, snippet: str) -> list[ChangeSpan]:
-    if not snippet:
-        return []
-    return [ChangeSpan(match.start(), match.end()) for match in re.finditer(re.escape(snippet), text or "")]
+def _any_span_overlaps(
+    token_start: int,
+    token_end: int,
+    change_spans: list[ChangeSpan],
+) -> bool:
+    return any(
+        _spans_overlap(token_start, token_end, change_span.start, change_span.end)
+        for change_span in change_spans
+    )
 
 
-def _spans_touch(
+def _spans_overlap(
     token_start: int,
     token_end: int,
     changed_start: int,
     changed_end: int,
-    text: str,
 ) -> bool:
     if token_start < changed_end and changed_start < token_end:
         return True
-    if changed_start == changed_end and token_start <= changed_start <= token_end:
-        return True
-    gap_start = min(token_end, changed_end)
-    gap_end = max(token_start, changed_start)
-    if gap_start > gap_end:
-        return False
-    return _is_weak_gap(text[gap_start:gap_end])
-
-
-def _is_weak_gap(text: str) -> bool:
-    return all(not char.isalnum() or char in "年月日天元%‰￥¥,，.。;；:：()（）[]【】 " for char in text)
+    return changed_start == changed_end and token_start <= changed_start <= token_end
 
 
 def _token_values(tokens: list[FieldToken]) -> list[str]:
@@ -231,6 +255,17 @@ def _dedupe_tokens(tokens: list[FieldToken]) -> list[FieldToken]:
             continue
         seen.add(key)
         result.append(token)
+    return result
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
     return result
 
 
