@@ -2131,6 +2131,17 @@ h2 {
   justify-content: center;
   gap: 10px;
   margin: 18px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.compare-options legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .compare-option {
