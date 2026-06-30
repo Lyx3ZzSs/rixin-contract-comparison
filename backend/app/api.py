@@ -46,8 +46,14 @@ router = APIRouter(prefix="/api/compare", tags=["compare"])
 async def compare_contracts(
     original_file: UploadFile = File(...),
     compare_file: UploadFile = File(...),
+    ignore_stamps: bool = Form(False),
+    ignore_headers_footers: bool = Form(False),
 ) -> CompareTaskResponse:
     task_id = generate_task_id()
+    compare_options = CompareOptions(
+        ignore_stamps=ignore_stamps,
+        ignore_headers_footers=ignore_headers_footers,
+    )
     try:
         original_path = await save_upload_file(original_file, task_id, "original")
         compare_path = await save_upload_file(compare_file, task_id, "compare")
@@ -57,6 +63,7 @@ async def compare_contracts(
             compare_path=compare_path,
             original_filename=original_file.filename or original_path.name,
             compare_filename=compare_file.filename or compare_path.name,
+            compare_options=compare_options,
         )
     except FileValidationError as exc:
         raise http_error(exc) from exc

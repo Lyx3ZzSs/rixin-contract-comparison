@@ -232,7 +232,7 @@ def test_api_compare_rejects_owner_only_encrypted_pdf_before_task_creation(tmp_p
     assert not list(settings.tasks_dir.rglob("job.json"))
 
 
-def test_api_compare_ignores_legacy_exclusion_options(tmp_path: Path) -> None:
+def test_api_compare_persists_enabled_exclusion_options(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     default_task_runner.stop(wait=True)
     original_autostart = default_task_runner.autostart
@@ -266,10 +266,14 @@ def test_api_compare_ignores_legacy_exclusion_options(tmp_path: Path) -> None:
     assert "compare_options" not in payload
     task = load_task(task_id)
     assert task.compare_options.ignore_punctuation is False
-    assert task.compare_options.ignore_headers_footers is False
-    assert task.compare_options.ignore_stamps is False
+    assert task.compare_options.ignore_headers_footers is True
+    assert task.compare_options.ignore_stamps is True
     job = default_task_runner.latest_job(task_id, task_type="compare")
-    assert "compare_options" not in job.payload
+    assert job.payload["compare_options"] == {
+        "ignore_punctuation": False,
+        "ignore_headers_footers": True,
+        "ignore_stamps": True,
+    }
 
 
 def test_compare_progress_stream_sends_current_snapshot(tmp_path: Path) -> None:
