@@ -195,6 +195,47 @@ def test_clause_matcher_writes_matcher_guard_for_critical_token_conflict() -> No
     assert pair.score_details["matcher_guard_applied"] == 1.0
 
 
+def test_low_coverage_same_key_with_weak_body_and_title_is_not_accepted_by_key_only() -> None:
+    original = [
+        clause(
+            "O001",
+            "",
+            "服务范围",
+            "乙方应提供功率预测平台部署、模型训练、接口联调、历史数据迁移、验收支持和上线后运维服务。",
+            clause_key="main_contract/服务范围",
+        )
+    ]
+    compare = [
+        clause(
+            "N001",
+            "",
+            "项目联系人",
+            "联系人:张三。",
+            clause_key="main_contract/服务范围",
+        )
+    ]
+
+    pairs = ClauseMatcher().match(original, compare)
+
+    assert {pair.match_method for pair in pairs} == {"delete", "add"}
+    delete_pair = next(pair for pair in pairs if pair.match_method == "delete")
+    assert delete_pair.match_candidates[0]["score_details"]["matcher_risk_flags"] == [
+        "SAME_KEY_LOW_BODY_COVERAGE"
+    ]
+
+
+def test_critical_token_conflict_caps_score_but_keeps_modify_candidate() -> None:
+    original = [clause("O001", "3.1", "付款条款", "甲方应在2026年6月30日前支付人民币1000元。")]
+    compare = [clause("N001", "3.1", "付款条款", "甲方应在2027年7月31日前支付人民币5000元。")]
+
+    pair = ClauseMatcher().match(original, compare)[0]
+
+    assert pair.compare is not None
+    assert pair.score <= 84.0
+    assert "CRITICAL_TOKEN_CONFLICT" in pair.score_details["matcher_risk_flags"]
+    assert pair.match_confidence == "LOW"
+
+
 def test_optimal_assignment_prefers_two_good_pairs_over_one_greedy_pair() -> None:
     original = [
         clause("O001", "", "A", "Template service scope with payment support."),

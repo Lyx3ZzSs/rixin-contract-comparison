@@ -978,6 +978,28 @@ class ClauseMatcher:
             weighted = max(weighted, details["body_score"] * 0.92)
         if details["weak_numeric_marker"] >= 1 and details["body_score"] < 80 and details["title_score"] < 75:
             weighted = min(weighted, 68.0)
+        risk_flags = set(details.get("matcher_risk_flags", []))
+        if SAME_KEY_LOW_BODY_COVERAGE in risk_flags:
+            weighted = min(weighted, 82.0)
+        if (
+            CRITICAL_TOKEN_CONFLICT in risk_flags
+            and self._alignment_number(details.get("alignment"), "critical_token_overlap", default=1.0) <= 0.0
+            and details["body_score"] < 85
+        ):
+            weighted = min(weighted, 84.0)
+        if (
+            CRITICAL_TOKEN_CONFLICT in risk_flags
+            and self._alignment_number(details.get("alignment"), "critical_token_overlap", default=1.0) <= 0.0
+            and details.get("business_token_mismatch", 0.0) >= 1
+        ):
+            weighted = min(weighted, 84.0)
+        if (
+            SAME_NUMBER_LOW_BODY_SIMILARITY in risk_flags
+            and details["title_score"] < 80
+        ):
+            weighted = min(weighted, 78.0)
+        if BODY_ONLY_ALIGNMENT_RISK in risk_flags:
+            weighted = min(weighted, 84.0)
         return round(max(0.0, min(100.0, weighted)), 2)
 
     def _candidate_acceptable(self, candidate: MatchCandidate) -> bool:
@@ -994,6 +1016,19 @@ class ClauseMatcher:
         ):
             return False
         if details["weak_numeric_marker"] >= 1 and details["body_score"] < 80 and details["title_score"] < 75:
+            return False
+        risk_flags = set(details.get("matcher_risk_flags", []))
+        if (
+            SAME_KEY_LOW_BODY_COVERAGE in risk_flags
+            and details["body_score"] < 55
+            and details["title_score"] < 80
+        ):
+            return False
+        if (
+            SAME_NUMBER_LOW_BODY_SIMILARITY in risk_flags
+            and details["title_score"] < 80
+            and candidate.score < self.low_confidence_review_threshold
+        ):
             return False
         if details["clause_key_score"] >= 96 and details["body_score"] >= 35:
             return True
@@ -1062,6 +1097,7 @@ class ClauseMatcher:
             candidate
             for candidate in candidates
             if candidate.details.get("section_mismatch_candidate", 0.0) >= 1
+            or candidate.details.get("matcher_risk_flags")
         ]
         return self._candidate_summaries(flagged)
 
