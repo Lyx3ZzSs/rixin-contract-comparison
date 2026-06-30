@@ -147,6 +147,11 @@ export interface CompareResponse {
   errors: string[];
 }
 
+export interface CompareContractOptions {
+  ignoreStamps: boolean;
+  ignoreHeadersFooters: boolean;
+}
+
 export interface CompareTask extends CompareResponse {
   created_at: string;
   updated_at: string;
@@ -165,6 +170,21 @@ export interface CompareRecordSummary {
   compare_filename: string;
   diff_count: number;
   report_url: string;
+}
+
+export interface CompareRecordListResponse {
+  records: CompareRecordSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface CompareRecordQuery {
+  page?: number;
+  pageSize?: number;
+  startDate?: string;
+  endDate?: string;
 }
 
 export interface BBox {

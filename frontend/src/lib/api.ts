@@ -1,6 +1,8 @@
 import type {
   AuditItemReviewResponse,
-  CompareRecordSummary,
+  CompareRecordListResponse,
+  CompareRecordQuery,
+  CompareContractOptions,
   CompareResponse,
   CompareQualitySummary,
   CompareTask,
@@ -44,10 +46,17 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
 export async function compareContracts(
   originalFile: File,
   compareFile: File,
+  options?: CompareContractOptions,
 ): Promise<CompareResponse> {
   const formData = new FormData();
   formData.append("original_file", originalFile);
   formData.append("compare_file", compareFile);
+  if (options?.ignoreStamps) {
+    formData.append("ignore_stamps", "true");
+  }
+  if (options?.ignoreHeadersFooters) {
+    formData.append("ignore_headers_footers", "true");
+  }
 
   const response = await fetch(toApiUrl("/api/compare"), {
     method: "POST",
@@ -61,13 +70,16 @@ export async function getTask(taskId: string): Promise<CompareTask> {
   return parseJsonResponse<CompareTask>(response);
 }
 
-export async function getCompareRecords(): Promise<CompareRecordSummary[]> {
-  const response = await fetch(toApiUrl("/api/compare/records"));
-  const payload = await parseJsonResponse<{ records: CompareRecordSummary[] }>(response);
-  return payload.records;
+export async function getCompareRecords(query: CompareRecordQuery = {}): Promise<CompareRecordListResponse> {
+  const searchParams = new URLSearchParams();
+  if (query.page !== undefined) searchParams.set("page", String(query.page));
+  if (query.pageSize !== undefined) searchParams.set("page_size", String(query.pageSize));
+  if (query.startDate) searchParams.set("start_date", query.startDate);
+  if (query.endDate) searchParams.set("end_date", query.endDate);
+  const queryString = searchParams.toString();
+  const response = await fetch(toApiUrl(`/api/compare/records${queryString ? `?${queryString}` : ""}`));
+  return parseJsonResponse<CompareRecordListResponse>(response);
 }
-
-
 
 export async function getDiffs(taskId: string): Promise<DiffItem[]> {
   const response = await fetch(toApiUrl(`/api/compare/${taskId}/diffs`));
@@ -104,9 +116,5 @@ export async function getCompareQuality(taskId: string): Promise<CompareQualityS
   const response = await fetch(toApiUrl(`/api/compare/${taskId}/quality`));
   return parseJsonResponse<CompareQualitySummary>(response);
 }
-
-
-
-
 
 
