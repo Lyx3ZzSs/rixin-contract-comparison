@@ -44,6 +44,13 @@ class _FieldToken:
 
 
 @dataclass(frozen=True)
+class _SigningLabelToken:
+    label: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
 class CoverageFragment:
     kind: str
     text: str
@@ -117,6 +124,9 @@ class ClauseBoundaryCoverageFilter:
         decisions: list[BoundaryCoverageDecision] = []
         for diff in diffs:
             diff, trim_decision = self._trim_covered_contact_fields(diff, context)
+            if trim_decision is not None:
+                decisions.append(trim_decision)
+            diff, trim_decision = self._trim_covered_signing_form_labels(diff, context)
             if trim_decision is not None:
                 decisions.append(trim_decision)
             suppression_reason = self._suppression_reason(diff, context)
@@ -272,6 +282,63 @@ class ClauseBoundaryCoverageFilter:
             ),
         )
 
+    def _trim_covered_signing_form_labels(
+        self,
+        diff: DiffItem,
+        context: BoundaryCoverageContext,
+    ) -> tuple[DiffItem, BoundaryCoverageDecision | None]:
+        if not _eligible_structural_clause_diff(diff):
+            return diff, None
+
+        original_window = context.original_index.window_text(diff.original_clause_id)
+        compare_window = context.compare_index.window_text(diff.compare_clause_id)
+        if not original_window or not compare_window:
+            return diff, None
+
+        original_tokens = _covered_signing_label_tokens(
+            diff.original_text,
+            diff.original_change_ranges,
+            original_window,
+            compare_window,
+        )
+        compare_tokens = _covered_signing_label_tokens(
+            diff.compare_text,
+            diff.compare_change_ranges,
+            original_window,
+            compare_window,
+        )
+        if not original_tokens and not compare_tokens:
+            return diff, None
+
+        update: dict[str, Any] = {}
+        detail: dict[str, Any] = {}
+        if original_tokens:
+            trimmed_ranges = _remove_ranges_for_signing_labels(diff.original_change_ranges, original_tokens)
+            trimmed_evidence = _remove_evidence_for_signing_labels(diff.original_evidence, original_tokens)
+            update["original_change_ranges"] = trimmed_ranges
+            update["original_evidence"] = trimmed_evidence
+            update["original_snippet"] = _rebuild_snippet(diff.original_text, trimmed_ranges)
+            detail["removed_original_fields"] = _signing_token_labels(original_tokens)
+        if compare_tokens:
+            trimmed_ranges = _remove_ranges_for_signing_labels(diff.compare_change_ranges, compare_tokens)
+            trimmed_evidence = _remove_evidence_for_signing_labels(diff.compare_evidence, compare_tokens)
+            update["compare_change_ranges"] = trimmed_ranges
+            update["compare_evidence"] = trimmed_evidence
+            update["compare_snippet"] = _rebuild_snippet(diff.compare_text, trimmed_ranges)
+            detail["removed_compare_fields"] = _signing_token_labels(compare_tokens)
+
+        original_ranges = update.get("original_change_ranges", diff.original_change_ranges)
+        compare_ranges = update.get("compare_change_ranges", diff.compare_change_ranges)
+        update["readable_change"] = _rebuild_readable(diff.original_text, diff.compare_text, original_ranges, compare_ranges)
+        return (
+            diff.model_copy(update=update),
+            BoundaryCoverageDecision(
+                action="trimmed_by_neighbor_clause_coverage",
+                diff_id=diff.diff_id,
+                detail=detail,
+            ),
+        )
+
 
 def compact_text(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text or "")
@@ -402,6 +469,87 @@ def _evidence_matches_token(evidence: EvidenceBox, token: _FieldToken) -> bool:
 
 def _token_labels(tokens: list[_FieldToken]) -> list[str]:
     return [f"{token.label}:{token.value}" for token in tokens]
+
+
+def _covered_signing_label_tokens(
+    text: str,
+    ranges: list[TextRange],
+    original_window: str,
+    compare_window: str,
+) -> list[_SigningLabelToken]:
+    tokens: list[_SigningLabelToken] = []
+    seen: set[tuple[str, int, int]] = set()
+    for range_ in ranges:
+        label = _signing_form_label_key(text[range_.start : range_.end])
+        if not label:
+            continue
+        if not _signing_form_label_present(label, original_window):
+            continue
+        if not _signing_form_label_present(label, compare_window):
+            continue
+        key = (label, range_.start, range_.end)
+        if key in seen:
+            continue
+        seen.add(key)
+        tokens.append(_SigningLabelToken(label=label, start=range_.start, end=range_.end))
+    return tokens
+
+
+def _remove_ranges_for_signing_labels(ranges: list[TextRange], tokens: list[_SigningLabelToken]) -> list[TextRange]:
+    if not ranges or not tokens:
+        return list(ranges)
+    token_spans = {(token.start, token.end) for token in tokens}
+    return [range_ for range_ in ranges if (range_.start, range_.end) not in token_spans]
+
+
+def _remove_evidence_for_signing_labels(evidence: list[EvidenceBox], tokens: list[_SigningLabelToken]) -> list[EvidenceBox]:
+    if not evidence or not tokens:
+        return list(evidence)
+    labels = {token.label for token in tokens}
+    return [item for item in evidence if _signing_form_label_key(item.text) not in labels]
+
+
+def _signing_token_labels(tokens: list[_SigningLabelToken]) -> list[str]:
+    labels: list[str] = []
+    for token in tokens:
+        if token.label not in labels:
+            labels.append(token.label)
+    return labels
+
+
+def _signing_form_label_key(text: str) -> str:
+    compact = normalize_for_coverage(text)
+    if not compact:
+        return ""
+    if re.search(r"\d|[A-Za-z]", compact):
+        return ""
+    if "盖章" in compact and len(compact) <= 6:
+        return "盖章"
+    for label, aliases in _signing_form_label_aliases().items():
+        if compact in aliases:
+            return label
+    return ""
+
+
+def _signing_form_label_present(label: str, text: str) -> bool:
+    compact = normalize_for_coverage(text)
+    if not compact:
+        return False
+    return any(alias in compact for alias in _signing_form_label_aliases().get(label, (label,)))
+
+
+def _signing_form_label_aliases() -> dict[str, tuple[str, ...]]:
+    return {
+        "盖章": ("盖章",),
+        "授权代表签字": ("授权代表签字", "授权代表签", "授权代表", "代表签字", "签字"),
+        "纳税人识别号": ("纳税人识别号", "纳税人识别", "识别号"),
+        "地址": ("地址",),
+        "电话": ("电话",),
+        "开户行": ("开户行",),
+        "账号": ("账号",),
+        "银行行号": ("银行行号",),
+        "日期": ("日期",),
+    }
 
 
 def _rebuild_snippet(text: str, ranges: list[TextRange]) -> str:

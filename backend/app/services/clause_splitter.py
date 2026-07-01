@@ -1182,6 +1182,8 @@ class ClauseSplitter:
             return True
         first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
         compact = re.sub(r"\s+", "", first_line)
+        if self._is_payment_method_value_tail(compact, marker):
+            return True
         if re.fullmatch(r"\d{1,3}", compact):
             return True
         if re.fullmatch(r"\d{3,}(?:\.\d+)?", clause_no or ""):
@@ -1204,6 +1206,16 @@ class ClauseSplitter:
             return False
         first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
         return bool(re.search(r"(元|万元|亿元|税|价款|费用|金额|合同约定|税务机关)", first_line))
+
+    def _is_payment_method_value_tail(self, compact_line: str, marker: tuple[str, str]) -> bool:
+        clause_no, title = marker
+        if not self.weak_numeric_marker_pattern.fullmatch(clause_no or ""):
+            return False
+        compact_title = re.sub(r"\s+", "", title or "")
+        payment_terms = r"(预付款|到货款|货到款|投运款|进度款|验收款|质保金|质量保证金)"
+        if re.match(rf"^[,，、;；:：]?\s*{payment_terms}\d*(?:[%％])?[\]】）)]*$", compact_title):
+            return True
+        return bool(re.match(rf"^\d+[,，、;；]\s*{payment_terms}\d*(?:[%％])?[\]】）)]*$", compact_line))
 
     def _is_article_reference_continuation(self, text: str, marker: tuple[str, str]) -> bool:
         clause_no, title = marker

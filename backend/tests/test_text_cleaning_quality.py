@@ -394,6 +394,59 @@ def test_clause_splitter_does_not_promote_article_reference_as_clause_number() -
     assert "第1条所列明的货物规格等要求一致" in clauses[0].text.replace("\n", "")
 
 
+def test_clause_splitter_keeps_payment_method_value_tail_inside_parent_clause() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="payment-start",
+                        page_no=1,
+                        text="9.1 本合同项下所有款项均以人民币支付。付款方式：【",
+                        bbox=BBox(x0=70, y0=230, x1=353.5, y1=242),
+                    ),
+                    TextBlock(
+                        block_id="payment-tail-symbol",
+                        page_no=1,
+                        text="_】",
+                        bbox=BBox(x0=143, y0=245.5, x1=194, y1=259.5),
+                    ),
+                    TextBlock(
+                        block_id="payment-tail-value",
+                        page_no=1,
+                        text="35,质保金5",
+                        bbox=BBox(x0=85.5, y0=246, x1=148, y1=259.5),
+                    ),
+                    TextBlock(
+                        block_id="payment-options",
+                        page_no=1,
+                        text="A. 滚动付款方式。付款条件为乙方将产品送至我方指定地点。",
+                        bbox=BBox(x0=70, y0=263.5, x1=530, y1=275),
+                    ),
+                    TextBlock(
+                        block_id="next",
+                        page_no=1,
+                        text="9.2 若为款到发货或预付款金额超过50%及以上，则乙方应至少提前日开具发票。",
+                        bbox=BBox(x0=70, y0=420, x1=530, y1=435),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert [clause.clause_no for clause in clauses] == ["9.1", "9.2"]
+    assert "35,质保金5" in clauses[0].text
+    assert "_】" in clauses[0].text
+
+
 def test_clause_splitter_merges_ocr_split_paragraph_with_evidence() -> None:
     document = Document(
         filename="sample.pdf",
@@ -1484,6 +1537,50 @@ def test_diff_quality_suppresses_evidence_unreliable_short_symbol_noise() -> Non
     )
 
 
+def test_diff_quality_suppresses_single_sided_payment_blank_tail_symbol_noise() -> None:
+    diff = DiffItem(
+        diff_id="D004",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="35",
+        title=",质保金5",
+        original_text=(
+            "35,质保金5\n"
+            "A. 滚动付款方式。付款条件为乙方将产品送至我方指定地点。"
+        ),
+        compare_text=(
+            "35,质保金5\n"
+            "_】\n"
+            "A. 滚动付款方式。付款条件为乙方将产品送至我方指定地点。"
+        ),
+        original_snippet="",
+        compare_snippet="_】",
+        match_score=100,
+        match_score_details={
+            "body_score": 99.93,
+            "business_token_mismatch": 0.0,
+        },
+        structural_flags=["PARAGRAPH_MERGED", "READING_ORDER_REPAIRED"],
+        review_flags=[
+            "READING_ORDER_REPAIRED",
+            "READING_ORDER_RISK",
+            "OCR_REMEDIATION_PLANNED",
+            "POSSIBLE_OCR_NOISE",
+        ],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D004"
+        and decision.detail["reason"] == "clause_ocr_noise"
+        for decision in result.decisions
+    )
+
+
 def test_diff_quality_suppresses_reading_order_contact_fields_covered_by_neighbor_clause() -> None:
     original_previous = _quality_clause(
         "OC146",
@@ -1643,6 +1740,90 @@ def test_diff_quality_trims_covered_contact_fields_from_mixed_signing_page_diff(
         decision.action == "trimmed_by_neighbor_clause_coverage"
         and decision.diff_id == "D014"
         and decision.detail["removed_original_fields"] == ["联系人:环加飞", "电话:010-83582793", "传真:010-83582600"]
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_trims_covered_signing_form_labels_from_mixed_signature_diff() -> None:
+    original_clause = _quality_clause(
+        "OC068",
+        "22.5本合同一式两份,双方各持一份,传真件有效。\n"
+        "甲方:【南京国电南自电网自动化有限公\n"
+        "授权代表签字:\n"
+        "纳税人识别号:\n"
+        "日期:\n"
+        "2026.4.17\n"
+        "乙方:【国能日新科技股份有限公司】(盖章)\n"
+        "授权代表签字:\n"
+        "纳税人识别号:",
+        order_index=68,
+        page_no=7,
+        split_flags=["PARAGRAPH_MERGED"],
+    )
+    compare_clause = _quality_clause(
+        "NC068",
+        "22.5本合同一式两份,双方各持一份,传真件有效。\n"
+        "甲方:【南\n"
+        "司】(盖章\n"
+        "授权代表签\n"
+        "纳税人识别\n"
+        "日期:\n"
+        "2026.4.17\n"
+        "日期:2026.4.17\n"
+        "刘万程",
+        side_prefix="N",
+        order_index=68,
+        page_no=7,
+        split_flags=["READING_ORDER_REPAIRED"],
+    )
+    compare_text = compare_clause.text
+    compare_ranges = [
+        TextRange(start=compare_text.index("司】(盖章"), end=compare_text.index("司】(盖章") + len("司】(盖章"), highlight_type="ADD"),
+        TextRange(start=compare_text.index("授权代表签"), end=compare_text.index("授权代表签") + len("授权代表签"), highlight_type="ADD"),
+        TextRange(start=compare_text.index("纳税人识别"), end=compare_text.index("纳税人识别") + len("纳税人识别"), highlight_type="ADD"),
+        TextRange(start=compare_text.index("日期:2026.4.17"), end=compare_text.index("日期:2026.4.17") + len("日期:2026.4.17"), highlight_type="ADD"),
+        TextRange(start=compare_text.index("刘万程"), end=compare_text.index("刘万程") + len("刘万程"), highlight_type="ADD"),
+    ]
+    diff = DiffItem(
+        diff_id="D005",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id="OC068",
+        compare_clause_id="NC068",
+        original_text=original_clause.text,
+        compare_text=compare_text,
+        original_snippet="乙方:【国能日新科技股份有限公司】(授权代表签字:纳税人识别号:",
+        compare_snippet="司】(盖章授权代表签纳税人识别日期:2026.4.17刘万程",
+        compare_change_ranges=compare_ranges,
+        compare_evidence=[
+            EvidenceBox(page_no=7, bbox=BBox(x0=68.2, y0=345.7, x1=126.3, y1=361.3), text="司】(盖章", highlight_type="ADD"),
+            EvidenceBox(page_no=7, bbox=BBox(x0=68.7, y0=362.7, x1=126.3, y1=378.3), text="授权代表签", highlight_type="ADD"),
+            EvidenceBox(page_no=7, bbox=BBox(x0=68.7, y0=380.2, x1=125.8, y1=393.8), text="纳税人识别", highlight_type="ADD"),
+            EvidenceBox(page_no=7, bbox=BBox(x0=337.2, y0=486.2, x1=408.8, y1=522.8), text="2026.4.17", highlight_type="ADD"),
+            EvidenceBox(page_no=7, bbox=BBox(x0=501.2, y0=349.2, x1=565.8, y1=383.3), text="刘万程", highlight_type="ADD"),
+        ],
+        structural_flags=["PUNCTUATED_HEADING", "PARAGRAPH_MERGED", "READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "SEAL_OR_SIGNATURE_RISK", "CRITICAL_VALUE_CHANGE"],
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause],
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D005"]
+    trimmed = result.diffs[0]
+    assert "司】(盖章" not in trimmed.compare_snippet
+    assert "授权代表签" not in trimmed.compare_snippet
+    assert "纳税人识别" not in trimmed.compare_snippet
+    assert "2026.4.17" in trimmed.compare_snippet
+    assert "刘万程" in trimmed.compare_snippet
+    assert {evidence.text for evidence in trimmed.compare_evidence} == {"2026.4.17", "刘万程"}
+    assert any(
+        decision.action == "trimmed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D005"
+        and decision.detail["removed_compare_fields"] == ["盖章", "授权代表签字", "纳税人识别号"]
         for decision in result.decisions
     )
 

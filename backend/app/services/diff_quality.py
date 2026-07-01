@@ -52,7 +52,7 @@ class DiffQualityProcessor:
         r"\d{4}\s*年|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|pay|payment|invoice|buyer|supplier)"
     )
     style_punct_pattern = re.compile(r"[\s，。；：、”“‘’（）()\[\]【】《》!?:;\"']+")
-    low_value_symbol_pattern = re.compile(r"^[\d/\\∠_.,，。·•\-—~～…\sLIl|]+$", re.IGNORECASE)
+    low_value_symbol_pattern = re.compile(r"^[\d/\\∠_.,，。·•\-—~～…\sLIl|\[\]【】（）()]+$", re.IGNORECASE)
     single_latin_layout_glyphs = {"i", "l", "|"}
     header_footer_pattern = re.compile(r"(?:页眉|页脚|页码|第\s*\d+\s*页|共\s*\d+\s*页)")
 
@@ -212,6 +212,7 @@ class DiffQualityProcessor:
                     reason != "single_latin_layout_glyph_noise"
                     and self.ocr_quality_review_flags.intersection(diff.review_flags)
                     and not self._is_confirmed_clause_ocr_noise(diff)
+                    and not self._is_planned_short_symbol_ocr_noise(diff, reason)
                 ):
                     kept.append(diff)
                     continue
@@ -411,6 +412,16 @@ class DiffQualityProcessor:
         flags = set(diff.review_flags)
         return "POSSIBLE_OCR_NOISE" in flags and bool(
             flags.intersection({"SHORT_CLAUSE_MATCH_REVIEW", "OCR_REMEDIATION_UNRESOLVED"})
+        )
+
+    @staticmethod
+    def _is_planned_short_symbol_ocr_noise(diff: DiffItem, reason: str) -> bool:
+        flags = set(diff.review_flags)
+        return (
+            reason == "clause_ocr_noise"
+            and "POSSIBLE_OCR_NOISE" in flags
+            and "OCR_REMEDIATION_PLANNED" in flags
+            and "EVIDENCE_UNRELIABLE" not in flags
         )
 
     @staticmethod
