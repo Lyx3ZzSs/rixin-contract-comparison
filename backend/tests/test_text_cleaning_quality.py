@@ -1547,6 +1547,90 @@ def test_diff_quality_keeps_partial_credit_code_change_even_with_email_coverage(
     )
 
 
+def test_diff_quality_keeps_true_phone_change_even_with_boundary_risk() -> None:
+    original_clause = _quality_clause(
+        "OC010",
+        "联系人:刘玉良\n电话:18811089109",
+        order_index=10,
+        page_no=2,
+        split_flags=["PARAGRAPH_MERGED"],
+    )
+    compare_clause = _quality_clause(
+        "NC010",
+        "联系人:刘玉良\n电话:18811089110",
+        side_prefix="N",
+        order_index=10,
+        page_no=2,
+        split_flags=["READING_ORDER_REPAIRED"],
+    )
+    diff = DiffItem(
+        diff_id="D900",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id="OC010",
+        compare_clause_id="NC010",
+        original_text=original_clause.text,
+        compare_text=compare_clause.text,
+        original_snippet="电话:18811089109",
+        compare_snippet="电话:18811089110",
+        structural_flags=["PARAGRAPH_MERGED"],
+        review_flags=["READING_ORDER_RISK", "CRITICAL_VALUE_CHANGE"],
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause],
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D900"]
+
+
+def test_diff_quality_suppresses_equal_credit_code_with_different_line_break() -> None:
+    original_clause = _quality_clause(
+        "OC020",
+        "统一社会信用代码:9111010867\n23891430\nEmail: yuliang.liu@sprixin.com",
+        order_index=20,
+        page_no=3,
+        split_flags=["PARAGRAPH_MERGED"],
+    )
+    compare_clause = _quality_clause(
+        "NC020",
+        "统一社会信用代码:911101086723891430\nEmail: yuliang.liu@sprixin.com",
+        side_prefix="N",
+        order_index=20,
+        page_no=3,
+        split_flags=["READING_ORDER_REPAIRED"],
+    )
+    diff = DiffItem(
+        diff_id="D901",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id="OC020",
+        compare_clause_id="NC020",
+        original_text=original_clause.text,
+        compare_text=compare_clause.text,
+        original_snippet="统一社会信用代码:9111010867\n23891430Email: yuliang.liu@sprixin.com",
+        compare_snippet="统一社会信用代码:911101086723891430Email: yuliang.liu@sprixin.com",
+        structural_flags=["PARAGRAPH_MERGED", "READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "CRITICAL_VALUE_CHANGE"],
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause],
+    )
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D901"
+        and decision.detail["reason"] == "changed_fragments_covered_by_neighbor_clauses"
+        for decision in result.decisions
+    )
+
+
 def test_diff_quality_suppresses_appendix_heading_delete_covered_by_compare_page_text() -> None:
     original_clause = _quality_clause(
         "OC093",
