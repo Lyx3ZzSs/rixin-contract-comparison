@@ -210,6 +210,8 @@ class ClauseBoundaryCoverageFilter:
             ]
         )
         if not required_sequences:
+            if not _bare_phone_fragments_safe(diff):
+                return False
             return True
 
         original_sequences = contact_field_coverage_sequences(original_window)
@@ -270,6 +272,14 @@ def emails(text: str) -> list[str]:
 def phones(text: str) -> list[str]:
     normalized = unicodedata.normalize("NFKC", text or "")
     return [match.group(0) for match in _PHONE_PATTERN.finditer(normalized)]
+
+
+def _bare_phone_fragments_safe(diff: DiffItem) -> bool:
+    original_phones = [normalize_phone(value) for value in phones(diff.original_snippet)]
+    compare_phones = [normalize_phone(value) for value in phones(diff.compare_snippet)]
+    if not original_phones and not compare_phones:
+        return True
+    return set(original_phones) == set(compare_phones)
 
 
 def credit_code_candidates(text: str) -> list[str]:

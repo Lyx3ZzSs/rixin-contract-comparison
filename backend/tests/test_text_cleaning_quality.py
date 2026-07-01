@@ -1504,6 +1504,49 @@ def test_diff_quality_keeps_contact_phone_reassignment_even_when_values_exist_in
     )
 
 
+def test_diff_quality_keeps_bare_phone_reassignment_when_values_exist_in_windows() -> None:
+    original_clause = _quality_clause(
+        "OC204",
+        "联系人:张三\n电话:13800000001\n联系人:李四\n电话:13800000002",
+        order_index=204,
+        page_no=33,
+        split_flags=["PARAGRAPH_MERGED"],
+    )
+    compare_clause = _quality_clause(
+        "NC204",
+        "联系人:张三\n电话:13800000002\n联系人:李四\n电话:13800000001",
+        side_prefix="N",
+        order_index=204,
+        page_no=33,
+        split_flags=["READING_ORDER_REPAIRED"],
+    )
+    diff = DiffItem(
+        diff_id="D023",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id="OC204",
+        compare_clause_id="NC204",
+        original_text=original_clause.text,
+        compare_text=compare_clause.text,
+        original_snippet="13800000001",
+        compare_snippet="13800000002",
+        structural_flags=["PARAGRAPH_MERGED", "READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "CRITICAL_VALUE_CHANGE"],
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause],
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D023"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage" and decision.diff_id == "D023"
+        for decision in result.decisions
+    )
+
+
 def test_diff_quality_keeps_partial_credit_code_change_even_with_email_coverage() -> None:
     original_clause = _quality_clause(
         "OC203",
