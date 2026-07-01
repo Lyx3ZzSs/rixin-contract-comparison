@@ -535,7 +535,9 @@ def _signing_form_label_present(label: str, text: str) -> bool:
     compact = normalize_for_coverage(text)
     if not compact:
         return False
-    return any(alias in compact for alias in _signing_form_label_aliases().get(label, (label,)))
+    if label == "授权代表签字":
+        return bool(re.search(r"授权代表签字|授权代表签(?!署)|代表签字", compact))
+    return any(alias in compact for alias in _signing_form_presence_aliases().get(label, (label,)))
 
 
 def _signing_form_label_aliases() -> dict[str, tuple[str, ...]]:
@@ -549,6 +551,14 @@ def _signing_form_label_aliases() -> dict[str, tuple[str, ...]]:
         "账号": ("账号",),
         "银行行号": ("银行行号",),
         "日期": ("日期",),
+    }
+
+
+def _signing_form_presence_aliases() -> dict[str, tuple[str, ...]]:
+    aliases = _signing_form_label_aliases()
+    return {
+        **aliases,
+        "授权代表签字": ("授权代表签字", "授权代表签", "代表签字"),
     }
 
 

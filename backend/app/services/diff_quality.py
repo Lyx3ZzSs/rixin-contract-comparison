@@ -55,6 +55,10 @@ class DiffQualityProcessor:
     low_value_symbol_pattern = re.compile(r"^[\d/\\∠_.,，。·•\-—~～…\sLIl|\[\]【】（）()]+$", re.IGNORECASE)
     single_latin_layout_glyphs = {"i", "l", "|"}
     header_footer_pattern = re.compile(r"(?:页眉|页脚|页码|第\s*\d+\s*页|共\s*\d+\s*页)")
+    directly_suppressible_review_reasons = {
+        "cover_annotation_noise",
+        "single_latin_layout_glyph_noise",
+    }
 
     def __init__(self) -> None:
         self.boundary_coverage_filter = ClauseBoundaryCoverageFilter()
@@ -151,6 +155,23 @@ class DiffQualityProcessor:
 
     def _classify(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         for diff in diffs:
+            if self._trim_signing_form_ocr_noise_from_date_change(diff):
+                decisions.append(
+                    DiffQualityDecision(
+                        action="trimmed_signing_form_ocr_noise",
+                        diff_id=diff.diff_id,
+                        detail={"reason": "seal_occluded_signing_form_text"},
+                    )
+                )
+            if self._reclassify_signing_date_field_change(diff):
+                decisions.append(
+                    DiffQualityDecision(
+                        action="signing_date_field_reclassified",
+                        diff_id=diff.diff_id,
+                        detail={"source_type": "metadata", "reason": "signing_date_field_fill"},
+                    )
+                )
+                continue
             if self._should_downgrade_non_body_change(diff):
                 diff.quality_status = "NEEDS_REVIEW"
                 self._remove_flag(diff, "CRITICAL_VALUE_CHANGE")
@@ -209,7 +230,7 @@ class DiffQualityProcessor:
             reason = self._suppression_reason(diff)
             if reason:
                 if (
-                    reason != "single_latin_layout_glyph_noise"
+                    reason not in self.directly_suppressible_review_reasons
                     and self.ocr_quality_review_flags.intersection(diff.review_flags)
                     and not self._is_confirmed_clause_ocr_noise(diff)
                     and not self._is_planned_short_symbol_ocr_noise(diff, reason)
@@ -222,12 +243,18 @@ class DiffQualityProcessor:
         return kept
 
     def _suppression_reason(self, diff: DiffItem) -> str:
+        if self._looks_like_cover_annotation_noise(diff):
+            return "cover_annotation_noise"
         if self._looks_like_header_footer_noise(diff):
             return "header_footer_noise"
         if self._has_critical_field_change(diff):
             return ""
+        if self._is_range_connector_equivalent_clause_change(diff):
+            return "range_connector_equivalent"
         if self._is_layout_punctuation_equivalent_clause_change(diff):
             return "layout_punctuation_equivalent"
+        if self._looks_like_single_cjk_ocr_substitution(diff):
+            return "single_cjk_ocr_substitution"
         if self._changed_text_has_business_token(diff):
             return ""
         changed = self._changed_text(diff)
@@ -255,6 +282,37 @@ class DiffQualityProcessor:
         if diff.match_score_details.get("business_token_mismatch", 0.0) >= 1:
             return False
         return layout_punctuation_equivalent(diff.original_text, diff.compare_text)
+
+    def _is_range_connector_equivalent_clause_change(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        if not diff.original_text or not diff.compare_text:
+            return False
+        if (diff.match_score or 0) < 96:
+            return False
+        if diff.match_score_details and diff.match_score_details.get("body_score", 100.0) < 96:
+            return False
+        if diff.match_score_details.get("business_token_mismatch", 0.0) >= 1:
+            return False
+        if not (
+            self._has_range_connector(diff.original_text)
+            or self._has_range_connector(diff.compare_text)
+        ):
+            return False
+        normalized_original = self._normalize_range_connectors(diff.original_text)
+        normalized_compare = self._normalize_range_connectors(diff.compare_text)
+        return bool(normalized_original and normalized_original == normalized_compare)
+
+    @staticmethod
+    def _normalize_range_connectors(text: str) -> str:
+        normalized = unicodedata.normalize("NFKC", text or "")
+        normalized = re.sub(r"(?<=[0-9%％])(?:一|﹣|－|–|—|-|~|～|至)(?=[0-9])", "-", normalized)
+        return re.sub(r"\s+", "", normalized)
+
+    @staticmethod
+    def _has_range_connector(text: str) -> bool:
+        normalized = unicodedata.normalize("NFKC", text or "")
+        return bool(re.search(r"(?<=[0-9%％])(?:一|﹣|－|–|—|-|~|～|至)(?=[0-9])", normalized))
 
     def _flag_boundary_drift(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         clause_diffs = [diff for diff in diffs if diff.source_type == "clause"]
@@ -380,7 +438,219 @@ class DiffQualityProcessor:
         if not flags.intersection({"LAYOUT_MISMATCH_RISK", "SEAL_OR_SIGNATURE_RISK"}):
             return False
         compact = self._compact(self._changed_text(diff))
-        return len(compact) == 1 and compact in self.single_latin_layout_glyphs
+        if len(compact) != 1:
+            return False
+        if compact in self.single_latin_layout_glyphs:
+            return True
+        if not compact.isalpha() or not compact.isascii():
+            return False
+        return self._changed_evidence_is_near_page_edge(diff)
+
+    @staticmethod
+    def _changed_evidence_is_near_page_edge(diff: DiffItem) -> bool:
+        changed = {unicodedata.normalize("NFKC", item) for item in [diff.original_snippet, diff.compare_snippet] if item}
+        for evidence in [*diff.original_evidence, *diff.compare_evidence]:
+            text = unicodedata.normalize("NFKC", evidence.text or "")
+            if changed and text not in changed:
+                continue
+            if evidence.bbox.x0 <= 36.0 or evidence.bbox.x1 <= 40.0:
+                return True
+        return False
+
+    def _looks_like_single_cjk_ocr_substitution(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        if not diff.original_text or not diff.compare_text:
+            return False
+        if (diff.match_score or 0) < 96:
+            return False
+        flags = set(diff.review_flags)
+        if "POSSIBLE_OCR_NOISE" not in flags:
+            return False
+        original = self._compact(diff.original_snippet)
+        compare = self._compact(diff.compare_snippet)
+        if not original or not compare:
+            return False
+        return bool(re.fullmatch(r"[\u4e00-\u9fff]", original) and re.fullmatch(r"[\u4e00-\u9fff]", compare))
+
+    def _looks_like_cover_annotation_noise(self, diff: DiffItem) -> bool:
+        if diff.source_type != "metadata" or diff.title != "封面额外文本":
+            return False
+        flags = set(diff.review_flags)
+        if not flags.intersection({"EVIDENCE_UNRELIABLE", "OCR_REMEDIATION_UNRESOLVED", "POSSIBLE_COVER_OCR_FRAGMENT"}):
+            return False
+        compact = self._compact(self._changed_text(diff))
+        if not compact:
+            return False
+        evidences = [*diff.original_evidence, *diff.compare_evidence]
+        if not evidences:
+            return False
+        if self._looks_like_single_cjk_cover_stamp_fragment(compact, evidences, flags):
+            return True
+        if re.search(r"[\u4e00-\u9fff]", compact) or not re.search(r"[a-z]", compact):
+            return False
+        return any(
+            evidence.method in {"header_footer", "cover_extra"}
+            and (
+                evidence.confidence < 0.7
+                or evidence.evidence_quality == "LOW"
+                or evidence.bbox.y0 <= 72.0
+            )
+            for evidence in evidences
+        )
+
+    @staticmethod
+    def _looks_like_single_cjk_cover_stamp_fragment(
+        compact: str,
+        evidences: list[EvidenceBox],
+        flags: set[str],
+    ) -> bool:
+        if not re.fullmatch(r"[\u4e00-\u9fff]", compact):
+            return False
+        if "SEAL_OR_SIGNATURE_RISK" not in flags:
+            return False
+        return any(evidence.method == "cover_extra" and evidence.bbox.y0 <= 96.0 for evidence in evidences)
+
+    def _reclassify_signing_date_field_change(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        flags = set(diff.review_flags)
+        if "CRITICAL_FIELD_CHANGE" not in flags:
+            return False
+        if not flags.intersection({"CRITICAL_FIELD_DATE_CHANGE", "CRITICAL_FIELD_DURATION_CHANGE"}):
+            return False
+        context = f"{diff.original_text}\n{diff.compare_text}"
+        if not self._has_signing_date_context(context):
+            return False
+        if not self._changed_text_is_signing_date_fill(diff):
+            return False
+        diff.source_type = "metadata"
+        diff.title = "签署日期"
+        diff.section_type = "signature"
+        diff.original_snippet = self._strip_signing_date_placeholder(diff.original_snippet)
+        diff.compare_snippet = self._strip_signing_date_placeholder(diff.compare_snippet)
+        diff.original_evidence = self._keep_evidence_covered_by_snippet(diff.original_evidence, diff.original_snippet)
+        diff.compare_evidence = self._keep_evidence_covered_by_snippet(diff.compare_evidence, diff.compare_snippet)
+        diff.original_change_ranges = self._keep_ranges_covered_by_snippet(
+            diff.original_text,
+            diff.original_change_ranges,
+            diff.original_snippet,
+        )
+        diff.compare_change_ranges = self._keep_ranges_covered_by_snippet(
+            diff.compare_text,
+            diff.compare_change_ranges,
+            diff.compare_snippet,
+        )
+        self._add_flag(diff, "SIGNING_DATE_FIELD_CHANGE")
+        for flag in (
+            "CRITICAL_FIELD_CHANGE",
+            "CRITICAL_FIELD_DATE_CHANGE",
+            "CRITICAL_FIELD_DURATION_CHANGE",
+            "CRITICAL_VALUE_CHANGE",
+        ):
+            self._remove_flag(diff, flag)
+        return True
+
+    def _trim_signing_form_ocr_noise_from_date_change(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        flags = set(diff.review_flags)
+        if "SEAL_OR_SIGNATURE_RISK" not in flags:
+            return False
+        context = f"{diff.original_text}\n{diff.compare_text}"
+        if not self._has_signing_date_context(context):
+            return False
+        if not self._text_contains_filled_date(self._changed_text(diff)):
+            return False
+
+        original_snippet = self._strip_signing_form_noise(diff.original_snippet)
+        compare_snippet = self._strip_signing_form_noise(diff.compare_snippet)
+        if original_snippet == diff.original_snippet and compare_snippet == diff.compare_snippet:
+            return False
+
+        diff.original_snippet = original_snippet
+        diff.compare_snippet = compare_snippet
+        diff.original_evidence = self._keep_evidence_covered_by_snippet(diff.original_evidence, original_snippet)
+        diff.compare_evidence = self._keep_evidence_covered_by_snippet(diff.compare_evidence, compare_snippet)
+        diff.original_change_ranges = self._keep_ranges_covered_by_snippet(
+            diff.original_text,
+            diff.original_change_ranges,
+            original_snippet,
+        )
+        diff.compare_change_ranges = self._keep_ranges_covered_by_snippet(
+            diff.compare_text,
+            diff.compare_change_ranges,
+            compare_snippet,
+        )
+        return True
+
+    @staticmethod
+    def _text_contains_filled_date(text: str) -> bool:
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
+        return bool(
+            re.search(r"\d{4}年\d{1,2}月\d{1,2}日", compact)
+            or re.search(r"\d{4}年\d{3,4}日", compact)
+            or re.search(r"\d{8}", compact)
+        )
+
+    @staticmethod
+    def _strip_signing_form_noise(text: str) -> str:
+        normalized = unicodedata.normalize("NFKC", text or "")
+        normalized = re.sub(r"单位名称[:：][^()（）\n]{0,60}", "", normalized)
+        normalized = re.sub(r"[（(]\s*章\s*[）)]", "", normalized)
+        normalized = re.sub(r"(?<![\u4e00-\u9fff])公司(?![\u4e00-\u9fff])", "", normalized)
+        return re.sub(r"\s+", "", normalized)
+
+    def _keep_evidence_covered_by_snippet(self, evidences: list[EvidenceBox], snippet: str) -> list[EvidenceBox]:
+        snippet_key = self._compact(snippet)
+        if not snippet_key:
+            return []
+        return [evidence for evidence in evidences if self._compact(evidence.text) in snippet_key]
+
+    def _keep_ranges_covered_by_snippet(self, text: str, ranges: list, snippet: str) -> list:
+        snippet_key = self._compact(snippet)
+        if not snippet_key:
+            return []
+        kept = []
+        for range_ in ranges:
+            fragment = text[range_.start : range_.end]
+            if self._compact(fragment) in snippet_key:
+                kept.append(range_)
+        return kept
+
+    @staticmethod
+    def _has_signing_date_context(text: str) -> bool:
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
+        if not compact:
+            return False
+        has_parties = "甲方" in compact and "乙方" in compact
+        has_signature_label = bool(re.search(r"(签字日期|签订日期|法定代表人|授权代表|年月日)", compact))
+        return has_parties and has_signature_label
+
+    def _changed_text_is_signing_date_fill(self, diff: DiffItem) -> bool:
+        changed = unicodedata.normalize("NFKC", self._changed_text(diff) or "")
+        compact = re.sub(r"\s+", "", changed)
+        if not compact:
+            return False
+        has_filled_date = bool(
+            re.search(r"\d{4}年\d{1,2}月\d{1,2}日", compact)
+            or re.search(r"\d{4}年\d{3,4}日", compact)
+            or re.search(r"\d{8}", compact)
+        )
+        if not has_filled_date:
+            return False
+        residue = re.sub(r"\d{4}年\d{1,2}月\d{1,2}日", "", compact)
+        residue = re.sub(r"\d{4}年\d{3,4}日", "", residue)
+        residue = re.sub(r"\d{8}", "", residue)
+        residue = residue.replace("年月日", "").replace("年月", "").replace("月日", "").replace("月", "")
+        return residue == ""
+
+    @staticmethod
+    def _strip_signing_date_placeholder(text: str) -> str:
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
+        if compact and re.fullmatch(r"[年月日]+", compact):
+            return ""
+        return compact
 
     def _looks_like_cover_fragment(self, diff: DiffItem) -> bool:
         if diff.source_type != "metadata" or diff.diff_type not in {"ADD", "DELETE"}:

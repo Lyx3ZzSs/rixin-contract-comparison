@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import fitz
+
 from app.models import BBox, Document, Page, TextBlock
 from app.services.cover.facade import CoverMetadataComparator
 
@@ -36,6 +40,23 @@ def _document(blocks: list[TextBlock]) -> Document:
         page_count=1,
         pages=[Page(page_no=1, width=597, height=819, blocks=blocks)],
     )
+
+
+def _document_at_path(blocks: list[TextBlock], path: Path) -> Document:
+    return Document(
+        filename=path.name,
+        path=str(path),
+        page_count=1,
+        pages=[Page(page_no=1, width=597, height=819, blocks=blocks)],
+    )
+
+
+def _multi_page_document(pages: list[list[TextBlock]]) -> Document:
+    built_pages = [
+        Page(page_no=index, width=597, height=819, blocks=[block.model_copy(update={"page_no": index}) for block in blocks])
+        for index, blocks in enumerate(pages, start=1)
+    ]
+    return Document(filename="sample.pdf", path="sample.pdf", page_count=len(built_pages), pages=built_pages)
 
 
 def test_cover_extra_keeps_unmatched_header_and_single_char_apart_from_title() -> None:
@@ -110,6 +131,136 @@ def test_cover_title_excludes_contract_number_role_labels() -> None:
     contract_no_diffs = [diff for diff in diffs if diff.title == "封面字段：合同编号（乙方）"]
     assert len(contract_no_diffs) == 1
     assert "GNXNYN-20140604-000024" in contract_no_diffs[0].compare_text
+
+
+def test_cover_title_excludes_prefixed_buyer_and_seller_contract_number_labels() -> None:
+    original = _document(
+        [
+            _block("o_buyer_no", "甲方合同编号：", 100, 78, 180, 92),
+            _block("o_seller_no", "乙方合同编号：", 100, 122, 180, 138),
+            _block("o_title_1", "华能陕西新能源分公司复辉光伏电站功率", 100, 260, 498, 286, "paragraph_title"),
+            _block("o_title_2", "预测系统技术服务项目合同", 164, 292, 431, 316, "paragraph_title"),
+        ]
+    )
+    compare = _document(
+        [
+            _block("c_buyer_no", "甲方合同编号：XNY-RN/SC-FW-2026-00S", 96, 68, 359, 101),
+            _block("c_seller_no", "乙方合同编号：", 100, 119, 180, 135),
+            _block("c_title_1", "华能陕西新能源分公司复辉光伏电站功率", 98, 264, 498, 288, "paragraph_title"),
+            _block("c_title_2", "预测系统技术服务项目合同", 164, 292, 431, 316, "paragraph_title"),
+        ]
+    )
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    buyer_no_diffs = [diff for diff in diffs if diff.title == "封面字段：合同编号（甲方）"]
+    assert len(buyer_no_diffs) == 1
+    assert buyer_no_diffs[0].diff_type == "ADD"
+    assert buyer_no_diffs[0].compare_text == "XNY-RN/SC-FW-2026-00S"
+    assert all(diff.title != "封面字段：项目名称" for diff in diffs)
+    assert all(
+        not (diff.title == "封面额外文本" and "华能陕西新能源分公司复辉光伏电站功率" in diff.compare_text)
+        for diff in diffs
+    )
+
+
+def test_cover_title_missing_from_ocr_is_not_reported_when_present_in_opposite_body_text() -> None:
+    original = _multi_page_document(
+        [
+            [
+                _block("o_buyer_no", "甲方合同编号：", 100, 78, 180, 92),
+                _block("o_seller_no", "乙方合同编号：", 100, 122, 180, 138),
+            ],
+            [
+                _block(
+                    "o_body_title",
+                    "1.1 项目名称：华能陕西新能源分公司复辉光伏电站功率预测系统技术服务项目合同。",
+                    100,
+                    150,
+                    520,
+                    175,
+                )
+            ],
+        ]
+    )
+    compare = _multi_page_document(
+        [
+            [
+                _block("c_buyer_no", "甲方合同编号：XNY-RN/SC-FW-2026-00S", 96, 68, 359, 101),
+                _block("c_seller_no", "乙方合同编号：", 100, 119, 180, 135),
+                _block("c_title_1", "华能陕西新能源分公司复辉光伏电站功率", 98, 264, 498, 288, "paragraph_title"),
+                _block("c_title_2", "预测系统技术服务项目合同", 164, 292, 431, 316, "paragraph_title"),
+            ],
+            [
+                _block(
+                    "c_body_title",
+                    "1.1 项目名称：华能陕西新能源分公司复辉光伏电站功率预测系统技术服务项目合同。",
+                    100,
+                    150,
+                    520,
+                    175,
+                )
+            ],
+        ]
+    )
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    assert [diff.title for diff in diffs] == ["封面字段：合同编号（甲方）"]
+
+
+def test_cover_title_missing_from_ocr_is_not_reported_when_present_in_opposite_native_pdf_text(tmp_path: Path) -> None:
+    native_pdf = tmp_path / "original.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=597, height=819)
+    page.insert_text((130, 280), "华能陕西新能源分公司复辉光伏电站功率", fontsize=14, fontname="china-s")
+    page.insert_text((180, 310), "预测系统技术服务项目合同", fontsize=14, fontname="china-s")
+    pdf.save(native_pdf)
+    pdf.close()
+
+    original = _document_at_path(
+        [
+            _block("o_buyer_no", "甲方合同编号：", 100, 78, 180, 92),
+            _block("o_seller_no", "乙方合同编号：", 100, 122, 180, 138),
+        ],
+        native_pdf,
+    )
+    compare = _document(
+        [
+            _block("c_buyer_no", "甲方合同编号：XNY-RN/SC-FW-2026-00S", 96, 68, 359, 101),
+            _block("c_seller_no", "乙方合同编号：", 100, 119, 180, 135),
+            _block("c_title_1", "华能陕西新能源分公司复辉光伏电站功率", 98, 264, 498, 288, "paragraph_title"),
+            _block("c_title_2", "预测系统技术服务项目合同", 164, 292, 431, 316, "paragraph_title"),
+        ]
+    )
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    assert [diff.title for diff in diffs] == ["封面字段：合同编号（甲方）"]
+
+
+def test_cover_extra_pairs_blank_year_month_placeholder_with_filled_cover_date() -> None:
+    original = _document(
+        [
+            _block("o_buyer_no", "甲方合同编号：", 100, 78, 180, 92),
+            _block("o_title", "技术服务项目合同", 164, 292, 431, 316, "paragraph_title"),
+            _block("o_date", "年月", 265, 695, 328, 715),
+        ]
+    )
+    compare = _document(
+        [
+            _block("c_buyer_no", "甲方合同编号：XNY-RN/SC-FW-2026-00S", 96, 68, 359, 101),
+            _block("c_title", "技术服务项目合同", 164, 292, 431, 316, "paragraph_title"),
+            _block("c_date", "2026年05月", 236, 678, 329, 704),
+        ]
+    )
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    extra_deletes = [diff.original_text for diff in diffs if diff.title == "封面额外文本" and diff.diff_type == "DELETE"]
+    extra_adds = [diff.compare_text for diff in diffs if diff.title == "封面额外文本" and diff.diff_type == "ADD"]
+    assert "年月" not in extra_deletes
+    assert "2026年05月" in extra_adds
 
 
 def test_cover_contract_number_role_label_is_compared_separately_from_common_contract_no() -> None:

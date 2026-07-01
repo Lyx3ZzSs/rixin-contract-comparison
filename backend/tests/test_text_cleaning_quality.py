@@ -1828,6 +1828,75 @@ def test_diff_quality_trims_covered_signing_form_labels_from_mixed_signature_dif
     )
 
 
+def test_diff_quality_keeps_missing_signature_label_when_compare_only_has_authorized_representative_clause_text() -> None:
+    original_clause = _quality_clause(
+        "OC146",
+        "15.特别约定\n"
+        "(以下无正文)\n"
+        "签署页\n"
+        "甲方:国家电网有限公司华北分部乙方:国能日新科技股份有限公\n"
+        "(盖章)\n"
+        "法定代表人(负责人)或\n"
+        "授权代表(签字):\n"
+        "签订日期:",
+        order_index=146,
+        page_no=25,
+        split_flags=["PARAGRAPH_MERGED"],
+    )
+    compare_clause = _quality_clause(
+        "NC146",
+        "15. 特别约定\n"
+        "本合同经双方法定代表人(负责人)或其授权代表签署并加盖双方公章后生效。\n"
+        "(以下无正文)",
+        side_prefix="N",
+        order_index=146,
+        page_no=23,
+        split_flags=["PARAGRAPH_MERGED"],
+    )
+    original_text = original_clause.text
+    target = "授权代表(签字):"
+    diff = DiffItem(
+        diff_id="D014",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id="OC146",
+        compare_clause_id="NC146",
+        original_text=original_text,
+        compare_text=compare_clause.text,
+        original_snippet=target,
+        compare_snippet="",
+        original_change_ranges=[
+            TextRange(
+                start=original_text.index(target),
+                end=original_text.index(target) + len(target),
+                highlight_type="DELETE",
+            )
+        ],
+        original_evidence=[
+            EvidenceBox(page_no=25, bbox=BBox(x0=91, y0=229, x1=180, y1=245), text=target, highlight_type="DELETE")
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        review_flags=["READING_ORDER_RISK", "CRITICAL_VALUE_CHANGE"],
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause],
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D014"]
+    kept = result.diffs[0]
+    assert "授权代表" in kept.original_snippet
+    assert [evidence.text for evidence in kept.original_evidence] == [target]
+    assert not any(
+        decision.action == "trimmed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D014"
+        and "授权代表签字" in decision.detail.get("removed_original_fields", [])
+        for decision in result.decisions
+    )
+
+
 def test_diff_quality_keeps_boundary_risk_diff_with_uncovered_amount_change() -> None:
     original_clause = _quality_clause(
         "OC201",
@@ -2295,6 +2364,347 @@ def test_diff_quality_suppresses_single_latin_glyph_layout_artifact() -> None:
     assert any(
         decision.action == "suppressed_low_value_noise"
         and decision.diff_id == "D013"
+        and decision.detail["reason"] == "single_latin_layout_glyph_noise"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_low_confidence_cover_annotation_fragments() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D005",
+            diff_type="ADD",
+            source_type="metadata",
+            title="封面额外文本",
+            compare_text="Cakilu-7020513",
+            compare_snippet="Cakilu-7020513",
+            review_flags=["EVIDENCE_UNRELIABLE", "OCR_REMEDIATION_UNRESOLVED"],
+            compare_evidence=[
+                EvidenceBox(
+                    page_no=1,
+                    bbox=BBox(x0=344, y0=4.5, x1=493, y1=58),
+                    method="header_footer",
+                    text="Cakilu-7020513",
+                    confidence=0.55,
+                    evidence_quality="LOW",
+                )
+            ],
+        ),
+        DiffItem(
+            diff_id="D007",
+            diff_type="ADD",
+            source_type="metadata",
+            title="封面额外文本",
+            compare_text="N2o",
+            compare_snippet="N2o",
+            review_flags=["EVIDENCE_UNRELIABLE", "OCR_REMEDIATION_UNRESOLVED"],
+            compare_evidence=[
+                EvidenceBox(
+                    page_no=1,
+                    bbox=BBox(x0=493.5, y0=7, x1=540, y1=33),
+                    method="header_footer",
+                    text="N2o",
+                    confidence=0.55,
+                    evidence_quality="LOW",
+                )
+            ],
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+
+    assert result.diffs == []
+    assert {
+        (decision.diff_id, decision.detail.get("reason"))
+        for decision in result.decisions
+        if decision.action == "suppressed_low_value_noise"
+    } == {
+        ("D005", "cover_annotation_noise"),
+        ("D007", "cover_annotation_noise"),
+    }
+
+
+def test_diff_quality_suppresses_single_cjk_cover_stamp_fragment_near_top() -> None:
+    diff = DiffItem(
+        diff_id="D007",
+        diff_type="ADD",
+        source_type="metadata",
+        title="封面额外文本",
+        compare_text="正",
+        compare_snippet="正",
+        review_flags=[
+            "LAYOUT_MISMATCH_RISK",
+            "PAGE_UNRELIABLE",
+            "READING_ORDER_RISK",
+            "SEAL_OR_SIGNATURE_RISK",
+            "OCR_REMEDIATION_MANUAL_REVIEW",
+            "POSSIBLE_COVER_OCR_FRAGMENT",
+        ],
+        compare_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=451.5, y0=14.5, x1=545.0, y1=75.0),
+                method="cover_extra",
+                text="正",
+                confidence=0.68,
+                evidence_quality="MEDIUM",
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D007"
+        and decision.detail["reason"] == "cover_annotation_noise"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_reclassifies_clause_mixed_signing_date_fill_as_signature_date_change() -> None:
+    diff = DiffItem(
+        diff_id="D016",
+        diff_type="MODIFY",
+        source_type="clause",
+        title="本项目范围内风电场与国网陕西省电力调度中心及西安集控中心保",
+        original_text=(
+            "10.6.8本项目范围内风电场与国网陕西省电力调度中心及西安集控中心保持网络通讯正常。\n"
+            "甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司\n"
+            "年月日\n年月日"
+        ),
+        compare_text=(
+            "10.6.8本项目范围内风电场与国网陕西省电力调度中心及西安集控中心保持网络通讯正常。\n"
+            "甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司\n"
+            "2026年05月22日\n年月日"
+        ),
+        original_snippet="",
+        compare_snippet="20260522",
+        review_flags=[
+            "CRITICAL_FIELD_CHANGE",
+            "CRITICAL_FIELD_DATE_CHANGE",
+            "READING_ORDER_RISK",
+            "CRITICAL_VALUE_CHANGE",
+        ],
+        compare_evidence=[
+            EvidenceBox(page_no=28, bbox=BBox(x0=83.7, y0=509.2, x1=113.3, y1=536.3), text="2026"),
+            EvidenceBox(page_no=28, bbox=BBox(x0=135.7, y0=509.2, x1=149.3, y1=536.3), text="05"),
+            EvidenceBox(page_no=28, bbox=BBox(x0=171.7, y0=509.2, x1=185.3, y1=536.3), text="22"),
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert len(result.diffs) == 1
+    reclassified = result.diffs[0]
+    assert reclassified.source_type == "metadata"
+    assert reclassified.title == "签署日期"
+    assert reclassified.original_snippet == ""
+    assert "SIGNING_DATE_FIELD_CHANGE" in reclassified.review_flags
+    assert "CRITICAL_FIELD_CHANGE" not in reclassified.review_flags
+    assert "CRITICAL_VALUE_CHANGE" not in reclassified.review_flags
+    assert any(decision.action == "signing_date_field_reclassified" for decision in result.decisions)
+
+
+def test_diff_quality_reclassifies_ocr_split_signing_date_without_duration_flag() -> None:
+    diff = DiffItem(
+        diff_id="D019",
+        diff_type="MODIFY",
+        source_type="clause",
+        title="协议的效力和变更",
+        original_text=(
+            "第六条协议的效力和变更\n"
+            "本协议自双方签字起生效。\n"
+            "甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司\n"
+            "年月日\n年月日"
+        ),
+        compare_text=(
+            "第六条协议的效力和变更\n"
+            "本协议自双方签字起生效。\n"
+            "甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司\n"
+            "2026年0522日\n年月日"
+        ),
+        original_snippet="月",
+        compare_snippet="20260522",
+        review_flags=[
+            "CRITICAL_FIELD_CHANGE",
+            "CRITICAL_FIELD_DURATION_CHANGE",
+            "LAYOUT_MISMATCH_RISK",
+            "READING_ORDER_RISK",
+            "CRITICAL_VALUE_CHANGE",
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert len(result.diffs) == 1
+    reclassified = result.diffs[0]
+    assert reclassified.source_type == "metadata"
+    assert reclassified.title == "签署日期"
+    assert reclassified.original_snippet == ""
+    assert "SIGNING_DATE_FIELD_CHANGE" in reclassified.review_flags
+    assert "CRITICAL_FIELD_DURATION_CHANGE" not in reclassified.review_flags
+    assert "CRITICAL_VALUE_CHANGE" not in reclassified.review_flags
+
+
+def test_diff_quality_trims_seal_occluded_signing_form_text_before_date_reclassification() -> None:
+    diff = DiffItem(
+        diff_id="D013",
+        diff_type="MODIFY",
+        source_type="clause",
+        title="合同执行过程中如发生争议或未尽事项,双方应本着公平、公正的原",
+        original_text=(
+            "11.4合同执行过程中如发生争议或未尽事项,双方应本着公平、公正的原则协商解决。\n"
+            "签字页\n甲方\n单位名称:定边县瑞能新能源科技有限公司(章)\n法定代表人或授权代表签字:\n"
+            "签字日期:年月日\n乙方\n单位名称:国能日新科技股份有限公司\n(章)\n签字日期:年月日"
+        ),
+        compare_text=(
+            "11.4合同执行过程中如发生争议或未尽事项,双方应本着公平、公正的原则协商解决。\n"
+            "签字页\n甲方\n法定代表人或授权代表签字:\n"
+            "签字日期:2026年05月22日\n乙方\n单位名称:国能日新科技股份有限公司\n(章)\n签字日期:年月日"
+        ),
+        original_snippet="单位名称:定边县瑞能新能源科技有限公司(章)(章)",
+        compare_snippet="20260522(章)",
+        original_change_ranges=[
+            TextRange(start=67, end=94, highlight_type="DELETE"),
+        ],
+        compare_change_ranges=[
+            TextRange(start=72, end=83, highlight_type="ADD"),
+        ],
+        original_evidence=[
+            EvidenceBox(page_no=13, bbox=BBox(x0=83, y0=140, x1=137, y1=154), text="单位名称:", highlight_type="DELETE"),
+            EvidenceBox(page_no=13, bbox=BBox(x0=142, y0=140, x1=286, y1=154), text="定边县瑞能新能源科技有限", highlight_type="DELETE"),
+            EvidenceBox(page_no=13, bbox=BBox(x0=83, y0=167, x1=110, y1=183), text="公司", highlight_type="DELETE"),
+            EvidenceBox(page_no=13, bbox=BBox(x0=115, y0=167, x1=137, y1=183), text="(章)", highlight_type="DELETE"),
+            EvidenceBox(page_no=13, bbox=BBox(x0=328, y0=165, x1=353, y1=184), text="(章)", highlight_type="DELETE"),
+        ],
+        compare_evidence=[
+            EvidenceBox(page_no=13, bbox=BBox(x0=137, y0=513, x1=161, y1=535), text="2026", highlight_type="ADD"),
+            EvidenceBox(page_no=13, bbox=BBox(x0=174, y0=513, x1=187, y1=535), text="05", highlight_type="ADD"),
+            EvidenceBox(page_no=13, bbox=BBox(x0=203, y0=513, x1=219, y1=535), text="22", highlight_type="ADD"),
+            EvidenceBox(page_no=13, bbox=BBox(x0=330, y0=161, x1=353, y1=179), text="(章)", highlight_type="ADD"),
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        review_flags=[
+            "CRITICAL_FIELD_CHANGE",
+            "CRITICAL_FIELD_DATE_CHANGE",
+            "PAGE_UNRELIABLE",
+            "READING_ORDER_RISK",
+            "SEAL_OR_SIGNATURE_RISK",
+            "CRITICAL_VALUE_CHANGE",
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert len(result.diffs) == 1
+    reclassified = result.diffs[0]
+    assert reclassified.source_type == "metadata"
+    assert reclassified.title == "签署日期"
+    assert reclassified.original_snippet == ""
+    assert reclassified.compare_snippet == "20260522"
+    assert {evidence.text for evidence in reclassified.original_evidence} == set()
+    assert {evidence.text for evidence in reclassified.compare_evidence} == {"2026", "05", "22"}
+    assert any(decision.action == "trimmed_signing_form_ocr_noise" for decision in result.decisions)
+
+
+def test_diff_quality_suppresses_single_cjk_ocr_substitution_without_business_change() -> None:
+    diff = DiffItem(
+        diff_id="D012",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="大写:人民币陆万陆仟零叁拾柒元柒角肆分",
+        compare_text="大写:人民币陆万陆任零叁拾柒元柒角肆分",
+        original_snippet="仟",
+        compare_snippet="任",
+        match_score=100,
+        review_flags=["POSSIBLE_OCR_NOISE"],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D012"
+        and decision.detail["reason"] == "single_cjk_ocr_substitution"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_equivalent_range_connector_change() -> None:
+    diff = DiffItem(
+        diff_id="D014",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="根据严重程度扣罚中标方合同价的10%一20%。",
+        compare_text="根据严重程度扣罚中标方合同价的10%—20%。",
+        original_snippet="一20",
+        compare_snippet="—20",
+        match_score=100,
+        match_score_details={"body_score": 100.0, "business_token_mismatch": 0.0},
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D014"
+        and decision.detail["reason"] == "range_connector_equivalent"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_single_latin_edge_noise_but_not_body_letter() -> None:
+    edge_noise = DiffItem(
+        diff_id="D015",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="72小时内提交解决方案。",
+        compare_text="72小时内\nB\n提交解决方案。",
+        original_snippet="",
+        compare_snippet="B",
+        match_score=100,
+        review_flags=["LAYOUT_MISMATCH_RISK", "OCR_REMEDIATION_PLANNED"],
+        quality_status="NEEDS_REVIEW",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=27,
+                bbox=BBox(x0=24.7, y0=173.2, x1=27.3, y1=180.3),
+                method="char_exact",
+                text="B",
+                confidence=0.98,
+                evidence_quality="HIGH",
+            )
+        ],
+    )
+    body_letter = DiffItem(
+        diff_id="D020",
+        diff_type="ADD",
+        source_type="clause",
+        compare_text="B. 按进度付款方式。",
+        compare_snippet="B",
+        match_score=100,
+        review_flags=["LAYOUT_MISMATCH_RISK"],
+        compare_evidence=[
+            EvidenceBox(
+                page_no=3,
+                bbox=BBox(x0=100, y0=173, x1=110, y1=185),
+                method="char_exact",
+                text="B",
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([edge_noise, body_letter])
+
+    assert [diff.diff_id for diff in result.diffs] == ["D020"]
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D015"
         and decision.detail["reason"] == "single_latin_layout_glyph_noise"
         for decision in result.decisions
     )

@@ -30,6 +30,11 @@ LABEL_TO_KEY: dict[str, str] = {
     "有效期": "validity_period",
 }
 
+LABEL_PREFIX_TO_KEY: dict[str, str] = {
+    "甲方合同编号": "contract_no_buyer",
+    "乙方合同编号": "contract_no_seller",
+}
+
 FIELD_ORDER: list[str] = [
     "contract_no",
     "contract_no_buyer",

@@ -6,7 +6,7 @@ import unicodedata
 from app.models import TextBlock
 from app.services.normalizer import TextNormalizer
 
-from .constants import LABEL_TO_KEY
+from .constants import LABEL_PREFIX_TO_KEY, LABEL_TO_KEY
 
 
 def parse_labeled_line(line: str) -> tuple[str, str] | None:
@@ -27,6 +27,9 @@ def parse_labeled_line(line: str) -> tuple[str, str] | None:
 def _label_key(label: str) -> str | None:
     normalized = unicodedata.normalize("NFKC", label or "")
     compact = re.sub(r"\s+", "", normalized).strip(":：")
+    for prefix, key in LABEL_PREFIX_TO_KEY.items():
+        if compact.startswith(prefix):
+            return key
     if compact.startswith("合同编号"):
         qualifier_text = "".join(re.findall(r"[（(]([^）)]{1,12})[）)]", compact))
         if "甲方" in qualifier_text:
