@@ -26,6 +26,32 @@ def test_local_json_task_repository_separates_task_types(tmp_path: Path) -> None
     assert [task.task_id for task in repository.list_extraction_tasks()] == ["TEXTRACT"]
 
 
+def test_local_json_task_repository_orders_compare_tasks_by_created_at_desc(tmp_path: Path) -> None:
+    repository = configure_task_storage(tmp_path)
+    older_created_newer_updated = CompareTask(
+        task_id="TOLDER_CREATED",
+        created_at="2026-05-20T08:00:00+00:00",
+        updated_at="2026-05-23T10:00:00+00:00",
+    )
+    newer_created_older_updated = CompareTask(
+        task_id="TNEWER_CREATED",
+        created_at="2026-05-22T08:00:00+00:00",
+        updated_at="2026-05-22T10:00:00+00:00",
+    )
+    repository.save_compare_task(older_created_newer_updated)
+    repository.task_json_path(older_created_newer_updated.task_id).write_text(
+        json.dumps(json.loads(older_created_newer_updated.model_dump_json()), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    repository.save_compare_task(newer_created_older_updated)
+    repository.task_json_path(newer_created_older_updated.task_id).write_text(
+        json.dumps(json.loads(newer_created_older_updated.model_dump_json()), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    assert [task.task_id for task in repository.list_compare_tasks()] == ["TNEWER_CREATED", "TOLDER_CREATED"]
+
+
 def test_local_json_task_repository_uses_last_write(tmp_path: Path) -> None:
     repository = configure_task_storage(tmp_path)
 

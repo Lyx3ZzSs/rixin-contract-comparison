@@ -95,8 +95,24 @@ def compare_record_summary(task: CompareTask) -> CompareRecordResponse:
     )
 
 
-def compare_record_list_response(tasks: list[CompareTask]) -> CompareRecordListResponse:
-    return CompareRecordListResponse(records=[compare_record_summary(task) for task in tasks])
+def compare_record_list_response(
+    tasks: list[CompareTask],
+    *,
+    total: int | None = None,
+    page: int = 1,
+    page_size: int | None = None,
+    total_pages: int | None = None,
+) -> CompareRecordListResponse:
+    resolved_total = len(tasks) if total is None else total
+    resolved_page_size = len(tasks) if page_size is None else page_size
+    resolved_total_pages = total_pages if total_pages is not None else (1 if resolved_total else 0)
+    return CompareRecordListResponse(
+        records=[compare_record_summary(task) for task in tasks],
+        total=resolved_total,
+        page=page,
+        page_size=resolved_page_size,
+        total_pages=resolved_total_pages,
+    )
 
 
 def diff_response(diff) -> CompareDiffResponse:

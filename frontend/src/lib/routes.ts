@@ -2,6 +2,7 @@
 export type AppRoute =
   | { name: "home" }
   | { name: "records" }
+  | { name: "quality" }
   | { name: "task"; taskId: string };
 
 export function readRoute(pathname = window.location.pathname): AppRoute {
@@ -11,6 +12,9 @@ export function readRoute(pathname = window.location.pathname): AppRoute {
   }
   if (pathname === "/compare/records") {
     return { name: "records" };
+  }
+  if (pathname === "/quality/workbench") {
+    return { name: "quality" };
   }
   return { name: "home" };
 }
@@ -30,4 +34,8 @@ export function navigateToTask(taskId: string): void {
 
 export function navigateToComparisonRecords(): void {
   navigateTo("/compare/records");
+}
+
+export function navigateToQualityWorkbench(): void {
+  navigateTo("/quality/workbench");
 }

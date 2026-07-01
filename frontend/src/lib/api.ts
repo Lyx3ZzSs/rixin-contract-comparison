@@ -9,6 +9,14 @@ import type {
   DiffReviewPayload,
   DiffReviewResponse,
   DiffItem,
+  ExpectedDiff,
+  QualityCaseDetail,
+  QualityCaseExportRequest,
+  QualityCaseExportResponse,
+  QualityCaseListResponse,
+  QualityRegressionRequest,
+  QualityRunRequest,
+  QualityRunResponse,
 } from "../types";
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
@@ -117,4 +125,75 @@ export async function getCompareQuality(taskId: string): Promise<CompareQualityS
   return parseJsonResponse<CompareQualitySummary>(response);
 }
 
+export async function listQualityCases(): Promise<QualityCaseListResponse> {
+  const response = await fetch(toApiUrl("/api/quality/cases"));
+  return parseJsonResponse<QualityCaseListResponse>(response);
+}
+
+export async function exportQualityCase(payload: QualityCaseExportRequest): Promise<QualityCaseExportResponse> {
+  const response = await fetch(toApiUrl("/api/quality/cases/export"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<QualityCaseExportResponse>(response);
+}
+
+export async function getQualityCase(caseId: string): Promise<QualityCaseDetail> {
+  const response = await fetch(toApiUrl(`/api/quality/cases/${encodeURIComponent(caseId)}`));
+  return parseJsonResponse<QualityCaseDetail>(response);
+}
+
+export async function updateQualityExpectedDiff(
+  caseId: string,
+  index: number,
+  payload: Partial<ExpectedDiff>,
+): Promise<QualityCaseDetail> {
+  const response = await fetch(
+    toApiUrl(`/api/quality/cases/${encodeURIComponent(caseId)}/expected-diffs/${index}`),
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  return parseJsonResponse<QualityCaseDetail>(response);
+}
+
+export async function createQualityExpectedDiff(
+  caseId: string,
+  payload: Partial<ExpectedDiff>,
+): Promise<QualityCaseDetail> {
+  const response = await fetch(toApiUrl(`/api/quality/cases/${encodeURIComponent(caseId)}/expected-diffs`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<QualityCaseDetail>(response);
+}
+
+export async function deleteQualityExpectedDiff(caseId: string, index: number): Promise<QualityCaseDetail> {
+  const response = await fetch(toApiUrl(`/api/quality/cases/${encodeURIComponent(caseId)}/expected-diffs/${index}`), {
+    method: "DELETE",
+  });
+  return parseJsonResponse<QualityCaseDetail>(response);
+}
+
+export async function evaluateQuality(payload: QualityRunRequest): Promise<QualityRunResponse> {
+  const response = await fetch(toApiUrl("/api/quality/evaluate"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<QualityRunResponse>(response);
+}
+
+export async function runQualityRegression(payload: QualityRegressionRequest): Promise<QualityRunResponse> {
+  const response = await fetch(toApiUrl("/api/quality/regression"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<QualityRunResponse>(response);
+}
 

@@ -114,7 +114,15 @@ class HeaderFooterComparator:
         block_type = (block.block_type or "").lower()
         if block_type in self.excluded_types:
             return None
+        if (block.layout_match_status or "") == "noise_unmatched":
+            return None
         is_page_number = self._is_page_number(text)
+        if self._is_bare_field_label(text):
+            return None
+        if self._looks_like_short_edge_noise(text, block, page_height):
+            return None
+        if is_page_number and block.bbox.y1 <= page_height * 0.12:
+            return None
         slot = ""
         explicit_header = block_type in self.header_types
         explicit_footer = block_type in self.footer_types
@@ -617,3 +625,16 @@ class HeaderFooterComparator:
             or re.match(r"^[一二三四五六七八九十]+、", compact)
             or re.match(r"^\d+(?:\.\d+){0,3}[.、]", compact)
         )
+
+    def _is_bare_field_label(self, text: str) -> bool:
+        compact = self._compact(text).rstrip(":：")
+        return compact in {"合同编号", "项目名称", "签订时间", "签订日期", "签订地点", "有效期限", "有效期"}
+
+    def _looks_like_short_edge_noise(self, text: str, block: TextBlock, page_height: float) -> bool:
+        compact = self._compact(text)
+        if not (1 <= len(compact) <= 2):
+            return False
+        if not re.fullmatch(r"[\u4e00-\u9fff]+", compact):
+            return False
+        near_top = block.bbox.y1 <= page_height * 0.12 or block.bbox.y0 <= page_height * 0.05
+        return near_top and block.bbox.x0 <= 100

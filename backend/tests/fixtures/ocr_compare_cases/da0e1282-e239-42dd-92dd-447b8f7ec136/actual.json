@@ -1,0 +1,4224 @@
+{
+  "task_id": "da0e1282-e239-42dd-92dd-447b8f7ec136",
+  "schema_version": 2,
+  "revision": 55,
+  "status": "COMPLETED",
+  "stage": "已完成",
+  "progress_percent": 100,
+  "created_at": "2026-06-30T11:43:01.295802+00:00",
+  "updated_at": "2026-06-30T11:44:02.550284+00:00",
+  "original_filename": "返回确认-HTXTJC260065合XX-C-260XXX-国能日新.pdf",
+  "compare_filename": "GNXNYN-20260421-00044-CGHT.pdf",
+  "original_pdf_path": "uploads/original_返回确认-HTXTJC260065合XX-C-260XXX-国能日新.pdf",
+  "compare_pdf_path": "uploads/compare_GNXNYN-20260421-00044-CGHT.pdf",
+  "original_highlight_pdf_path": null,
+  "compare_highlight_pdf_path": null,
+  "report_pdf_path": null,
+  "extractor_used": "ppstructure_ocr_hybrid",
+  "ocr_raw_result_path": "",
+  "ocr_raw_result_paths": {
+    "original": {
+      "ppstructure": "ocr/original_返回确认-HTXTJC260065合XX-C-260XXX-国能日新_ppstructure_raw.json",
+      "ppocrv5": "ocr/original_返回确认-HTXTJC260065合XX-C-260XXX-国能日新_ppocrv5_raw.json",
+      "hybrid": "ocr/original_返回确认-HTXTJC260065合XX-C-260XXX-国能日新_ppstructure_ocr_hybrid_raw.json"
+    },
+    "compare": {
+      "ppstructure": "ocr/compare_GNXNYN-20260421-00044-CGHT_ppstructure_raw.json",
+      "ppocrv5": "ocr/compare_GNXNYN-20260421-00044-CGHT_ppocrv5_raw.json",
+      "hybrid": "ocr/compare_GNXNYN-20260421-00044-CGHT_ppstructure_ocr_hybrid_raw.json"
+    }
+  },
+  "parse_warnings": [
+    "有 1 个 OCR 块存在多个接近的版面候选。",
+    "检测到 4 个模型顺序与几何阅读顺序冲突。",
+    "检测到 7 个模型顺序与几何阅读顺序冲突。",
+    "original 第 2 页 OCR 质量风险: READING_ORDER_CONFLICT",
+    "original 第 10 页 OCR 质量风险: READING_ORDER_CONFLICT",
+    "original 第 11 页 OCR 质量风险: READING_ORDER_CONFLICT",
+    "compare 第 1 页 OCR 质量风险: READING_ORDER_CONFLICT",
+    "compare 第 2 页 OCR 质量风险: READING_ORDER_CONFLICT",
+    "compare 第 8 页 OCR 质量风险: READING_ORDER_CONFLICT",
+    "compare 第 11 页 OCR 质量风险: READING_ORDER_CONFLICT",
+    "compare 第 12 页 OCR 质量风险: READING_ORDER_CONFLICT",
+    "compare 第 15 页 OCR 质量风险: READING_ORDER_CONFLICT, SEAL_OR_SIGNATURE_DETECTED"
+  ],
+  "parse_warning_details": [
+    {
+      "code": "LAYOUT_AMBIGUOUS_MATCH",
+      "message": "有 1 个 OCR 块存在多个接近的版面候选。",
+      "severity": "WARNING",
+      "page_no": null,
+      "source": "layout_analysis"
+    },
+    {
+      "code": "LAYOUT_READING_ORDER_CONFLICT",
+      "message": "检测到 4 个模型顺序与几何阅读顺序冲突。",
+      "severity": "WARNING",
+      "page_no": null,
+      "source": "layout_analysis"
+    },
+    {
+      "code": "LAYOUT_READING_ORDER_CONFLICT",
+      "message": "检测到 7 个模型顺序与几何阅读顺序冲突。",
+      "severity": "WARNING",
+      "page_no": null,
+      "source": "layout_analysis"
+    },
+    {
+      "code": "OCR_QUALITY_READING_ORDER_RISK",
+      "message": "original 第 2 页 OCR 质量风险: READING_ORDER_CONFLICT",
+      "severity": "WARNING",
+      "page_no": 2,
+      "source": "ocr_quality:original"
+    },
+    {
+      "code": "OCR_QUALITY_READING_ORDER_RISK",
+      "message": "original 第 10 页 OCR 质量风险: READING_ORDER_CONFLICT",
+      "severity": "WARNING",
+      "page_no": 10,
+      "source": "ocr_quality:original"
+    },
+    {
+      "code": "OCR_QUALITY_READING_ORDER_RISK",
+      "message": "original 第 11 页 OCR 质量风险: READING_ORDER_CONFLICT",
+      "severity": "WARNING",
+      "page_no": 11,
+      "source": "ocr_quality:original"
+    },
+    {
+      "code": "OCR_QUALITY_READING_ORDER_RISK",
+      "message": "compare 第 1 页 OCR 质量风险: READING_ORDER_CONFLICT",
+      "severity": "WARNING",
+      "page_no": 1,
+      "source": "ocr_quality:compare"
+    },
+    {
+      "code": "OCR_QUALITY_READING_ORDER_RISK",
+      "message": "compare 第 2 页 OCR 质量风险: READING_ORDER_CONFLICT",
+      "severity": "WARNING",
+      "page_no": 2,
+      "source": "ocr_quality:compare"
+    },
+    {
+      "code": "OCR_QUALITY_READING_ORDER_RISK",
+      "message": "compare 第 8 页 OCR 质量风险: READING_ORDER_CONFLICT",
+      "severity": "WARNING",
+      "page_no": 8,
+      "source": "ocr_quality:compare"
+    },
+    {
+      "code": "OCR_QUALITY_READING_ORDER_RISK",
+      "message": "compare 第 11 页 OCR 质量风险: READING_ORDER_CONFLICT",
+      "severity": "WARNING",
+      "page_no": 11,
+      "source": "ocr_quality:compare"
+    },
+    {
+      "code": "OCR_QUALITY_READING_ORDER_RISK",
+      "message": "compare 第 12 页 OCR 质量风险: READING_ORDER_CONFLICT",
+      "severity": "WARNING",
+      "page_no": 12,
+      "source": "ocr_quality:compare"
+    },
+    {
+      "code": "OCR_QUALITY_UNRELIABLE",
+      "message": "compare 第 15 页 OCR 质量风险: READING_ORDER_CONFLICT, SEAL_OR_SIGNATURE_DETECTED",
+      "severity": "ERROR",
+      "page_no": 15,
+      "source": "ocr_quality:compare"
+    }
+  ],
+  "document_profiles": {
+    "original": {
+      "filename": "original_返回确认-HTXTJC260065合XX-C-260XXX-国能日新.pdf",
+      "page_count": 14,
+      "extractor_used": "ppstructure_ocr_hybrid",
+      "total_text_chars": 8758,
+      "table_block_count": 6,
+      "image_block_count": 0,
+      "scanned_page_count": 0,
+      "table_heavy_page_count": 4,
+      "page_profiles": [
+        {
+          "page_no": 1,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 7,
+          "table_block_count": 1,
+          "image_block_count": 0,
+          "char_count": 125,
+          "avg_confidence": 0.9946092218160629,
+          "table_area_ratio": 0.1038,
+          "image_area_ratio": 0.0,
+          "page_role": "cover",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 2,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 22,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 320,
+          "avg_confidence": 0.9972809742797505,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 3,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 7,
+          "table_block_count": 2,
+          "image_block_count": 0,
+          "char_count": 634,
+          "avg_confidence": 0.995833694934845,
+          "table_area_ratio": 0.535,
+          "image_area_ratio": 0.0,
+          "page_role": "body_start",
+          "extraction_strategy": "structured_ocr",
+          "low_text": false,
+          "table_heavy": true
+        },
+        {
+          "page_no": 4,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 1,
+          "table_block_count": 1,
+          "image_block_count": 0,
+          "char_count": 738,
+          "avg_confidence": 0.9999852776527405,
+          "table_area_ratio": 0.6823,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "structured_ocr",
+          "low_text": false,
+          "table_heavy": true
+        },
+        {
+          "page_no": 5,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 1,
+          "table_block_count": 1,
+          "image_block_count": 0,
+          "char_count": 718,
+          "avg_confidence": 0.9999887347221375,
+          "table_area_ratio": 0.6837,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "structured_ocr",
+          "low_text": false,
+          "table_heavy": true
+        },
+        {
+          "page_no": 6,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 4,
+          "table_block_count": 1,
+          "image_block_count": 0,
+          "char_count": 741,
+          "avg_confidence": 0.9859269380569458,
+          "table_area_ratio": 0.6077,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "structured_ocr",
+          "low_text": false,
+          "table_heavy": true
+        },
+        {
+          "page_no": 7,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 749,
+          "avg_confidence": 0.9921959484777143,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 8,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 30,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 892,
+          "avg_confidence": 0.9908256669839223,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 9,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 931,
+          "avg_confidence": 0.9959163261998084,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 10,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 33,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 705,
+          "avg_confidence": 0.9981599305615281,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 11,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 30,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 657,
+          "avg_confidence": 0.997131468852361,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "appendix",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 12,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 717,
+          "avg_confidence": 0.9889269413486603,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 13,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 510,
+          "avg_confidence": 0.992412672888848,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 14,
+          "width": 595.2999877929688,
+          "height": 841.9000244140625,
+          "text_block_count": 11,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 321,
+          "avg_confidence": 0.997989990494468,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        }
+      ],
+      "recommended_strategy": "mixed",
+      "warnings": []
+    },
+    "compare": {
+      "filename": "compare_GNXNYN-20260421-00044-CGHT.pdf",
+      "page_count": 15,
+      "extractor_used": "ppstructure_ocr_hybrid",
+      "total_text_chars": 8767,
+      "table_block_count": 7,
+      "image_block_count": 1,
+      "scanned_page_count": 0,
+      "table_heavy_page_count": 4,
+      "page_profiles": [
+        {
+          "page_no": 1,
+          "width": 597.0,
+          "height": 819.0,
+          "text_block_count": 10,
+          "table_block_count": 1,
+          "image_block_count": 0,
+          "char_count": 160,
+          "avg_confidence": 0.9162381183017384,
+          "table_area_ratio": 0.1037,
+          "image_area_ratio": 0.0,
+          "page_role": "cover",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 2,
+          "width": 597.0,
+          "height": 819.0,
+          "text_block_count": 23,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 321,
+          "avg_confidence": 0.9707991662232772,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 3,
+          "width": 597.0,
+          "height": 821.0,
+          "text_block_count": 6,
+          "table_block_count": 2,
+          "image_block_count": 0,
+          "char_count": 561,
+          "avg_confidence": 0.9998925998806953,
+          "table_area_ratio": 0.5089,
+          "image_area_ratio": 0.0,
+          "page_role": "body_start",
+          "extraction_strategy": "structured_ocr",
+          "low_text": false,
+          "table_heavy": true
+        },
+        {
+          "page_no": 4,
+          "width": 597.0,
+          "height": 821.0,
+          "text_block_count": 1,
+          "table_block_count": 1,
+          "image_block_count": 0,
+          "char_count": 727,
+          "avg_confidence": 0.9999751150608063,
+          "table_area_ratio": 0.6676,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "structured_ocr",
+          "low_text": false,
+          "table_heavy": true
+        },
+        {
+          "page_no": 5,
+          "width": 597.0,
+          "height": 821.0,
+          "text_block_count": 1,
+          "table_block_count": 1,
+          "image_block_count": 0,
+          "char_count": 637,
+          "avg_confidence": 0.9999301731586456,
+          "table_area_ratio": 0.6695,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "structured_ocr",
+          "low_text": false,
+          "table_heavy": true
+        },
+        {
+          "page_no": 6,
+          "width": 597.0,
+          "height": 821.0,
+          "text_block_count": 1,
+          "table_block_count": 1,
+          "image_block_count": 0,
+          "char_count": 726,
+          "avg_confidence": 0.9999224245548248,
+          "table_area_ratio": 0.6683,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "structured_ocr",
+          "low_text": false,
+          "table_heavy": true
+        },
+        {
+          "page_no": 7,
+          "width": 597.0,
+          "height": 821.0,
+          "text_block_count": 28,
+          "table_block_count": 1,
+          "image_block_count": 0,
+          "char_count": 731,
+          "avg_confidence": 0.9960407100874802,
+          "table_area_ratio": 0.0612,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 8,
+          "width": 597.0,
+          "height": 821.0,
+          "text_block_count": 32,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 864,
+          "avg_confidence": 0.9847557861357927,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 9,
+          "width": 597.0,
+          "height": 819.0,
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 887,
+          "avg_confidence": 0.9987954881883436,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 10,
+          "width": 597.0,
+          "height": 819.0,
+          "text_block_count": 32,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 882,
+          "avg_confidence": 0.9771350286900997,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 11,
+          "width": 597.0,
+          "height": 821.0,
+          "text_block_count": 8,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 66,
+          "avg_confidence": 0.9853466674685478,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 12,
+          "width": 597.0,
+          "height": 821.0,
+          "text_block_count": 30,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 655,
+          "avg_confidence": 0.9975290894508362,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "appendix",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 13,
+          "width": 597.0,
+          "height": 819.0,
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 718,
+          "avg_confidence": 0.9915333544054339,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 14,
+          "width": 597.0,
+          "height": 819.0,
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "image_block_count": 0,
+          "char_count": 510,
+          "avg_confidence": 0.9974927229266013,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        },
+        {
+          "page_no": 15,
+          "width": 600.0,
+          "height": 823.0,
+          "text_block_count": 11,
+          "table_block_count": 0,
+          "image_block_count": 1,
+          "char_count": 322,
+          "avg_confidence": 0.9953477134307226,
+          "table_area_ratio": 0.0,
+          "image_area_ratio": 0.0063,
+          "page_role": "body",
+          "extraction_strategy": "text",
+          "low_text": false,
+          "table_heavy": false
+        }
+      ],
+      "recommended_strategy": "mixed",
+      "warnings": []
+    }
+  },
+  "ocr_quality_summary": {
+    "status": "UNRELIABLE",
+    "requires_review": true,
+    "page_count_by_status": {
+      "OK": 20,
+      "READING_ORDER_RISK": 8,
+      "UNRELIABLE": 1
+    },
+    "risk_page_count": 9,
+    "affected_diff_count": 7,
+    "profiles": [
+      {
+        "side": "original",
+        "page_no": 1,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 7,
+          "table_block_count": 1,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9946,
+          "ocr_block_count": 8,
+          "matched_ocr_block_count": 8,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "original",
+        "page_no": 2,
+        "status": "READING_ORDER_RISK",
+        "score": 0.8,
+        "reasons": [
+          "READING_ORDER_CONFLICT"
+        ],
+        "metrics": {
+          "text_block_count": 22,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9973,
+          "ocr_block_count": 22,
+          "matched_ocr_block_count": 22,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 2,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": [
+          "D001",
+          "D003"
+        ]
+      },
+      {
+        "side": "original",
+        "page_no": 3,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 7,
+          "table_block_count": 2,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9958,
+          "ocr_block_count": 9,
+          "matched_ocr_block_count": 9,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "original",
+        "page_no": 4,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 1,
+          "table_block_count": 1,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 1.0,
+          "ocr_block_count": 2,
+          "matched_ocr_block_count": 2,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "original",
+        "page_no": 5,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 1,
+          "table_block_count": 1,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 1.0,
+          "ocr_block_count": 2,
+          "matched_ocr_block_count": 2,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "original",
+        "page_no": 6,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 4,
+          "table_block_count": 1,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9859,
+          "ocr_block_count": 5,
+          "matched_ocr_block_count": 5,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "original",
+        "page_no": 7,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9922,
+          "ocr_block_count": 31,
+          "matched_ocr_block_count": 31,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "original",
+        "page_no": 8,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 30,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9908,
+          "ocr_block_count": 30,
+          "matched_ocr_block_count": 30,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "original",
+        "page_no": 9,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9959,
+          "ocr_block_count": 31,
+          "matched_ocr_block_count": 31,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "original",
+        "page_no": 10,
+        "status": "READING_ORDER_RISK",
+        "score": 0.8,
+        "reasons": [
+          "READING_ORDER_CONFLICT"
+        ],
+        "metrics": {
+          "text_block_count": 33,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9982,
+          "ocr_block_count": 33,
+          "matched_ocr_block_count": 33,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 1,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": [
+          "D001",
+          "D003",
+          "D010"
+        ]
+      },
+      {
+        "side": "original",
+        "page_no": 11,
+        "status": "READING_ORDER_RISK",
+        "score": 0.8,
+        "reasons": [
+          "READING_ORDER_CONFLICT"
+        ],
+        "metrics": {
+          "text_block_count": 30,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9971,
+          "ocr_block_count": 30,
+          "matched_ocr_block_count": 30,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 1,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": [
+          "D001",
+          "D003"
+        ]
+      },
+      {
+        "side": "original",
+        "page_no": 12,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9889,
+          "ocr_block_count": 31,
+          "matched_ocr_block_count": 31,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "original",
+        "page_no": 13,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9924,
+          "ocr_block_count": 31,
+          "matched_ocr_block_count": 31,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "original",
+        "page_no": 14,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 11,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.998,
+          "ocr_block_count": 11,
+          "matched_ocr_block_count": 11,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "compare",
+        "page_no": 1,
+        "status": "READING_ORDER_RISK",
+        "score": 0.8,
+        "reasons": [
+          "READING_ORDER_CONFLICT"
+        ],
+        "metrics": {
+          "text_block_count": 10,
+          "table_block_count": 1,
+          "low_confidence_block_ratio": 0.1818,
+          "avg_confidence": 0.9162,
+          "ocr_block_count": 11,
+          "matched_ocr_block_count": 10,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 1,
+          "layout_match_rate": 0.9091
+        },
+        "affected_diff_ids": [
+          "D001",
+          "D002",
+          "D003",
+          "D004",
+          "D005"
+        ]
+      },
+      {
+        "side": "compare",
+        "page_no": 2,
+        "status": "READING_ORDER_RISK",
+        "score": 0.8,
+        "reasons": [
+          "READING_ORDER_CONFLICT"
+        ],
+        "metrics": {
+          "text_block_count": 23,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0435,
+          "avg_confidence": 0.9708,
+          "ocr_block_count": 23,
+          "matched_ocr_block_count": 22,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 2,
+          "layout_match_rate": 0.9565
+        },
+        "affected_diff_ids": [
+          "D001",
+          "D003"
+        ]
+      },
+      {
+        "side": "compare",
+        "page_no": 3,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 6,
+          "table_block_count": 2,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9999,
+          "ocr_block_count": 8,
+          "matched_ocr_block_count": 8,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "compare",
+        "page_no": 4,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 1,
+          "table_block_count": 1,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 1.0,
+          "ocr_block_count": 2,
+          "matched_ocr_block_count": 2,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "compare",
+        "page_no": 5,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 1,
+          "table_block_count": 1,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9999,
+          "ocr_block_count": 2,
+          "matched_ocr_block_count": 2,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "compare",
+        "page_no": 6,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 1,
+          "table_block_count": 1,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9999,
+          "ocr_block_count": 2,
+          "matched_ocr_block_count": 2,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "compare",
+        "page_no": 7,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 28,
+          "table_block_count": 1,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.996,
+          "ocr_block_count": 29,
+          "matched_ocr_block_count": 29,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "compare",
+        "page_no": 8,
+        "status": "READING_ORDER_RISK",
+        "score": 0.8,
+        "reasons": [
+          "READING_ORDER_CONFLICT"
+        ],
+        "metrics": {
+          "text_block_count": 32,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9848,
+          "ocr_block_count": 32,
+          "matched_ocr_block_count": 32,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 1,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": [
+          "D001",
+          "D003"
+        ]
+      },
+      {
+        "side": "compare",
+        "page_no": 9,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9988,
+          "ocr_block_count": 31,
+          "matched_ocr_block_count": 31,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "compare",
+        "page_no": 10,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 32,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0312,
+          "avg_confidence": 0.9771,
+          "ocr_block_count": 32,
+          "matched_ocr_block_count": 31,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 0.9688
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "compare",
+        "page_no": 11,
+        "status": "READING_ORDER_RISK",
+        "score": 0.8,
+        "reasons": [
+          "READING_ORDER_CONFLICT"
+        ],
+        "metrics": {
+          "text_block_count": 8,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9853,
+          "ocr_block_count": 8,
+          "matched_ocr_block_count": 8,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 1,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": [
+          "D001",
+          "D003",
+          "D010"
+        ]
+      },
+      {
+        "side": "compare",
+        "page_no": 12,
+        "status": "READING_ORDER_RISK",
+        "score": 0.8,
+        "reasons": [
+          "READING_ORDER_CONFLICT"
+        ],
+        "metrics": {
+          "text_block_count": 30,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9975,
+          "ocr_block_count": 30,
+          "matched_ocr_block_count": 30,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 1,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": [
+          "D001",
+          "D003"
+        ]
+      },
+      {
+        "side": "compare",
+        "page_no": 13,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9915,
+          "ocr_block_count": 31,
+          "matched_ocr_block_count": 31,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "compare",
+        "page_no": 14,
+        "status": "OK",
+        "score": 1.0,
+        "reasons": [],
+        "metrics": {
+          "text_block_count": 31,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9975,
+          "ocr_block_count": 31,
+          "matched_ocr_block_count": 31,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 0,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": []
+      },
+      {
+        "side": "compare",
+        "page_no": 15,
+        "status": "UNRELIABLE",
+        "score": 0.6,
+        "reasons": [
+          "READING_ORDER_CONFLICT",
+          "SEAL_OR_SIGNATURE_DETECTED"
+        ],
+        "metrics": {
+          "text_block_count": 11,
+          "table_block_count": 0,
+          "low_confidence_block_ratio": 0.0,
+          "avg_confidence": 0.9953,
+          "ocr_block_count": 12,
+          "matched_ocr_block_count": 12,
+          "meaningful_unmatched_count": 0,
+          "reading_order_conflict_count": 1,
+          "layout_match_rate": 1.0
+        },
+        "affected_diff_ids": [
+          "D001",
+          "D003",
+          "D007"
+        ]
+      }
+    ]
+  },
+  "ocr_remediation_summary": {
+    "status": "MANUAL_REVIEW_REQUIRED",
+    "requires_manual_review": true,
+    "attempted_action_count": 17,
+    "successful_action_count": 0,
+    "unresolved_action_count": 17,
+    "risk_reduced_page_count": 0,
+    "risk_reduced_diff_count": 0,
+    "manual_review_required_count": 2,
+    "actions": [
+      {
+        "action_id": "compare:1:D001:ESCALATE_MANUAL_REVIEW",
+        "action_type": "ESCALATE_MANUAL_REVIEW",
+        "reason": "PAGE_UNRELIABLE",
+        "status": "MANUAL_REVIEW_REQUIRED",
+        "side": "compare",
+        "page_no": 1,
+        "diff_id": "D001",
+        "before_quality": {
+          "ocr_status": "READING_ORDER_RISK",
+          "ocr_score": 0.8,
+          "ocr_reasons": [
+            "READING_ORDER_CONFLICT"
+          ],
+          "ocr_metrics": {
+            "text_block_count": 10,
+            "table_block_count": 1,
+            "low_confidence_block_ratio": 0.1818,
+            "avg_confidence": 0.9162,
+            "ocr_block_count": 11,
+            "matched_ocr_block_count": 10,
+            "meaningful_unmatched_count": 0,
+            "reading_order_conflict_count": 1,
+            "layout_match_rate": 0.9091
+          }
+        },
+        "after_quality": {},
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED"
+        ],
+        "notes": [
+          "Planning-only action for PAGE_UNRELIABLE."
+        ]
+      },
+      {
+        "action_id": "compare:1:D002:MARK_REVIEW",
+        "action_type": "MARK_REVIEW",
+        "reason": "READING_ORDER_RISK",
+        "status": "PLANNED",
+        "side": "compare",
+        "page_no": 1,
+        "diff_id": "D002",
+        "before_quality": {
+          "ocr_status": "READING_ORDER_RISK",
+          "ocr_score": 0.8,
+          "ocr_reasons": [
+            "READING_ORDER_CONFLICT"
+          ],
+          "ocr_metrics": {
+            "text_block_count": 10,
+            "table_block_count": 1,
+            "low_confidence_block_ratio": 0.1818,
+            "avg_confidence": 0.9162,
+            "ocr_block_count": 11,
+            "matched_ocr_block_count": 10,
+            "meaningful_unmatched_count": 0,
+            "reading_order_conflict_count": 1,
+            "layout_match_rate": 0.9091
+          }
+        },
+        "after_quality": {},
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED"
+        ],
+        "notes": [
+          "Planning-only action for READING_ORDER_RISK."
+        ]
+      },
+      {
+        "action_id": "compare:1:D003:RELOCATE_EVIDENCE",
+        "action_type": "RELOCATE_EVIDENCE",
+        "reason": "EVIDENCE_UNRELIABLE",
+        "status": "FAILED",
+        "side": "compare",
+        "page_no": 1,
+        "diff_id": "D003",
+        "before_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "after_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED",
+          "OCR_REMEDIATION_UNRESOLVED"
+        ],
+        "notes": [
+          "Planning-only action for EVIDENCE_UNRELIABLE.",
+          "NO_ACCEPTED_CANDIDATE"
+        ]
+      },
+      {
+        "action_id": "compare:2:D003:RELOCATE_EVIDENCE",
+        "action_type": "RELOCATE_EVIDENCE",
+        "reason": "EVIDENCE_UNRELIABLE",
+        "status": "FAILED",
+        "side": "compare",
+        "page_no": 2,
+        "diff_id": "D003",
+        "before_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "after_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED",
+          "OCR_REMEDIATION_UNRESOLVED"
+        ],
+        "notes": [
+          "Planning-only action for EVIDENCE_UNRELIABLE.",
+          "NO_ACCEPTED_CANDIDATE"
+        ]
+      },
+      {
+        "action_id": "compare:8:D003:RELOCATE_EVIDENCE",
+        "action_type": "RELOCATE_EVIDENCE",
+        "reason": "EVIDENCE_UNRELIABLE",
+        "status": "FAILED",
+        "side": "compare",
+        "page_no": 8,
+        "diff_id": "D003",
+        "before_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "after_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED",
+          "OCR_REMEDIATION_UNRESOLVED"
+        ],
+        "notes": [
+          "Planning-only action for EVIDENCE_UNRELIABLE.",
+          "NO_ACCEPTED_CANDIDATE"
+        ]
+      },
+      {
+        "action_id": "compare:11:D003:RELOCATE_EVIDENCE",
+        "action_type": "RELOCATE_EVIDENCE",
+        "reason": "EVIDENCE_UNRELIABLE",
+        "status": "FAILED",
+        "side": "compare",
+        "page_no": 11,
+        "diff_id": "D003",
+        "before_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "after_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED",
+          "OCR_REMEDIATION_UNRESOLVED"
+        ],
+        "notes": [
+          "Planning-only action for EVIDENCE_UNRELIABLE.",
+          "NO_ACCEPTED_CANDIDATE"
+        ]
+      },
+      {
+        "action_id": "compare:12:D003:RELOCATE_EVIDENCE",
+        "action_type": "RELOCATE_EVIDENCE",
+        "reason": "EVIDENCE_UNRELIABLE",
+        "status": "FAILED",
+        "side": "compare",
+        "page_no": 12,
+        "diff_id": "D003",
+        "before_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "after_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED",
+          "OCR_REMEDIATION_UNRESOLVED"
+        ],
+        "notes": [
+          "Planning-only action for EVIDENCE_UNRELIABLE.",
+          "NO_ACCEPTED_CANDIDATE"
+        ]
+      },
+      {
+        "action_id": "compare:15:D003:RELOCATE_EVIDENCE",
+        "action_type": "RELOCATE_EVIDENCE",
+        "reason": "EVIDENCE_UNRELIABLE",
+        "status": "FAILED",
+        "side": "compare",
+        "page_no": 15,
+        "diff_id": "D003",
+        "before_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "after_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED",
+          "OCR_REMEDIATION_UNRESOLVED"
+        ],
+        "notes": [
+          "Planning-only action for EVIDENCE_UNRELIABLE.",
+          "NO_ACCEPTED_CANDIDATE"
+        ]
+      },
+      {
+        "action_id": "original:2:D003:RELOCATE_EVIDENCE",
+        "action_type": "RELOCATE_EVIDENCE",
+        "reason": "EVIDENCE_UNRELIABLE",
+        "status": "FAILED",
+        "side": "original",
+        "page_no": 2,
+        "diff_id": "D003",
+        "before_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "after_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED",
+          "OCR_REMEDIATION_UNRESOLVED"
+        ],
+        "notes": [
+          "Planning-only action for EVIDENCE_UNRELIABLE.",
+          "NO_ACCEPTED_CANDIDATE"
+        ]
+      },
+      {
+        "action_id": "original:10:D003:RELOCATE_EVIDENCE",
+        "action_type": "RELOCATE_EVIDENCE",
+        "reason": "EVIDENCE_UNRELIABLE",
+        "status": "FAILED",
+        "side": "original",
+        "page_no": 10,
+        "diff_id": "D003",
+        "before_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "after_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED",
+          "OCR_REMEDIATION_UNRESOLVED"
+        ],
+        "notes": [
+          "Planning-only action for EVIDENCE_UNRELIABLE.",
+          "NO_ACCEPTED_CANDIDATE"
+        ]
+      },
+      {
+        "action_id": "original:11:D003:RELOCATE_EVIDENCE",
+        "action_type": "RELOCATE_EVIDENCE",
+        "reason": "EVIDENCE_UNRELIABLE",
+        "status": "FAILED",
+        "side": "original",
+        "page_no": 11,
+        "diff_id": "D003",
+        "before_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "after_quality": {
+          "evidence_count": 0,
+          "max_confidence": 0.0,
+          "methods": [],
+          "pages": []
+        },
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED",
+          "OCR_REMEDIATION_UNRESOLVED"
+        ],
+        "notes": [
+          "Planning-only action for EVIDENCE_UNRELIABLE.",
+          "NO_ACCEPTED_CANDIDATE"
+        ]
+      },
+      {
+        "action_id": "compare:1:D004:MARK_REVIEW",
+        "action_type": "MARK_REVIEW",
+        "reason": "READING_ORDER_RISK",
+        "status": "PLANNED",
+        "side": "compare",
+        "page_no": 1,
+        "diff_id": "D004",
+        "before_quality": {
+          "ocr_status": "READING_ORDER_RISK",
+          "ocr_score": 0.8,
+          "ocr_reasons": [
+            "READING_ORDER_CONFLICT"
+          ],
+          "ocr_metrics": {
+            "text_block_count": 10,
+            "table_block_count": 1,
+            "low_confidence_block_ratio": 0.1818,
+            "avg_confidence": 0.9162,
+            "ocr_block_count": 11,
+            "matched_ocr_block_count": 10,
+            "meaningful_unmatched_count": 0,
+            "reading_order_conflict_count": 1,
+            "layout_match_rate": 0.9091
+          }
+        },
+        "after_quality": {},
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED"
+        ],
+        "notes": [
+          "Planning-only action for READING_ORDER_RISK."
+        ]
+      },
+      {
+        "action_id": "compare:1:D005:MARK_REVIEW",
+        "action_type": "MARK_REVIEW",
+        "reason": "READING_ORDER_RISK",
+        "status": "PLANNED",
+        "side": "compare",
+        "page_no": 1,
+        "diff_id": "D005",
+        "before_quality": {
+          "ocr_status": "READING_ORDER_RISK",
+          "ocr_score": 0.8,
+          "ocr_reasons": [
+            "READING_ORDER_CONFLICT"
+          ],
+          "ocr_metrics": {
+            "text_block_count": 10,
+            "table_block_count": 1,
+            "low_confidence_block_ratio": 0.1818,
+            "avg_confidence": 0.9162,
+            "ocr_block_count": 11,
+            "matched_ocr_block_count": 10,
+            "meaningful_unmatched_count": 0,
+            "reading_order_conflict_count": 1,
+            "layout_match_rate": 0.9091
+          }
+        },
+        "after_quality": {},
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED"
+        ],
+        "notes": [
+          "Planning-only action for READING_ORDER_RISK."
+        ]
+      },
+      {
+        "action_id": "compare:1:D003:MARK_REVIEW",
+        "action_type": "MARK_REVIEW",
+        "reason": "READING_ORDER_RISK",
+        "status": "PLANNED",
+        "side": "compare",
+        "page_no": 1,
+        "diff_id": "D003",
+        "before_quality": {
+          "ocr_status": "READING_ORDER_RISK",
+          "ocr_score": 0.8,
+          "ocr_reasons": [
+            "READING_ORDER_CONFLICT"
+          ],
+          "ocr_metrics": {
+            "text_block_count": 10,
+            "table_block_count": 1,
+            "low_confidence_block_ratio": 0.1818,
+            "avg_confidence": 0.9162,
+            "ocr_block_count": 11,
+            "matched_ocr_block_count": 10,
+            "meaningful_unmatched_count": 0,
+            "reading_order_conflict_count": 1,
+            "layout_match_rate": 0.9091
+          }
+        },
+        "after_quality": {},
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED"
+        ],
+        "notes": [
+          "Planning-only action for READING_ORDER_RISK."
+        ]
+      },
+      {
+        "action_id": "compare:15:D007:ESCALATE_MANUAL_REVIEW",
+        "action_type": "ESCALATE_MANUAL_REVIEW",
+        "reason": "PAGE_UNRELIABLE",
+        "status": "MANUAL_REVIEW_REQUIRED",
+        "side": "compare",
+        "page_no": 15,
+        "diff_id": "D007",
+        "before_quality": {
+          "ocr_status": "UNRELIABLE",
+          "ocr_score": 0.6,
+          "ocr_reasons": [
+            "READING_ORDER_CONFLICT",
+            "SEAL_OR_SIGNATURE_DETECTED"
+          ],
+          "ocr_metrics": {
+            "text_block_count": 11,
+            "table_block_count": 0,
+            "low_confidence_block_ratio": 0.0,
+            "avg_confidence": 0.9953,
+            "ocr_block_count": 12,
+            "matched_ocr_block_count": 12,
+            "meaningful_unmatched_count": 0,
+            "reading_order_conflict_count": 1,
+            "layout_match_rate": 1.0
+          }
+        },
+        "after_quality": {},
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED"
+        ],
+        "notes": [
+          "Planning-only action for PAGE_UNRELIABLE."
+        ]
+      },
+      {
+        "action_id": "compare:11:D010:MARK_REVIEW",
+        "action_type": "MARK_REVIEW",
+        "reason": "READING_ORDER_RISK",
+        "status": "PLANNED",
+        "side": "compare",
+        "page_no": 11,
+        "diff_id": "D010",
+        "before_quality": {
+          "ocr_status": "READING_ORDER_RISK",
+          "ocr_score": 0.8,
+          "ocr_reasons": [
+            "READING_ORDER_CONFLICT"
+          ],
+          "ocr_metrics": {
+            "text_block_count": 8,
+            "table_block_count": 0,
+            "low_confidence_block_ratio": 0.0,
+            "avg_confidence": 0.9853,
+            "ocr_block_count": 8,
+            "matched_ocr_block_count": 8,
+            "meaningful_unmatched_count": 0,
+            "reading_order_conflict_count": 1,
+            "layout_match_rate": 1.0
+          }
+        },
+        "after_quality": {},
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED"
+        ],
+        "notes": [
+          "Planning-only action for READING_ORDER_RISK."
+        ]
+      },
+      {
+        "action_id": "original:10:D010:MARK_REVIEW",
+        "action_type": "MARK_REVIEW",
+        "reason": "READING_ORDER_RISK",
+        "status": "PLANNED",
+        "side": "original",
+        "page_no": 10,
+        "diff_id": "D010",
+        "before_quality": {
+          "ocr_status": "READING_ORDER_RISK",
+          "ocr_score": 0.8,
+          "ocr_reasons": [
+            "READING_ORDER_CONFLICT"
+          ],
+          "ocr_metrics": {
+            "text_block_count": 33,
+            "table_block_count": 0,
+            "low_confidence_block_ratio": 0.0,
+            "avg_confidence": 0.9982,
+            "ocr_block_count": 33,
+            "matched_ocr_block_count": 33,
+            "meaningful_unmatched_count": 0,
+            "reading_order_conflict_count": 1,
+            "layout_match_rate": 1.0
+          }
+        },
+        "after_quality": {},
+        "changed_evidence": false,
+        "changed_diff_text": false,
+        "review_flags_added": [
+          "OCR_REMEDIATION_PLANNED"
+        ],
+        "notes": [
+          "Planning-only action for READING_ORDER_RISK."
+        ]
+      }
+    ]
+  },
+  "debug_artifact_paths": {
+    "document_profiles": "debug/document_profiles.json",
+    "layout_quality": "debug/layout_quality.json",
+    "document_understanding": "debug/document_understanding.json",
+    "document_preparation": "debug/document_preparation.json",
+    "table_repair": "debug/table_repair.json",
+    "original_clauses": "debug/clauses_original.json",
+    "compare_clauses": "debug/clauses_compare.json",
+    "section_outline": "debug/section_outline.json",
+    "clause_split_quality": "debug/clause_split_quality.json",
+    "clause_matches": "debug/clause_matches.json",
+    "match_matrix_summary": "debug/match_matrix_summary.json",
+    "ocr_quality": "debug/ocr_quality.json",
+    "ocr_remediation": "debug/ocr_remediation.json",
+    "ocr_model_routing": "debug/ocr_model_routing.json",
+    "diff_quality": "debug/diff_quality.json",
+    "diff_decisions": "debug/diff_decisions.json"
+  },
+  "diff_count": 9,
+  "reviewed_count": 0,
+  "confirmed_count": 0,
+  "false_positive_count": 0,
+  "manual_review_count": 0,
+  "ignored_count": 0,
+  "audit_item_reviews": {},
+  "compare_options": {
+    "ignore_punctuation": false,
+    "ignore_headers_footers": false,
+    "ignore_stamps": false
+  },
+  "diffs": [
+    {
+      "diff_id": "D001",
+      "diff_type": "MODIFY",
+      "original_clause_id": null,
+      "compare_clause_id": null,
+      "clause_no": "",
+      "title": "页脚页码",
+      "original_text": "页码格式：共 14 页第 N 页（覆盖第 1-14 页）",
+      "compare_text": "页码格式：共 15 页第 N 页（覆盖第 1-15 页）",
+      "original_snippet": "1414",
+      "compare_snippet": "1515",
+      "readable_change": "页脚变更：页码格式：共 14 页第 N 页（覆盖第 1-14 页） -> 页码格式：共 15 页第 N 页（覆盖第 1-15 页）",
+      "source_type": "header_footer",
+      "section_type": "",
+      "section_path": [],
+      "match_score": null,
+      "match_method": "",
+      "match_score_details": {},
+      "match_candidates": [],
+      "match_confidence": "",
+      "structural_flags": [],
+      "review_flags": [
+        "PAGE_UNRELIABLE",
+        "READING_ORDER_RISK",
+        "SEAL_OR_SIGNATURE_RISK",
+        "OCR_REMEDIATION_MANUAL_REVIEW",
+        "OCR_REMEDIATION_PLANNED",
+        "HEADER_FOOTER_REVIEW"
+      ],
+      "quality_status": "NEEDS_REVIEW",
+      "text_confidence": null,
+      "merged_sources": [],
+      "review_status": "UNREVIEWED",
+      "review_comment": "",
+      "reviewed_by": "",
+      "reviewed_at": "",
+      "original_evidence": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "x0": 277.4067953191416,
+            "y0": 777.9076235084805,
+            "x1": 333.8878185102461,
+            "y1": 793.4057831028011,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第1页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 2,
+          "bbox": {
+            "x0": 278.9062915100559,
+            "y0": 780.4073266688548,
+            "x1": 332.88815438296996,
+            "y1": 792.4059018386514,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第2页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 3,
+          "bbox": {
+            "x0": 278.4064594464178,
+            "y0": 779.4074454047051,
+            "x1": 332.38832231933185,
+            "y1": 791.9059612065765,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第3页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 4,
+          "bbox": {
+            "x0": 278.4064594464178,
+            "y0": 779.9073860367799,
+            "x1": 332.38832231933185,
+            "y1": 791.9059612065765,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第4页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 5,
+          "bbox": {
+            "x0": 278.9062915100559,
+            "y0": 779.9073860367799,
+            "x1": 332.88815438296996,
+            "y1": 792.4059018386514,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第5页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 6,
+          "bbox": {
+            "x0": 278.9062915100559,
+            "y0": 779.9073860367799,
+            "x1": 332.88815438296996,
+            "y1": 792.4059018386514,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第6页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 7,
+          "bbox": {
+            "x0": 279.406123573694,
+            "y0": 780.9072673009297,
+            "x1": 332.38832231933185,
+            "y1": 791.4060205745017,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第7页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 8,
+          "bbox": {
+            "x0": 279.406123573694,
+            "y0": 780.9072673009297,
+            "x1": 332.88815438296996,
+            "y1": 791.4060205745017,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第8页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 9,
+          "bbox": {
+            "x0": 279.406123573694,
+            "y0": 780.9072673009297,
+            "x1": 332.88815438296996,
+            "y1": 791.4060205745017,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第9页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 10,
+          "bbox": {
+            "x0": 277.4067953191416,
+            "y0": 780.9072673009297,
+            "x1": 334.38765057388423,
+            "y1": 791.4060205745017,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第10页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 11,
+          "bbox": {
+            "x0": 277.4067953191416,
+            "y0": 781.4072079330045,
+            "x1": 334.88748263752234,
+            "y1": 791.9059612065765,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第11页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 12,
+          "bbox": {
+            "x0": 277.4067953191416,
+            "y0": 781.4072079330045,
+            "x1": 334.88748263752234,
+            "y1": 791.9059612065765,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第12页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 13,
+          "bbox": {
+            "x0": 277.4067953191416,
+            "y0": 781.4072079330045,
+            "x1": 334.88748263752234,
+            "y1": 791.9059612065765,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第13页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 14,
+          "bbox": {
+            "x0": 276.9069632555035,
+            "y0": 780.4073266688548,
+            "x1": 334.88748263752234,
+            "y1": 792.4059018386514,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共14页第14页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        }
+      ],
+      "compare_evidence": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "x0": 284.0,
+            "y0": 759.0,
+            "x1": 336.5,
+            "y1": 771.5,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第1页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 2,
+          "bbox": {
+            "x0": 285.5,
+            "y0": 762.5,
+            "x1": 337.0,
+            "y1": 773.0,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第2页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 3,
+          "bbox": {
+            "x0": 284.0,
+            "y0": 760.5,
+            "x1": 336.0,
+            "y1": 772.5,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第3页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 4,
+          "bbox": {
+            "x0": 284.5,
+            "y0": 763.0,
+            "x1": 336.5,
+            "y1": 775.5,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第4页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 5,
+          "bbox": {
+            "x0": 284.0,
+            "y0": 759.5,
+            "x1": 336.0,
+            "y1": 771.5,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第5页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 6,
+          "bbox": {
+            "x0": 284.5,
+            "y0": 764.0,
+            "x1": 336.0,
+            "y1": 776.5,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第6页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 7,
+          "bbox": {
+            "x0": 285.0,
+            "y0": 760.0,
+            "x1": 337.0,
+            "y1": 772.5,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第7页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 8,
+          "bbox": {
+            "x0": 284.0,
+            "y0": 763.0,
+            "x1": 336.0,
+            "y1": 775.0,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第8页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 9,
+          "bbox": {
+            "x0": 284.5,
+            "y0": 758.0,
+            "x1": 337.5,
+            "y1": 771.5,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第9页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 10,
+          "bbox": {
+            "x0": 282.5,
+            "y0": 761.5,
+            "x1": 338.5,
+            "y1": 773.5,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第10页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 11,
+          "bbox": {
+            "x0": 282.5,
+            "y0": 760.0,
+            "x1": 339.5,
+            "y1": 774.0,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第11页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 12,
+          "bbox": {
+            "x0": 282.5,
+            "y0": 764.0,
+            "x1": 338.0,
+            "y1": 776.0,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第12页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 13,
+          "bbox": {
+            "x0": 282.5,
+            "y0": 759.5,
+            "x1": 338.5,
+            "y1": 771.5,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第13页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 14,
+          "bbox": {
+            "x0": 282.0,
+            "y0": 761.0,
+            "x1": 338.5,
+            "y1": 774.0,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第14页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        },
+        {
+          "page_no": 15,
+          "bbox": {
+            "x0": 287.5,
+            "y0": 764.5,
+            "x1": 343.0,
+            "y1": 776.0,
+            "normalized": null
+          },
+          "method": "header_footer",
+          "text": "共15页第15页",
+          "highlight_type": "MODIFY",
+          "confidence": 0.55,
+          "evidence_quality": "LOW",
+          "text_confidence": null
+        }
+      ],
+      "original_change_ranges": [
+        {
+          "start": 7,
+          "end": 9,
+          "highlight_type": "MODIFY"
+        },
+        {
+          "start": 23,
+          "end": 25,
+          "highlight_type": "MODIFY"
+        }
+      ],
+      "compare_change_ranges": [
+        {
+          "start": 7,
+          "end": 9,
+          "highlight_type": "MODIFY"
+        },
+        {
+          "start": 23,
+          "end": 25,
+          "highlight_type": "MODIFY"
+        }
+      ]
+    },
+    {
+      "diff_id": "D002",
+      "diff_type": "ADD",
+      "original_clause_id": null,
+      "compare_clause_id": null,
+      "clause_no": "",
+      "title": "封面字段：合同编号",
+      "original_text": "",
+      "compare_text": "XX-C-260520",
+      "original_snippet": "",
+      "compare_snippet": "XX-C-260520",
+      "readable_change": "新增封面字段【合同编号】：XX-C-260520",
+      "source_type": "metadata",
+      "section_type": "",
+      "section_path": [],
+      "match_score": null,
+      "match_method": "",
+      "match_score_details": {},
+      "match_candidates": [],
+      "match_confidence": "",
+      "structural_flags": [],
+      "review_flags": [
+        "READING_ORDER_RISK",
+        "OCR_REMEDIATION_PLANNED",
+        "CRITICAL_VALUE_CHANGE"
+      ],
+      "quality_status": "NEEDS_REVIEW",
+      "text_confidence": null,
+      "merged_sources": [],
+      "review_status": "UNREVIEWED",
+      "review_comment": "",
+      "reviewed_by": "",
+      "reviewed_at": "",
+      "original_evidence": [],
+      "compare_evidence": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "x0": 167.7,
+            "y0": 64.7,
+            "x1": 244.3,
+            "y1": 81.8,
+            "normalized": null
+          },
+          "method": "cover_metadata",
+          "text": "XX-C-260520",
+          "highlight_type": "ADD",
+          "confidence": 0.9,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        }
+      ],
+      "original_change_ranges": [],
+      "compare_change_ranges": [
+        {
+          "start": 0,
+          "end": 11,
+          "highlight_type": "ADD"
+        }
+      ]
+    },
+    {
+      "diff_id": "D003",
+      "diff_type": "MODIFY",
+      "original_clause_id": null,
+      "compare_clause_id": null,
+      "clause_no": "",
+      "title": "封面字段：签订日期",
+      "original_text": "2026年4月 日",
+      "compare_text": "2026年4月21日",
+      "original_snippet": "",
+      "compare_snippet": "21",
+      "readable_change": "封面字段【签订日期】新增：21",
+      "source_type": "metadata",
+      "section_type": "",
+      "section_path": [],
+      "match_score": null,
+      "match_method": "",
+      "match_score_details": {},
+      "match_candidates": [],
+      "match_confidence": "",
+      "structural_flags": [],
+      "review_flags": [
+        "EVIDENCE_UNRELIABLE",
+        "OCR_REMEDIATION_PLANNED",
+        "OCR_REMEDIATION_UNRESOLVED",
+        "READING_ORDER_RISK",
+        "CROSS_SOURCE_MERGED",
+        "CRITICAL_VALUE_CHANGE"
+      ],
+      "quality_status": "NEEDS_REVIEW",
+      "text_confidence": null,
+      "merged_sources": [
+        "table"
+      ],
+      "review_status": "UNREVIEWED",
+      "review_comment": "",
+      "reviewed_by": "",
+      "reviewed_at": "",
+      "original_evidence": [],
+      "compare_evidence": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "x0": 337.0,
+            "y0": 643.0,
+            "x1": 365.0,
+            "y1": 665.5,
+            "normalized": null
+          },
+          "method": "table_cell",
+          "text": "21",
+          "highlight_type": "ADD",
+          "confidence": 0.9,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        }
+      ],
+      "original_change_ranges": [],
+      "compare_change_ranges": [
+        {
+          "start": 7,
+          "end": 9,
+          "highlight_type": "ADD"
+        }
+      ]
+    },
+    {
+      "diff_id": "D004",
+      "diff_type": "ADD",
+      "original_clause_id": null,
+      "compare_clause_id": null,
+      "clause_no": "",
+      "title": "封面额外文本",
+      "original_text": "",
+      "compare_text": "GNXMXN-22604A-00044",
+      "original_snippet": "",
+      "compare_snippet": "GNXMXN-22604A-00044",
+      "readable_change": "新增封面额外文本：GNXMXN-22604A-00044",
+      "source_type": "metadata",
+      "section_type": "",
+      "section_path": [],
+      "match_score": null,
+      "match_method": "",
+      "match_score_details": {},
+      "match_candidates": [],
+      "match_confidence": "",
+      "structural_flags": [],
+      "review_flags": [
+        "READING_ORDER_RISK",
+        "OCR_REMEDIATION_PLANNED",
+        "CRITICAL_VALUE_CHANGE"
+      ],
+      "quality_status": "NEEDS_REVIEW",
+      "text_confidence": null,
+      "merged_sources": [],
+      "review_status": "UNREVIEWED",
+      "review_comment": "",
+      "reviewed_by": "",
+      "reviewed_at": "",
+      "original_evidence": [],
+      "compare_evidence": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "x0": 390.0,
+            "y0": 4.5,
+            "x1": 545.0,
+            "y1": 35.0,
+            "normalized": null
+          },
+          "method": "cover_extra",
+          "text": "GNXMXN-22604A-00044",
+          "highlight_type": "ADD",
+          "confidence": 0.68,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        }
+      ],
+      "original_change_ranges": [],
+      "compare_change_ranges": [
+        {
+          "start": 0,
+          "end": 19,
+          "highlight_type": "ADD"
+        }
+      ]
+    },
+    {
+      "diff_id": "D005",
+      "diff_type": "ADD",
+      "original_clause_id": null,
+      "compare_clause_id": null,
+      "clause_no": "",
+      "title": "封面额外文本",
+      "original_text": "",
+      "compare_text": "录",
+      "original_snippet": "",
+      "compare_snippet": "录",
+      "readable_change": "新增封面额外文本：录",
+      "source_type": "metadata",
+      "section_type": "",
+      "section_path": [],
+      "match_score": null,
+      "match_method": "",
+      "match_score_details": {},
+      "match_candidates": [],
+      "match_confidence": "",
+      "structural_flags": [],
+      "review_flags": [
+        "READING_ORDER_RISK",
+        "OCR_REMEDIATION_PLANNED",
+        "POSSIBLE_COVER_OCR_FRAGMENT"
+      ],
+      "quality_status": "NEEDS_REVIEW",
+      "text_confidence": null,
+      "merged_sources": [],
+      "review_status": "UNREVIEWED",
+      "review_comment": "",
+      "reviewed_by": "",
+      "reviewed_at": "",
+      "original_evidence": [],
+      "compare_evidence": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "x0": 496.5,
+            "y0": 36.0,
+            "x1": 529.0,
+            "y1": 73.0,
+            "normalized": null
+          },
+          "method": "cover_extra",
+          "text": "录",
+          "highlight_type": "ADD",
+          "confidence": 0.68,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        }
+      ],
+      "original_change_ranges": [],
+      "compare_change_ranges": [
+        {
+          "start": 0,
+          "end": 1,
+          "highlight_type": "ADD"
+        }
+      ]
+    },
+    {
+      "diff_id": "D007",
+      "diff_type": "ADD",
+      "original_clause_id": null,
+      "compare_clause_id": null,
+      "clause_no": "",
+      "title": "印章区域（第15页）",
+      "original_text": "",
+      "compare_text": "公",
+      "original_snippet": "",
+      "compare_snippet": "公",
+      "readable_change": "新增印章：公",
+      "source_type": "seal",
+      "section_type": "",
+      "section_path": [],
+      "match_score": null,
+      "match_method": "",
+      "match_score_details": {},
+      "match_candidates": [],
+      "match_confidence": "",
+      "structural_flags": [],
+      "review_flags": [
+        "PAGE_UNRELIABLE",
+        "READING_ORDER_RISK",
+        "SEAL_OR_SIGNATURE_RISK",
+        "OCR_REMEDIATION_MANUAL_REVIEW",
+        "OCR_REMEDIATION_PLANNED",
+        "SEAL_REVIEW"
+      ],
+      "quality_status": "NEEDS_REVIEW",
+      "text_confidence": null,
+      "merged_sources": [],
+      "review_status": "UNREVIEWED",
+      "review_comment": "",
+      "reviewed_by": "",
+      "reviewed_at": "",
+      "original_evidence": [],
+      "compare_evidence": [
+        {
+          "page_no": 15,
+          "bbox": {
+            "x0": 518.0,
+            "y0": 345.5,
+            "x1": 550.0,
+            "y1": 443.0,
+            "normalized": null
+          },
+          "method": "seal_region",
+          "text": "公",
+          "highlight_type": "ADD",
+          "confidence": 0.74,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        }
+      ],
+      "original_change_ranges": [],
+      "compare_change_ranges": [
+        {
+          "start": 0,
+          "end": 1,
+          "highlight_type": "ADD"
+        }
+      ]
+    },
+    {
+      "diff_id": "D008",
+      "diff_type": "MODIFY",
+      "original_clause_id": "OC002",
+      "compare_clause_id": "NC002",
+      "clause_no": "一",
+      "title": "标的物",
+      "original_text": "一、标的物\n上述价格为含13%增值税价格,总金额包括光伏功率预测系统V2.0软件部分价格,\n支持该系统所需的硬件设备价格。该价格为固定不变价,包括设备及随机附件的设计、采\n购、制造、税类(包含关税)、包装、运输、保险费用;还包含调试、技术服务(包含技\n术资料、图纸的提供)、质保期内服务的费用。\n上述价格不包含二次搬运、征地、阻工、爆破、通信接口协调等费用。",
+      "compare_text": "一、标的物\n上述价格为含13%增值税价格,总金额包括光伏功率预测系统V2.0软件部分价格,支\n持该系统所需的硬件设备价格。该价格为固定不变价,包括设备及随机附件的设计、采购、\n制造、税类(包含关税)、包装、运输、保险费用;还包含安装调试、技术服务(包含技术\n资料、图纸的提供)、质保期内服务的费用。\n上述价格不包含二次搬运、征地、阻工、爆破、通信接口协调等费用。",
+      "original_snippet": "",
+      "compare_snippet": "安装",
+      "readable_change": "原文：\n修改后：安装",
+      "source_type": "clause",
+      "section_type": "main_contract",
+      "section_path": [
+        "一 标的物"
+      ],
+      "match_score": 100.0,
+      "match_method": "same_clause_key_weighted",
+      "match_score_details": {
+        "clause_key_score": 100.0,
+        "canonical_path_score": 100.0,
+        "clause_no_score": 100.0,
+        "section_score": 100.0,
+        "section_mismatch_candidate": 0.0,
+        "section_mismatch_score": 0.0,
+        "title_score": 100.0,
+        "position_score": 100.0,
+        "neighbor_score": 50.0,
+        "business_token_score": 100.0,
+        "business_token_mismatch": 0.0,
+        "weak_numeric_marker": 0.0,
+        "short_clause_pair": 0.0,
+        "semantic_score": 99.82,
+        "semantic_rerank_available": 0.0,
+        "semantic_rerank_score": 0.0,
+        "semantic_rerank_reason": "",
+        "semantic_rerank_reason_present": 0.0,
+        "rerank_available": 0.0,
+        "rerank_score": 0.0,
+        "rerank_reason_present": 0.0,
+        "assignment_strategy_optimal": 0.0,
+        "body_ratio_score": 99.33,
+        "body_token_score": 99.33,
+        "body_token_capped_score": 99.33,
+        "body_partial_score": 98.65,
+        "body_length_coverage": 0.99,
+        "body_score": 99.33,
+        "alignment": {
+          "number_match": true,
+          "title_match": true,
+          "body_similarity": 0.9935,
+          "critical_token_overlap": 1.0,
+          "section_type_match": true,
+          "page_distance": 0,
+          "risk_flags": []
+        },
+        "matcher_risk_flags": [],
+        "matcher_guard_applied": 0.0,
+        "candidate_source_body_top_k": 1.0,
+        "candidate_source_clause_no": 1.0,
+        "candidate_source_index_window": 1.0,
+        "candidate_source_semantic_top_k": 1.0,
+        "candidate_source_position": 1.0,
+        "candidate_source_title_top_k": 1.0
+      },
+      "match_candidates": [
+        {
+          "compare_clause_id": "NC002",
+          "compare_clause_no": "一",
+          "compare_clause_key": "main_contract/一标的物|n一|percent:13%",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "一 标的物"
+          ],
+          "score": 100.0,
+          "match_method": "same_clause_key_weighted",
+          "match_confidence": "NORMAL",
+          "score_details": {
+            "clause_key_score": 100.0,
+            "canonical_path_score": 100.0,
+            "clause_no_score": 100.0,
+            "section_score": 100.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 100.0,
+            "position_score": 100.0,
+            "neighbor_score": 50.0,
+            "business_token_score": 100.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 99.82,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 99.33,
+            "body_token_score": 99.33,
+            "body_token_capped_score": 99.33,
+            "body_partial_score": 98.65,
+            "body_length_coverage": 0.99,
+            "body_score": 99.33,
+            "alignment": {
+              "number_match": true,
+              "title_match": true,
+              "body_similarity": 0.9935,
+              "critical_token_overlap": 1.0,
+              "section_type_match": true,
+              "page_distance": 0,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [],
+            "matcher_guard_applied": 0.0,
+            "candidate_source_body_top_k": 1.0,
+            "candidate_source_clause_no": 1.0,
+            "candidate_source_index_window": 1.0,
+            "candidate_source_semantic_top_k": 1.0,
+            "candidate_source_position": 1.0,
+            "candidate_source_title_top_k": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC070",
+          "compare_clause_no": "1",
+          "compare_clause_key": "main_contract/n1技术文档交付",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "1 技术文档交付"
+          ],
+          "score": 47.04,
+          "match_method": "same_clause_no_low_similarity",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 58.18,
+            "canonical_path_score": 72.73,
+            "clause_no_score": 100.0,
+            "section_score": 100.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 0.0,
+            "position_score": 0.0,
+            "neighbor_score": 50.0,
+            "business_token_score": 0.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 51.35,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 7.66,
+            "body_token_score": 7.66,
+            "body_token_capped_score": 7.66,
+            "body_partial_score": 10.91,
+            "body_length_coverage": 0.76,
+            "body_score": 10.91,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.0824,
+              "critical_token_overlap": 0.0,
+              "section_type_match": true,
+              "page_distance": 7,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [
+              "SAME_NUMBER_LOW_BODY_SIMILARITY"
+            ],
+            "matcher_guard_applied": 1.0,
+            "candidate_source_clause_no": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC076",
+          "compare_clause_no": "1",
+          "compare_clause_key": "main_contract/n1接口不开放或配置不可调|percent:1%|percent:10%",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "1 接口不开放或配置不可调"
+          ],
+          "score": 46.98,
+          "match_method": "same_clause_no_low_similarity",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 65.06,
+            "canonical_path_score": 65.31,
+            "clause_no_score": 100.0,
+            "section_score": 100.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 0.0,
+            "position_score": 0.0,
+            "neighbor_score": 50.0,
+            "business_token_score": 0.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 48.99,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 7.43,
+            "body_token_score": 7.43,
+            "body_token_capped_score": 7.43,
+            "body_partial_score": 9.03,
+            "body_length_coverage": 0.82,
+            "body_score": 9.03,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.0429,
+              "critical_token_overlap": 0.0,
+              "section_type_match": true,
+              "page_distance": 8,
+              "risk_flags": [
+                "CRITICAL_TOKEN_MISMATCH",
+                "POSSIBLE_CLAUSE_MISALIGNMENT"
+              ]
+            },
+            "matcher_risk_flags": [
+              "CRITICAL_TOKEN_CONFLICT",
+              "SAME_NUMBER_LOW_BODY_SIMILARITY"
+            ],
+            "matcher_guard_applied": 1.0,
+            "candidate_source_clause_no": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC073",
+          "compare_clause_no": "1",
+          "compare_clause_key": "main_contract/n1配置独立性验收",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "1 配置独立性验收"
+          ],
+          "score": 46.59,
+          "match_method": "same_clause_no_low_similarity",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 57.14,
+            "canonical_path_score": 71.11,
+            "clause_no_score": 100.0,
+            "section_score": 100.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 0.0,
+            "position_score": 0.0,
+            "neighbor_score": 50.0,
+            "business_token_score": 0.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 52.43,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 7.2,
+            "body_token_score": 7.2,
+            "body_token_capped_score": 7.2,
+            "body_partial_score": 10.0,
+            "body_length_coverage": 0.69,
+            "body_score": 10.0,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.062,
+              "critical_token_overlap": 0.0,
+              "section_type_match": true,
+              "page_distance": 7,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [
+              "SAME_NUMBER_LOW_BODY_SIMILARITY"
+            ],
+            "matcher_guard_applied": 1.0,
+            "candidate_source_clause_no": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC067",
+          "compare_clause_no": "1",
+          "compare_clause_key": "main_contract/n1上报日志完整记录",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "1 上报日志完整记录"
+          ],
+          "score": 46.07,
+          "match_method": "same_clause_no_low_similarity",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 56.14,
+            "canonical_path_score": 69.57,
+            "clause_no_score": 100.0,
+            "section_score": 100.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 0.0,
+            "position_score": 0.0,
+            "neighbor_score": 50.0,
+            "business_token_score": 0.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 47.96,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 9.38,
+            "body_token_score": 9.38,
+            "body_token_capped_score": 9.38,
+            "body_partial_score": 10.23,
+            "body_length_coverage": 0.73,
+            "body_score": 10.23,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.0992,
+              "critical_token_overlap": 0.0,
+              "section_type_match": true,
+              "page_distance": 6,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [
+              "SAME_NUMBER_LOW_BODY_SIMILARITY"
+            ],
+            "matcher_guard_applied": 1.0,
+            "candidate_source_clause_no": 1.0
+          }
+        }
+      ],
+      "match_confidence": "NORMAL",
+      "structural_flags": [
+        "PARAGRAPH_MERGED",
+        "CROSS_PAGE_CONTINUATION_MERGED"
+      ],
+      "review_flags": [],
+      "quality_status": "NORMAL",
+      "text_confidence": null,
+      "merged_sources": [],
+      "review_status": "UNREVIEWED",
+      "review_comment": "",
+      "reviewed_by": "",
+      "reviewed_at": "",
+      "original_evidence": [],
+      "compare_evidence": [
+        {
+          "page_no": 7,
+          "bbox": {
+            "x0": 371.7,
+            "y0": 173.2,
+            "x1": 398.3,
+            "y1": 187.3,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "安装",
+          "highlight_type": "ADD",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        }
+      ],
+      "original_change_ranges": [],
+      "compare_change_ranges": [
+        {
+          "start": 114,
+          "end": 116,
+          "highlight_type": "ADD"
+        }
+      ]
+    },
+    {
+      "diff_id": "D009",
+      "diff_type": "MODIFY",
+      "original_clause_id": "OC037",
+      "compare_clause_id": "NC037",
+      "clause_no": "9.2",
+      "title": "乙方在本合同约定交货时间未能将合同规定货物运抵合同指定交货地点的,则甲",
+      "original_text": "9.2 乙方在本合同约定交货时间未能将合同规定货物运抵合同指定交货地点的,则甲\n方有权提出逾期赔偿,逾期赔偿额计算方法为:每逾期一日,乙方应向甲方承担未到达货\n物价款的3%o作为违约金,不满一天的按照一天计算,但累计总额不超过未到达货物价款\n的10%。若因甲方自身原因、交通以及自然灾害等不可抗拒因素造成延迟交货的,乙方不\n承担任何责任。",
+      "compare_text": "9.2乙方在本合同约定交货时间未能将合同规定货物运抵合同指定交货地点的,则甲\n方有权提出逾期赔偿,逾期赔偿额计算方法为:每逾期一日,乙方应向甲方承担未到达货\n物价款的3%作为违约金,不满一天的按照一天计算,但累计总额不超过未到达货物价款\n的10%。若因甲方自身原因、交通以及自然灾害等不可抗拒因素造成延迟交货的,乙方不\n承担任何责任。",
+      "original_snippet": "3%o",
+      "compare_snippet": "3%",
+      "readable_change": "原文：3%o\n修改后：3%",
+      "source_type": "clause",
+      "section_type": "main_contract",
+      "section_path": [
+        "九 违约责任",
+        "9.2 乙方在本合同约定交货时间未能将合同规定货物运抵合"
+      ],
+      "match_score": 100.0,
+      "match_method": "same_clause_key_weighted",
+      "match_score_details": {
+        "clause_key_score": 100.0,
+        "canonical_path_score": 100.0,
+        "clause_no_score": 100.0,
+        "section_score": 100.0,
+        "section_mismatch_candidate": 0.0,
+        "section_mismatch_score": 0.0,
+        "title_score": 100.0,
+        "position_score": 100.0,
+        "neighbor_score": 100.0,
+        "business_token_score": 100.0,
+        "business_token_mismatch": 0.0,
+        "weak_numeric_marker": 0.0,
+        "short_clause_pair": 0.0,
+        "semantic_score": 99.84,
+        "semantic_rerank_available": 0.0,
+        "semantic_rerank_score": 0.0,
+        "semantic_rerank_reason": "",
+        "semantic_rerank_reason_present": 0.0,
+        "rerank_available": 0.0,
+        "rerank_score": 0.0,
+        "rerank_reason_present": 0.0,
+        "assignment_strategy_optimal": 0.0,
+        "body_ratio_score": 99.67,
+        "body_token_score": 99.67,
+        "body_token_capped_score": 99.67,
+        "body_partial_score": 99.34,
+        "body_length_coverage": 0.99,
+        "body_score": 99.67,
+        "alignment": {
+          "number_match": true,
+          "title_match": true,
+          "body_similarity": 0.9969,
+          "critical_token_overlap": 1.0,
+          "section_type_match": true,
+          "page_distance": 0,
+          "risk_flags": []
+        },
+        "matcher_risk_flags": [],
+        "matcher_guard_applied": 0.0,
+        "candidate_source_body_top_k": 1.0,
+        "candidate_source_clause_no": 1.0,
+        "candidate_source_index_window": 1.0,
+        "candidate_source_semantic_top_k": 1.0,
+        "candidate_source_position": 1.0,
+        "candidate_source_title_top_k": 1.0
+      },
+      "match_candidates": [
+        {
+          "compare_clause_id": "NC037",
+          "compare_clause_no": "9.2",
+          "compare_clause_key": "main_contract/九违约责任/n9_2乙方在本合同约定交货时间未能将合同规定货物运抵合|percent:10%|percent:3%",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "九 违约责任",
+            "9.2 乙方在本合同约定交货时间未能将合同规定货物运抵合"
+          ],
+          "score": 100.0,
+          "match_method": "same_clause_key_weighted",
+          "match_confidence": "NORMAL",
+          "score_details": {
+            "clause_key_score": 100.0,
+            "canonical_path_score": 100.0,
+            "clause_no_score": 100.0,
+            "section_score": 100.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 100.0,
+            "position_score": 100.0,
+            "neighbor_score": 100.0,
+            "business_token_score": 100.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 99.84,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 99.67,
+            "body_token_score": 99.67,
+            "body_token_capped_score": 99.67,
+            "body_partial_score": 99.34,
+            "body_length_coverage": 0.99,
+            "body_score": 99.67,
+            "alignment": {
+              "number_match": true,
+              "title_match": true,
+              "body_similarity": 0.9969,
+              "critical_token_overlap": 1.0,
+              "section_type_match": true,
+              "page_distance": 0,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [],
+            "matcher_guard_applied": 0.0,
+            "candidate_source_body_top_k": 1.0,
+            "candidate_source_clause_no": 1.0,
+            "candidate_source_index_window": 1.0,
+            "candidate_source_semantic_top_k": 1.0,
+            "candidate_source_position": 1.0,
+            "candidate_source_title_top_k": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC039",
+          "compare_clause_no": "9.4",
+          "compare_clause_key": "main_contract/九违约责任/n9_4如甲方未按合同约定如期付款每逾期一日甲方应支|percent:10%|percent:3%",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "九 违约责任",
+            "9.4 如甲方未按合同约定如期付款,每逾期一日,甲方应支"
+          ],
+          "score": 65.67,
+          "match_method": "body_weighted_similarity",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 72.86,
+            "canonical_path_score": 60.78,
+            "clause_no_score": 40.0,
+            "section_score": 100.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 22.54,
+            "position_score": 95.32,
+            "neighbor_score": 40.0,
+            "business_token_score": 63.64,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 83.71,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 29.95,
+            "body_token_score": 29.95,
+            "body_token_capped_score": 29.95,
+            "body_partial_score": 38.89,
+            "body_length_coverage": 0.35,
+            "body_score": 38.89,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.3119,
+              "critical_token_overlap": 1.0,
+              "section_type_match": true,
+              "page_distance": 0,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [],
+            "matcher_guard_applied": 0.0,
+            "candidate_source_index_window": 1.0,
+            "candidate_source_semantic_top_k": 1.0,
+            "candidate_source_position": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC035",
+          "compare_clause_no": "九",
+          "compare_clause_key": "main_contract/九违约责任|n九",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "九 违约责任"
+          ],
+          "score": 56.23,
+          "match_method": "section_mismatch_blocked",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 45.16,
+            "canonical_path_score": 57.53,
+            "clause_no_score": 25.0,
+            "section_score": 70.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 5.13,
+            "position_score": 95.32,
+            "neighbor_score": 20.0,
+            "business_token_score": 70.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 1.0,
+            "semantic_score": 60.06,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 5.06,
+            "body_token_score": 5.06,
+            "body_token_capped_score": 5.06,
+            "body_partial_score": 57.14,
+            "body_length_coverage": 0.03,
+            "body_score": 57.14,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.0485,
+              "critical_token_overlap": 0.0,
+              "section_type_match": true,
+              "page_distance": 0,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [],
+            "matcher_guard_applied": 0.0,
+            "candidate_source_index_window": 1.0,
+            "candidate_source_position": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC036",
+          "compare_clause_no": "9.1",
+          "compare_clause_key": "main_contract/九违约责任/n9_1乙方提供的设备应符合合同规定的质量标准技术要求",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "九 违约责任",
+            "9.1 乙方提供的设备应符合合同规定的质量标准、技术要求"
+          ],
+          "score": 55.41,
+          "match_method": "body_weighted_similarity",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 50.85,
+            "canonical_path_score": 64.08,
+            "clause_no_score": 40.0,
+            "section_score": 100.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 31.43,
+            "position_score": 97.66,
+            "neighbor_score": 32.5,
+            "business_token_score": 10.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 71.04,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 18.18,
+            "body_token_score": 18.18,
+            "body_token_capped_score": 18.18,
+            "body_partial_score": 27.96,
+            "body_length_coverage": 0.37,
+            "body_score": 27.96,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.137,
+              "critical_token_overlap": 0.0,
+              "section_type_match": true,
+              "page_distance": 0,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [],
+            "matcher_guard_applied": 0.0,
+            "candidate_source_index_window": 1.0,
+            "candidate_source_semantic_top_k": 1.0,
+            "candidate_source_position": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC040",
+          "compare_clause_no": "9.5",
+          "compare_clause_key": "main_contract/九违约责任/n9_5本合同下无论一项还是多项乙方所承担的违约责任|percent:10%",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "九 违约责任",
+            "9.5 本合同下,无论一项还是多项,乙方所承担的违约责任"
+          ],
+          "score": 55.06,
+          "match_method": "body_weighted_similarity",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 60.47,
+            "canonical_path_score": 58.82,
+            "clause_no_score": 40.0,
+            "section_score": 100.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 17.14,
+            "position_score": 92.99,
+            "neighbor_score": 20.0,
+            "business_token_score": 30.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 71.47,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 21.65,
+            "body_token_score": 21.65,
+            "body_token_capped_score": 21.65,
+            "body_partial_score": 29.27,
+            "body_length_coverage": 0.27,
+            "body_score": 29.27,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.2353,
+              "critical_token_overlap": 0.5,
+              "section_type_match": true,
+              "page_distance": 0,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [],
+            "matcher_guard_applied": 0.0,
+            "candidate_source_index_window": 1.0,
+            "candidate_source_semantic_top_k": 1.0,
+            "candidate_source_position": 1.0
+          }
+        }
+      ],
+      "match_confidence": "NORMAL",
+      "structural_flags": [
+        "PARAGRAPH_MERGED"
+      ],
+      "review_flags": [
+        "CRITICAL_VALUE_CHANGE"
+      ],
+      "quality_status": "NORMAL",
+      "text_confidence": null,
+      "merged_sources": [],
+      "review_status": "UNREVIEWED",
+      "review_comment": "",
+      "reviewed_by": "",
+      "reviewed_at": "",
+      "original_evidence": [
+        {
+          "page_no": 9,
+          "bbox": {
+            "x0": 116.16070289131378,
+            "y0": 239.67144402800713,
+            "x1": 119.26019908222804,
+            "y1": 251.27025666950433,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "3",
+          "highlight_type": "MODIFY",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        },
+        {
+          "page_no": 9,
+          "bbox": {
+            "x0": 122.65851971860897,
+            "y0": 239.67144402800713,
+            "x1": 126.25784797316135,
+            "y1": 251.27025666950433,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "%",
+          "highlight_type": "MODIFY",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        },
+        {
+          "page_no": 9,
+          "bbox": {
+            "x0": 129.65616860954228,
+            "y0": 239.67144402800713,
+            "x1": 132.75566480045657,
+            "y1": 251.27025666950433,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "o",
+          "highlight_type": "MODIFY",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        }
+      ],
+      "compare_evidence": [
+        {
+          "page_no": 9,
+          "bbox": {
+            "x0": 118.2,
+            "y0": 391.7,
+            "x1": 121.8,
+            "y1": 404.3,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "3",
+          "highlight_type": "MODIFY",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        },
+        {
+          "page_no": 9,
+          "bbox": {
+            "x0": 125.7,
+            "y0": 391.7,
+            "x1": 129.3,
+            "y1": 404.3,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "%",
+          "highlight_type": "MODIFY",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        }
+      ],
+      "original_change_ranges": [
+        {
+          "start": 84,
+          "end": 87,
+          "highlight_type": "MODIFY"
+        }
+      ],
+      "compare_change_ranges": [
+        {
+          "start": 83,
+          "end": 85,
+          "highlight_type": "MODIFY"
+        }
+      ]
+    },
+    {
+      "diff_id": "D010",
+      "diff_type": "MODIFY",
+      "original_clause_id": "OC061",
+      "compare_clause_id": "NC061",
+      "clause_no": "14.2",
+      "title": "甲方在合同履行过程中,要求乙方提供合同约定范围之外的硬件设备、软件产品、",
+      "original_text": "14.2甲方在合同履行过程中,要求乙方提供合同约定范围之外的硬件设备、软件产品、\n运输安装等行为,双方应就补充采购签订书面补充协议,明确:采购内容及技术规格、价格\n及付款方式、交付时间、验收标准。\n甲方:江苏东大金智信息系统有限公司乙方:国能日新科技股份有限公司\n(盖章)\n(盖章)\n法人代表或授权委托人:\n法人代表或授权委托人:\n(签字)\n日期:\n(签字)\n日期:\n乙方须在系统部署完成后,向甲方提供完整的系统管理权限(含管理员账号、配置文件访问权限、\n日志查看权限),确保甲方在不依赖乙方人员的情况下,可独立完成:\n上报通道配置\n上报参数调整\n日志查看与问题定位\n配置备份与恢复",
+      "compare_text": "14.2甲方在合同履行过程中,要求乙方提供合同约定范围之外的硬件设备、软件产品、\n运输安装等行为,双方应就补充采购签订书面补充协议,明确:采购内容及技术规格、价格\n及付款方式、交付时间、验收标准。\n甲方:江苏东达金智信息系统有限公司 乙方:国能日新科技股份有限公司\n(盖章)\n(盖章)\n法人\n法人代表或\n日期\n日期:2026.\n乙方须在系统部署完成后,向甲方提供完整的系统管理权限(含管理员账号、配置文件访问权限、\n日志查看权限),确保甲方在不依赖乙方人员的情况下,可独立完成:\n上报通道配置\n上报参数调整\n日志查看与问题定位\n配置备份与恢复",
+      "original_snippet": "大代表或授权委托人:授权委托人:(签字):(签字)",
+      "compare_snippet": "达2026.",
+      "readable_change": "原文：大代表或授权委托人:授权委托人:(签字):(签字)\n修改后：达2026.",
+      "source_type": "clause",
+      "section_type": "main_contract",
+      "section_path": [
+        "十四 其他",
+        "14.2 甲方在合同履行过程中,要求乙方提供合同约定范围之"
+      ],
+      "match_score": 100.0,
+      "match_method": "same_clause_key_weighted",
+      "match_score_details": {
+        "clause_key_score": 98.92,
+        "canonical_path_score": 100.0,
+        "clause_no_score": 100.0,
+        "section_score": 100.0,
+        "section_mismatch_candidate": 0.0,
+        "section_mismatch_score": 0.0,
+        "title_score": 100.0,
+        "position_score": 100.0,
+        "neighbor_score": 100.0,
+        "business_token_score": 85.71,
+        "business_token_mismatch": 0.0,
+        "weak_numeric_marker": 0.0,
+        "short_clause_pair": 0.0,
+        "semantic_score": 97.68,
+        "semantic_rerank_available": 0.0,
+        "semantic_rerank_score": 0.0,
+        "semantic_rerank_reason": "",
+        "semantic_rerank_reason_present": 0.0,
+        "rerank_available": 0.0,
+        "rerank_score": 0.0,
+        "rerank_reason_present": 0.0,
+        "assignment_strategy_optimal": 0.0,
+        "body_ratio_score": 95.1,
+        "body_token_score": 95.1,
+        "body_token_capped_score": 95.1,
+        "body_partial_score": 92.11,
+        "body_length_coverage": 0.95,
+        "body_score": 95.1,
+        "alignment": {
+          "number_match": true,
+          "title_match": true,
+          "body_similarity": 0.9504,
+          "critical_token_overlap": 0.3333,
+          "section_type_match": true,
+          "page_distance": 0,
+          "risk_flags": [
+            "CRITICAL_TOKEN_MISMATCH",
+            "POSSIBLE_CLAUSE_MISALIGNMENT"
+          ]
+        },
+        "matcher_risk_flags": [
+          "CRITICAL_TOKEN_CONFLICT"
+        ],
+        "matcher_guard_applied": 1.0,
+        "candidate_source_body_top_k": 1.0,
+        "candidate_source_clause_no": 1.0,
+        "candidate_source_index_window": 1.0,
+        "candidate_source_semantic_top_k": 1.0,
+        "candidate_source_position": 1.0,
+        "candidate_source_title_top_k": 1.0
+      },
+      "match_candidates": [
+        {
+          "compare_clause_id": "NC061",
+          "compare_clause_no": "14.2",
+          "compare_clause_key": "main_contract/十四其他/n14_2甲方在合同履行过程中要求乙方提供合同约定范围之|party:乙方:国能日新科技股份有限公司|party:甲方:江苏东达金智信息系统有限公司",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "十四 其他",
+            "14.2 甲方在合同履行过程中,要求乙方提供合同约定范围之"
+          ],
+          "score": 100.0,
+          "match_method": "same_clause_key_weighted",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 98.92,
+            "canonical_path_score": 100.0,
+            "clause_no_score": 100.0,
+            "section_score": 100.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 100.0,
+            "position_score": 100.0,
+            "neighbor_score": 100.0,
+            "business_token_score": 85.71,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 97.68,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 95.1,
+            "body_token_score": 95.1,
+            "body_token_capped_score": 95.1,
+            "body_partial_score": 92.11,
+            "body_length_coverage": 0.95,
+            "body_score": 95.1,
+            "alignment": {
+              "number_match": true,
+              "title_match": true,
+              "body_similarity": 0.9504,
+              "critical_token_overlap": 0.3333,
+              "section_type_match": true,
+              "page_distance": 0,
+              "risk_flags": [
+                "CRITICAL_TOKEN_MISMATCH",
+                "POSSIBLE_CLAUSE_MISALIGNMENT"
+              ]
+            },
+            "matcher_risk_flags": [
+              "CRITICAL_TOKEN_CONFLICT"
+            ],
+            "matcher_guard_applied": 1.0,
+            "candidate_source_body_top_k": 1.0,
+            "candidate_source_clause_no": 1.0,
+            "candidate_source_index_window": 1.0,
+            "candidate_source_semantic_top_k": 1.0,
+            "candidate_source_position": 1.0,
+            "candidate_source_title_top_k": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC072",
+          "compare_clause_no": "六",
+          "compare_clause_key": "main_contract/六验收标准|n六",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "六 验收标准"
+          ],
+          "score": 49.86,
+          "match_method": "section_mismatch_blocked",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 26.09,
+            "canonical_path_score": 41.1,
+            "clause_no_score": 0.0,
+            "section_score": 70.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 0.0,
+            "position_score": 74.29,
+            "neighbor_score": 20.0,
+            "business_token_score": 70.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 1.0,
+            "semantic_score": 48.37,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 3.25,
+            "body_token_score": 3.25,
+            "body_token_capped_score": 3.25,
+            "body_partial_score": 80.0,
+            "body_length_coverage": 0.02,
+            "body_score": 70.0,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.0316,
+              "critical_token_overlap": 0.0,
+              "section_type_match": true,
+              "page_distance": 2,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [],
+            "matcher_guard_applied": 0.0,
+            "candidate_source_position": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC060",
+          "compare_clause_no": "14.1",
+          "compare_clause_key": "main_contract/十四其他/n14_1本合同正本一式肆份甲乙双方各执贰份合同附页",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "十四 其他",
+            "14.1 本合同正本一式肆份,甲乙双方各执贰份。合同附页、"
+          ],
+          "score": 49.51,
+          "match_method": "body_weighted_similarity",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 42.03,
+            "canonical_path_score": 64.71,
+            "clause_no_score": 40.0,
+            "section_score": 100.0,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 25.35,
+            "position_score": 97.66,
+            "neighbor_score": 26.67,
+            "business_token_score": 0.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 58.31,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 8.33,
+            "body_token_score": 8.33,
+            "body_token_capped_score": 8.33,
+            "body_partial_score": 23.53,
+            "body_length_coverage": 0.2,
+            "body_score": 23.53,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.0943,
+              "critical_token_overlap": 0.0,
+              "section_type_match": true,
+              "page_distance": 0,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [],
+            "matcher_guard_applied": 0.0,
+            "candidate_source_index_window": 1.0,
+            "candidate_source_position": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC055",
+          "compare_clause_no": "12.2",
+          "compare_clause_key": "main_contract/十二争议解决条款/n12_2在诉讼期间除正在进行诉讼部分外合同其他事项继",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "十二 争议解决条款",
+            "12.2 在诉讼期间,除正在进行诉讼部分外,合同其他事项继"
+          ],
+          "score": 47.46,
+          "match_method": "section_mismatch_blocked",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 33.57,
+            "canonical_path_score": 52.34,
+            "clause_no_score": 70.0,
+            "section_score": 28.57,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 18.18,
+            "position_score": 85.97,
+            "neighbor_score": 55.0,
+            "business_token_score": 0.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 55.4,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 5.9,
+            "body_token_score": 5.9,
+            "body_token_capped_score": 5.9,
+            "body_partial_score": 35.0,
+            "body_length_coverage": 0.12,
+            "body_score": 35.0,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.0569,
+              "critical_token_overlap": 0.0,
+              "section_type_match": true,
+              "page_distance": 0,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [],
+            "matcher_guard_applied": 0.0,
+            "candidate_source_position": 1.0
+          }
+        },
+        {
+          "compare_clause_id": "NC058",
+          "compare_clause_no": "13.2",
+          "compare_clause_key": "main_contract/十三合同生效与修改/n13_2如因执行合同需对本合同内容做修改或补充则须由甲",
+          "compare_section_type": "main_contract",
+          "compare_section_path": [
+            "十三 合同生效与修改",
+            "13.2 如因执行合同需对本合同内容做修改或补充,则须由甲"
+          ],
+          "score": 43.69,
+          "match_method": "section_mismatch_blocked",
+          "match_confidence": "LOW",
+          "score_details": {
+            "clause_key_score": 34.48,
+            "canonical_path_score": 51.38,
+            "clause_no_score": 70.0,
+            "section_score": 13.33,
+            "section_mismatch_candidate": 0.0,
+            "section_mismatch_score": 0.0,
+            "title_score": 19.72,
+            "position_score": 92.99,
+            "neighbor_score": 55.0,
+            "business_token_score": 0.0,
+            "business_token_mismatch": 0.0,
+            "weak_numeric_marker": 0.0,
+            "short_clause_pair": 0.0,
+            "semantic_score": 62.72,
+            "semantic_rerank_available": 0.0,
+            "semantic_rerank_score": 0.0,
+            "semantic_rerank_reason": "",
+            "semantic_rerank_reason_present": 0.0,
+            "rerank_available": 0.0,
+            "rerank_score": 0.0,
+            "rerank_reason_present": 0.0,
+            "assignment_strategy_optimal": 0.0,
+            "body_ratio_score": 13.94,
+            "body_token_score": 13.94,
+            "body_token_capped_score": 13.94,
+            "body_partial_score": 23.68,
+            "body_length_coverage": 0.19,
+            "body_score": 23.68,
+            "alignment": {
+              "number_match": false,
+              "title_match": false,
+              "body_similarity": 0.1284,
+              "critical_token_overlap": 0.0,
+              "section_type_match": true,
+              "page_distance": 0,
+              "risk_flags": []
+            },
+            "matcher_risk_flags": [],
+            "matcher_guard_applied": 0.0,
+            "candidate_source_index_window": 1.0,
+            "candidate_source_position": 1.0
+          }
+        }
+      ],
+      "match_confidence": "LOW",
+      "structural_flags": [
+        "PARAGRAPH_MERGED",
+        "READING_ORDER_REPAIRED"
+      ],
+      "review_flags": [
+        "LOW_CONFIDENCE_MATCH",
+        "READING_ORDER_REPAIRED",
+        "READING_ORDER_RISK",
+        "SPATIAL_LINE_PAIRING_REPAIRED",
+        "OCR_REMEDIATION_PLANNED",
+        "CRITICAL_VALUE_CHANGE"
+      ],
+      "quality_status": "NEEDS_REVIEW",
+      "text_confidence": null,
+      "merged_sources": [],
+      "review_status": "UNREVIEWED",
+      "review_comment": "",
+      "reviewed_by": "",
+      "reviewed_at": "",
+      "original_evidence": [
+        {
+          "page_no": 10,
+          "bbox": {
+            "x0": 157.1469321096374,
+            "y0": 621.6260869331994,
+            "x1": 172.24239782786591,
+            "y1": 633.7248402067714,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "大",
+          "highlight_type": "MODIFY",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        },
+        {
+          "page_no": 10,
+          "bbox": {
+            "x0": 109.16305400038047,
+            "y0": 668.1205657161613,
+            "x1": 210.72946672799907,
+            "y1": 680.2193189897332,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "代表或授权委托人:",
+          "highlight_type": "DELETE",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        },
+        {
+          "page_no": 10,
+          "bbox": {
+            "x0": 387.0696813831602,
+            "y0": 668.1205657161613,
+            "x1": 451.6485214015599,
+            "y1": 680.2193189897332,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "授权委托人:",
+          "highlight_type": "DELETE",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        },
+        {
+          "page_no": 10,
+          "bbox": {
+            "x0": 180.13920703698966,
+            "y0": 689.1180722633055,
+            "x1": 210.229634664361,
+            "y1": 707.7160537538505,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "(签字)",
+          "highlight_type": "DELETE",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        },
+        {
+          "page_no": 10,
+          "bbox": {
+            "x0": 109.66288606401856,
+            "y0": 711.615400706674,
+            "x1": 114.26187844584712,
+            "y1": 730.713322829294,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": ":",
+          "highlight_type": "DELETE",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        },
+        {
+          "page_no": 10,
+          "bbox": {
+            "x0": 396.5664905922839,
+            "y0": 689.1180722633055,
+            "x1": 426.65691821965527,
+            "y1": 707.7160537538505,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "(签字)",
+          "highlight_type": "DELETE",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        }
+      ],
+      "compare_evidence": [
+        {
+          "page_no": 11,
+          "bbox": {
+            "x0": 168.7,
+            "y0": 59.2,
+            "x1": 183.8,
+            "y1": 81.3,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "达",
+          "highlight_type": "MODIFY",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        },
+        {
+          "page_no": 11,
+          "bbox": {
+            "x0": 371.7,
+            "y0": 150.2,
+            "x1": 404.3,
+            "y1": 178.3,
+            "normalized": null
+          },
+          "method": "char_exact",
+          "text": "2026.",
+          "highlight_type": "ADD",
+          "confidence": 0.98,
+          "evidence_quality": "HIGH",
+          "text_confidence": null
+        }
+      ],
+      "original_change_ranges": [
+        {
+          "start": 105,
+          "end": 106,
+          "highlight_type": "MODIFY"
+        },
+        {
+          "start": 144,
+          "end": 153,
+          "highlight_type": "DELETE"
+        },
+        {
+          "start": 159,
+          "end": 165,
+          "highlight_type": "DELETE"
+        },
+        {
+          "start": 166,
+          "end": 170,
+          "highlight_type": "DELETE"
+        },
+        {
+          "start": 173,
+          "end": 174,
+          "highlight_type": "DELETE"
+        },
+        {
+          "start": 175,
+          "end": 179,
+          "highlight_type": "DELETE"
+        }
+      ],
+      "compare_change_ranges": [
+        {
+          "start": 105,
+          "end": 106,
+          "highlight_type": "MODIFY"
+        },
+        {
+          "start": 158,
+          "end": 163,
+          "highlight_type": "ADD"
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "metrics": {
+    "task_id": "da0e1282-e239-42dd-92dd-447b8f7ec136",
+    "started_at": "2026-06-30T11:43:01.304349+00:00",
+    "finished_at": "2026-06-30T11:44:02.547615+00:00",
+    "total_duration_seconds": 61.24277633312158,
+    "stages": [
+      {
+        "name": "文档解析中",
+        "duration_seconds": 55.82903424999677,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "文档语义清洗中",
+        "duration_seconds": 0.01780237490311265,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "文档准备中",
+        "duration_seconds": 0.004360417136922479,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "差异识别中",
+        "duration_seconds": 1.9032754579093307,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "差异识别中",
+        "duration_seconds": 0.07615716708824039,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "条款匹配中",
+        "duration_seconds": 3.2739602921064943,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "差异计算中",
+        "duration_seconds": 0.008219582960009575,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "证据定位中",
+        "duration_seconds": 0.03175766719505191,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "OCR质量评估中",
+        "duration_seconds": 0.002191040897741914,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "OCR风险处置规划中",
+        "duration_seconds": 0.018974333070218563,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "OCR模型路由评估中",
+        "duration_seconds": 0.001815167022868991,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "差异质量评估中",
+        "duration_seconds": 0.003001958131790161,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "高亮信息准备中",
+        "duration_seconds": 5.749985575675964e-06,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      },
+      {
+        "name": "汇总统计中",
+        "duration_seconds": 0.0019930419512093067,
+        "memory_mb_start": 355.21875,
+        "memory_mb_end": 355.21875,
+        "error": null
+      }
+    ],
+    "peak_memory_mb": 355.21875
+  }
+}

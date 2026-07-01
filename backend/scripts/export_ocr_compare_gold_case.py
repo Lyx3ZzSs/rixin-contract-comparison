@@ -67,8 +67,12 @@ def _has_protected_expected(path: Path) -> bool:
 
 def _build_expected_payload(case_id: str, task: dict[str, Any]) -> dict[str, Any]:
     return {
+        "schema_version": "1.1",
         "case_id": case_id,
+        "dataset_split": "dev",
         "tags": ["exported", "requires_human_review"],
+        "case_tags": ["exported", "requires_human_review"],
+        "baseline_required": False,
         "source_task_id": task["task_id"],
         "source_files": {
             "original_filename": task.get("original_filename", ""),
@@ -81,6 +85,7 @@ def _build_expected_payload(case_id: str, task: dict[str, Any]) -> dict[str, Any
             "min_recall": 1.0,
             "max_false_positive_count": 0,
             "min_evidence_hit_rate": 1.0,
+            "max_known_false_positive_regression_count": 0,
         },
     }
 
@@ -92,6 +97,11 @@ def _draft_expected_diff(diff: dict[str, Any]) -> dict[str, Any]:
         "title_contains": _snippet(diff.get("title", "")),
         "source_actual_diff_id": diff.get("diff_id", ""),
         "review_status": "DRAFT",
+        "reviewer": "",
+        "reviewed_at": "",
+        "false_positive_reason": "",
+        "false_negative_reason": "",
+        "should_not_match_again": False,
         "severity": _severity(diff),
         "notes": (
             "Generated draft, not reviewed gold. Change review_status to APPROVED "
@@ -104,7 +114,17 @@ def _draft_expected_diff(diff: dict[str, Any]) -> dict[str, Any]:
         payload["original_contains"] = original
     if compare:
         payload["compare_contains"] = compare
-    return {key: value for key, value in payload.items() if value not in ("", [], None)}
+    keep_empty_string_fields = {
+        "reviewer",
+        "reviewed_at",
+        "false_positive_reason",
+        "false_negative_reason",
+    }
+    return {
+        key: value
+        for key, value in payload.items()
+        if value not in ("", [], None) or key in keep_empty_string_fields
+    }
 
 
 def _snippet(value: Any, *, limit: int = 80) -> str:

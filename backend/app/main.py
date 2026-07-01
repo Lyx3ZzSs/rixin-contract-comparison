@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as compare_router
+from app.api_quality import router as quality_router
 from app.clients import close_clients
 from app.config import settings
 from app.infrastructure.task_repository import default_task_repository
@@ -57,6 +58,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(compare_router)
+app.include_router(quality_router)
 
 
 @app.get("/health")

@@ -166,6 +166,10 @@ class CompareRecordResponse(BaseModel):
 
 class CompareRecordListResponse(BaseModel):
     records: list[CompareRecordResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
 
 
 class TaskExecutionResponse(BaseModel):

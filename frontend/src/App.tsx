@@ -2,11 +2,13 @@ import { useMemo } from "react";
 
 import { LoginPage } from "./pages/LoginPage";
 import { ComparisonRecordsPage } from "./pages/ComparisonRecordsPage";
+import { QualityWorkbenchPage } from "./pages/QualityWorkbenchPage";
 import { ResultPage } from "./pages/ResultPage";
 import { UploadPage } from "./pages/UploadPage";
 import {
   navigateHome,
   navigateToComparisonRecords,
+  navigateToQualityWorkbench,
   navigateToTask,
 } from "./lib/routes";
 import { useApp } from "./lib/state";
@@ -47,6 +49,9 @@ export function App() {
     if (route.name === "records") {
       return <ComparisonRecordsPage onOpenTask={navigateToTask} onCreateComparison={navigateHome} />;
     }
+    if (route.name === "quality") {
+      return <QualityWorkbenchPage />;
+    }
     return <UploadPage onTaskCreated={handleTaskCreated} onOpenRecords={navigateToComparisonRecords} />;
   }, [route]);
 
@@ -61,7 +66,11 @@ export function App() {
         <nav className="oa-nav">
           <div className={isComparisonMenuOpen ? "oa-nav-group open" : "oa-nav-group"}>
             <button
-              className={route.name === "task" || route.name === "home" || route.name === "records" ? "active" : ""}
+              className={
+                route.name === "task" || route.name === "home" || route.name === "records" || route.name === "quality"
+                  ? "active"
+                  : ""
+              }
               type="button"
               onClick={handleComparisonMenuClick}
               aria-expanded={isSidebarExpanded ? isComparisonMenuOpen : undefined}
@@ -86,6 +95,15 @@ export function App() {
                 >
                   <span className="oa-history-icon" aria-hidden="true" />
                   <span>对比记录</span>
+                </button>
+                <button
+                  className={route.name === "quality" ? "active" : ""}
+                  type="button"
+                  onClick={navigateToQualityWorkbench}
+                  aria-current={route.name === "quality" ? "page" : undefined}
+                >
+                  <span className="oa-history-icon" aria-hidden="true" />
+                  <span>质量工作台</span>
                 </button>
               </div>
             )}

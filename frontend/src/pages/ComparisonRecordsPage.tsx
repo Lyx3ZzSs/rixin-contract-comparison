@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { ChevronLeft, ChevronRight, RotateCcw, Search } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 
 import { ProgressRing } from "../components/ProgressRing";
 import { getCompareRecords, toApiUrl } from "../lib/api";
 import { useRecordProgressSSE } from "../lib/hooks";
-import type { CompareRecordSummary, TaskStatus } from "../types";
+import type { CompareRecordListResponse, CompareRecordQuery, CompareRecordSummary, TaskStatus } from "../types";
 
 interface ComparisonRecordsPageProps {
   onOpenTask: (taskId: string) => void;
@@ -16,20 +17,61 @@ const statusLabels: Record<TaskStatus, string> = {
   FAILED: "失败",
 };
 
+const PAGE_SIZE = 10;
+
+interface RecordQueryState {
+  page: number;
+  startDate: string;
+  endDate: string;
+}
+
+const emptyPagination = {
+  total: 0,
+  page: 1,
+  page_size: PAGE_SIZE,
+  total_pages: 0,
+};
+
 export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: ComparisonRecordsPageProps) {
   const [records, setRecords] = useState<CompareRecordSummary[]>([]);
+  const [pagination, setPagination] = useState(emptyPagination);
+  const [query, setQuery] = useState<RecordQueryState>({ page: 1, startDate: "", endDate: "" });
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // 初始加载
+  const buildApiQuery = useCallback((state: RecordQueryState): CompareRecordQuery => ({
+    page: state.page,
+    pageSize: PAGE_SIZE,
+    startDate: state.startDate,
+    endDate: state.endDate,
+  }), []);
+
+  const applyPayload = useCallback((payload: CompareRecordListResponse) => {
+    setRecords(payload.records);
+    setPagination({
+      total: payload.total,
+      page: payload.page,
+      page_size: payload.page_size,
+      total_pages: payload.total_pages,
+    });
+  }, []);
+
   useEffect(() => {
     let isCurrent = true;
-    void getCompareRecords()
+    setIsLoading(true);
+    setError("");
+    void getCompareRecords(buildApiQuery(query))
       .then((payload) => {
-        if (isCurrent) setRecords(payload);
+        if (isCurrent) applyPayload(payload);
       })
       .catch((err) => {
-        if (isCurrent) setError(err instanceof Error ? err.message : "对比记录加载失败。");
+        if (isCurrent) {
+          setRecords([]);
+          setPagination(emptyPagination);
+          setError(err instanceof Error ? err.message : "对比记录加载失败。");
+        }
       })
       .finally(() => {
         if (isCurrent) setIsLoading(false);
@@ -37,7 +79,11 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
     return () => {
       isCurrent = false;
     };
-  }, []);
+  }, [applyPayload, buildApiQuery, query]);
+
+  const refreshCurrentPage = useCallback(() => {
+    void getCompareRecords(buildApiQuery(query)).then(applyPayload);
+  }, [applyPayload, buildApiQuery, query]);
 
   // SSE 实时更新 PROCESSING 记录进度
   useRecordProgressSSE(
@@ -49,9 +95,30 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
     },
     () => {
       // 记录完成时刷新完整列表（获取 diff_count、report_url 等最终字段）
-      void getCompareRecords().then((payload) => setRecords(payload));
+      refreshCurrentPage();
     },
   );
+
+  const applyFilters = () => {
+    setQuery({ page: 1, startDate, endDate });
+  };
+
+  const resetFilters = () => {
+    setStartDate("");
+    setEndDate("");
+    setQuery({ page: 1, startDate: "", endDate: "" });
+  };
+
+  const goToPreviousPage = () => {
+    setQuery((current) => ({ ...current, page: Math.max(1, current.page - 1) }));
+  };
+
+  const goToNextPage = () => {
+    setQuery((current) => ({ ...current, page: current.page + 1 }));
+  };
+
+  const hasPreviousPage = query.page > 1;
+  const hasNextPage = pagination.total_pages > 0 && query.page < pagination.total_pages;
 
   return (
     <section className="records-workspace" aria-labelledby="records-title">
@@ -66,6 +133,25 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
       </header>
 
       <div className="records-panel">
+        <div className="records-toolbar" aria-label="对比记录筛选">
+          <label>
+            <span>创建开始日期</span>
+            <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+          </label>
+          <label>
+            <span>创建结束日期</span>
+            <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+          </label>
+          <button type="button" className="records-filter-primary" onClick={applyFilters}>
+            <Search size={15} aria-hidden="true" />
+            查询
+          </button>
+          <button type="button" className="records-filter-secondary" onClick={resetFilters}>
+            <RotateCcw size={15} aria-hidden="true" />
+            重置
+          </button>
+        </div>
+
         {isLoading ? (
           <div className="records-state" role="status">
             正在加载对比记录...
@@ -92,7 +178,7 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
                   </div>
                   <div className="record-meta">
                     <span>{record.task_id}</span>
-                    <span>{formatDateTime(record.updated_at || record.created_at)}</span>
+                    <span>{formatDateTime(record.created_at || record.updated_at)}</span>
                     <span className={`record-status ${record.status.toLowerCase()}`}>{statusLabels[record.status]}</span>
                   </div>
                 </div>
@@ -118,6 +204,25 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
                 </div>
               </article>
             ))}
+          </div>
+        )}
+
+        {!isLoading && !error && (
+          <div className="records-pagination" aria-label="对比记录分页">
+            <span>
+              共 {pagination.total} 条
+              {pagination.total_pages > 0 ? `，第 ${pagination.page} / ${pagination.total_pages} 页` : ""}
+            </span>
+            <div>
+              <button type="button" onClick={goToPreviousPage} disabled={!hasPreviousPage}>
+                <ChevronLeft size={15} aria-hidden="true" />
+                上一页
+              </button>
+              <button type="button" onClick={goToNextPage} disabled={!hasNextPage}>
+                下一页
+                <ChevronRight size={15} aria-hidden="true" />
+              </button>
+            </div>
           </div>
         )}
       </div>

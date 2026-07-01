@@ -17,6 +17,7 @@ QualitySnapshot = dict[str, int | float | list[str] | list[int]]
 HIGH_CONFIDENCE_THRESHOLD = 0.85
 RELOCATED_CONFIDENCE = 0.98
 MAX_RELOCATED_EVIDENCE = 3
+LOW_INFORMATION_SYMBOL_PATTERN = re.compile(r"^[/\\∠_.,，。·•\-—~～…\s|]+$")
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,13 @@ class EvidenceRelocator:
             return EvidenceRelocationResult(
                 status="FAILED",
                 reason="NO_SIDE_TEXT_SIGNAL",
+                before_quality=before_quality,
+                after_quality=dict(before_quality),
+            )
+        if self._is_low_information_query(query) and not self._has_existing_page_anchor(current_evidence, page_no):
+            return EvidenceRelocationResult(
+                status="FAILED",
+                reason="LOW_INFORMATION_QUERY_WITHOUT_PAGE_ANCHOR",
                 before_quality=before_quality,
                 after_quality=dict(before_quality),
             )
@@ -159,6 +167,17 @@ class EvidenceRelocator:
     @staticmethod
     def _normalize_query(text: str) -> str:
         return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _is_low_information_query(query: str) -> bool:
+        compact = re.sub(r"\s+", "", query or "")
+        return 0 < len(compact) <= 2 and bool(LOW_INFORMATION_SYMBOL_PATTERN.fullmatch(compact))
+
+    @staticmethod
+    def _has_existing_page_anchor(evidences: list[EvidenceBox], page_no: int | None) -> bool:
+        if page_no is None:
+            return False
+        return any(evidence.page_no == page_no for evidence in evidences)
 
     @staticmethod
     def _quality_snapshot(evidences: list[EvidenceBox]) -> QualitySnapshot:

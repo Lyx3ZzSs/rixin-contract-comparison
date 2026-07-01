@@ -4,7 +4,7 @@ import fitz
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-from app.models import AuditItemReview, BBox, CompareTask, DiffItem, EvidenceBox
+from app.models import AuditItemReview, BBox, CompareTask, DiffItem, EvidenceBox, TextRange
 from app.services.report_generator import ReportGenerator, _SOURCE_TYPE_LABELS, _SOURCE_TYPE_ORDER
 
 
@@ -143,3 +143,47 @@ def test_report_generator_produces_grouped_tables_with_diff_content(tmp_path) ->
     assert "忽略新增说明" in report_text
     assert "新增说明" in report_text
     assert "旧说明" in report_text
+
+
+def test_report_generator_handles_truncated_highlighted_text(tmp_path) -> None:
+    original_pdf = tmp_path / "original.pdf"
+    compare_pdf = tmp_path / "compare.pdf"
+    _make_pdf(original_pdf)
+    _make_pdf(compare_pdf)
+    compare_text = (
+        "乙方 单位名称: 国能日新科技股份有限公司 (章) 法定代表人或授权代表签字: "
+        "内 1幢二层 227 号 电话:010-83458100 开户银行: 招商银行北京大屯路支行 "
+        "税号:911101086723891430 帐号:110904199110901 联系人及电话: 李伟18991278230 "
+        "签字日期: 年 月 日 发电计划, 并上传预测数据至省调及西安集控中心。"
+    )
+    task = CompareTask(
+        task_id="TREPORT_TRUNCATED",
+        status="COMPLETED",
+        original_filename="original.pdf",
+        compare_filename="compare.pdf",
+        original_pdf_path=str(original_pdf),
+        compare_pdf_path=str(compare_pdf),
+        diffs=[
+            DiffItem(
+                diff_id="D020",
+                diff_type="ADD",
+                title="乙方",
+                compare_text=compare_text,
+                compare_evidence=[
+                    EvidenceBox(
+                        page_no=1,
+                        bbox=BBox(x0=1, y0=2, x1=3, y1=4),
+                        text=compare_text,
+                        highlight_type="ADD",
+                    ),
+                ],
+                compare_change_ranges=[TextRange(start=0, end=176)],
+            ),
+        ],
+    )
+
+    output_path = tmp_path / "report.pdf"
+
+    ReportGenerator().generate(task, output_path)
+
+    assert output_path.exists()

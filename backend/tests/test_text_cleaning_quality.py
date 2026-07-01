@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import re
 
-from app.models import BBox, Clause, ClausePair, DiffItem, Document, EvidenceBox, Page, TextBlock
+from app.models import BBox, Clause, ClausePair, DiffItem, Document, EvidenceBox, Page, TextBlock, TextRange
 from app.services.clause_splitter import ClauseSplitter
 from app.services.diff_engine import DiffEngine
+from app.services.diff.boundary_coverage import contact_field_coverage_sequences
 from app.services.diff_quality import DiffQualityProcessor
 from app.services.document_preparation import DocumentPreparer
 from app.services.normalizer import TextNormalizer
@@ -1311,6 +1312,20 @@ def _quality_document(page_no: int, text: str) -> Document:
     )
 
 
+def test_contact_field_coverage_sequences_pairs_columnar_contacts_after_prior_field() -> None:
+    sequences = contact_field_coverage_sequences(
+        "传真:010-83458100\n"
+        "联系人:环加飞\n"
+        "联系人:刘玉良\n"
+        "电话:010-83582793\n"
+        "电话:18811089109\n"
+        "传真:010-83582600\n"
+        "传真:010-83458100"
+    )
+
+    assert "联系人环加飞电话01083582793传真01083582600" in sequences
+
+
 def test_diff_quality_flags_critical_changes_and_minor_ocr_noise() -> None:
     diffs = [
         DiffItem(
@@ -1366,6 +1381,64 @@ def test_diff_quality_suppresses_short_symbol_noise_without_business_tokens() ->
     assert any(decision.action == "suppressed_low_value_noise" and decision.diff_id == "D001" for decision in result.decisions)
 
 
+def test_diff_quality_suppresses_short_symbol_noise_even_when_clause_context_has_numbers() -> None:
+    diff = DiffItem(
+        diff_id="D005",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="10.2 有下列情形之一的。\n(1) 因对方违约使合同不能继续履行或没有必要继续履行;\n(2) 1。",
+        compare_text="10.2 有下列情形之一的。\n(1) 因对方违约使合同不能继续履行或没有必要继续履行;\n(2) ∠。",
+        original_snippet="1",
+        compare_snippet="∠",
+        match_score=100,
+        match_score_details={
+            "body_score": 98.0,
+            "business_token_mismatch": 0.0,
+        },
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D005"
+        and decision.detail["reason"] in {"clause_ocr_noise", "short_symbol_noise", "layout_punctuation_equivalent"}
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_evidence_unreliable_short_symbol_noise() -> None:
+    diff = DiffItem(
+        diff_id="D007",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="13.2 可行性论证报告:/;",
+        compare_text="13.2 可行性论证报告:;",
+        original_snippet="/",
+        compare_snippet="",
+        match_score=100,
+        review_flags=[
+            "EVIDENCE_UNRELIABLE",
+            "SHORT_CLAUSE_MATCH_REVIEW",
+            "OCR_REMEDIATION_PLANNED",
+            "OCR_REMEDIATION_UNRESOLVED",
+            "POSSIBLE_OCR_NOISE",
+        ],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D007"
+        and decision.detail["reason"] == "clause_ocr_noise"
+        for decision in result.decisions
+    )
+
+
 def test_diff_quality_suppresses_reading_order_contact_fields_covered_by_neighbor_clause() -> None:
     original_previous = _quality_clause(
         "OC146",
@@ -1414,6 +1487,117 @@ def test_diff_quality_suppresses_reading_order_contact_fields_covered_by_neighbo
         decision.action == "suppressed_by_neighbor_clause_coverage"
         and decision.diff_id == "D015"
         and decision.detail["reason"] == "changed_fragments_covered_by_neighbor_clauses"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_trims_covered_contact_fields_from_mixed_signing_page_diff() -> None:
+    original_clause = _quality_clause(
+        "OC146",
+        "15.特别约定\n"
+        "本特别约定是合同各方经协商后对合同其他条款的修改或补充。\n"
+        "1。\n"
+        "(以下无正文)\n"
+        "签署页\n"
+        "甲方:国家电网有限公司华北分部乙方:国能日新科技股份有限公\n"
+        "(盖章)\n"
+        "法定代表人(负责人)或\n"
+        "授权代表(签字):\n"
+        "签订日期:\n"
+        "地址:北京市西城区广安门内大街地址:北京市海淀区建材城中路\n"
+        "482号\n"
+        "联系人:环加飞\n"
+        "电话:010-83582793\n"
+        "传真:010-83582600",
+        order_index=146,
+        page_no=25,
+        split_flags=["PARAGRAPH_MERGED"],
+    )
+    compare_clause = _quality_clause(
+        "NC146",
+        "15. 特别约定\n"
+        "本特别约定是合同各方经协商后对合同其他条款的修改或补充。\n"
+        "∠。\n"
+        "(以下无正文)\n"
+        "地址:北京市西城区广安门内大街地址:北京市海淀区建材城中路\n"
+        "482号",
+        side_prefix="N",
+        order_index=146,
+        page_no=23,
+        split_flags=["PARAGRAPH_MERGED"],
+    )
+    compare_neighbor = _quality_clause(
+        "NC147",
+        "27号金隅智造工场N6\n"
+        "联系人:环加飞\n"
+        "联系人:刘玉良\n"
+        "电话:010-83582793\n"
+        "电话:18811089109\n"
+        "传真:010-83582600\n"
+        "传真:010-83458100",
+        side_prefix="N",
+        order_index=147,
+        page_no=24,
+        split_flags=["READING_ORDER_REPAIRED"],
+    )
+    original_text = original_clause.text
+    compare_text = compare_clause.text
+    original_ranges = [
+        TextRange(start=original_text.index("1。"), end=original_text.index("1。") + len("1。"), highlight_type="DELETE"),
+        TextRange(start=original_text.index("签署页"), end=original_text.index("签署页") + len("签署页"), highlight_type="DELETE"),
+        TextRange(start=original_text.index("甲方:"), end=original_text.index("签订日期:") + len("签订日期:"), highlight_type="DELETE"),
+        TextRange(start=original_text.index("联系人:"), end=original_text.index("联系人:") + len("联系人:环加飞"), highlight_type="DELETE"),
+        TextRange(start=original_text.index("电话:"), end=original_text.index("电话:") + len("电话:010-83582793"), highlight_type="DELETE"),
+        TextRange(start=original_text.index("传真:"), end=original_text.index("传真:") + len("传真:010-83582600"), highlight_type="DELETE"),
+    ]
+    diff = DiffItem(
+        diff_id="D014",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id="OC146",
+        compare_clause_id="NC146",
+        original_text=original_text,
+        compare_text=compare_text,
+        original_snippet="1。签署页甲方:国家电网有限公司华北分部乙方:国能日新科技股份有限公"
+        "(盖章)法定代表人(负责人)或授权代表(签字):签订日期:"
+        "联系人:环加飞电话:010-83582793传真:010-83582600",
+        compare_snippet="∠。",
+        original_change_ranges=original_ranges,
+        compare_change_ranges=[
+            TextRange(start=compare_text.index("∠。"), end=compare_text.index("∠。") + len("∠。"), highlight_type="ADD")
+        ],
+        original_evidence=[
+            EvidenceBox(page_no=25, bbox=BBox(x0=10, y0=10, x1=80, y1=30), text="签署页", highlight_type="DELETE"),
+            EvidenceBox(page_no=25, bbox=BBox(x0=10, y0=40, x1=80, y1=60), text="联系人:", highlight_type="DELETE"),
+            EvidenceBox(page_no=25, bbox=BBox(x0=85, y0=40, x1=140, y1=60), text="环加飞", highlight_type="DELETE"),
+            EvidenceBox(page_no=25, bbox=BBox(x0=10, y0=70, x1=80, y1=90), text="电话:", highlight_type="DELETE"),
+            EvidenceBox(page_no=25, bbox=BBox(x0=85, y0=70, x1=180, y1=90), text="010-83582793", highlight_type="DELETE"),
+            EvidenceBox(page_no=25, bbox=BBox(x0=10, y0=100, x1=80, y1=120), text="传真:", highlight_type="DELETE"),
+            EvidenceBox(page_no=25, bbox=BBox(x0=85, y0=100, x1=180, y1=120), text="010-83582600", highlight_type="DELETE"),
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        review_flags=["READING_ORDER_RISK", "LOW_CONFIDENCE_MATCH", "CRITICAL_VALUE_CHANGE"],
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause, compare_neighbor],
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D014"]
+    trimmed = result.diffs[0]
+    assert "签署页" in trimmed.original_snippet
+    assert "联系人" not in trimmed.original_snippet
+    assert "010-83582793" not in trimmed.original_snippet
+    assert "010-83582600" not in trimmed.original_snippet
+    assert {evidence.text for evidence in trimmed.original_evidence} == {"签署页"}
+    assert all("联系人" not in trimmed.original_text[item.start : item.end] for item in trimmed.original_change_ranges)
+    assert all("010-83582793" not in trimmed.original_text[item.start : item.end] for item in trimmed.original_change_ranges)
+    assert any(
+        decision.action == "trimmed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D014"
+        and decision.detail["removed_original_fields"] == ["联系人:环加飞", "电话:010-83582793", "传真:010-83582600"]
         for decision in result.decisions
     )
 
@@ -1851,6 +2035,43 @@ def test_diff_quality_preserves_ocr_marked_low_value_diff() -> None:
     assert [item.diff_id for item in result.diffs] == ["D001"]
     assert "EVIDENCE_UNRELIABLE" in result.diffs[0].review_flags
     assert result.diffs[0].quality_status == "NEEDS_REVIEW"
+
+
+def test_diff_quality_suppresses_single_latin_glyph_layout_artifact() -> None:
+    diff = DiffItem(
+        diff_id="D013",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="14. 份数\n本合同一式捌份，甲乙双方各执肆份。",
+        compare_text="14. 份数\nI\n本合同一式捌份，甲乙双方各执肆份。",
+        original_snippet="",
+        compare_snippet="I",
+        match_score=100,
+        structural_flags=["PARAGRAPH_MERGED", "CROSS_PAGE_CONTINUATION_MERGED"],
+        review_flags=["LAYOUT_MISMATCH_RISK", "OCR_REMEDIATION_PLANNED"],
+        quality_status="NEEDS_REVIEW",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=23,
+                bbox=BBox(x0=188, y0=162, x1=191, y1=171),
+                method="char_exact",
+                text="I",
+                highlight_type="MODIFY",
+                confidence=0.98,
+                evidence_quality="HIGH",
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D013"
+        and decision.detail["reason"] == "single_latin_layout_glyph_noise"
+        for decision in result.decisions
+    )
 
 
 def test_diff_quality_suppresses_layout_reflow_punctuation_equivalent_clause_change() -> None:

@@ -14,6 +14,9 @@ def _block(
     x1: float = 500,
     block_type: str = "text",
     page_no: int = 1,
+    source: str = "",
+    layout_match_status: str = "not_applicable",
+    layout_match_score: float | None = None,
 ) -> TextBlock:
     return TextBlock(
         block_id=block_id,
@@ -21,6 +24,9 @@ def _block(
         text=text,
         bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1),
         block_type=block_type,
+        source=source,
+        layout_match_status=layout_match_status,
+        layout_match_score=layout_match_score,
     )
 
 
@@ -193,6 +199,91 @@ def test_header_footer_fuzzy_does_not_pair_short_noise_entries() -> None:
     assert fuzzy_diffs[0].original_text == "南京国电南自电动化有限公司"
     assert fuzzy_diffs[0].compare_text == "南京国电南自电网自动化有限公司"
     assert all(diff.diff_type != "MODIFY" for diff in diffs if diff.original_text == "R" or diff.compare_text == "司")
+
+
+def test_header_footer_ignores_repeated_short_cjk_edge_noise() -> None:
+    original = _document(
+        [
+            [_block("o1", "回回", x0=28, y0=12, x1=84, y1=35, block_type="header", page_no=1)],
+            [_block("o2", "回回", x0=28, y0=12, x1=84, y1=35, block_type="header", page_no=2)],
+            [_block("o3", "回回", x0=28, y0=12, x1=84, y1=35, block_type="header", page_no=3)],
+        ]
+    )
+    compare = _document([[], [], []])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_ignores_one_page_short_cjk_edge_noise() -> None:
+    original = _document([[_block("o1", "理", x0=26, y0=24, x1=87, y1=102, block_type="header")]])
+    compare = _document([[]])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_ignores_noise_unmatched_header_fragment() -> None:
+    original = _document([[]])
+    compare = _document(
+        [
+            [
+                _block(
+                    "c1",
+                    "e1",
+                    x0=544,
+                    y0=11,
+                    x1=559,
+                    y1=21,
+                    block_type="header",
+                    source="ppocrv5_noise_unmatched",
+                    layout_match_status="noise_unmatched",
+                    layout_match_score=0.0,
+                )
+            ]
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_ignores_one_page_label_fragment_header() -> None:
+    original = _document([[]])
+    compare = _document([[_block("c1", "合同编号", x0=362, y0=53.5, x1=421, y1=61.5, block_type="header")]])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_ignores_top_unmatched_single_digit_as_page_number() -> None:
+    original = _document([[]])
+    compare = _document(
+        [
+            [
+                _block(
+                    "c1",
+                    "3",
+                    x0=563,
+                    y0=42,
+                    x1=570,
+                    y1=48,
+                    block_type="header",
+                    source="ppocrv5_unmatched",
+                    layout_match_status="meaningful_unmatched",
+                    layout_match_score=0.0,
+                )
+            ]
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
 
 
 def test_header_footer_fuzzy_requires_close_position_for_supplemental_match() -> None:

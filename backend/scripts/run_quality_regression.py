@@ -14,7 +14,11 @@ if __package__ in {None, ""}:
     if str(backend_root) not in sys.path:
         sys.path.insert(0, str(backend_root))
 
-from scripts.evaluate_ocr_compare_quality import evaluate_case_root, write_html_report
+from scripts.evaluate_ocr_compare_quality import (
+    DATASET_SPLIT_CHOICES,
+    evaluate_case_root,
+    write_html_report,
+)
 
 DEFAULT_REGRESSION_THRESHOLDS: dict[str, float | int] = {
     "min_precision": 0.9,
@@ -22,12 +26,14 @@ DEFAULT_REGRESSION_THRESHOLDS: dict[str, float | int] = {
     "min_evidence_hit_rate": 0.9,
     "max_false_positive_count": 0,
     "max_false_negative_count": 0,
+    "max_known_false_positive_regression_count": 0,
     "max_task_failure_count": 0,
     "max_precision_drop": 0.02,
     "max_recall_drop": 0.02,
     "max_evidence_hit_rate_drop": 0.02,
     "max_false_positive_increase": 1,
     "max_false_negative_increase": 0,
+    "max_known_false_positive_regression_increase": 0,
     "max_task_failure_increase": 0,
 }
 
@@ -35,6 +41,7 @@ RATE_METRICS = ("precision", "recall", "evidence_hit_rate")
 COUNT_METRICS = (
     "false_positive_count",
     "false_negative_count",
+    "known_false_positive_regression_count",
     "task_failure_count",
 )
 
@@ -115,6 +122,12 @@ def apply_gates(
         aggregate.get("false_negative_count"),
         thresholds,
     )
+    _check_max_gate(
+        failures,
+        "max_known_false_positive_regression_count",
+        aggregate.get("known_false_positive_regression_count"),
+        thresholds,
+    )
 
     if comparison.get("baseline_available") is True:
         aggregate_delta = comparison.get("aggregate_delta", {})
@@ -146,6 +159,12 @@ def apply_gates(
             failures,
             "max_false_negative_increase",
             aggregate_delta.get("false_negative_count"),
+            thresholds,
+        )
+        _check_increase_gate(
+            failures,
+            "max_known_false_positive_regression_increase",
+            aggregate_delta.get("known_false_positive_regression_count"),
             thresholds,
         )
         _check_increase_gate(
@@ -306,13 +325,14 @@ def run_regression(
     run_id: str | None,
     html_output: Path | None,
     write_baseline: Path | None,
+    dataset_splits: set[str] | None = None,
 ) -> dict[str, Any]:
     if not case_root.exists():
         raise FileNotFoundError(f"case root does not exist: {case_root}")
     if baseline_path is not None and not baseline_path.exists():
         raise FileNotFoundError(f"baseline report does not exist: {baseline_path}")
     thresholds = load_thresholds(thresholds_path)
-    current_report = evaluate_case_root(case_root)
+    current_report = evaluate_case_root(case_root, dataset_splits=dataset_splits)
     baseline_report = _read_json(baseline_path) if baseline_path else None
     comparison = compare_reports(current_report, baseline_report)
     failed_gates = apply_gates(current_report, comparison, thresholds)
@@ -391,6 +411,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--html-output", type=Path, default=None)
     parser.add_argument("--write-baseline", type=Path, default=None)
     parser.add_argument("--fail-on-regression", action="store_true")
+    parser.add_argument(
+        "--dataset-split",
+        action="append",
+        dest="dataset_splits",
+        choices=DATASET_SPLIT_CHOICES,
+    )
     args = parser.parse_args(argv)
 
     summary = run_regression(
@@ -401,6 +427,7 @@ def main(argv: list[str] | None = None) -> int:
         run_id=args.run_id,
         html_output=args.html_output,
         write_baseline=args.write_baseline,
+        dataset_splits=set(args.dataset_splits) if args.dataset_splits else None,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     if args.fail_on_regression and summary["failed_gates"]:

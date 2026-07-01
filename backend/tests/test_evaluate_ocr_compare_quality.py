@@ -17,15 +17,83 @@ from scripts.evaluate_ocr_compare_quality import (
 )
 
 
-def test_discover_cases_ignores_incomplete_directories() -> None:
-    cases = discover_cases(Path("tests/fixtures/ocr_compare_cases"))
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _make_smoke_case(case_root: Path, case_id: str = "simple_scanned") -> Path:
+    case_dir = case_root / case_id
+    _write_json(
+        case_dir / "expected.json",
+        {
+            "case_id": case_id,
+            "expected_diffs": [
+                {
+                    "diff_type": "MODIFY",
+                    "source_type": "clause",
+                    "title_contains": "付款",
+                    "original_contains": "100元",
+                    "compare_contains": "120元",
+                    "expected_evidence": [
+                        {
+                            "side": "original",
+                            "page_no": 1,
+                            "bbox": {"x0": 100, "y0": 200, "x1": 180, "y1": 230},
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    _write_json(
+        case_dir / "actual.json",
+        {
+            "task_id": "EVAL_OCR_SIMPLE_SCANNED",
+            "status": "COMPLETED",
+            "parse_warning_details": [
+                {"source": "OCR", "code": "LOW_CONFIDENCE", "message": "ocr warning"}
+            ],
+            "diffs": [
+                {
+                    "diff_id": "D001",
+                    "diff_type": "MODIFY",
+                    "source_type": "clause",
+                    "title": "付款",
+                    "original_text": "付款金额为100元",
+                    "compare_text": "付款金额为120元",
+                    "review_flags": ["OCR_LOW_CONFIDENCE"],
+                    "quality_status": "NEEDS_REVIEW",
+                    "original_evidence": [
+                        {
+                            "page_no": 1,
+                            "bbox": {"x0": 100, "y0": 200, "x1": 180, "y1": 230},
+                            "confidence": 0.5,
+                            "evidence_quality": "LOW",
+                        }
+                    ],
+                    "compare_evidence": [],
+                }
+            ],
+        },
+    )
+    return case_dir
+
+
+def test_discover_cases_ignores_incomplete_directories(tmp_path: Path) -> None:
+    _make_smoke_case(tmp_path)
+    (tmp_path / "incomplete").mkdir()
+    _write_json(tmp_path / "incomplete" / "expected.json", {"expected_diffs": []})
+
+    cases = discover_cases(tmp_path)
 
     assert [case.case_id for case in cases] == ["simple_scanned"]
-    assert cases[0].case_dir == Path("tests/fixtures/ocr_compare_cases/simple_scanned")
+    assert cases[0].case_dir == tmp_path / "simple_scanned"
 
 
-def test_load_case_inputs_reads_expected_and_actual_task() -> None:
-    case = discover_cases(Path("tests/fixtures/ocr_compare_cases"))[0]
+def test_load_case_inputs_reads_expected_and_actual_task(tmp_path: Path) -> None:
+    _make_smoke_case(tmp_path)
+    case = discover_cases(tmp_path)[0]
 
     expected, task = load_case_inputs(case)
 
@@ -36,8 +104,9 @@ def test_load_case_inputs_reads_expected_and_actual_task() -> None:
     assert task.diffs[0].review_flags == ["OCR_LOW_CONFIDENCE"]
 
 
-def test_evaluate_case_reports_ocr_compare_metrics() -> None:
-    case = discover_cases(Path("tests/fixtures/ocr_compare_cases"))[0]
+def test_evaluate_case_reports_ocr_compare_metrics(tmp_path: Path) -> None:
+    _make_smoke_case(tmp_path)
+    case = discover_cases(tmp_path)[0]
 
     result = evaluate_case(case)
 
@@ -200,8 +269,9 @@ def test_evaluate_case_reports_evidence_drift_for_matched_diff(
     assert any("evidence drift" in issue for issue in result.issues)
 
 
-def test_evaluate_case_root_aggregates_metrics() -> None:
-    report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
+def test_evaluate_case_root_aggregates_metrics(tmp_path: Path) -> None:
+    _make_smoke_case(tmp_path)
+    report = evaluate_case_root(tmp_path)
 
     assert report["case_count"] == 1
     assert report["aggregate"]["status"] == "COMPLETED"
@@ -218,6 +288,69 @@ def test_evaluate_case_root_aggregates_metrics() -> None:
     assert report["aggregate"]["precision"] == 1.0
     assert report["aggregate"]["evidence_hit_rate"] == 1.0
     assert report["aggregate"]["low_confidence_ratio"] == 1.0
+
+
+def test_evaluate_case_root_filters_dataset_split(tmp_path: Path) -> None:
+    def write_case(case_id: str, expected: dict) -> None:
+        case_dir = tmp_path / case_id
+        case_dir.mkdir()
+        (case_dir / "expected.json").write_text(
+            json.dumps({"case_id": case_id, "expected_diffs": []} | expected),
+            encoding="utf-8",
+        )
+        (case_dir / "actual.json").write_text(
+            json.dumps(
+                {
+                    "task_id": f"EVAL_{case_id.upper()}",
+                    "status": "COMPLETED",
+                    "parse_warning_details": [],
+                    "diffs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_case("regression_case", {"dataset_split": "regression"})
+    write_case("dev_case", {"dataset_split": "dev"})
+    write_case("legacy_case", {})
+
+    report = evaluate_case_root(tmp_path, dataset_splits={"regression"})
+
+    assert report["case_count"] == 1
+    assert [case["case_id"] for case in report["cases"]] == ["regression_case"]
+    assert report["dataset_splits"] == ["regression"]
+
+    legacy_report = evaluate_case_root(tmp_path, dataset_splits={"legacy"})
+
+    assert legacy_report["case_count"] == 1
+    assert [case["case_id"] for case in legacy_report["cases"]] == ["legacy_case"]
+    assert legacy_report["dataset_splits"] == ["legacy"]
+
+
+def test_evaluate_case_root_keeps_bad_expected_json_as_legacy_when_filtering(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "bad_legacy_case"
+    case_dir.mkdir()
+    (case_dir / "expected.json").write_text("{bad json", encoding="utf-8")
+    (case_dir / "actual.json").write_text(
+        json.dumps(
+            {
+                "task_id": "EVAL_BAD_LEGACY_CASE",
+                "status": "COMPLETED",
+                "parse_warning_details": [],
+                "diffs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = evaluate_case_root(tmp_path, dataset_splits={"legacy"})
+
+    assert report["case_count"] == 1
+    assert report["cases"][0]["case_id"] == "bad_legacy_case"
+    assert report["cases"][0]["status"] == "FAILED"
+    assert report["aggregate"]["task_failure_count"] == 1
 
 
 def test_evaluate_case_root_aggregates_route_metrics(tmp_path: Path) -> None:
@@ -436,20 +569,23 @@ def test_evaluate_case_root_reports_bad_case_as_failure(tmp_path: Path) -> None:
     assert any("Expecting property name" in issue for issue in report["cases"][0]["issues"])
 
 
-def test_threshold_failures_pass_for_smoke_fixture() -> None:
-    report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
+def test_threshold_failures_pass_for_smoke_fixture(tmp_path: Path) -> None:
+    _make_smoke_case(tmp_path)
+    report = evaluate_case_root(tmp_path)
 
     assert threshold_failures(report) == []
 
 
 def test_cli_writes_json_output(tmp_path: Path) -> None:
+    case_root = tmp_path / "cases"
+    _make_smoke_case(case_root)
     output = tmp_path / "ocr_compare_quality.json"
 
     completed = subprocess.run(
         [
             sys.executable,
             "scripts/evaluate_ocr_compare_quality.py",
-            "tests/fixtures/ocr_compare_cases",
+            str(case_root),
             "--output",
             str(output),
             "--fail-on-threshold",
@@ -468,13 +604,15 @@ def test_cli_writes_json_output(tmp_path: Path) -> None:
 
 
 def test_cli_writes_html_output(tmp_path: Path) -> None:
+    case_root = tmp_path / "cases"
+    _make_smoke_case(case_root)
     html_output = tmp_path / "html"
 
     completed = subprocess.run(
         [
             sys.executable,
             "scripts/evaluate_ocr_compare_quality.py",
-            "tests/fixtures/ocr_compare_cases",
+            str(case_root),
             "--html-output",
             str(html_output),
         ],
@@ -490,7 +628,9 @@ def test_cli_writes_html_output(tmp_path: Path) -> None:
 
 
 def test_write_html_report_creates_index_and_case_pages(tmp_path: Path) -> None:
-    report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
+    case_root = tmp_path / "cases"
+    _make_smoke_case(case_root)
+    report = evaluate_case_root(case_root)
 
     write_html_report(tmp_path, report)
 
@@ -508,7 +648,9 @@ def test_write_html_report_creates_index_and_case_pages(tmp_path: Path) -> None:
 
 
 def test_write_html_report_includes_regression_summary(tmp_path: Path) -> None:
-    report = evaluate_case_root(Path("tests/fixtures/ocr_compare_cases"))
+    case_root = tmp_path / "cases"
+    _make_smoke_case(case_root)
+    report = evaluate_case_root(case_root)
     report["regression"] = {
         "run_id": "phase5-run",
         "git": {"branch": "v0.0.2", "commit": "abc123", "dirty": True},
@@ -769,6 +911,199 @@ def test_evaluate_case_counts_only_approved_gold_diffs(tmp_path: Path) -> None:
         "approved_expected_count": 1,
         "draft_expected_count": 1,
         "rejected_expected_count": 1,
+    }
+
+
+def test_evaluate_case_reports_known_false_positive_regressions(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "negative_gold_case"
+    case_dir.mkdir()
+    (case_dir / "expected.json").write_text(
+        json.dumps(
+            {
+                "case_id": "negative_gold_case",
+                "schema_version": "1.1",
+                "dataset_split": "regression",
+                "expected_diffs": [
+                    {
+                        "review_status": "REJECTED",
+                        "should_not_match_again": True,
+                        "false_positive_reason": "header_footer",
+                        "diff_type": "MODIFY",
+                        "source_type": "header_footer",
+                        "title_contains": "版本号",
+                        "compare_contains": "V2.0",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (case_dir / "actual.json").write_text(
+        json.dumps(
+            {
+                "task_id": "EVAL_NEGATIVE_GOLD_CASE",
+                "status": "COMPLETED",
+                "parse_warning_details": [],
+                "diffs": [
+                    {
+                        "diff_id": "D_FP",
+                        "diff_type": "MODIFY",
+                        "source_type": "header_footer",
+                        "title": "版本号",
+                        "original_text": "V1.0",
+                        "compare_text": "V2.0",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_case(discover_cases(tmp_path)[0]).to_dict()
+
+    assert result["expected_count"] == 0
+    assert result["false_positive_count"] == 1
+    assert result["known_false_positive_regression_count"] == 1
+    assert result["known_false_positive_regressions"] == [
+        {
+            "expected_index": 0,
+            "actual_index": 0,
+            "actual_diff_id": "D_FP",
+            "score": 0.75,
+            "false_positive_reason": "header_footer",
+            "label": "版本号",
+        }
+    ]
+    assert any("known false positive regression" in issue for issue in result["issues"])
+
+
+def test_evaluate_case_ignores_known_false_positive_when_actual_is_approved_match(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "approved_overlap_case"
+    case_dir.mkdir()
+    (case_dir / "expected.json").write_text(
+        json.dumps(
+            {
+                "case_id": "approved_overlap_case",
+                "expected_diffs": [
+                    {
+                        "review_status": "APPROVED",
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title_contains": "付款",
+                        "original_contains": "30日",
+                        "compare_contains": "45日",
+                    },
+                    {
+                        "review_status": "REJECTED",
+                        "should_not_match_again": True,
+                        "false_positive_reason": "historical_duplicate",
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title_contains": "付款",
+                        "original_contains": "30日",
+                        "compare_contains": "45日",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (case_dir / "actual.json").write_text(
+        json.dumps(
+            {
+                "task_id": "EVAL_APPROVED_OVERLAP_CASE",
+                "status": "COMPLETED",
+                "parse_warning_details": [],
+                "diffs": [
+                    {
+                        "diff_id": "D_APPROVED",
+                        "diff_type": "MODIFY",
+                        "source_type": "clause",
+                        "title": "付款期限",
+                        "original_text": "买方应在验收后30日内付款。",
+                        "compare_text": "买方应在验收后45日内付款。",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_case(discover_cases(tmp_path)[0]).to_dict()
+
+    assert result["true_positive_count"] == 1
+    assert result["false_positive_count"] == 0
+    assert result["known_false_positive_regression_count"] == 0
+    assert result["known_false_positive_regressions"] == []
+    assert not any(
+        "known false positive regression" in issue for issue in result["issues"]
+    )
+
+
+def test_evaluate_case_root_adds_case_id_to_known_false_positive_regressions(
+    tmp_path: Path,
+) -> None:
+    for case_id, diff_id, title in [
+        ("negative_gold_one", "D_FP_ONE", "页眉版本"),
+        ("negative_gold_two", "D_FP_TWO", "页脚编号"),
+    ]:
+        case_dir = tmp_path / case_id
+        case_dir.mkdir()
+        (case_dir / "expected.json").write_text(
+            json.dumps(
+                {
+                    "case_id": case_id,
+                    "expected_diffs": [
+                        {
+                            "review_status": "REJECTED",
+                            "should_not_match_again": True,
+                            "false_positive_reason": "header_footer",
+                            "diff_type": "MODIFY",
+                            "source_type": "header_footer",
+                            "title_contains": title,
+                            "compare_contains": "V2.0",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (case_dir / "actual.json").write_text(
+            json.dumps(
+                {
+                    "task_id": f"EVAL_{case_id.upper()}",
+                    "status": "COMPLETED",
+                    "parse_warning_details": [],
+                    "diffs": [
+                        {
+                            "diff_id": diff_id,
+                            "diff_type": "MODIFY",
+                            "source_type": "header_footer",
+                            "title": title,
+                            "original_text": "V1.0",
+                            "compare_text": "V2.0",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    report = evaluate_case_root(tmp_path)
+    regressions = report["aggregate"]["known_false_positive_regressions"]
+
+    assert report["aggregate"]["known_false_positive_regression_count"] == 2
+    assert {item["case_id"] for item in regressions} == {
+        "negative_gold_one",
+        "negative_gold_two",
+    }
+    assert {item["actual_diff_id"] for item in regressions} == {
+        "D_FP_ONE",
+        "D_FP_TWO",
     }
 
 

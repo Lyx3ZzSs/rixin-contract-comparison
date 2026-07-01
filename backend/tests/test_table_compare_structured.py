@@ -3,6 +3,7 @@ import signal
 import pytest
 
 from app.models import BBox, CharBox, Document, Page, TextBlock
+from app.models_table import StructuredTable, TableCell, TableRow
 from app.services.table_compare import TableComparator
 from app.services.table_compare.parser import LogicalTableParser
 from app.services.table_compare.repair import TableRepairContext, TableRepairService
@@ -55,6 +56,31 @@ def _make_doc(blocks: list[TextBlock]) -> Document:
     return Document(filename="test.pdf", path="test.pdf", page_count=len(pages), pages=pages)
 
 
+def _structured_table(
+    rows: list[list[str]],
+    *,
+    source_text: str = "",
+    geometry_status: str = "not_available",
+) -> StructuredTable:
+    return StructuredTable(
+        page_no=13,
+        source_block_id="table_1",
+        source_text=source_text,
+        geometry_status=geometry_status,
+        rows=[
+            TableRow(
+                row_index=row_index,
+                cells=[
+                    TableCell(row_index=row_index, col_index=col_index, text=text)
+                    for col_index, text in enumerate(row)
+                ],
+            )
+            for row_index, row in enumerate(rows)
+        ],
+        col_count=max((len(row) for row in rows), default=0),
+    )
+
+
 @pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="requires SIGALRM")
 def test_block_range_bbox_returns_when_prefix_empty_and_suffix_missing() -> None:
     builder = TableComparator()._diff_builder
@@ -97,6 +123,53 @@ def test_block_range_bbox_returns_when_prefix_empty_and_suffix_missing() -> None
         signal.signal(signal.SIGALRM, previous)
 
     assert bbox is None
+
+
+def test_severe_conflict_table_does_not_add_value_already_present_in_original_source() -> None:
+    source_text = (
+        "周玲 国能日新 科技股份 有限公司 女 1981.11 工程师 "
+        "计算机 科学与 技术 项目经理 6个月"
+    )
+    original = _structured_table(
+        [["周玲", "国能日新科技股份有限公司", "女", "1981.11", "工程师", "计算机科学与技术", "项目经理", ""]],
+        source_text=source_text,
+        geometry_status="severe_conflict",
+    )
+    compare = _structured_table(
+        [["周玲", "国能日新科技股份有限公司", "女", "1981.11", "工程师", "计算机科学与技术", "项目经理", "6个月"]],
+        source_text=source_text,
+        geometry_status="severe_conflict",
+    )
+
+    diffs = TableComparator()._diff_builder.diff_cells(original, compare)
+
+    assert not any(diff.compare_text == "6个月" and diff.diff_type == "ADD" for diff in diffs)
+
+
+def test_severe_conflict_table_does_not_delete_cross_page_continuation_covered_by_compare_source() -> None:
+    compare_source = (
+        "李江城 国能日新 科技股份 有限公司 男 1991.9 工程师 "
+        "信息科学与技术 技术执行 3个月"
+    )
+    original = _structured_table(
+        [
+            ["李江城", "国能日新", "", "", "工程师", "信息科", "技术执行", "3个月"],
+            ["", "", "科技股份 有限公司", "", "", "", "学与技 术", ""],
+        ],
+        source_text=compare_source,
+        geometry_status="severe_conflict",
+    )
+    compare = _structured_table(
+        [["李江城", "国能日新科技股份有限公司", "男", "1991.9", "工程师", "信息科学与技术", "技术执行", "3个月"]],
+        source_text=compare_source,
+        geometry_status="severe_conflict",
+    )
+
+    diffs = TableComparator()._diff_builder.diff_cells(original, compare)
+
+    deleted_text = " | ".join(diff.original_text for diff in diffs if diff.diff_type == "DELETE")
+    assert "科技股份" not in deleted_text
+    assert "学与技" not in deleted_text
 
 
 def _product_table(rows: list[str]) -> str:

@@ -15,6 +15,7 @@ DEFAULT_THRESHOLDS = {
     "max_task_failure_count": 0,
     "min_evidence_hit_rate": 1.0,
 }
+DATASET_SPLIT_CHOICES = ("dev", "regression", "holdout", "adversarial", "legacy")
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -32,11 +33,16 @@ class OcrCompareCase:
     case_dir: Path
 
 
-def discover_cases(case_root: Path) -> list[OcrCompareCase]:
+def discover_cases(
+    case_root: Path, *, dataset_splits: set[str] | None = None
+) -> list[OcrCompareCase]:
     return [
         OcrCompareCase(case_id=path.name, case_dir=path)
         for path in sorted(case_root.iterdir())
         if path.is_dir() and (path / "expected.json").exists() and _has_actual_source(path)
+        and (
+            dataset_splits is None or _case_dataset_split(path) in dataset_splits
+        )
     ]
 
 
@@ -75,6 +81,14 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _case_dataset_split(case_dir: Path) -> str:
+    try:
+        expected = _read_json(case_dir / "expected.json")
+    except Exception:  # noqa: BLE001
+        return "legacy"
+    return str(expected.get("dataset_split") or "legacy")
+
+
 @dataclass
 class OcrCompareCaseResult:
     case_id: str
@@ -83,6 +97,7 @@ class OcrCompareCaseResult:
     actual_count: int
     true_positive_count: int
     false_positive_count: int
+    known_false_positive_regression_count: int
     false_negative_count: int
     evidence_hit_count: int
     low_confidence_count: int
@@ -94,6 +109,7 @@ class OcrCompareCaseResult:
     matches: list[dict[str, Any]]
     missed_expected_diffs: list[dict[str, Any]]
     unexpected_actual_diffs: list[dict[str, Any]]
+    known_false_positive_regressions: list[dict[str, Any]]
     evidence_drift_diffs: list[dict[str, Any]]
     issues: list[str]
 
@@ -106,6 +122,7 @@ class OcrCompareCaseResult:
             actual_count=0,
             true_positive_count=0,
             false_positive_count=0,
+            known_false_positive_regression_count=0,
             false_negative_count=0,
             evidence_hit_count=0,
             low_confidence_count=0,
@@ -117,6 +134,7 @@ class OcrCompareCaseResult:
             matches=[],
             missed_expected_diffs=[],
             unexpected_actual_diffs=[],
+            known_false_positive_regressions=[],
             evidence_drift_diffs=[],
             issues=[str(error)],
         )
@@ -139,8 +157,10 @@ class OcrCompareCaseResult:
         }
 
 
-def evaluate_case_root(case_root: Path) -> dict[str, Any]:
-    cases = discover_cases(case_root)
+def evaluate_case_root(
+    case_root: Path, *, dataset_splits: set[str] | None = None
+) -> dict[str, Any]:
+    cases = discover_cases(case_root, dataset_splits=dataset_splits)
     results = []
     for case in cases:
         try:
@@ -151,6 +171,7 @@ def evaluate_case_root(case_root: Path) -> dict[str, Any]:
     report = {
         "case_root": str(case_root),
         "case_count": len(results),
+        "dataset_splits": sorted(dataset_splits) if dataset_splits is not None else [],
         "thresholds": DEFAULT_THRESHOLDS,
         "aggregate": aggregate,
         "cases": [result.to_dict() for result in results],
@@ -163,10 +184,19 @@ def evaluate_case(case: OcrCompareCase) -> OcrCompareCaseResult:
     expected_payload, actual_task = load_case_inputs(case)
     all_expected_diffs = expected_payload.get("expected_diffs", [])
     expected_diffs = _approved_expected_diffs(all_expected_diffs)
+    negative_expected_diffs = _negative_expected_diffs(all_expected_diffs)
     actual_diffs = [diff.model_dump(mode="json") for diff in actual_task.diffs]
     matches = _match_expected_diffs(expected_diffs, actual_diffs)
     matched_actual_indexes = {match.actual_index for match in matches}
+    known_fp_matches = _known_false_positive_matches(
+        negative_expected_diffs,
+        actual_diffs,
+        excluded_actual_indexes=matched_actual_indexes,
+    )
     issues = _case_issues(expected_diffs, actual_diffs, matches)
+    issues.extend(
+        _known_false_positive_issues(known_fp_matches, negative_expected_diffs)
+    )
     routing_summary = ModelRoutingAnalyzer().analyze(
         actual_task.ocr_quality_summary,
         actual_task.diffs,
@@ -181,6 +211,7 @@ def evaluate_case(case: OcrCompareCase) -> OcrCompareCaseResult:
         actual_count=len(actual_diffs),
         true_positive_count=len(matches),
         false_positive_count=len(actual_diffs) - len(matched_actual_indexes),
+        known_false_positive_regression_count=len(known_fp_matches),
         false_negative_count=len(expected_diffs) - len(matches),
         evidence_hit_count=_matched_evidence_hit_count(
             matches, expected_diffs, actual_diffs
@@ -198,6 +229,9 @@ def evaluate_case(case: OcrCompareCase) -> OcrCompareCaseResult:
         matches=_match_details(matches, expected_diffs, actual_diffs),
         missed_expected_diffs=_missed_expected_details(expected_diffs, matches),
         unexpected_actual_diffs=_unexpected_actual_details(actual_diffs, matches),
+        known_false_positive_regressions=_known_false_positive_details(
+            known_fp_matches, negative_expected_diffs, actual_diffs
+        ),
         evidence_drift_diffs=_evidence_drift_details(
             matches, expected_diffs, actual_diffs
         ),
@@ -221,14 +255,16 @@ class DiffMatch:
 def _match_expected_diffs(
     expected: list[ApprovedExpectedDiff] | list[dict[str, Any]],
     actual: list[dict[str, Any]],
+    excluded_actual_indexes: set[int] | None = None,
 ) -> list[DiffMatch]:
     matches: list[DiffMatch] = []
     used_actual: set[int] = set()
+    excluded_actual_indexes = excluded_actual_indexes or set()
     for expected_record in _expected_records(expected):
         best_index = None
         best_score = 0.0
         for actual_index, actual_diff in enumerate(actual):
-            if actual_index in used_actual:
+            if actual_index in used_actual or actual_index in excluded_actual_indexes:
                 continue
             score = _diff_match_score(expected_record.payload, actual_diff)
             if score > best_score:
@@ -269,6 +305,29 @@ def _approved_expected_diffs(
         for index, item in enumerate(expected)
         if item.get("review_status") in (None, "", "APPROVED")
     ]
+
+
+def _negative_expected_diffs(
+    expected: list[dict[str, Any]],
+) -> list[ApprovedExpectedDiff]:
+    return [
+        ApprovedExpectedDiff(source_index=index, payload=item)
+        for index, item in enumerate(expected)
+        if item.get("review_status") == "REJECTED"
+        and item.get("should_not_match_again") is True
+    ]
+
+
+def _known_false_positive_matches(
+    negative_expected: list[ApprovedExpectedDiff],
+    actual: list[dict[str, Any]],
+    excluded_actual_indexes: set[int] | None = None,
+) -> list[DiffMatch]:
+    return _match_expected_diffs(
+        negative_expected,
+        actual,
+        excluded_actual_indexes=excluded_actual_indexes,
+    )
 
 
 def _annotation_summary(expected: list[dict[str, Any]]) -> dict[str, int]:
@@ -345,6 +404,31 @@ def _unexpected_actual_details(
         }
         for index, item in enumerate(actual)
         if index not in matched_actual
+    ]
+
+
+def _known_false_positive_details(
+    matches: list[DiffMatch],
+    negative_expected: list[ApprovedExpectedDiff],
+    actual: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    expected_by_source_index = _expected_by_source_index(negative_expected)
+    return [
+        {
+            "expected_index": match.expected_index,
+            "actual_index": match.actual_index,
+            "actual_diff_id": str(actual[match.actual_index].get("diff_id", "")),
+            "score": match.score,
+            "false_positive_reason": str(
+                expected_by_source_index[match.expected_index].payload.get(
+                    "false_positive_reason", ""
+                )
+            ),
+            "label": _diff_label(
+                expected_by_source_index[match.expected_index].payload
+            ),
+        }
+        for match in matches
     ]
 
 
@@ -519,6 +603,21 @@ def _evidence_drift_issues(
     ]
 
 
+def _known_false_positive_issues(
+    matches: list[DiffMatch],
+    negative_expected: list[ApprovedExpectedDiff],
+) -> list[str]:
+    expected_by_source_index = _expected_by_source_index(negative_expected)
+    issues = []
+    for match in matches:
+        expected_diff = expected_by_source_index[match.expected_index].payload
+        issues.append(
+            "known false positive regression for expected diff "
+            f"{match.expected_index + 1}: {_diff_label(expected_diff)}"
+        )
+    return issues
+
+
 def _diff_label(diff: dict[str, Any]) -> str:
     return (
         diff.get("title_contains")
@@ -543,6 +642,9 @@ def _aggregate(results: list[OcrCompareCaseResult]) -> dict[str, Any]:
         actual_count=sum(item.actual_count for item in results),
         true_positive_count=sum(item.true_positive_count for item in results),
         false_positive_count=sum(item.false_positive_count for item in results),
+        known_false_positive_regression_count=sum(
+            item.known_false_positive_regression_count for item in results
+        ),
         false_negative_count=sum(item.false_negative_count for item in results),
         evidence_hit_count=sum(item.evidence_hit_count for item in results),
         low_confidence_count=sum(item.low_confidence_count for item in results),
@@ -554,6 +656,11 @@ def _aggregate(results: list[OcrCompareCaseResult]) -> dict[str, Any]:
         matches=[],
         missed_expected_diffs=[],
         unexpected_actual_diffs=[],
+        known_false_positive_regressions=[
+            regression | {"case_id": item.case_id}
+            for item in results
+            for regression in item.known_false_positive_regressions
+        ],
         evidence_drift_diffs=[],
         issues=[issue for item in results for issue in item.issues],
     )
@@ -965,9 +1072,19 @@ def main() -> int:
         action="store_true",
         help="Exit 1 if smoke thresholds fail.",
     )
+    parser.add_argument(
+        "--dataset-split",
+        action="append",
+        dest="dataset_splits",
+        choices=DATASET_SPLIT_CHOICES,
+        help="Limit evaluation to cases tagged with this dataset split.",
+    )
     args = parser.parse_args()
 
-    report = evaluate_case_root(args.case_root)
+    report = evaluate_case_root(
+        args.case_root,
+        dataset_splits=set(args.dataset_splits) if args.dataset_splits else None,
+    )
     content = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -53,6 +53,7 @@ class DiffQualityProcessor:
     )
     style_punct_pattern = re.compile(r"[\s，。；：、”“‘’（）()\[\]【】《》!?:;\"']+")
     low_value_symbol_pattern = re.compile(r"^[\d/\\∠_.,，。·•\-—~～…\sLIl|]+$", re.IGNORECASE)
+    single_latin_layout_glyphs = {"i", "l", "|"}
     header_footer_pattern = re.compile(r"(?:页眉|页脚|页码|第\s*\d+\s*页|共\s*\d+\s*页)")
 
     def __init__(self) -> None:
@@ -207,7 +208,11 @@ class DiffQualityProcessor:
         for diff in diffs:
             reason = self._suppression_reason(diff)
             if reason:
-                if self.ocr_quality_review_flags.intersection(diff.review_flags):
+                if (
+                    reason != "single_latin_layout_glyph_noise"
+                    and self.ocr_quality_review_flags.intersection(diff.review_flags)
+                    and not self._is_confirmed_clause_ocr_noise(diff)
+                ):
                     kept.append(diff)
                     continue
                 decisions.append(DiffQualityDecision(action="suppressed_low_value_noise", diff_id=diff.diff_id, detail={"reason": reason}))
@@ -222,12 +227,14 @@ class DiffQualityProcessor:
             return ""
         if self._is_layout_punctuation_equivalent_clause_change(diff):
             return "layout_punctuation_equivalent"
-        if self._has_business_token(diff):
+        if self._changed_text_has_business_token(diff):
             return ""
         changed = self._changed_text(diff)
         compact = self._compact(changed)
         if not compact:
             return "empty_change"
+        if self._looks_like_single_latin_layout_glyph_noise(diff):
+            return "single_latin_layout_glyph_noise"
         if diff.source_type == "clause" and "POSSIBLE_OCR_NOISE" in diff.review_flags and self._looks_like_short_symbol_noise(diff):
             return "clause_ocr_noise"
         if diff.source_type in {"header_footer", "metadata"} and len(compact) <= 4:
@@ -347,7 +354,7 @@ class DiffQualityProcessor:
     def _looks_like_minor_ocr_noise(self, diff: DiffItem) -> bool:
         if diff.source_type != "clause" or diff.diff_type != "MODIFY":
             return False
-        if self._has_business_token(diff):
+        if self._changed_text_has_business_token(diff):
             return False
         if (diff.match_score or 0) < 96:
             return False
@@ -357,13 +364,22 @@ class DiffQualityProcessor:
     def _looks_like_short_symbol_noise(self, diff: DiffItem) -> bool:
         if diff.source_type != "clause":
             return False
-        if self._has_business_token(diff):
+        if self._changed_text_has_business_token(diff):
             return False
         changed = self._changed_text(diff)
         compact = self._compact(changed)
         if not compact:
             return False
         return len(compact) <= 12 and bool(self.low_value_symbol_pattern.fullmatch(changed.strip()))
+
+    def _looks_like_single_latin_layout_glyph_noise(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause":
+            return False
+        flags = set(diff.structural_flags) | set(diff.review_flags)
+        if not flags.intersection({"LAYOUT_MISMATCH_RISK", "SEAL_OR_SIGNATURE_RISK"}):
+            return False
+        compact = self._compact(self._changed_text(diff))
+        return len(compact) == 1 and compact in self.single_latin_layout_glyphs
 
     def _looks_like_cover_fragment(self, diff: DiffItem) -> bool:
         if diff.source_type != "metadata" or diff.diff_type not in {"ADD", "DELETE"}:
@@ -386,6 +402,16 @@ class DiffQualityProcessor:
     def _has_business_token(self, diff: DiffItem) -> bool:
         text = f"{self._changed_text(diff)} {diff.original_text} {diff.compare_text}"
         return bool(self.business_token_pattern.search(text or ""))
+
+    def _changed_text_has_business_token(self, diff: DiffItem) -> bool:
+        return bool(self.business_token_pattern.search(self._changed_text(diff) or ""))
+
+    @staticmethod
+    def _is_confirmed_clause_ocr_noise(diff: DiffItem) -> bool:
+        flags = set(diff.review_flags)
+        return "POSSIBLE_OCR_NOISE" in flags and bool(
+            flags.intersection({"SHORT_CLAUSE_MATCH_REVIEW", "OCR_REMEDIATION_UNRESOLVED"})
+        )
 
     @staticmethod
     def _is_row_level_table_diff(diff: DiffItem) -> bool:

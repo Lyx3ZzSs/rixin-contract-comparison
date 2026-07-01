@@ -46,18 +46,20 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
             key, value = parsed
             evidences = [build_evidence(block, line)]
             vparts = value_parts_from_line(block, value) if value else []
-            if not value and key != "contract_no":
+            consumed_ids: set[str] = set()
+            if not value and not _is_contract_number_key(key):
                 value, extra_evidences, extra_ids, extra_parts = nearby_value(block, blocks)
                 evidences.extend(extra_evidences)
-                consumed.update(extra_ids)
+                consumed_ids.update(extra_ids)
                 vparts.extend(extra_parts)
-            if not value and key != "contract_no":
+            if not value and not _is_contract_number_key(key):
                 value, extra_evidences, extra_ids, extra_parts = next_value(block_lines, line_index, blocks, index)
                 evidences.extend(extra_evidences)
-                consumed.update(extra_ids)
+                consumed_ids.update(extra_ids)
                 vparts.extend(extra_parts)
-            if value:
+            if value and _valid_field_value(key, value):
                 set_field(fields, key, value, evidences, vparts)
+                consumed.update(consumed_ids)
                 consumed.add(block.block_id)
 
     first_page_no = min((block.page_no for block in blocks), default=1)
@@ -66,7 +68,7 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
         for block in blocks
         if block.page_no == first_page_no and block.block_id not in consumed and is_title_candidate(normalizer, block)
     ]
-    if title_blocks:
+    if title_blocks and "project_title" not in fields:
         title_lines: list[str] = []
         evidences: list[EvidenceBox] = []
         for block in title_blocks:
@@ -87,6 +89,22 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
                 evidences=evidences,
             )
     return CoverExtraction(fields=fields, consumed_block_ids=consumed)
+
+
+def _valid_field_value(key: str, value: str) -> bool:
+    if key != "sign_date":
+        return True
+    compact = re.sub(r"\s+", "", value or "")
+    if len(re.findall(r"\d{4}", compact)) != 1:
+        return False
+    return bool(
+        re.search(r"\d{4}年\d{1,2}月\d{1,2}日?", compact)
+        or re.search(r"\d{4}[./-]\d{1,2}[./-]\d{1,2}", compact)
+    )
+
+
+def _is_contract_number_key(key: str) -> bool:
+    return key in {"contract_no", "contract_no_buyer", "contract_no_seller"}
 
 
 def _cover_blocks(document: Document) -> list[TextBlock]:

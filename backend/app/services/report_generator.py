@@ -405,24 +405,26 @@ class ReportGenerator:
         highlight_color = color_map.get(diff_type, "#A96300")
         if not change_ranges:
             return escape(_clean_report_text(text, limit))
+        text_limit = min(len(text), limit)
         sorted_ranges = sorted(change_ranges, key=lambda r: r.start)
         parts: list[str] = []
         pos = 0
         for cr in sorted_ranges:
+            if cr.start >= text_limit:
+                break
             start = max(pos, cr.start)
-            end = min(cr.end, len(text))
+            end = min(cr.end, text_limit)
             if start > pos:
                 parts.append(escape(text[pos:start]))
             if start < end:
                 parts.append(f'<font color="{highlight_color}">{escape(text[start:end])}</font>')
             pos = max(pos, end)
-        if pos < len(text):
-            parts.append(escape(text[pos:]))
+        if pos < text_limit:
+            parts.append(escape(text[pos:text_limit]))
+        if len(text) > limit:
+            parts.append("...")
         result = "".join(parts)
-        clean = " ".join(result.split())
-        if len(clean) > limit:
-            clean = f"{clean[:limit]}..."
-        return clean
+        return " ".join(result.split())
 
     # ── Labels & Helpers ───────────────────────────────────────────
 

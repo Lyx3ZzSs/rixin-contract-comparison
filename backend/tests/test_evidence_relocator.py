@@ -147,6 +147,34 @@ def test_relocator_fails_without_side_text_signal(tmp_path: Path):
     assert result.changed_evidence is False
 
 
+def test_relocator_rejects_short_symbol_without_existing_page_anchor(tmp_path: Path):
+    original_pdf = tmp_path / "original.pdf"
+    compare_pdf = tmp_path / "compare.pdf"
+    _write_pdf(original_pdf, "SGTYHT/23-JS-004\n13.2 可行性论证报告：/;")
+    _write_pdf(compare_pdf, "13.2可行性论证报告：;")
+    diff = DiffItem(
+        diff_id="D007",
+        diff_type="MODIFY",
+        original_snippet="/",
+        compare_snippet="",
+        original_evidence=[],
+        review_flags=["EVIDENCE_UNRELIABLE"],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = EvidenceRelocator().relocate(
+        diff,
+        side="original",
+        page_no=1,
+        original_pdf=original_pdf,
+        compare_pdf=compare_pdf,
+    )
+
+    assert result.status == "FAILED"
+    assert result.reason == "LOW_INFORMATION_QUERY_WITHOUT_PAGE_ANCHOR"
+    assert result.evidence == []
+
+
 def test_relocator_rejects_degraded_placeholder_text(tmp_path: Path):
     original_pdf = tmp_path / "original.pdf"
     compare_pdf = tmp_path / "compare.pdf"

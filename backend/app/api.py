@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import date, datetime
+from math import ceil
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.api_errors import http_error
@@ -82,8 +84,33 @@ async def compare_contracts(
 
 
 @router.get("/records", response_model=CompareRecordListResponse)
-def list_records() -> CompareRecordListResponse:
-    return compare_record_list_response(default_compare_task_application.list_compare_tasks())
+def list_records(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> CompareRecordListResponse:
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=422, detail="开始日期不能晚于结束日期。")
+
+    tasks = default_compare_task_application.list_compare_tasks()
+    filtered_tasks = [
+        task
+        for task in tasks
+        if _is_task_in_created_date_range(task, start_date=start_date, end_date=end_date)
+    ]
+    total = len(filtered_tasks)
+    start_index = (page - 1) * page_size
+    end_index = start_index + page_size
+    page_tasks = filtered_tasks[start_index:end_index]
+    total_pages = ceil(total / page_size) if total else 0
+    return compare_record_list_response(
+        page_tasks,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
 
 
 @router.get("/{task_id}", response_model=CompareTaskDetailResponse)
@@ -253,6 +280,34 @@ def _load_or_404(task_id: str) -> CompareTask:
         return default_compare_task_application.load_compare_task(task_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _is_task_in_created_date_range(
+    task: CompareTask,
+    *,
+    start_date: date | None,
+    end_date: date | None,
+) -> bool:
+    if start_date is None and end_date is None:
+        return True
+    task_date = _task_created_date(task)
+    if task_date is None:
+        return False
+    if start_date and task_date < start_date:
+        return False
+    if end_date and task_date > end_date:
+        return False
+    return True
+
+
+def _task_created_date(task: CompareTask) -> date | None:
+    value = task.created_at or task.updated_at
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
 
 
 def _file_response(

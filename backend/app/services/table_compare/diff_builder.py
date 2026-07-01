@@ -477,6 +477,30 @@ class TableDiffBuilder:
                     )
                     continue
 
+                if self._one_sided_cell_covered_by_conflicted_source(
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                    orig_text,
+                    comp_text,
+                    orig_norm,
+                    comp_norm,
+                    original_block,
+                    compare_block,
+                ):
+                    self._record_suppressed_diff(
+                        "one_sided_cell_covered_by_conflicted_source",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
+                    continue
+
                 if not orig_norm:
                     diff_type = "ADD"
                 elif not comp_norm:
@@ -854,7 +878,101 @@ class TableDiffBuilder:
 
     @staticmethod
     def _has_unusable_geometry(*tables: StructuredTable) -> bool:
-        return any(getattr(table, "geometry_status", "") == "geometry_unusable" for table in tables)
+        return any(getattr(table, "geometry_status", "") in {"geometry_unusable", "severe_conflict"} for table in tables)
+
+    def _one_sided_cell_covered_by_conflicted_source(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+        orig_text: str,
+        comp_text: str,
+        orig_norm: str,
+        comp_norm: str,
+        original_block: TextBlock | None,
+        compare_block: TextBlock | None,
+    ) -> bool:
+        if not self._has_unusable_geometry(original, compare):
+            return False
+        if bool(orig_norm) == bool(comp_norm):
+            return False
+
+        if orig_norm:
+            present_table = original
+            present_row = orig_row
+            present_text = orig_text
+            missing_table = compare
+            missing_row = comp_row
+            missing_block = compare_block
+        else:
+            present_table = compare
+            present_row = comp_row
+            present_text = comp_text
+            missing_table = original
+            missing_row = orig_row
+            missing_block = original_block
+
+        if present_row is None or missing_row is None:
+            return False
+        source_text = self._source_text_for_cell_cover(missing_table, missing_row, missing_block)
+        source_norm = utils.normalize(source_text)
+        value_norm = utils.normalize(present_text)
+        if not source_norm or not value_norm:
+            return False
+        if not self._source_covers_value(value_norm, present_text, source_norm):
+            return False
+        return self._source_has_nearby_row_anchor(source_norm, value_norm, present_table, present_row, missing_table, missing_row)
+
+    def _source_covers_value(self, value_norm: str, value_text: str, source_norm: str) -> bool:
+        if value_norm in source_norm:
+            return True
+        tokens = self._coverage_tokens(value_text)
+        return bool(tokens and self._all_coverage_tokens_covered(tokens, source_norm))
+
+    def _source_has_nearby_row_anchor(
+        self,
+        source_norm: str,
+        value_norm: str,
+        present_table: StructuredTable,
+        present_row: int,
+        missing_table: StructuredTable,
+        missing_row: int,
+    ) -> bool:
+        value_positions = self._token_positions(source_norm, value_norm)
+        if not value_positions:
+            return False
+        anchors = self._row_anchor_tokens(present_table, present_row, value_norm)
+        anchors.extend(token for token in self._row_anchor_tokens(missing_table, missing_row, value_norm) if token not in anchors)
+        if not anchors:
+            return False
+        for anchor in anchors:
+            anchor_positions = self._token_positions(source_norm, anchor)
+            if any(abs(anchor_pos - value_pos) <= 140 for anchor_pos in anchor_positions for value_pos in value_positions):
+                return True
+        return False
+
+    def _row_anchor_tokens(self, table: StructuredTable, row: int, value_norm: str) -> list[str]:
+        anchors: list[str] = []
+        for cell in self._matcher._row_nonempty_cells(table, row):
+            cell_norm = utils.normalize(cell.text)
+            if not cell_norm or cell_norm == value_norm or value_norm in cell_norm:
+                continue
+            for token in self._coverage_tokens(cell.text):
+                if token != value_norm and token not in anchors:
+                    anchors.append(token)
+        return anchors
+
+    @staticmethod
+    def _token_positions(source_norm: str, token: str) -> list[int]:
+        if not source_norm or not token:
+            return []
+        folded_token = utils.punctuation_fold(token)
+        folded_source = utils.punctuation_fold(source_norm)
+        positions = [match.start() for match in re.finditer(re.escape(token), source_norm)]
+        if folded_token and folded_token != token:
+            positions.extend(match.start() for match in re.finditer(re.escape(folded_token), folded_source))
+        return positions
 
     def _matched_row_covered_by_unusable_geometry_window(
         self,
@@ -1077,7 +1195,7 @@ class TableDiffBuilder:
         row: int,
         block: TextBlock | None,
     ) -> str:
-        parts = [TableMatcher.row_plain_source_text(table, row)]
+        parts = [TableMatcher.row_plain_source_text(table, row), getattr(table, "source_text", "") or ""]
         if block is not None:
             parts.append(block.text or "")
             if block.raw_html:

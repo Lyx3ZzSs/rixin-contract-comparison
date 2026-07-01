@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.models_extraction import ExtractionTask
 from app.services.review_service import CompareQualityService
-from app.utils.json_utils import load_task, save_extraction_task, save_task
+from app.utils.json_utils import load_task, save_extraction_task, save_task, task_json_path, to_jsonable
 
 
 def make_pdf(path: Path, lines: list[str]) -> None:
@@ -67,8 +67,22 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     original = tmp_path / "original.pdf"
     compare = tmp_path / "compare.pdf"
-    make_pdf(original, ["1. Payment", "Buyer shall pay within 30 days."])
-    make_pdf(compare, ["1. Payment", "Buyer shall pay within 45 days."])
+    make_pdf(
+        original,
+        [
+            "1. Payment",
+            "Buyer shall pay 1000 USD within 30 days after acceptance.",
+            "Seller shall deliver two signed invoices.",
+        ],
+    )
+    make_pdf(
+        compare,
+        [
+            "1. Payment",
+            "Buyer shall pay 1200 USD within 45 days after final acceptance.",
+            "Seller shall deliver two signed invoices.",
+        ],
+    )
 
     client = TestClient(app)
     with original.open("rb") as original_file, compare.open("rb") as compare_file:
@@ -418,6 +432,56 @@ def test_compare_records_list_uses_compare_tasks_only(tmp_path: Path) -> None:
     assert records[0]["report_url"] == ""
     assert records[1]["report_url"] == "/api/compare/TOLDER/report"
     assert all(record["task_id"] != "TEXT001" for record in records)
+
+
+def test_compare_records_list_supports_pagination_and_created_time_filter(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_compare_task_fixture(
+        task_id="TMAY20",
+        status="COMPLETED",
+        created_at="2026-05-20T08:00:00+00:00",
+        updated_at="2026-05-24T10:00:00+00:00",
+        original_filename="may20-a.pdf",
+        compare_filename="may20-b.pdf",
+    )
+    save_compare_task_fixture(
+        task_id="TMAY21",
+        status="COMPLETED",
+        created_at="2026-05-21T08:00:00+00:00",
+        updated_at="2026-05-24T10:00:00+00:00",
+        original_filename="may21-a.pdf",
+        compare_filename="may21-b.pdf",
+    )
+    save_compare_task_fixture(
+        task_id="TMAY22",
+        status="PROCESSING",
+        created_at="2026-05-22T08:00:00+00:00",
+        updated_at="2026-05-22T10:00:00+00:00",
+        original_filename="may22-a.pdf",
+        compare_filename="may22-b.pdf",
+    )
+
+    client = TestClient(app)
+    response = client.get("/api/compare/records?page=1&page_size=1&start_date=2026-05-21&end_date=2026-05-22")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert [record["task_id"] for record in payload["records"]] == ["TMAY22"]
+    assert payload["total"] == 2
+    assert payload["page"] == 1
+    assert payload["page_size"] == 1
+    assert payload["total_pages"] == 2
+
+    second_page = client.get("/api/compare/records?page=2&page_size=1&start_date=2026-05-21&end_date=2026-05-22")
+
+    assert second_page.status_code == 200, second_page.text
+    assert [record["task_id"] for record in second_page.json()["records"]] == ["TMAY21"]
+
+
+def save_compare_task_fixture(**kwargs) -> None:
+    task = CompareTask(**kwargs)
+    save_task(task)
+    task_json_path(task.task_id).write_text(json.dumps(to_jsonable(task), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def test_api_updates_diff_review_and_quality_summary(tmp_path: Path) -> None:
@@ -789,8 +853,3 @@ def test_cors_allows_frontend_dev_origin() -> None:
     )
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
-
-
-
-
-

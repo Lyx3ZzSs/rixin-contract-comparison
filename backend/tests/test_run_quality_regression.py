@@ -22,6 +22,7 @@ def _quality_report(
     evidence_hit_rate: float = 1.0,
     false_positive_count: int = 0,
     false_negative_count: int = 0,
+    known_false_positive_regression_count: int = 0,
     task_failure_count: int = 0,
     cases: list[dict] | None = None,
 ) -> dict:
@@ -33,6 +34,9 @@ def _quality_report(
             "evidence_hit_rate": evidence_hit_rate,
             "false_positive_count": false_positive_count,
             "false_negative_count": false_negative_count,
+            "known_false_positive_regression_count": (
+                known_false_positive_regression_count
+            ),
             "task_failure_count": task_failure_count,
         },
         "cases": cases or [],
@@ -64,8 +68,11 @@ def test_load_thresholds_uses_defaults_when_path_is_none() -> None:
     assert thresholds == DEFAULT_REGRESSION_THRESHOLDS
     assert thresholds["min_recall"] == 0.95
     assert thresholds["max_false_positive_increase"] == 1
+    assert thresholds["max_known_false_positive_regression_count"] == 0
+    assert thresholds["max_known_false_positive_regression_increase"] == 0
     assert "max_false_positive_increase" in thresholds
     assert "max_false_negative_increase" in thresholds
+    assert "max_known_false_positive_regression_increase" in thresholds
     assert "max_task_failure_increase" in thresholds
     assert "max_false_positive_count_increase" not in thresholds
     assert "max_false_negative_count_increase" not in thresholds
@@ -112,6 +119,7 @@ def test_compare_reports_returns_aggregate_and_case_deltas() -> None:
         evidence_hit_rate=0.9,
         false_positive_count=1,
         false_negative_count=0,
+        known_false_positive_regression_count=0,
         cases=[_case_report("case_a", precision=0.95, recall=1.0)],
     )
     current = _quality_report(
@@ -120,6 +128,7 @@ def test_compare_reports_returns_aggregate_and_case_deltas() -> None:
         evidence_hit_rate=0.85,
         false_positive_count=3,
         false_negative_count=2,
+        known_false_positive_regression_count=2,
         cases=[_case_report("case_a", precision=0.8, recall=0.75)],
     )
 
@@ -132,6 +141,7 @@ def test_compare_reports_returns_aggregate_and_case_deltas() -> None:
     assert comparison["aggregate_delta"]["evidence_hit_rate"] == -0.05
     assert comparison["aggregate_delta"]["false_positive_count"] == 2
     assert comparison["aggregate_delta"]["false_negative_count"] == 2
+    assert comparison["aggregate_delta"]["known_false_positive_regression_count"] == 2
     assert comparison["case_deltas"][0]["case_id"] == "case_a"
     assert comparison["case_deltas"][0]["precision_delta"] == -0.15
     assert comparison["case_deltas"][0]["recall_delta"] == -0.25
@@ -222,11 +232,13 @@ def test_apply_gates_detects_absolute_failures_without_baseline() -> None:
             "max_task_failure_count": 0,
             "max_false_positive_count": 0,
             "max_false_negative_count": 0,
+            "max_known_false_positive_regression_count": 0,
             "max_recall_drop": 0.02,
             "max_precision_drop": 0.02,
             "max_evidence_hit_rate_drop": 0.02,
             "max_false_positive_increase": 1,
             "max_false_negative_increase": 0,
+            "max_known_false_positive_regression_increase": 0,
             "max_task_failure_increase": 0,
         },
     )
@@ -239,6 +251,23 @@ def test_apply_gates_detects_absolute_failures_without_baseline() -> None:
     assert "max_false_negative_count" in {item["gate"] for item in failures}
 
 
+def test_apply_gates_fails_on_known_false_positive_regression_count() -> None:
+    current = _quality_report(known_false_positive_regression_count=1)
+    comparison = compare_reports(current, None)
+    thresholds = DEFAULT_REGRESSION_THRESHOLDS | {
+        "max_known_false_positive_regression_count": 0,
+        "max_known_false_positive_regression_increase": 0,
+    }
+
+    failures = apply_gates(current, comparison, thresholds)
+
+    assert {
+        "gate": "max_known_false_positive_regression_count",
+        "value": 1,
+        "limit": 0,
+    } in failures
+
+
 def test_apply_gates_detects_regressions_against_baseline() -> None:
     baseline = _quality_report(
         precision=1.0,
@@ -246,6 +275,7 @@ def test_apply_gates_detects_regressions_against_baseline() -> None:
         evidence_hit_rate=1.0,
         false_positive_count=0,
         false_negative_count=0,
+        known_false_positive_regression_count=0,
         task_failure_count=0,
     )
     current = _quality_report(
@@ -254,6 +284,7 @@ def test_apply_gates_detects_regressions_against_baseline() -> None:
         evidence_hit_rate=0.85,
         false_positive_count=2,
         false_negative_count=1,
+        known_false_positive_regression_count=1,
         task_failure_count=1,
     )
     comparison = compare_reports(current, baseline)
@@ -265,7 +296,24 @@ def test_apply_gates_detects_regressions_against_baseline() -> None:
     assert "max_evidence_hit_rate_drop" in {item["gate"] for item in failures}
     assert "max_false_positive_increase" in {item["gate"] for item in failures}
     assert "max_false_negative_increase" in {item["gate"] for item in failures}
+    assert "max_known_false_positive_regression_increase" in {
+        item["gate"] for item in failures
+    }
     assert "max_task_failure_increase" in {item["gate"] for item in failures}
+
+
+def test_apply_gates_detects_known_false_positive_regression_increase() -> None:
+    baseline = _quality_report(known_false_positive_regression_count=0)
+    current = _quality_report(known_false_positive_regression_count=2)
+    comparison = compare_reports(current, baseline)
+
+    failures = apply_gates(current, comparison, DEFAULT_REGRESSION_THRESHOLDS)
+
+    assert {
+        "gate": "max_known_false_positive_regression_increase",
+        "value": 2,
+        "limit": 0,
+    } in failures
 
 
 def test_apply_gates_allows_metrics_that_exactly_meet_limits() -> None:
@@ -276,11 +324,13 @@ def test_apply_gates_allows_metrics_that_exactly_meet_limits() -> None:
         "max_task_failure_count": 0,
         "max_false_positive_count": 1,
         "max_false_negative_count": 0,
+        "max_known_false_positive_regression_count": 0,
         "max_recall_drop": 0.02,
         "max_precision_drop": 0.02,
         "max_evidence_hit_rate_drop": 0.02,
         "max_false_positive_increase": 1,
         "max_false_negative_increase": 0,
+        "max_known_false_positive_regression_increase": 0,
         "max_task_failure_increase": 0,
     }
     baseline = _quality_report(
@@ -368,7 +418,9 @@ def test_run_regression_writes_artifacts_and_baseline(
     )
 
     monkeypatch.setattr(
-        run_quality_regression, "evaluate_case_root", lambda path: dict(report)
+        run_quality_regression,
+        "evaluate_case_root",
+        lambda path, *, dataset_splits=None: dict(report),
     )
     monkeypatch.setattr(
         run_quality_regression,
@@ -422,7 +474,7 @@ def test_run_regression_compares_existing_baseline(
     monkeypatch.setattr(
         run_quality_regression,
         "evaluate_case_root",
-        lambda path: dict(current_report),
+        lambda path, *, dataset_splits=None: dict(current_report),
     )
     monkeypatch.setattr(
         run_quality_regression,
@@ -464,7 +516,7 @@ def test_run_regression_marks_failed_gate_status(
     monkeypatch.setattr(
         run_quality_regression,
         "evaluate_case_root",
-        lambda path: dict(current_report),
+        lambda path, *, dataset_splits=None: dict(current_report),
     )
     monkeypatch.setattr(
         run_quality_regression,
@@ -512,7 +564,7 @@ def test_run_regression_uses_html_output_override(
     monkeypatch.setattr(
         run_quality_regression,
         "evaluate_case_root",
-        lambda path: dict(current_report),
+        lambda path, *, dataset_splits=None: dict(current_report),
     )
     monkeypatch.setattr(
         run_quality_regression,
@@ -596,7 +648,11 @@ def test_main_returns_zero_when_gates_fail_without_fail_flag(
     monkeypatch.setattr(
         run_quality_regression,
         "evaluate_case_root",
-        lambda path: _quality_report(precision=0.1, recall=0.1, evidence_hit_rate=0.1),
+        lambda path, *, dataset_splits=None: _quality_report(
+            precision=0.1,
+            recall=0.1,
+            evidence_hit_rate=0.1,
+        ),
     )
     monkeypatch.setattr(
         run_quality_regression,
@@ -631,7 +687,11 @@ def test_main_returns_one_when_gates_fail_with_fail_flag(
     monkeypatch.setattr(
         run_quality_regression,
         "evaluate_case_root",
-        lambda path: _quality_report(precision=0.1, recall=0.1, evidence_hit_rate=0.1),
+        lambda path, *, dataset_splits=None: _quality_report(
+            precision=0.1,
+            recall=0.1,
+            evidence_hit_rate=0.1,
+        ),
     )
     monkeypatch.setattr(
         run_quality_regression,
@@ -677,7 +737,7 @@ def test_main_returns_zero_when_fail_flag_has_no_failed_gates(
     monkeypatch.setattr(
         run_quality_regression,
         "evaluate_case_root",
-        lambda path: _quality_report(),
+        lambda path, *, dataset_splits=None: _quality_report(),
     )
     monkeypatch.setattr(
         run_quality_regression,
@@ -739,6 +799,10 @@ def test_main_forwards_optional_paths_to_run_regression(
             str(html_output),
             "--write-baseline",
             str(write_baseline),
+            "--dataset-split",
+            "regression",
+            "--dataset-split",
+            "dev",
         ]
     )
 
@@ -751,6 +815,7 @@ def test_main_forwards_optional_paths_to_run_regression(
         "run_id": "forwarded-run",
         "html_output": html_output,
         "write_baseline": write_baseline,
+        "dataset_splits": {"dev", "regression"},
     }
 
 

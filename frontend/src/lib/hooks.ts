@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { getCompareRecords, getDiffs, getTask } from "./api";
+import { getDiffs, getTask } from "./api";
 import { createProgressEventSource, type ProgressEvent } from "./api_sse";
 import type { CompareRecordSummary, CompareTask, DiffItem, TaskStatus } from "../types";
 
@@ -222,9 +222,7 @@ export function useRecordProgressSSE(
 
       const scheduleFallback = () => {
         const fallbackTimer = window.setTimeout(function poll() {
-          void getCompareRecords().then((list) => {
-            const rec = list.find((r) => r.task_id === taskId);
-            if (!rec) return;
+          void getTask(taskId).then((rec) => {
             onUpdateRef.current(taskId, rec.progress_percent, rec.stage, rec.status);
             if (rec.status === "PROCESSING") {
               const next = window.setTimeout(poll, SSE_FALLBACK_POLL_MS);

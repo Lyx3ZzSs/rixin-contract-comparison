@@ -78,7 +78,7 @@ class LocalJsonTaskRepository:
                 tasks.append(CompareTask(**data))
             except (ValueError, TypeError):
                 continue
-        return sorted(tasks, key=lambda task: task.updated_at or task.created_at, reverse=True)
+        return sorted(tasks, key=lambda task: task.created_at or task.updated_at, reverse=True)
 
     def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
         with self._lock:

@@ -1,4 +1,5 @@
 import { act, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getCompareRecords } from "../lib/api";
@@ -41,6 +42,14 @@ const completedRecord: CompareRecordSummary = {
   report_url: "/api/compare/task-completed/report",
 };
 
+const pagePayload = (records: CompareRecordSummary[], page = 1, totalPages = 1) => ({
+  records,
+  total: records.length,
+  page,
+  page_size: 10,
+  total_pages: totalPages,
+});
+
 describe("ComparisonRecordsPage", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -53,7 +62,7 @@ describe("ComparisonRecordsPage", () => {
 
   it("opens processing records as progress and completed records as results", async () => {
     const onOpenTask = vi.fn();
-    vi.mocked(getCompareRecords).mockResolvedValueOnce([processingRecord, completedRecord]);
+    vi.mocked(getCompareRecords).mockResolvedValueOnce(pagePayload([processingRecord, completedRecord]));
 
     render(<ComparisonRecordsPage onOpenTask={onOpenTask} onCreateComparison={vi.fn()} />);
 
@@ -67,7 +76,7 @@ describe("ComparisonRecordsPage", () => {
   });
 
   it("updates progress via SSE for processing records", async () => {
-    vi.mocked(getCompareRecords).mockResolvedValueOnce([processingRecord]);
+    vi.mocked(getCompareRecords).mockResolvedValueOnce(pagePayload([processingRecord]));
 
     render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
 
@@ -93,8 +102,8 @@ describe("ComparisonRecordsPage", () => {
 
   it("refreshes full list when SSE reports completion", async () => {
     vi.mocked(getCompareRecords)
-      .mockResolvedValueOnce([processingRecord])
-      .mockResolvedValueOnce([completedRecord]);
+      .mockResolvedValueOnce(pagePayload([processingRecord]))
+      .mockResolvedValueOnce(pagePayload([completedRecord]));
 
     render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
 
@@ -124,5 +133,48 @@ describe("ComparisonRecordsPage", () => {
 
     expect(getCompareRecords).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("button", { name: "查看结果" })).toBeInTheDocument();
+  });
+
+  it("applies updated date filters from the toolbar", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getCompareRecords)
+      .mockResolvedValueOnce(pagePayload([completedRecord]))
+      .mockResolvedValueOnce(pagePayload([]));
+
+    render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
+
+    await screen.findByText("task-completed");
+    await user.type(screen.getByLabelText("创建开始日期"), "2026-05-21");
+    await user.type(screen.getByLabelText("创建结束日期"), "2026-05-22");
+    await user.click(screen.getByRole("button", { name: "查询" }));
+
+    expect(getCompareRecords).toHaveBeenLastCalledWith({
+      page: 1,
+      pageSize: 10,
+      startDate: "2026-05-21",
+      endDate: "2026-05-22",
+    });
+    expect(await screen.findByText("暂无对比记录")).toBeInTheDocument();
+  });
+
+  it("loads the next page of records", async () => {
+    const user = userEvent.setup();
+    const nextRecord = { ...completedRecord, task_id: "task-next", updated_at: "2026-05-12T00:02:00Z" };
+    vi.mocked(getCompareRecords)
+      .mockResolvedValueOnce({ ...pagePayload([completedRecord], 1, 2), total: 2 })
+      .mockResolvedValueOnce({ ...pagePayload([nextRecord], 2, 2), total: 2 });
+
+    render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
+
+    await screen.findByText("task-completed");
+    await user.click(screen.getByRole("button", { name: "下一页" }));
+
+    expect(getCompareRecords).toHaveBeenLastCalledWith({
+      page: 2,
+      pageSize: 10,
+      startDate: "",
+      endDate: "",
+    });
+    expect(await screen.findByText("task-next")).toBeInTheDocument();
   });
 });

@@ -5,7 +5,8 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.models import Clause, DiffItem, Document
+from app.models import Clause, DiffItem, Document, EvidenceBox, TextRange
+from app.services.diff.text_utils import shorten
 
 STRUCTURAL_RISK_FLAGS = {
     "POSSIBLE_SPLIT_DRIFT",
@@ -115,6 +116,9 @@ class ClauseBoundaryCoverageFilter:
         kept: list[DiffItem] = []
         decisions: list[BoundaryCoverageDecision] = []
         for diff in diffs:
+            diff, trim_decision = self._trim_covered_contact_fields(diff, context)
+            if trim_decision is not None:
+                decisions.append(trim_decision)
             suppression_reason = self._suppression_reason(diff, context)
             if suppression_reason:
                 decisions.append(
@@ -221,6 +225,53 @@ class ClauseBoundaryCoverageFilter:
             for sequence in required_sequences
         )
 
+    def _trim_covered_contact_fields(
+        self,
+        diff: DiffItem,
+        context: BoundaryCoverageContext,
+    ) -> tuple[DiffItem, BoundaryCoverageDecision | None]:
+        if not _eligible_structural_clause_diff(diff):
+            return diff, None
+
+        original_window = context.original_index.window_text(diff.original_clause_id)
+        compare_window = context.compare_index.window_text(diff.compare_clause_id)
+        if not original_window or not compare_window:
+            return diff, None
+
+        original_tokens = _covered_contact_tokens(diff.original_snippet, original_window, compare_window)
+        compare_tokens = _covered_contact_tokens(diff.compare_snippet, original_window, compare_window)
+        if not original_tokens and not compare_tokens:
+            return diff, None
+
+        update: dict[str, Any] = {}
+        detail: dict[str, Any] = {}
+        if original_tokens:
+            trimmed_ranges = _remove_ranges_for_tokens(diff.original_text, diff.original_change_ranges, original_tokens)
+            trimmed_evidence = _remove_evidence_for_tokens(diff.original_evidence, original_tokens)
+            update["original_change_ranges"] = trimmed_ranges
+            update["original_evidence"] = trimmed_evidence
+            update["original_snippet"] = _rebuild_snippet(diff.original_text, trimmed_ranges)
+            detail["removed_original_fields"] = _token_labels(original_tokens)
+        if compare_tokens:
+            trimmed_ranges = _remove_ranges_for_tokens(diff.compare_text, diff.compare_change_ranges, compare_tokens)
+            trimmed_evidence = _remove_evidence_for_tokens(diff.compare_evidence, compare_tokens)
+            update["compare_change_ranges"] = trimmed_ranges
+            update["compare_evidence"] = trimmed_evidence
+            update["compare_snippet"] = _rebuild_snippet(diff.compare_text, trimmed_ranges)
+            detail["removed_compare_fields"] = _token_labels(compare_tokens)
+
+        original_ranges = update.get("original_change_ranges", diff.original_change_ranges)
+        compare_ranges = update.get("compare_change_ranges", diff.compare_change_ranges)
+        update["readable_change"] = _rebuild_readable(diff.original_text, diff.compare_text, original_ranges, compare_ranges)
+        return (
+            diff.model_copy(update=update),
+            BoundaryCoverageDecision(
+                action="trimmed_by_neighbor_clause_coverage",
+                diff_id=diff.diff_id,
+                detail=detail,
+            ),
+        )
+
 
 def compact_text(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text or "")
@@ -262,6 +313,112 @@ def contact_field_coverage_sequences(text: str) -> set[str]:
     sequences = {sequence.normalized for sequence in _contiguous_contact_field_sequences(tokens)}
     sequences.update(_inferred_contact_field_sequences(tokens))
     return {sequence for sequence in sequences if sequence}
+
+
+def _covered_contact_tokens(
+    snippet: str,
+    original_window: str,
+    compare_window: str,
+) -> list[_FieldToken]:
+    tokens = [token for token in _field_tokens(snippet) if token.kind in {"contact", "phone", "fax"}]
+    if not tokens:
+        return []
+
+    original_sequences = contact_field_coverage_sequences(original_window)
+    compare_sequences = contact_field_coverage_sequences(compare_window)
+    covered_indexes: set[int] = set()
+    for sequence_tokens in _contact_token_groups(tokens):
+        sequence = _sequence_from_tokens(sequence_tokens)
+        if sequence.normalized in original_sequences and sequence.normalized in compare_sequences:
+            covered_indexes.update(id(token) for token in sequence_tokens)
+    return [token for token in tokens if id(token) in covered_indexes]
+
+
+def _contact_token_groups(tokens: list[_FieldToken]) -> list[list[_FieldToken]]:
+    groups: list[list[_FieldToken]] = [list(group) for group in _contiguous_contact_token_groups(tokens)]
+    groups.extend(_columnar_contact_groups(tokens))
+    return groups
+
+
+def _contiguous_contact_token_groups(tokens: list[_FieldToken]) -> list[list[_FieldToken]]:
+    groups: list[list[_FieldToken]] = []
+    current: list[_FieldToken] = []
+    for token in tokens:
+        if token.kind == "contact":
+            if current:
+                groups.append(current)
+            current = [token]
+            continue
+        if current:
+            current.append(token)
+        else:
+            groups.append([token])
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _remove_ranges_for_tokens(text: str, ranges: list[TextRange], tokens: list[_FieldToken]) -> list[TextRange]:
+    if not ranges or not tokens:
+        return list(ranges)
+    return [
+        range_
+        for range_ in ranges
+        if not any(_range_matches_token(text, range_, token) for token in tokens)
+    ]
+
+
+def _range_matches_token(text: str, range_: TextRange, token: _FieldToken) -> bool:
+    fragment = normalize_for_coverage(text[range_.start : range_.end])
+    token_text = normalize_for_coverage(f"{token.label}:{token.value}")
+    token_value = token.normalized_value
+    return bool(
+        fragment
+        and (
+            fragment == token_text
+            or fragment == token_value
+            or (len(fragment) >= 3 and fragment in token_text)
+            or (len(token_text) >= 3 and token_text in fragment)
+            or (len(token_value) >= 3 and token_value in fragment)
+        )
+    )
+
+
+def _remove_evidence_for_tokens(evidence: list[EvidenceBox], tokens: list[_FieldToken]) -> list[EvidenceBox]:
+    if not evidence or not tokens:
+        return list(evidence)
+    return [item for item in evidence if not any(_evidence_matches_token(item, token) for token in tokens)]
+
+
+def _evidence_matches_token(evidence: EvidenceBox, token: _FieldToken) -> bool:
+    evidence_text = normalize_for_coverage(evidence.text)
+    if not evidence_text:
+        return False
+    token_label = normalize_for_coverage(token.label)
+    token_text = normalize_for_coverage(f"{token.label}:{token.value}")
+    token_value = token.normalized_value
+    return evidence_text in {token_label, token_value, token_text} or evidence_text in token_text
+
+
+def _token_labels(tokens: list[_FieldToken]) -> list[str]:
+    return [f"{token.label}:{token.value}" for token in tokens]
+
+
+def _rebuild_snippet(text: str, ranges: list[TextRange]) -> str:
+    if not ranges:
+        return ""
+    return shorten("".join(text[range_.start : range_.end] for range_ in ranges))
+
+
+def _rebuild_readable(
+    original_text: str,
+    compare_text: str,
+    original_ranges: list[TextRange],
+    compare_ranges: list[TextRange],
+) -> str:
+    original_part = _rebuild_snippet(original_text, original_ranges)
+    compare_part = _rebuild_snippet(compare_text, compare_ranges)
+    return f"原文：{original_part}\n修改后：{compare_part}"
 
 
 def emails(text: str) -> list[str]:
@@ -390,27 +547,41 @@ def _contiguous_contact_field_sequences(tokens: list[_FieldToken]) -> list[Cover
 
 
 def _inferred_contact_field_sequences(tokens: list[_FieldToken]) -> set[str]:
-    contacts = [token for token in tokens if token.kind == "contact"]
-    phones = [token for token in tokens if token.kind == "phone"]
-    faxes = [token for token in tokens if token.kind == "fax"]
-    if not contacts:
-        return set()
-
-    sequences: set[str] = set()
-    for index, contact in enumerate(contacts):
-        group = [contact]
-        if index < len(phones):
-            group.append(phones[index])
-        if index < len(faxes):
-            group.append(faxes[index])
-        if len(group) > 1:
-            sequences.add(_sequence_from_tokens(group).normalized)
-    return sequences
+    return {
+        _sequence_from_tokens(group).normalized
+        for group in _columnar_contact_groups(tokens)
+        if len(group) > 1
+    }
 
 
 def _sequence_from_tokens(tokens: list[_FieldToken]) -> CoverageSequence:
     text = "".join(f"{token.label}:{token.value}" for token in tokens)
     return CoverageSequence(text, normalize_for_coverage(text))
+
+
+def _columnar_contact_groups(tokens: list[_FieldToken]) -> list[list[_FieldToken]]:
+    groups: list[list[_FieldToken]] = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index].kind != "contact":
+            index += 1
+            continue
+
+        contact_start = index
+        while index < len(tokens) and tokens[index].kind == "contact":
+            index += 1
+        contacts = tokens[contact_start:index]
+        following = tokens[index:]
+        phones = [token for token in following if token.kind == "phone"]
+        faxes = [token for token in following if token.kind == "fax"]
+        for offset, contact in enumerate(contacts):
+            group = [contact]
+            if offset < len(phones):
+                group.append(phones[offset])
+            if offset < len(faxes):
+                group.append(faxes[offset])
+            groups.append(group)
+    return groups
 
 
 def _snippets_contain_only_protected_boundary_fields(

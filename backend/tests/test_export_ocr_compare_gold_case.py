@@ -94,6 +94,33 @@ def test_export_gold_case_creates_review_draft_files(tmp_path: Path) -> None:
     assert "task-gold-001" in readme
 
 
+def test_export_gold_case_writes_schema_11_metadata(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task"
+    output_dir = tmp_path / "case_gold_001"
+    _write_task(task_dir)
+
+    export_gold_case(task_dir, output_dir)
+
+    expected = json.loads((output_dir / "expected.json").read_text(encoding="utf-8"))
+    first_diff = expected["expected_diffs"][0]
+    assert expected["schema_version"] == "1.1"
+    assert expected["dataset_split"] == "dev"
+    assert expected["case_tags"] == ["exported", "requires_human_review"]
+    assert expected["baseline_required"] is False
+    assert (
+        expected["quality_expectations"][
+            "max_known_false_positive_regression_count"
+        ]
+        == 0
+    )
+    assert first_diff["review_status"] == "DRAFT"
+    assert first_diff["reviewer"] == ""
+    assert first_diff["reviewed_at"] == ""
+    assert first_diff["false_positive_reason"] == ""
+    assert first_diff["false_negative_reason"] == ""
+    assert first_diff["should_not_match_again"] is False
+
+
 def test_export_gold_case_refuses_to_overwrite_reviewed_expected(
     tmp_path: Path,
 ) -> None:
