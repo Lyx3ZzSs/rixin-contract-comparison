@@ -847,7 +847,16 @@ class DiffQualityStage:
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
-        result = self.processor.process(ctx.require_diffs())
+        diffs = ctx.require_diffs()
+        original_document = ctx.original_extraction.document if ctx.original_extraction is not None else None
+        compare_document = ctx.compare_extraction.document if ctx.compare_extraction is not None else None
+        result = self.processor.process(
+            diffs,
+            original_clauses=ctx.original_clauses,
+            compare_clauses=ctx.compare_clauses,
+            original_document=original_document,
+            compare_document=compare_document,
+        )
         ctx.diffs = result.diffs
         merged_to_winner = self._merged_to_winner(result)
         self._remap_ocr_quality_summary(ctx, result, merged_to_winner)

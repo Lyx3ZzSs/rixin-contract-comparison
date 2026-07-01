@@ -30,6 +30,7 @@ from app.models import (
 )
 from app.services.extractors.base import ExtractionResult
 from app.services.compare_service import CompareService
+from app.services.diff_quality import DiffQualityResult
 from app.services.pipeline import ComparePipeline, PipelineContext, _copy_processing_result
 from app.services.pipeline_stages import (
     ClauseDiffStage,
@@ -1320,6 +1321,10 @@ def test_ocr_remediation_actions_survive_diff_quality_cross_source_merge(tmp_pat
         original_pdf=tmp_path / "original.pdf",
         compare_pdf=tmp_path / "compare.pdf",
     )
+    ctx.set_extractions(
+        ExtractionResult(document=make_document("付款30日"), extractor_used="test"),
+        ExtractionResult(document=make_document("付款45日"), extractor_used="test"),
+    )
     ctx.diffs = [
         DiffItem(
             diff_id="D001",
@@ -1348,6 +1353,87 @@ def test_ocr_remediation_actions_survive_diff_quality_cross_source_merge(tmp_pat
     action = task.ocr_remediation_summary.actions[0]
     assert action.diff_id == "D001"
     assert action.action_id == "original:1:D001:RELOCATE_EVIDENCE"
+
+
+def test_diff_quality_stage_passes_boundary_context_to_processor(tmp_path: Path) -> None:
+    class SpyDiffQualityProcessor:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        def process(self, diffs, **kwargs):
+            self.kwargs = kwargs
+            return DiffQualityResult(diffs=diffs, decisions=[])
+
+    artifact_store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    ctx = make_ctx(tmp_path)
+    original_document = make_document("第一条 原合同文本。")
+    compare_document = make_document("第一条 新合同文本。")
+    ctx.set_extractions(
+        ExtractionResult(document=original_document, extractor_used="test"),
+        ExtractionResult(document=compare_document, extractor_used="test"),
+    )
+    ctx.original_clauses = [make_clause("O001", "1", "第一条 原合同文本。")]
+    ctx.compare_clauses = [make_clause("N001", "1", "第一条 新合同文本。")]
+    ctx.diffs = [DiffItem(diff_id="D001", diff_type="MODIFY", source_type="clause")]
+    stage = DiffQualityStage(artifact_store=artifact_store)
+    spy = SpyDiffQualityProcessor()
+    stage.processor = spy
+
+    stage.execute(ctx)
+
+    assert spy.kwargs is not None
+    assert spy.kwargs["original_clauses"] is ctx.original_clauses
+    assert spy.kwargs["compare_clauses"] is ctx.compare_clauses
+    assert spy.kwargs["original_document"] is original_document
+    assert spy.kwargs["compare_document"] is compare_document
+
+
+def test_diff_quality_stage_allows_diffs_without_extractions(tmp_path: Path) -> None:
+    class SpyDiffQualityProcessor:
+        def __init__(self) -> None:
+            self.called = False
+            self.kwargs = None
+
+        def process(self, diffs, **kwargs):
+            self.called = True
+            self.kwargs = kwargs
+            return DiffQualityResult(diffs=diffs, decisions=[])
+
+    artifact_store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    ctx = make_ctx(tmp_path)
+    ctx.original_clauses = [make_clause("O001", "1", "第一条 原合同文本。")]
+    ctx.compare_clauses = [make_clause("N001", "1", "第一条 新合同文本。")]
+    ctx.diffs = [DiffItem(diff_id="D001", diff_type="MODIFY", source_type="clause")]
+    stage = DiffQualityStage(artifact_store=artifact_store)
+    spy = SpyDiffQualityProcessor()
+    stage.processor = spy
+
+    stage.execute(ctx)
+
+    assert spy.called
+    assert spy.kwargs is not None
+    assert spy.kwargs["original_clauses"] is ctx.original_clauses
+    assert spy.kwargs["compare_clauses"] is ctx.compare_clauses
+    assert spy.kwargs["original_document"] is None
+    assert spy.kwargs["compare_document"] is None
+
+
+def test_diff_quality_stage_requires_diffs_before_optional_extractions(tmp_path: Path) -> None:
+    class MissingDiffsContext(PipelineContext):
+        def require_diffs(self) -> list[DiffItem]:
+            raise PipelineContractError("Pipeline stage requires diffs.")
+
+        def require_extractions(self):
+            raise AssertionError("DiffQualityStage should not require extractions before diffs")
+
+    ctx = MissingDiffsContext(
+        task=CompareTask(task_id="TMISSINGDIFFS"),
+        original_pdf=tmp_path / "original.pdf",
+        compare_pdf=tmp_path / "compare.pdf",
+    )
+
+    with pytest.raises(PipelineContractError, match="requires diffs"):
+        DiffQualityStage().execute(ctx)
 
 
 def test_ocr_quality_survives_diff_quality_cross_source_merge(tmp_path: Path) -> None:
