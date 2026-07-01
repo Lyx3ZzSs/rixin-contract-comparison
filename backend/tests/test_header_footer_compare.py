@@ -216,6 +216,29 @@ def test_header_footer_ignores_repeated_short_cjk_edge_noise() -> None:
     assert diffs == []
 
 
+def test_header_footer_ignores_short_ascii_and_page_number_edge_noise() -> None:
+    original = _document(
+        [
+            [
+                _block("o-logo", "AC", x0=66, y0=78, x1=139, y1=112, block_type="header", page_no=1),
+                _block("o-page", "3", x0=462, y0=79, x1=488, y1=101, block_type="header", page_no=1),
+            ]
+        ]
+    )
+    compare = _document(
+        [
+            [
+                _block("c-noise", "j", x0=23, y0=9, x1=41, y1=29, block_type="header", page_no=1),
+                _block("c-page", "3", x0=462, y0=79, x1=488, y1=101, block_type="header", page_no=1),
+            ]
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
 def test_header_footer_ignores_one_page_short_cjk_edge_noise() -> None:
     original = _document([[_block("o1", "理", x0=26, y0=24, x1=87, y1=102, block_type="header")]])
     compare = _document([[]])

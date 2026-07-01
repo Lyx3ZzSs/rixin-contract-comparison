@@ -634,7 +634,10 @@ class HeaderFooterComparator:
         compact = self._compact(text)
         if not (1 <= len(compact) <= 2):
             return False
-        if not re.fullmatch(r"[\u4e00-\u9fff]+", compact):
+        if not re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9]+", compact):
             return False
         near_top = block.bbox.y1 <= page_height * 0.12 or block.bbox.y0 <= page_height * 0.05
-        return near_top and block.bbox.x0 <= 100
+        near_left_edge = block.bbox.x0 <= 100
+        near_logo_band = near_left_edge and block.bbox.y0 <= page_height * 0.15
+        near_page_number_band = bool(re.fullmatch(r"\d{1,2}", compact)) and block.bbox.y1 <= page_height * 0.14
+        return (near_top and (near_left_edge or near_page_number_band)) or near_logo_band

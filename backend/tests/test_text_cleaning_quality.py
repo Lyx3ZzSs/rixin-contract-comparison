@@ -349,6 +349,51 @@ def test_clause_splitter_keeps_single_numeric_inline_body_clause_number() -> Non
     assert "付款方式" in clauses[1].title
 
 
+def test_clause_splitter_does_not_promote_article_reference_as_clause_number() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="quality-31",
+                        page_no=1,
+                        text=(
+                            "3.1 乙方应于本合同签订后【】日内提供给甲方一套样品，"
+                            "本合同项下产品应与乙方提供并经甲方书面确认合格的样品及"
+                        ),
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                    ),
+                    TextBlock(
+                        block_id="article-reference",
+                        page_no=1,
+                        text="第1条所列明的\n货物规格等要求一致。[适用有样品的情形]",
+                        bbox=BBox(x0=70, y0=112, x1=500, y1=145),
+                    ),
+                    TextBlock(
+                        block_id="quality-32",
+                        page_no=1,
+                        text=(
+                            "3.2 本合同项下产品应符合其产品说明书或包装上注明采用的产品质量标准。"
+                        ),
+                        bbox=BBox(x0=50, y0=150, x1=500, y1=180),
+                    )
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["3.1", "3.2"]
+    assert "第1条所列明的货物规格等要求一致" in clauses[0].text.replace("\n", "")
+
+
 def test_clause_splitter_merges_ocr_split_paragraph_with_evidence() -> None:
     document = Document(
         filename="sample.pdf",

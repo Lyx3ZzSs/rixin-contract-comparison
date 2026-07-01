@@ -146,6 +146,23 @@ def test_severe_conflict_table_does_not_add_value_already_present_in_original_so
     assert not any(diff.compare_text == "6个月" and diff.diff_type == "ADD" for diff in diffs)
 
 
+def test_low_quality_table_does_not_add_isolated_single_character_fragment() -> None:
+    original = _structured_table(
+        [["序号", "标的物", "备注"], ["1", "AGCAVC系统", ""]],
+        source_text="序号 标的物 备注 1 AGCAVC系统",
+        geometry_status="low_confidence",
+    )
+    compare = _structured_table(
+        [["序号", "标的物", "备注"], ["1", "AGCAVC系统", "川"]],
+        source_text="序号 标的物 备注 1 AGCAVC系统",
+        geometry_status="low_confidence",
+    )
+
+    diffs = TableComparator()._diff_builder.diff_cells(original, compare)
+
+    assert not any(diff.compare_text == "川" and diff.diff_type == "ADD" for diff in diffs)
+
+
 def test_severe_conflict_table_does_not_delete_cross_page_continuation_covered_by_compare_source() -> None:
     compare_source = (
         "李江城 国能日新 科技股份 有限公司 男 1991.9 工程师 "

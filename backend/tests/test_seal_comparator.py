@@ -71,3 +71,20 @@ def test_seal_diffs_fall_back_to_block_bbox_without_layout_bbox() -> None:
 
     assert len(diffs) == 1
     assert diffs[0].compare_evidence[0].bbox == block_bbox
+
+
+def test_seal_diffs_ignore_text_or_html_changes_inside_matched_regions() -> None:
+    seal_bbox = BBox(x0=208, y0=121, x1=322, y1=232)
+    original = _document([_block("o1", "司", BBox(x0=211, y0=153, x1=239, y1=175), layout_bbox=seal_bbox)])
+    compare = _document([
+        _block(
+            "c1",
+            '<div style="text-align: center;"><img src="imgs/img_in_seal_box.jpg" alt="Image" /></div>',
+            BBox(x0=216, y0=178, x1=299, y1=225),
+            layout_bbox=seal_bbox,
+        )
+    ])
+
+    diffs = build_seal_diffs(original, compare)
+
+    assert diffs == []

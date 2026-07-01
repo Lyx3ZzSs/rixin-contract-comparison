@@ -6,6 +6,7 @@ Compares seal blocks between two documents and produces diffs with
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from app.models import BBox, DiffItem, Document, EvidenceBox, TextBlock, TextRange
 from app.utils.id_utils import generate_diff_id
@@ -177,6 +178,8 @@ def _build_modify(orig: SealEntry, comp: SealEntry, index: int) -> DiffItem | No
     comp_text = comp.text
     if orig_text == comp_text:
         return None
+    if _is_unreliable_seal_text_change(orig_text, comp_text):
+        return None
 
     return DiffItem(
         diff_id=generate_diff_id(index),
@@ -193,6 +196,28 @@ def _build_modify(orig: SealEntry, comp: SealEntry, index: int) -> DiffItem | No
         original_change_ranges=[TextRange(start=0, end=len(orig_text), highlight_type="MODIFY")] if orig_text else [],
         compare_change_ranges=[TextRange(start=0, end=len(comp_text), highlight_type="MODIFY")] if comp_text else [],
     )
+
+
+def _is_unreliable_seal_text_change(orig_text: str, comp_text: str) -> bool:
+    """Ignore OCR/HTML artifacts within a matched seal region."""
+    orig_norm = _normalize_seal_text(orig_text)
+    comp_norm = _normalize_seal_text(comp_text)
+    if not orig_norm and not comp_norm:
+        return True
+    if _contains_html_markup(orig_text) or _contains_html_markup(comp_text):
+        return True
+    if min(len(orig_norm), len(comp_norm)) <= 1 and max(len(orig_norm), len(comp_norm)) <= 2:
+        return True
+    return False
+
+
+def _normalize_seal_text(text: str) -> str:
+    text = re.sub(r"<[^>]+>", "", text)
+    return re.sub(r"\s+", "", text)
+
+
+def _contains_html_markup(text: str) -> bool:
+    return bool(re.search(r"</?[A-Za-z][^>]*>", text))
 
 
 def _region_evidence(entry: SealEntry, highlight_type: str) -> EvidenceBox:

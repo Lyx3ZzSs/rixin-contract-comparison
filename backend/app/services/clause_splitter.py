@@ -637,6 +637,8 @@ class ClauseSplitter:
         marker = self._parse_marker(first_text)
         if marker is None:
             return False
+        if self._is_article_reference_continuation(first_text, marker):
+            return True
         if self._is_amount_or_value_continuation(first_text, marker):
             return True
         return self._is_weak_numeric_continuation(first_text, marker)
@@ -1202,6 +1204,16 @@ class ClauseSplitter:
             return False
         first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
         return bool(re.search(r"(元|万元|亿元|税|价款|费用|金额|合同约定|税务机关)", first_line))
+
+    def _is_article_reference_continuation(self, text: str, marker: tuple[str, str]) -> bool:
+        clause_no, title = marker
+        if not re.fullmatch(r"第[零〇一二两三四五六七八九十百千万0-9]+(?:\.\d+)*条", clause_no or ""):
+            return False
+        compact_title = re.sub(r"\s+", "", title or "")
+        if re.match(r"^(所列|所述|上述|前述|规定|约定|列明|所列明)", compact_title):
+            return True
+        first_line = re.sub(r"\s+", "", (text or "").strip().splitlines()[0] if (text or "").strip() else "")
+        return bool(re.match(r"^第[零〇一二两三四五六七八九十百千万0-9]+(?:\.\d+)*条(所列|所述|上述|前述|规定|约定|列明|所列明)", first_line))
 
     def _is_weak_numeric_continuation(self, text: str, marker: tuple[str, str]) -> bool:
         clause_no, title = marker

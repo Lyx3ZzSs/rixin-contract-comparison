@@ -373,6 +373,18 @@ class TableDiffBuilder:
                         compare_text=comp_text,
                     )
                     continue
+                if self._is_low_quality_isolated_fragment(original, compare, orig_norm, comp_norm):
+                    self._record_suppressed_diff(
+                        "low_quality_isolated_fragment",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
+                    continue
                 if not orig_norm and not comp_norm:
                     continue
 
@@ -879,6 +891,27 @@ class TableDiffBuilder:
     @staticmethod
     def _has_unusable_geometry(*tables: StructuredTable) -> bool:
         return any(getattr(table, "geometry_status", "") in {"geometry_unusable", "severe_conflict"} for table in tables)
+
+    @staticmethod
+    def _has_low_quality_geometry(*tables: StructuredTable) -> bool:
+        return any(
+            getattr(table, "geometry_status", "") in {"low_confidence", "geometry_unusable", "severe_conflict"}
+            for table in tables
+        )
+
+    def _is_low_quality_isolated_fragment(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_norm: str,
+        comp_norm: str,
+    ) -> bool:
+        if not self._has_low_quality_geometry(original, compare):
+            return False
+        if bool(orig_norm) == bool(comp_norm):
+            return False
+        present = comp_norm or orig_norm
+        return 0 < len(present) <= 1 and not self._is_protected_business_change(orig_norm, comp_norm)
 
     def _one_sided_cell_covered_by_conflicted_source(
         self,
