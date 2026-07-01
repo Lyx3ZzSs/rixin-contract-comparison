@@ -5,7 +5,8 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.models import DiffItem, EvidenceBox
+from app.models import Clause, DiffItem, Document, EvidenceBox
+from app.services.diff.boundary_coverage import BoundaryCoverageContext, ClauseBoundaryCoverageFilter
 from app.services.diff.range_refiner import layout_punctuation_equivalent
 
 
@@ -54,7 +55,18 @@ class DiffQualityProcessor:
     low_value_symbol_pattern = re.compile(r"^[\d/\\∠_.,，。·•\-—~～…\sLIl|]+$", re.IGNORECASE)
     header_footer_pattern = re.compile(r"(?:页眉|页脚|页码|第\s*\d+\s*页|共\s*\d+\s*页)")
 
-    def process(self, diffs: list[DiffItem]) -> DiffQualityResult:
+    def __init__(self) -> None:
+        self.boundary_coverage_filter = ClauseBoundaryCoverageFilter()
+
+    def process(
+        self,
+        diffs: list[DiffItem],
+        *,
+        original_clauses: list[Clause] | None = None,
+        compare_clauses: list[Clause] | None = None,
+        original_document: Document | None = None,
+        compare_document: Document | None = None,
+    ) -> DiffQualityResult:
         working = [diff.model_copy(deep=True) for diff in diffs]
         decisions: list[DiffQualityDecision] = []
         working = self._dedupe_cross_source(working, decisions)
@@ -63,6 +75,19 @@ class DiffQualityProcessor:
         self._flag_structural_risks(working, decisions)
         self._flag_boundary_drift(working, decisions)
         self._flag_cross_source_structural_misclassification(working, decisions)
+        working, boundary_decisions = self.boundary_coverage_filter.filter(
+            working,
+            BoundaryCoverageContext(
+                original_clauses=original_clauses or [],
+                compare_clauses=compare_clauses or [],
+                original_document=original_document,
+                compare_document=compare_document,
+            ),
+        )
+        decisions.extend(
+            DiffQualityDecision(action=decision.action, diff_id=decision.diff_id, detail=decision.detail)
+            for decision in boundary_decisions
+        )
         self._propagate_text_confidence(working)
         return DiffQualityResult(diffs=working, decisions=decisions)
 

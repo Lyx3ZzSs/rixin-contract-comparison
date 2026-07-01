@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.models import BBox, Clause, ClausePair, DiffItem, Document, EvidenceBox, Page, TextBlock
 from app.services.clause_splitter import ClauseSplitter
 from app.services.diff_engine import DiffEngine
@@ -1253,6 +1255,62 @@ def test_quote_section_is_split_from_main_contract_clause_flow() -> None:
     assert "SECTION_QUOTE" in clauses[1].split_flags
 
 
+def _quality_clause(
+    clause_id: str,
+    text: str,
+    *,
+    side_prefix: str = "O",
+    order_index: int = 1,
+    page_no: int = 1,
+    section_type: str = "main_contract",
+    split_flags: list[str] | None = None,
+) -> Clause:
+    return Clause(
+        clause_id=clause_id,
+        clause_no="",
+        title=text.splitlines()[0] if text else "",
+        text=text,
+        normalized_text=re.sub(r"\s+", "", text),
+        page_numbers=[page_no],
+        bboxes=[
+            EvidenceBox(
+                page_no=page_no,
+                bbox=BBox(x0=10, y0=10, x1=120, y1=30),
+                text=text[:80],
+            )
+        ],
+        source_block_ids=[f"{side_prefix.lower()}_block_{order_index}"],
+        section_type=section_type,
+        section_path=[text] if section_type == "appendix" else [],
+        order_index=order_index,
+        split_flags=split_flags or [],
+    )
+
+
+def _quality_document(page_no: int, text: str) -> Document:
+    return Document(
+        filename="quality.pdf",
+        path="quality.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=page_no,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id=f"p{page_no}_b1",
+                        page_no=page_no,
+                        text=text,
+                        bbox=BBox(x0=40, y0=80, x1=540, y1=140),
+                        block_type="text",
+                    )
+                ],
+            )
+        ],
+    )
+
+
 def test_diff_quality_flags_critical_changes_and_minor_ocr_noise() -> None:
     diffs = [
         DiffItem(
@@ -1306,6 +1364,121 @@ def test_diff_quality_suppresses_short_symbol_noise_without_business_tokens() ->
 
     assert [diff.diff_id for diff in result.diffs] == ["D002"]
     assert any(decision.action == "suppressed_low_value_noise" and decision.diff_id == "D001" for decision in result.decisions)
+
+
+def test_diff_quality_suppresses_appendix_heading_delete_covered_by_compare_page_text() -> None:
+    original_clause = _quality_clause(
+        "OC093",
+        "附件一:",
+        order_index=93,
+        page_no=13,
+        section_type="appendix",
+        split_flags=["SECTION_APPENDIX"],
+    )
+    compare_document = _quality_document(13, "附件一：\n技术服务人员表\n姓名 单位 性别")
+    diff = DiffItem(
+        diff_id="D016",
+        diff_type="DELETE",
+        source_type="clause",
+        original_clause_id="OC093",
+        section_type="appendix",
+        section_path=["附件一:"],
+        original_text="附件一:",
+        original_snippet="附件一:",
+        structural_flags=["SECTION_APPENDIX"],
+        review_flags=["NON_MAIN_CONTRACT_SECTION"],
+        original_evidence=original_clause.bboxes,
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[],
+        compare_document=compare_document,
+    )
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D016"
+        and decision.detail["reason"] == "short_appendix_heading_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_appendix_heading_delete_when_opposite_page_only_references_appendix() -> None:
+    original_clause = _quality_clause(
+        "OC093",
+        "附件一:",
+        order_index=93,
+        page_no=13,
+        section_type="appendix",
+        split_flags=["SECTION_APPENDIX"],
+    )
+    compare_document = _quality_document(13, "服务范围详见附件一的人员安排，双方按正文约定执行。")
+    diff = DiffItem(
+        diff_id="D016",
+        diff_type="DELETE",
+        source_type="clause",
+        original_clause_id="OC093",
+        section_type="appendix",
+        section_path=["附件一:"],
+        original_text="附件一:",
+        original_snippet="附件一:",
+        structural_flags=["SECTION_APPENDIX"],
+        review_flags=["NON_MAIN_CONTRACT_SECTION"],
+        original_evidence=original_clause.bboxes,
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[],
+        compare_document=compare_document,
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D016"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage" and decision.diff_id == "D016"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_appendix_heading_delete_without_evidence_pages() -> None:
+    original_clause = _quality_clause(
+        "OC093",
+        "附件一:",
+        order_index=93,
+        page_no=13,
+        section_type="appendix",
+        split_flags=["SECTION_APPENDIX"],
+    )
+    compare_document = _quality_document(13, "附件一：\n技术服务人员表\n姓名 单位 性别")
+    diff = DiffItem(
+        diff_id="D016",
+        diff_type="DELETE",
+        source_type="clause",
+        original_clause_id="OC093",
+        section_type="appendix",
+        section_path=["附件一:"],
+        original_text="附件一:",
+        original_snippet="附件一:",
+        structural_flags=["SECTION_APPENDIX"],
+        review_flags=["NON_MAIN_CONTRACT_SECTION"],
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[],
+        compare_document=compare_document,
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D016"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage" and decision.diff_id == "D016"
+        for decision in result.decisions
+    )
 
 
 def test_diff_quality_preserves_critical_field_change_from_low_value_suppression() -> None:
