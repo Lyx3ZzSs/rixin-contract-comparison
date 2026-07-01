@@ -56,7 +56,6 @@ class DiffQualityProcessor:
     single_latin_layout_glyphs = {"i", "l", "|"}
     header_footer_pattern = re.compile(r"(?:页眉|页脚|页码|第\s*\d+\s*页|共\s*\d+\s*页)")
     directly_suppressible_review_reasons = {
-        "cover_annotation_noise",
         "single_latin_layout_glyph_noise",
     }
 
@@ -210,6 +209,11 @@ class DiffQualityProcessor:
                         detail={"flags": sorted(set(diff.structural_flags) | set(diff.review_flags))},
                     )
                 )
+                continue
+            if self._is_visible_cover_annotation_review(diff):
+                self._add_flag(diff, "COVER_ANNOTATION_REVIEW")
+                diff.quality_status = "NEEDS_REVIEW"
+                decisions.append(DiffQualityDecision(action="cover_annotation_review", diff_id=diff.diff_id))
                 continue
             if self._is_critical_change(diff):
                 self._add_flag(diff, "CRITICAL_VALUE_CHANGE")
@@ -498,6 +502,15 @@ class DiffQualityProcessor:
             )
             for evidence in evidences
         )
+
+    def _is_visible_cover_annotation_review(self, diff: DiffItem) -> bool:
+        if diff.source_type != "metadata" or diff.title != "封面额外文本":
+            return False
+        flags = set(diff.review_flags)
+        if not flags.intersection(self.ocr_quality_review_flags | {"POSSIBLE_COVER_OCR_FRAGMENT"}):
+            return False
+        evidences = [*diff.original_evidence, *diff.compare_evidence]
+        return any(evidence.method in {"header_footer", "cover_extra"} and evidence.bbox.y0 <= 96.0 for evidence in evidences)
 
     @staticmethod
     def _looks_like_single_cjk_cover_stamp_fragment(

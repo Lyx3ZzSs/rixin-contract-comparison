@@ -2369,7 +2369,7 @@ def test_diff_quality_suppresses_single_latin_glyph_layout_artifact() -> None:
     )
 
 
-def test_diff_quality_suppresses_low_confidence_cover_annotation_fragments() -> None:
+def test_diff_quality_keeps_visible_cover_annotation_fragments_for_review() -> None:
     diffs = [
         DiffItem(
             diff_id="D005",
@@ -2378,7 +2378,12 @@ def test_diff_quality_suppresses_low_confidence_cover_annotation_fragments() -> 
             title="封面额外文本",
             compare_text="Cakilu-7020513",
             compare_snippet="Cakilu-7020513",
-            review_flags=["EVIDENCE_UNRELIABLE", "OCR_REMEDIATION_UNRESOLVED"],
+            review_flags=[
+                "PAGE_UNRELIABLE",
+                "READING_ORDER_RISK",
+                "SEAL_OR_SIGNATURE_RISK",
+                "POSSIBLE_COVER_OCR_FRAGMENT",
+            ],
             compare_evidence=[
                 EvidenceBox(
                     page_no=1,
@@ -2395,17 +2400,24 @@ def test_diff_quality_suppresses_low_confidence_cover_annotation_fragments() -> 
             diff_type="ADD",
             source_type="metadata",
             title="封面额外文本",
-            compare_text="N2o",
-            compare_snippet="N2o",
-            review_flags=["EVIDENCE_UNRELIABLE", "OCR_REMEDIATION_UNRESOLVED"],
+            compare_text="正",
+            compare_snippet="正",
+            review_flags=[
+                "LAYOUT_MISMATCH_RISK",
+                "PAGE_UNRELIABLE",
+                "READING_ORDER_RISK",
+                "SEAL_OR_SIGNATURE_RISK",
+                "OCR_REMEDIATION_MANUAL_REVIEW",
+                "POSSIBLE_COVER_OCR_FRAGMENT",
+            ],
             compare_evidence=[
                 EvidenceBox(
                     page_no=1,
-                    bbox=BBox(x0=493.5, y0=7, x1=540, y1=33),
-                    method="header_footer",
-                    text="N2o",
-                    confidence=0.55,
-                    evidence_quality="LOW",
+                    bbox=BBox(x0=451.5, y0=14.5, x1=545.0, y1=75.0),
+                    method="cover_extra",
+                    text="正",
+                    confidence=0.68,
+                    evidence_quality="MEDIUM",
                 )
             ],
         ),
@@ -2413,18 +2425,16 @@ def test_diff_quality_suppresses_low_confidence_cover_annotation_fragments() -> 
 
     result = DiffQualityProcessor().process(diffs)
 
-    assert result.diffs == []
-    assert {
-        (decision.diff_id, decision.detail.get("reason"))
+    assert [diff.diff_id for diff in result.diffs] == ["D005", "D007"]
+    assert all(diff.quality_status == "NEEDS_REVIEW" for diff in result.diffs)
+    assert not any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id in {"D005", "D007"}
         for decision in result.decisions
-        if decision.action == "suppressed_low_value_noise"
-    } == {
-        ("D005", "cover_annotation_noise"),
-        ("D007", "cover_annotation_noise"),
-    }
+    )
 
 
-def test_diff_quality_suppresses_single_cjk_cover_stamp_fragment_near_top() -> None:
+def test_diff_quality_keeps_single_cjk_cover_stamp_fragment_near_top_for_review() -> None:
     diff = DiffItem(
         diff_id="D007",
         diff_type="ADD",
@@ -2454,13 +2464,9 @@ def test_diff_quality_suppresses_single_cjk_cover_stamp_fragment_near_top() -> N
 
     result = DiffQualityProcessor().process([diff])
 
-    assert result.diffs == []
-    assert any(
-        decision.action == "suppressed_low_value_noise"
-        and decision.diff_id == "D007"
-        and decision.detail["reason"] == "cover_annotation_noise"
-        for decision in result.decisions
-    )
+    assert [item.diff_id for item in result.diffs] == ["D007"]
+    assert result.diffs[0].quality_status == "NEEDS_REVIEW"
+    assert not any(decision.action == "suppressed_low_value_noise" for decision in result.decisions)
 
 
 def test_diff_quality_reclassifies_clause_mixed_signing_date_fill_as_signature_date_change() -> None:
