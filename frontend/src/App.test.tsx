@@ -48,21 +48,17 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
 
-    const qualityEntry = screen.getByRole("button", { name: /质量工作台/ });
-    expect(qualityEntry).toHaveClass("active");
-    expect(qualityEntry).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("button", { name: /质量工作台/ })).not.toBeInTheDocument();
   });
 
-  it("navigates to the quality workbench from the comparison menu", async () => {
+  it("hides the quality workbench from the comparison menu", async () => {
     const user = userEvent.setup();
     renderAuthenticatedApp("/");
 
     expect(screen.getByText("Mock Upload Page")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
-    await user.click(screen.getByRole("button", { name: /质量工作台/ }));
 
-    expect(window.location.pathname).toBe("/quality/workbench");
-    expect(screen.getByText("Mock Quality Workbench")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /质量工作台/ })).not.toBeInTheDocument();
   });
 });

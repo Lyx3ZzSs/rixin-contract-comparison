@@ -8,7 +8,6 @@ import { UploadPage } from "./pages/UploadPage";
 import {
   navigateHome,
   navigateToComparisonRecords,
-  navigateToQualityWorkbench,
   navigateToTask,
 } from "./lib/routes";
 import { useApp } from "./lib/state";
@@ -95,15 +94,6 @@ export function App() {
                 >
                   <span className="oa-history-icon" aria-hidden="true" />
                   <span>对比记录</span>
-                </button>
-                <button
-                  className={route.name === "quality" ? "active" : ""}
-                  type="button"
-                  onClick={navigateToQualityWorkbench}
-                  aria-current={route.name === "quality" ? "page" : undefined}
-                >
-                  <span className="oa-history-icon" aria-hidden="true" />
-                  <span>质量工作台</span>
                 </button>
               </div>
             )}
