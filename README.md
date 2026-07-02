@@ -78,6 +78,17 @@ python app/main.py
 VITE_API_BASE_URL=http://127.0.0.1:8001
 ```
 
+## Docker 部署
+
+本项目支持 Docker Compose 部署前后端容器，OCR 和 PP-Structure 使用外部服务。详细步骤见 [Docker 部署指南](docs/docker-deployment.md)。
+
+快速启动：
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
 ## 文档识别配置
 
 后端运行配置集中在仓库根目录 `.env`，模板见 `.env.example`；也可在 `backend/.env` 放后端本地覆盖。代码读取和校验入口在 `backend/app/config.py`，默认提示词在 `backend/app/config_defaults.py`。
