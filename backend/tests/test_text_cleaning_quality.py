@@ -1939,6 +1939,131 @@ def test_diff_quality_suppresses_one_sided_modify_fragment_covered_by_opposite_p
     )
 
 
+def test_diff_quality_suppresses_non_contiguous_split_original_fragments_covered_by_opposite_page() -> None:
+    original_document = _quality_document(
+        2,
+        "1.9.除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,均包括本数;“不满”“超\n"
+        "过”“以外”,不包括本数;“×日前”“×日后”不包括当日。按照日、月、年计算期间\n"
+        "的,开始的当日不算入,从下一日开始计算。期间的最后一日法定休假日的,以\n"
+        "法定休假日结束的次日为期间的最后一日。\n"
+        "2. 服务内容",
+    )
+    diff = DiffItem(
+        diff_id="D093",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="1.9",
+        original_clause_id="OC010P01",
+        compare_clause_id="NC010",
+        original_text="过”“以外”,不包括本数;“×日前”“×日后”不包括当日。按照日、月、年计算期",
+        compare_text=(
+            "1.9. 除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,均包括本数;“不满”“超\n"
+            "过”“以外”,不包括本数;“×日前”“×日后”不包括当日。按照日、月、年计算期\n"
+            "间的,开始的当日不算入,从下一日开始计算。期间的最后一日法定休假日的,\n"
+            "以法定休假日结束的次日为期间的最后一日。"
+        ),
+        original_snippet="",
+        compare_snippet=(
+            "1.9. 除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,均包括本数;"
+            "“不满”“超间的,开始的当日不算入,从下一日开始计算。"
+            "期间的最后一日法定休假日的,以法定休假日结束的次日为期间的最后一日。"
+        ),
+        review_flags=[
+            "LOW_COVERAGE_MATCH_REVIEW",
+            "PARTIAL_CLAUSE_MATCH",
+            "POSSIBLE_SPLIT_CLAUSE",
+            "TEXT_FOUND_IN_OTHER_CLAUSE",
+            "READING_ORDER_RISK",
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[
+            EvidenceBox(page_no=2, bbox=BBox(x0=62, y0=626, x1=82, y1=639), text="1.9."),
+            EvidenceBox(page_no=2, bbox=BBox(x0=80, y0=626, x1=350, y1=639), text="除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,"),
+            EvidenceBox(page_no=2, bbox=BBox(x0=95, y0=672, x1=122, y1=686), text="间的,"),
+            EvidenceBox(page_no=2, bbox=BBox(x0=96, y0=695, x1=300, y1=711), text="以法定休假日结束的次日为期间的最后一日。"),
+        ],
+        match_score_details={"body_length_coverage": 0.2746, "split_original_clause": 1.0},
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D093"
+        and decision.detail["reason"] == "low_coverage_split_page_fragment_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_split_fragment_when_snippet_material_is_not_covered() -> None:
+    original_document = _quality_document(
+        2,
+        "1.9.除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,均包括本数。",
+    )
+    diff = DiffItem(
+        diff_id="D093_REAL_ADD",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="1.9",
+        original_clause_id="OC010P01",
+        compare_clause_id="NC010",
+        original_text="1.9.除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,均包括本数。",
+        compare_text="1.9.除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,均包括本数。新增真实付款条件。",
+        original_snippet="",
+        compare_snippet="除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,均包括本数。新增真实付款条件。",
+        review_flags=[
+            "LOW_COVERAGE_MATCH_REVIEW",
+            "PARTIAL_CLAUSE_MATCH",
+            "POSSIBLE_SPLIT_CLAUSE",
+            "TEXT_FOUND_IN_OTHER_CLAUSE",
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[
+            EvidenceBox(page_no=2, bbox=BBox(x0=80, y0=626, x1=350, y1=639), text="除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,"),
+        ],
+        match_score_details={"body_length_coverage": 0.25, "split_original_clause": 1.0},
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D093_REAL_ADD"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D093_REAL_ADD"
+        and decision.detail["reason"] == "low_coverage_split_page_fragment_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_existing_clause_add_cut_by_reading_order() -> None:
+    original_document = _quality_document(
+        4,
+        "4.2.1 双方同意采用以下第（一）、（三）种方式进行付款【注:可多选】:\n"
+        "（一）转账/电汇;\n（二）信用证;",
+    )
+    diff = DiffItem(
+        diff_id="D113",
+        diff_type="ADD",
+        source_type="clause",
+        clause_no="4.2.1",
+        compare_text="双方同意采用以下第",
+        compare_snippet="双方同意采用以下第",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[EvidenceBox(page_no=4, bbox=BBox(x0=120, y0=160, x1=260, y1=180), text="双方同意采用以下第")],
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "changed_text_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
 def test_diff_quality_suppresses_short_heading_text_when_original_has_bare_number() -> None:
     original_document = _quality_document(
         9,

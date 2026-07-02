@@ -155,6 +155,8 @@ class ClauseBoundaryCoverageFilter:
             return "modify_fragment_covered_by_opposite_page_text"
         if self._short_heading_text_covered_by_bare_number(diff, context):
             return "short_heading_text_covered_by_bare_number"
+        if self._low_coverage_split_fragments_covered_by_opposite_page(diff, context):
+            return "low_coverage_split_page_fragment_covered"
         if self._changed_fragments_covered_by_neighbor_clauses(diff, context):
             return "changed_fragments_covered_by_neighbor_clauses"
         return ""
@@ -412,6 +414,53 @@ class ClauseBoundaryCoverageFilter:
                 return True
         return False
 
+    def _low_coverage_split_fragments_covered_by_opposite_page(
+        self,
+        diff: DiffItem,
+        context: BoundaryCoverageContext,
+    ) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if not flags.intersection(
+            {
+                "LOW_COVERAGE_MATCH_REVIEW",
+                "PARTIAL_CLAUSE_MATCH",
+                "POSSIBLE_SPLIT_CLAUSE",
+                "TEXT_FOUND_IN_OTHER_CLAUSE",
+            }
+        ):
+            return False
+        details = diff.match_score_details or {}
+        if details.get("body_length_coverage", 1.0) >= 0.70 and details.get("split_original_clause", 0.0) < 1:
+            return False
+
+        has_original = bool((diff.original_snippet or "").strip())
+        has_compare = bool((diff.compare_snippet or "").strip())
+        if has_original == has_compare:
+            return False
+        changed = diff.original_snippet if has_original else diff.compare_snippet
+        evidence = diff.original_evidence if has_original else diff.compare_evidence
+        fragments = _material_fragment_keys(changed, [item.text for item in evidence if item.text])
+        if not fragments:
+            return False
+
+        opposite_document = context.compare_document if has_original else context.original_document
+        if opposite_document is None:
+            return False
+        pages = self._candidate_pages_for_modify_side(diff, "original" if has_original else "compare")
+        if not pages:
+            return False
+        search_pages = {page_no + offset for page_no in pages for offset in (-1, 0, 1)}
+        for page in opposite_document.pages:
+            if page.page_no not in search_pages:
+                continue
+            page_lines = [block.text for block in page.blocks if block.text]
+            page_text = "\n".join(page_lines)
+            if _page_text_contains_all_fragments(page_text, page_lines, fragments):
+                return True
+        return False
+
     def _changed_fragments_covered_by_neighbor_clauses(self, diff: DiffItem, context: BoundaryCoverageContext) -> bool:
         if not _eligible_structural_clause_diff(diff):
             return False
@@ -624,6 +673,45 @@ def _page_text_contains_changed_text(page_text: str, page_lines: list[str], chan
     if len(changed_key) <= 8:
         return any(_short_line_covers_changed_text(line, changed_key) for line in page_lines)
     return changed_key in normalize_for_coverage(page_text)
+
+
+def _material_fragment_keys(text: str, evidence_texts: list[str] | None = None) -> list[str]:
+    raw_fragments: list[tuple[str, bool]] = []
+    raw_fragments.extend((fragment, True) for fragment in evidence_texts or [])
+    raw_fragments.extend((fragment, False) for fragment in re.split(r"[\n。；;，,]+", text or ""))
+    fragments: list[str] = []
+    seen: set[str] = set()
+    for fragment, from_evidence in raw_fragments:
+        key = normalize_for_coverage(fragment)
+        if not key or key in seen:
+            continue
+        if not from_evidence and _looks_like_unstable_quoted_fragment(fragment, key):
+            continue
+        if len(key) < 3 and not re.search(r"\d", key):
+            continue
+        if re.fullmatch(r"\d{1,3}", key):
+            continue
+        seen.add(key)
+        fragments.append(key)
+    return fragments
+
+
+def _looks_like_unstable_quoted_fragment(fragment: str, key: str) -> bool:
+    if len(key) > 8:
+        return False
+    normalized = unicodedata.normalize("NFKC", fragment or "")
+    quote_count = sum(normalized.count(ch) for ch in "“”\"'‘’")
+    return quote_count >= 2
+
+
+def _page_text_contains_all_fragments(page_text: str, page_lines: list[str], fragments: list[str]) -> bool:
+    if not fragments:
+        return False
+    page_key = normalize_for_coverage(page_text)
+    return all(
+        fragment in page_key or _page_text_contains_changed_text(page_text, page_lines, fragment)
+        for fragment in fragments
+    )
 
 
 def _short_line_covers_changed_text(line: str, changed_key: str) -> bool:
