@@ -1801,7 +1801,7 @@ def test_diff_quality_suppresses_short_clause_delete_covered_by_opposite_page_te
 def test_diff_quality_suppresses_heading_add_covered_by_original_page_text() -> None:
     compare_clause = _quality_clause(
         "NC111",
-        "服务期限与进度要求",
+        "服务内容概述",
         side_prefix="N",
         order_index=12,
         page_no=3,
@@ -1810,7 +1810,7 @@ def test_diff_quality_suppresses_heading_add_covered_by_original_page_text() -> 
     original_document = _quality_document(
         3,
         "乙方应按合同约定向甲方提供以下技术服务:\n"
-        "3. 服务期限与进度要求\n"
+        "3. 服务内容概述\n"
         "3.1 乙方提供服务的期限为合同签订后一年。\n"
         "4. 合同价格及支付",
     )
@@ -1819,9 +1819,9 @@ def test_diff_quality_suppresses_heading_add_covered_by_original_page_text() -> 
         diff_type="ADD",
         source_type="clause",
         compare_clause_id="NC111",
-        title="服务期限与进度要求",
-        compare_text="服务期限与进度要求",
-        compare_snippet="服务期限与进度要求",
+        title="服务内容概述",
+        compare_text="服务内容概述",
+        compare_snippet="服务内容概述",
         structural_flags=["READING_ORDER_REPAIRED"],
         review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
         compare_evidence=compare_clause.bboxes,
@@ -1846,7 +1846,7 @@ def test_diff_quality_suppresses_heading_add_covered_by_original_page_text() -> 
 def test_diff_quality_suppresses_heading_add_when_original_has_bare_number_and_child_clause() -> None:
     compare_heading = _quality_clause(
         "NC111",
-        "服务期限与进度要求",
+        "服务内容概述",
         side_prefix="N",
         order_index=12,
         page_no=3,
@@ -1872,9 +1872,9 @@ def test_diff_quality_suppresses_heading_add_when_original_has_bare_number_and_c
         diff_type="ADD",
         source_type="clause",
         compare_clause_id="NC111",
-        title="服务期限与进度要求",
-        compare_text="服务期限与进度要求",
-        compare_snippet="服务期限与进度要求",
+        title="服务内容概述",
+        compare_text="服务内容概述",
+        compare_snippet="服务内容概述",
         structural_flags=["READING_ORDER_REPAIRED"],
         review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
         compare_evidence=compare_heading.bboxes,
@@ -1892,6 +1892,244 @@ def test_diff_quality_suppresses_heading_add_when_original_has_bare_number_and_c
         decision.action == "suppressed_by_neighbor_clause_coverage"
         and decision.diff_id == "D111"
         and decision.detail["reason"] == "heading_add_covered_by_opposite_numbering"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_critical_heading_add_with_bare_number_and_child_clause() -> None:
+    compare_heading = _quality_clause(
+        "NC_CRITICAL_HEADING_ADD",
+        "2. 违约责任",
+        side_prefix="N",
+        order_index=12,
+        page_no=3,
+        split_flags=["READING_ORDER_REPAIRED"],
+    )
+    compare_heading.clause_no = "2"
+    compare_child = _quality_clause(
+        "NC_CRITICAL_HEADING_CHILD",
+        "2.1 任何一方均应按合同约定履行义务。",
+        side_prefix="N",
+        order_index=13,
+        page_no=3,
+    )
+    compare_child.clause_no = "2.1"
+    original_document = _quality_document(
+        3,
+        "1.9 条款正文。\n"
+        "2.\n"
+        "2.1 任何一方均应按合同约定履行义务。",
+    )
+    diff = DiffItem(
+        diff_id="D111_CRITICAL_HEADING_ADD",
+        diff_type="ADD",
+        source_type="clause",
+        compare_clause_id="NC_CRITICAL_HEADING_ADD",
+        title="违约责任",
+        compare_text="2. 违约责任",
+        compare_snippet="2. 违约责任",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        compare_evidence=compare_heading.bboxes,
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        compare_clauses=[compare_heading, compare_child],
+        original_document=original_document,
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D111_CRITICAL_HEADING_ADD"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "heading_add_covered_by_opposite_numbering"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_critical_flagged_material_heading_add_with_bare_number_and_child_clause() -> None:
+    compare_heading = _quality_clause(
+        "NC_MATERIAL_HEADING_ADD",
+        "保密义务",
+        side_prefix="N",
+        order_index=12,
+        page_no=3,
+        split_flags=["READING_ORDER_REPAIRED"],
+    )
+    compare_heading.clause_no = "2"
+    compare_child = _quality_clause(
+        "NC_MATERIAL_HEADING_CHILD",
+        "2.1 任何一方均应按合同约定履行义务。",
+        side_prefix="N",
+        order_index=13,
+        page_no=3,
+    )
+    compare_child.clause_no = "2.1"
+    original_document = _quality_document(
+        3,
+        "1.9 条款正文。\n"
+        "2.\n"
+        "2.1 任何一方均应按合同约定履行义务。",
+    )
+    diff = DiffItem(
+        diff_id="D111_MATERIAL_HEADING_ADD",
+        diff_type="ADD",
+        source_type="clause",
+        compare_clause_id="NC_MATERIAL_HEADING_ADD",
+        title="保密义务",
+        compare_text="保密义务",
+        compare_snippet="保密义务",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        compare_evidence=compare_heading.bboxes,
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        compare_clauses=[compare_heading, compare_child],
+        original_document=original_document,
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D111_MATERIAL_HEADING_ADD"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "heading_add_covered_by_opposite_numbering"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_critical_heading_add_not_covered_by_larger_numbered_heading() -> None:
+    original_document = _quality_document(
+        3,
+        "12. 违约责任\n12.1 任何一方违约均应承担赔偿责任。",
+    )
+    diff = DiffItem(
+        diff_id="D111_CRITICAL_HEADING_PREFIX",
+        diff_type="ADD",
+        source_type="clause",
+        compare_text="2. 违约责任",
+        compare_snippet="2. 违约责任",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        compare_evidence=[EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="2. 违约责任")],
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D111_CRITICAL_HEADING_PREFIX"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "changed_text_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_long_material_heading_add_not_covered_by_larger_numbered_heading() -> None:
+    original_document = _quality_document(
+        3,
+        "12. 合同价格及支付方式\n12.1 甲方按合同约定支付价款。",
+    )
+    diff = DiffItem(
+        diff_id="D111_LONG_MATERIAL_HEADING_PREFIX",
+        diff_type="ADD",
+        source_type="clause",
+        compare_text="2. 合同价格及支付方式",
+        compare_snippet="2. 合同价格及支付方式",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        compare_evidence=[EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="2. 合同价格及支付方式")],
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D111_LONG_MATERIAL_HEADING_PREFIX"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "changed_text_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_mixed_material_heading_add_not_covered_by_larger_numbered_heading() -> None:
+    original_document = _quality_document(
+        3,
+        "12. 合同价格及支付方式\n12.1 甲方按合同约定支付价款。",
+    )
+    diff = DiffItem(
+        diff_id="D111_MIXED_MATERIAL_HEADING_PREFIX",
+        diff_type="ADD",
+        source_type="clause",
+        compare_text="2. 合同价格及支付方式\n甲方按合同约定支付价款。",
+        compare_snippet="合同价格及支付方式\n甲方按合同约定支付价款。",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        compare_evidence=[
+            EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="合同价格及支付方式\n甲方按合同约定支付价款。")
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D111_MIXED_MATERIAL_HEADING_PREFIX"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "changed_text_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_mixed_material_heading_delete_not_covered_by_larger_numbered_heading() -> None:
+    compare_document = _quality_document(
+        3,
+        "12. 合同价格及支付方式\n甲方按合同约定支付价款。",
+    )
+    diff = DiffItem(
+        diff_id="D111_MIXED_MATERIAL_HEADING_DELETE_PREFIX",
+        diff_type="DELETE",
+        source_type="clause",
+        original_text="2. 合同价格及支付方式\n甲方按合同约定支付价款。",
+        original_snippet="合同价格及支付方式\n甲方按合同约定支付价款。",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        original_evidence=[
+            EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="合同价格及支付方式\n甲方按合同约定支付价款。")
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_document=compare_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D111_MIXED_MATERIAL_HEADING_DELETE_PREFIX"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "changed_text_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_single_line_material_heading_delete_not_covered_by_larger_numbered_heading() -> None:
+    compare_document = _quality_document(
+        3,
+        "12. 合同价格及支付方式\n12.1 甲方按合同约定支付价款。",
+    )
+    diff = DiffItem(
+        diff_id="D111_SINGLE_MATERIAL_HEADING_DELETE_PREFIX",
+        diff_type="DELETE",
+        source_type="clause",
+        original_text="2. 合同价格及支付方式",
+        original_snippet="2. 合同价格及支付方式",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        original_evidence=[EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="2. 合同价格及支付方式")],
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_document=compare_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D111_SINGLE_MATERIAL_HEADING_DELETE_PREFIX"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "changed_text_covered_by_opposite_page_text"
         for decision in result.decisions
     )
 
@@ -1934,6 +2172,64 @@ def test_diff_quality_suppresses_one_sided_modify_fragment_covered_by_opposite_p
     assert any(
         decision.action == "suppressed_by_neighbor_clause_coverage"
         and decision.diff_id == "D030"
+        and decision.detail["reason"] == "modify_fragment_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_critical_modify_fragment_not_covered_by_larger_numbered_heading() -> None:
+    original_document = _quality_document(
+        3,
+        "12. 违约责任\n12.1 任何一方违约均应承担赔偿责任。",
+    )
+    diff = DiffItem(
+        diff_id="D030_CRITICAL_HEADING_PREFIX",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="2",
+        original_text="2.1 任何一方均应按合同约定履行义务。",
+        compare_text="2. 违约责任\n2.1 任何一方均应按合同约定履行义务。",
+        original_snippet="",
+        compare_snippet="违约责任",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="违约责任")],
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D030_CRITICAL_HEADING_PREFIX"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "modify_fragment_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_long_material_modify_fragment_not_covered_by_larger_numbered_heading() -> None:
+    original_document = _quality_document(
+        3,
+        "12. 合同价格及支付方式\n12.1 甲方按合同约定支付价款。",
+    )
+    diff = DiffItem(
+        diff_id="D030_LONG_MATERIAL_HEADING_PREFIX",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="2",
+        original_text="2.1 任何一方均应按合同约定履行义务。",
+        compare_text="2. 合同价格及支付方式\n2.1 任何一方均应按合同约定履行义务。",
+        original_snippet="",
+        compare_snippet="合同价格及支付方式",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="合同价格及支付方式")],
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D030_LONG_MATERIAL_HEADING_PREFIX"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
         and decision.detail["reason"] == "modify_fragment_covered_by_opposite_page_text"
         for decision in result.decisions
     )
@@ -2064,10 +2360,286 @@ def test_diff_quality_suppresses_existing_clause_add_cut_by_reading_order() -> N
     )
 
 
+def test_diff_quality_suppresses_metadata_heading_delete_when_present_on_compare_page() -> None:
+    compare_document = _quality_document(2, "1. 定义\n除非另有明确约定,下列词语应具有本条所赋予的含义:")
+    diff = DiffItem(
+        diff_id="D011",
+        diff_type="DELETE",
+        source_type="metadata",
+        title="封面额外文本",
+        original_text="1.",
+        original_snippet="1.",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        original_evidence=[EvidenceBox(page_no=2, bbox=BBox(x0=100, y0=500, x1=130, y1=520), text="1.")],
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_document=compare_document)
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "changed_text_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_heading_when_opposite_page_has_number_and_body_continuation() -> None:
+    original_document = _quality_document(
+        2,
+        "1.9 条款正文。\n2.\n乙方应按合同约定向甲方提供以下技术服务:\n长源电力随州公司2026年新能源场站功率预测系统授权服务项目。",
+    )
+    diff = DiffItem(
+        diff_id="D094",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="2",
+        original_clause_id="OC010P02",
+        compare_clause_id="NC011",
+        original_text="乙方应按合同约定向甲方提供以下技术服务:",
+        compare_text="2. 服务内容\n乙方应按合同约定向甲方提供以下技术服务:",
+        original_snippet="",
+        compare_snippet="2. 服务内容",
+        review_flags=[
+            "LOW_COVERAGE_MATCH_REVIEW",
+            "PARTIAL_CLAUSE_MATCH",
+            "POSSIBLE_SPLIT_CLAUSE",
+            "TEXT_FOUND_IN_OTHER_CLAUSE",
+            "READING_ORDER_RISK",
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[EvidenceBox(page_no=2, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="2. 服务内容")],
+        match_score_details={"body_length_coverage": 0.1351, "split_original_clause": 1.0},
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "heading_with_bare_number_and_body_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_critical_heading_added_to_bare_number_body() -> None:
+    original_document = _quality_document(
+        2,
+        "1.9 条款正文。\n2.\n任何一方均应按合同约定履行义务。",
+    )
+    diff = DiffItem(
+        diff_id="D094_CRITICAL_HEADING",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="2",
+        original_clause_id="OC010P02",
+        compare_clause_id="NC011",
+        original_text="任何一方均应按合同约定履行义务。",
+        compare_text="2. 违约责任\n任何一方均应按合同约定履行义务。",
+        original_snippet="",
+        compare_snippet="2. 违约责任",
+        review_flags=[
+            "LOW_COVERAGE_MATCH_REVIEW",
+            "PARTIAL_CLAUSE_MATCH",
+            "POSSIBLE_SPLIT_CLAUSE",
+            "TEXT_FOUND_IN_OTHER_CLAUSE",
+            "READING_ORDER_RISK",
+            "CRITICAL_VALUE_CHANGE",
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[EvidenceBox(page_no=2, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="2. 违约责任")],
+        match_score_details={"body_length_coverage": 0.1351, "split_original_clause": 1.0},
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D094_CRITICAL_HEADING"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "heading_with_bare_number_and_body_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_critical_flagged_material_heading_added_to_bare_number_body() -> None:
+    original_document = _quality_document(
+        2,
+        "1.9 条款正文。\n2.\n任何一方均应按合同约定履行义务。",
+    )
+    diff = DiffItem(
+        diff_id="D094_MATERIAL_HEADING",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="2",
+        original_clause_id="OC010P02",
+        compare_clause_id="NC011",
+        original_text="任何一方均应按合同约定履行义务。",
+        compare_text="2. 保密义务\n任何一方均应按合同约定履行义务。",
+        original_snippet="",
+        compare_snippet="2. 保密义务",
+        review_flags=[
+            "LOW_COVERAGE_MATCH_REVIEW",
+            "PARTIAL_CLAUSE_MATCH",
+            "POSSIBLE_SPLIT_CLAUSE",
+            "TEXT_FOUND_IN_OTHER_CLAUSE",
+            "READING_ORDER_RISK",
+            "CRITICAL_VALUE_CHANGE",
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[EvidenceBox(page_no=2, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="2. 保密义务")],
+        match_score_details={"body_length_coverage": 0.1351, "split_original_clause": 1.0},
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D094_MATERIAL_HEADING"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "heading_with_bare_number_and_body_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_critical_short_heading_text_with_bare_number() -> None:
+    original_document = _quality_document(
+        2,
+        "2.\n2.1 任何一方均应按合同约定履行义务。",
+    )
+    diff = DiffItem(
+        diff_id="D094_CRITICAL_SHORT_HEADING",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="2",
+        original_clause_id="OC010P02",
+        compare_clause_id="NC011",
+        original_text="2.1 任何一方均应按合同约定履行义务。",
+        compare_text="2. 违约责任\n2.1 任何一方均应按合同约定履行义务。",
+        original_snippet="",
+        compare_snippet="违约责任",
+        review_flags=[
+            "LOW_CONFIDENCE_MATCH",
+            "POSSIBLE_CLAUSE_MISMATCH",
+            "READING_ORDER_RISK",
+            "CRITICAL_VALUE_CHANGE",
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[EvidenceBox(page_no=2, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="违约责任")],
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D094_CRITICAL_SHORT_HEADING"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "short_heading_text_covered_by_bare_number"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_metadata_number_delete_when_only_larger_number_heading_exists() -> None:
+    compare_document = _quality_document(2, "10. 付款金额为100万元\n除非另有约定,甲方按合同付款。")
+    diff = DiffItem(
+        diff_id="D011_NUMBER_BOUNDARY",
+        diff_type="DELETE",
+        source_type="metadata",
+        title="封面额外文本",
+        original_text="1.",
+        original_snippet="1.",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        original_evidence=[EvidenceBox(page_no=2, bbox=BBox(x0=100, y0=500, x1=130, y1=520), text="1.")],
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_document=compare_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D011_NUMBER_BOUNDARY"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "changed_text_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_false_delete_when_text_exists_on_compare_page() -> None:
+    compare_document = _quality_document(12, "本特别约定是对合同其他条款的修改或补充。\n（以下无正文）")
+    diff = DiffItem(
+        diff_id="D098",
+        diff_type="DELETE",
+        source_type="clause",
+        title="(以下无正文)",
+        original_text="(以下无正文)",
+        original_snippet="(以下无正文)",
+        review_flags=["NON_MAIN_CONTRACT_SECTION", "OCR_LOW_CONFIDENCE", "OCR_REMEDIATION_PLANNED"],
+        original_evidence=[EvidenceBox(page_no=12, bbox=BBox(x0=170, y0=215, x1=260, y1=235), text="(以下无正文)")],
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_document=compare_document)
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] in {"changed_text_covered_by_opposite_page_text", "short_heading_text_covered_by_opposite_page"}
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_large_false_delete_when_compare_page_contains_fragments() -> None:
+    compare_document = _quality_document(
+        14,
+        "项目名称:长源电力随州公司2026年新能源场站功率预测系统授权服务单一来源项目\n"
+        "甲方:国能长源随州发电有限公司随县分公司\n"
+        "乙方:国能日新科技股份有限公司\n"
+        "协议有效期:2026年7月1日至2027年6月30日\n"
+        "为贯彻“安全第一、预防为主、综合治理”的方针。",
+    )
+    diff = DiffItem(
+        diff_id="D091",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text=(
+            "项目名称:长源电力随州公司2026年新能源场站功率预测系统授权服务单一来源项目\n"
+            "甲方:国能长源随州发电有限公司随县分公司\n"
+            "乙方:国能日新科技股份有限公司\n"
+            "协议有效期:2026年7月1日至2027年6月30日\n"
+            "为贯彻“安全第一、预防为主、综合治理”的方针。"
+        ),
+        compare_text="",
+        original_snippet=(
+            "项目名称:长源电力随州公司2026年新能源场站功率预测系统授权服务单一来源项目"
+            "甲方:国能长源随州发电有限公司随县分公司"
+            "乙方:国能日新科技股份有限公司"
+            "协议有效期:2026年7月1日至2027年6月30日"
+        ),
+        compare_snippet="",
+        review_flags=[
+            "LOW_COVERAGE_MATCH_REVIEW",
+            "PARTIAL_CLAUSE_MATCH",
+            "POSSIBLE_MERGED_CLAUSE",
+            "TEXT_FOUND_IN_OTHER_CLAUSE",
+            "READING_ORDER_RISK",
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        original_evidence=[
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=140, x1=450, y1=170), text="项目名称:长源电力随州公司2026年新能源场站功率预测系统授权服务单一来源项目"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=180, x1=450, y1=210), text="甲方:国能长源随州发电有限公司随县分公司"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=220, x1=450, y1=250), text="乙方:国能日新科技股份有限公司"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=260, x1=450, y1=290), text="协议有效期:2026年7月1日至2027年6月30日"),
+        ],
+        match_score_details={"body_length_coverage": 0.35, "merged_compare_clause": 1.0},
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_document=compare_document)
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "low_coverage_split_page_fragment_covered"
+        for decision in result.decisions
+    )
+
+
 def test_diff_quality_suppresses_short_heading_text_when_original_has_bare_number() -> None:
     original_document = _quality_document(
         9,
-        "12.4 如果不可抗力事件的影响已达60天。\n13.\n13.1 甲方有权就乙方服务中的质量缺陷提出索赔。",
+        "12.4 如果不可抗力事件的影响已达60天。\n13.\n13.1 甲方应对服务内容进行说明。",
     )
     diff = DiffItem(
         diff_id="D046",
@@ -2076,12 +2648,12 @@ def test_diff_quality_suppresses_short_heading_text_when_original_has_bare_numbe
         clause_no="12.4",
         title="如果不可抗力事件的影响已达60天",
         original_text="12.4 如果不可抗力事件的影响已达60天。\n13.\n协商解决。",
-        compare_text="12.4 如果不可抗力事件的影响已达60天。\n协商解决。\n13. 索赔",
+        compare_text="12.4 如果不可抗力事件的影响已达60天。\n协商解决。\n13. 说明",
         original_snippet="",
-        compare_snippet="索赔",
+        compare_snippet="说明",
         structural_flags=["PARAGRAPH_MERGED"],
         review_flags=["LOW_CONFIDENCE_MATCH", "POSSIBLE_CLAUSE_MISMATCH", "READING_ORDER_RISK"],
-        compare_evidence=[EvidenceBox(page_no=9, bbox=BBox(x0=117, y0=468, x1=148, y1=491), text="索赔")],
+        compare_evidence=[EvidenceBox(page_no=9, bbox=BBox(x0=117, y0=468, x1=148, y1=491), text="说明")],
         quality_status="NEEDS_REVIEW",
     )
 
@@ -2092,6 +2664,115 @@ def test_diff_quality_suppresses_short_heading_text_when_original_has_bare_numbe
         decision.action == "suppressed_by_neighbor_clause_coverage"
         and decision.diff_id == "D046"
         and decision.detail["reason"] == "short_heading_text_covered_by_bare_number"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_unflagged_critical_short_heading_text_with_bare_number() -> None:
+    original_document = _quality_document(
+        2,
+        "2.\n2.1 任何一方均应按合同约定履行义务。",
+    )
+    for heading in ["付款", "索赔", "争议解决", "签署页"]:
+        diff = DiffItem(
+            diff_id=f"D094_UNFLAGGED_{heading}",
+            diff_type="MODIFY",
+            source_type="clause",
+            clause_no="2",
+            original_clause_id="OC010P02",
+            compare_clause_id="NC011",
+            original_text="2.1 任何一方均应按合同约定履行义务。",
+            compare_text=f"2. {heading}\n2.1 任何一方均应按合同约定履行义务。",
+            original_snippet="",
+            compare_snippet=heading,
+            review_flags=["LOW_CONFIDENCE_MATCH", "POSSIBLE_CLAUSE_MISMATCH", "READING_ORDER_RISK"],
+            structural_flags=["PARAGRAPH_MERGED"],
+            compare_evidence=[EvidenceBox(page_no=2, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text=heading)],
+        )
+
+        result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+        assert [item.diff_id for item in result.diffs] == [f"D094_UNFLAGGED_{heading}"]
+        assert not any(
+            decision.action == "suppressed_by_neighbor_clause_coverage"
+            and decision.detail["reason"] == "short_heading_text_covered_by_bare_number"
+            for decision in result.decisions
+        )
+
+
+def test_diff_quality_keeps_critical_heading_fragment_in_low_coverage_split() -> None:
+    original_document = _quality_document(
+        2,
+        "2.\n2.1 任何一方均应按合同约定履行义务。\n附注:历史条款曾提及违约责任。",
+    )
+    diff = DiffItem(
+        diff_id="D094_CRITICAL_LOW_COVERAGE",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="2",
+        original_clause_id="OC010P02",
+        compare_clause_id="NC011",
+        original_text="2.1 任何一方均应按合同约定履行义务。",
+        compare_text="2. 违约责任\n2.1 任何一方均应按合同约定履行义务。",
+        original_snippet="",
+        compare_snippet="违约责任",
+        review_flags=[
+            "LOW_COVERAGE_MATCH_REVIEW",
+            "PARTIAL_CLAUSE_MATCH",
+            "POSSIBLE_SPLIT_CLAUSE",
+            "TEXT_FOUND_IN_OTHER_CLAUSE",
+            "READING_ORDER_RISK",
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[EvidenceBox(page_no=2, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="违约责任")],
+        match_score_details={"body_length_coverage": 0.25, "split_original_clause": 1.0},
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D094_CRITICAL_LOW_COVERAGE"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "low_coverage_split_page_fragment_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_mixed_material_heading_fragment_in_low_coverage_split() -> None:
+    original_document = _quality_document(
+        3,
+        "12. 合同价格及支付方式\n12.1 甲方按合同约定支付价款。",
+    )
+    diff = DiffItem(
+        diff_id="D094_MIXED_MATERIAL_LOW_COVERAGE",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="2",
+        original_text="2.1 任何一方均应按合同约定履行义务。",
+        compare_text="2. 合同价格及支付方式\n甲方按合同约定支付价款。",
+        original_snippet="",
+        compare_snippet="合同价格及支付方式\n甲方按合同约定支付价款。",
+        review_flags=[
+            "LOW_COVERAGE_MATCH_REVIEW",
+            "PARTIAL_CLAUSE_MATCH",
+            "POSSIBLE_SPLIT_CLAUSE",
+            "TEXT_FOUND_IN_OTHER_CLAUSE",
+            "READING_ORDER_RISK",
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[
+            EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="合同价格及支付方式"),
+            EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=753, x1=151, y1=776), text="甲方按合同约定支付价款。"),
+        ],
+        match_score_details={"body_length_coverage": 0.25, "split_original_clause": 1.0},
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D094_MIXED_MATERIAL_LOW_COVERAGE"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.detail["reason"] == "low_coverage_split_page_fragment_covered"
         for decision in result.decisions
     )
 
