@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   backend:
     build:
@@ -17,6 +15,8 @@ services:
       - FRONTEND_CORS_ORIGINS=http://localhost,http://127.0.0.1
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - storage_data:/data/storage
     healthcheck:
