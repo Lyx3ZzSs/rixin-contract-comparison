@@ -10,11 +10,9 @@ from app.config_models import (
     DocumentUnderstandingSettings,
     HybridSettings,
     MatchingSettings,
-    PipelineSettings,
     PPOCRV5Settings,
     PPStructureSettings,
     RegistrySettings,
-    ReportSettings,
 )
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -109,11 +107,9 @@ class Settings(BaseSettings):
 
     layout_analysis_mode: str = "v2"
 
-
     # -- Document understanding (flat env vars) --------------------------
 
     document_understanding_enabled: bool = True
-    document_understanding_rule_confidence_accept: float = Field(default=0.85, ge=0.0, le=1.0)
 
     # -- Matching (flat env vars) -----------------------------------------
 
@@ -148,10 +144,6 @@ class Settings(BaseSettings):
     # -- Report (flat env vars) -------------------------------------------
 
     report_font_path: str = ""
-    libreoffice_path: str = ""
-    libreoffice_host: str = "127.0.0.1"
-    libreoffice_port: int = Field(default=2002, ge=1, le=65535)
-    libreoffice_timeout_seconds: int = Field(default=30, ge=5, le=120)
 
     # -- Pipeline (flat env vars) -----------------------------------------
 
@@ -163,14 +155,11 @@ class Settings(BaseSettings):
 
     # -- Model registry (flat env vars) ----------------------------------
 
-    model_registry_max_loaded: int = Field(default=0, ge=0)
     model_registry_preload: str = ""
 
     # -- Nested models (populated by model_validator) --------------------
 
     matching: MatchingSettings = Field(default_factory=MatchingSettings, exclude=True)
-    report: ReportSettings = Field(default_factory=ReportSettings, exclude=True)
-    pipeline: PipelineSettings = Field(default_factory=PipelineSettings, exclude=True)
     registry: RegistrySettings = Field(default_factory=RegistrySettings, exclude=True)
     document_understanding: DocumentUnderstandingSettings = Field(
         default_factory=DocumentUnderstandingSettings,
@@ -280,31 +269,15 @@ class Settings(BaseSettings):
             low_confidence_review_threshold=self.match_low_confidence_review_threshold,
         )
 
-        self.report = ReportSettings(
-            font_path=self.report_font_path,
-            libreoffice_path=self.libreoffice_path,
-            libreoffice_host=self.libreoffice_host,
-            libreoffice_port=self.libreoffice_port,
-            libreoffice_timeout_seconds=self.libreoffice_timeout_seconds,
+        preload_list = (
+            [s.strip() for s in self.model_registry_preload.split(",") if s.strip()]
+            if self.model_registry_preload
+            else []
         )
-
-        self.pipeline = PipelineSettings(
-            task_runner_max_workers=self.task_runner_max_workers,
-            task_runner_max_attempts=self.task_runner_max_attempts,
-            task_runner_lease_seconds=self.task_runner_lease_seconds,
-            task_runner_retry_delay_seconds=self.task_runner_retry_delay_seconds,
-            task_runner_poll_interval_seconds=self.task_runner_poll_interval_seconds,
-        )
-
-        preload_list = [s.strip() for s in self.model_registry_preload.split(",") if s.strip()] if self.model_registry_preload else []
-        self.registry = RegistrySettings(
-            max_loaded_models=self.model_registry_max_loaded,
-            preload_models=preload_list,
-        )
+        self.registry = RegistrySettings(preload_models=preload_list)
 
         self.document_understanding = DocumentUnderstandingSettings(
             enabled=self.document_understanding_enabled,
-            rule_confidence_accept=self.document_understanding_rule_confidence_accept,
         )
 
         self.ppstructure = PPStructureSettings(

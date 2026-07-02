@@ -17,6 +17,7 @@ import type {
   QualityRegressionRequest,
   QualityRunRequest,
   QualityRunResponse,
+  QualityTaskReviewResponse,
 } from "../types";
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
@@ -144,6 +145,11 @@ export async function getQualityCase(caseId: string): Promise<QualityCaseDetail>
   return parseJsonResponse<QualityCaseDetail>(response);
 }
 
+export async function getQualityTaskReview(taskId: string): Promise<QualityTaskReviewResponse> {
+  const response = await fetch(toApiUrl(`/api/quality/tasks/${encodeURIComponent(taskId)}/review`));
+  return parseJsonResponse<QualityTaskReviewResponse>(response);
+}
+
 export async function updateQualityExpectedDiff(
   caseId: string,
   index: number,
@@ -196,4 +202,3 @@ export async function runQualityRegression(payload: QualityRegressionRequest): P
   });
   return parseJsonResponse<QualityRunResponse>(response);
 }
-

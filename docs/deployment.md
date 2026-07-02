@@ -124,10 +124,7 @@ TASK_RUNNER_POLL_INTERVAL_SECONDS=0.25
 
 ```yaml
 environment:
-  - HOST=0.0.0.0
-  - PORT=8000
   - STORAGE_DIR=/data/storage
-  - RELOAD=false
   - FRONTEND_CORS_ORIGINS=http://localhost,http://127.0.0.1
 ```
 
@@ -365,4 +362,3 @@ services:
 - 限制 PP-OCRv5 / PP-Structure 的网络访问范围
 - 不要在公网暴露后端 8000 端口（移除 `docker-compose.yml` 中 `ports: "8000:8000"`）
 - 定期备份 `storage_data` 卷
-- 不要在 `.env` 中设置 `RELOAD=true`

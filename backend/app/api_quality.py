@@ -13,6 +13,7 @@ from app.api_quality_schemas import (
     QualityRegressionRequest,
     QualityRunRequest,
     QualityRunResponse,
+    QualityTaskReviewResponse,
 )
 from app.config import settings
 from app.services.quality_workbench import (
@@ -61,6 +62,17 @@ def export_case(
         QualityTaskNotFoundError,
         FileExistsError,
     ) as exc:
+        raise _quality_http_error(exc) from exc
+
+
+@router.get("/tasks/{task_id:path}/review", response_model=QualityTaskReviewResponse)
+def review_quality_task(
+    task_id: str,
+    service: QualityWorkbenchService = Depends(get_quality_workbench_service),
+) -> dict:
+    try:
+        return service.review_task(task_id)
+    except (InvalidQualityWorkbenchIdError, QualityTaskNotFoundError) as exc:
         raise _quality_http_error(exc) from exc
 
 

@@ -5,16 +5,18 @@ import {
   createQualityExpectedDiff,
   evaluateQuality,
   getQualityCase,
+  getQualityTaskReview,
   listQualityCases,
   runQualityRegression,
   updateQualityExpectedDiff,
 } from "../lib/api";
-import type { QualityCaseDetail, QualityCaseSummary } from "../types";
+import type { QualityCaseDetail, QualityCaseSummary, QualityTaskReviewResponse } from "../types";
 import { QualityWorkbenchPage } from "./QualityWorkbenchPage";
 
 vi.mock("../lib/api", () => ({
   listQualityCases: vi.fn(),
   getQualityCase: vi.fn(),
+  getQualityTaskReview: vi.fn(),
   updateQualityExpectedDiff: vi.fn(),
   createQualityExpectedDiff: vi.fn(),
   deleteQualityExpectedDiff: vi.fn(),
@@ -101,6 +103,65 @@ const secondCaseDetail: QualityCaseDetail = {
   },
 };
 
+const taskReviewResponse: QualityTaskReviewResponse = {
+  task_id: "task-001",
+  status: "COMPLETED",
+  original_filename: "原合同.pdf",
+  compare_filename: "新合同.pdf",
+  historical_diff_count: 10,
+  retained_diff_count: 6,
+  suppressed_diff_count: 4,
+  ocr_quality_summary: {
+    status: "UNRELIABLE",
+    requires_review: true,
+    risk_page_count: 11,
+    affected_diff_count: 9,
+  },
+  retained_diffs: [
+    {
+      diff_id: "D001",
+      diff_type: "ADD",
+      source_type: "metadata",
+      title: "封面字段：合同编号",
+      quality_status: "NEEDS_REVIEW",
+      review_flags: ["PAGE_UNRELIABLE"],
+      match_score: null,
+      original_snippet: "",
+      compare_snippet: "GNXNYN-20140604-000024",
+    },
+  ],
+  suppressed_diffs: [
+    {
+      diff_id: "D007",
+      diff_type: "MODIFY",
+      source_type: "clause",
+      title: "可行性论证报告:;",
+      quality_status: "NEEDS_REVIEW",
+      review_flags: ["POSSIBLE_OCR_NOISE"],
+      match_score: 100,
+      suppression_reason: "clause_ocr_noise",
+      quality_decisions: ["possible_ocr_noise", "suppressed_low_value_noise"],
+      original_snippet: "/",
+      compare_snippet: "",
+    },
+  ],
+  quality_decisions: [
+    {
+      diff_id: "D007",
+      action: "suppressed_low_value_noise",
+      detail: {
+        reason: "clause_ocr_noise",
+      },
+    },
+  ],
+  debug_artifacts: {
+    has_diff_quality: true,
+    has_diff_decisions: true,
+    has_ocr_quality: true,
+    has_clause_matches: false,
+  },
+};
+
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -112,6 +173,72 @@ function createDeferred<T>() {
 }
 
 describe("QualityWorkbenchPage", () => {
+  it("loads and renders a task review without changing the selected case", async () => {
+    vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
+    vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);
+    vi.mocked(getQualityTaskReview).mockResolvedValueOnce(taskReviewResponse);
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "task-001" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+
+    expect(getQualityTaskReview).toHaveBeenCalledWith("task-001");
+    expect(await screen.findByText("历史 10")).toBeInTheDocument();
+    expect(screen.getByText("保留 6")).toBeInTheDocument();
+    expect(screen.getByText("抑制 4")).toBeInTheDocument();
+    expect(screen.getByText("D007")).toBeInTheDocument();
+    expect(screen.getByText("clause_ocr_noise")).toBeInTheDocument();
+    expect(screen.getByText("签订日期")).toBeInTheDocument();
+  });
+
+  it("renders task review load errors", async () => {
+    vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
+    vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);
+    vi.mocked(getQualityTaskReview).mockRejectedValueOnce(new Error("任务不存在"));
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "missing-task" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+
+    expect(getQualityTaskReview).toHaveBeenCalledWith("missing-task");
+    expect(await screen.findByRole("alert")).toHaveTextContent("任务不存在");
+  });
+
+  it("clears stale task review results when a later task review fails", async () => {
+    vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
+    vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);
+    vi.mocked(getQualityTaskReview)
+      .mockResolvedValueOnce(taskReviewResponse)
+      .mockRejectedValueOnce(new Error("Quality task not found: missing-task"));
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "task-001" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+
+    expect(await screen.findByText("历史 10")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "missing-task" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Quality task not found: missing-task");
+    expect(screen.queryByText("历史 10")).not.toBeInTheDocument();
+    expect(screen.queryByText("D007")).not.toBeInTheDocument();
+  });
+
   it("loads cases, opens the first case, and renders actual and expected diffs", async () => {
     vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
     vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);

@@ -500,3 +500,162 @@ def test_export_case_rejects_unsafe_ids_and_missing_task(tmp_path: Path) -> None
 
     with pytest.raises(QualityTaskNotFoundError):
         service.export_case("missing-task", "case-001")
+
+
+def test_review_task_replays_quality_filter_and_reports_suppressed_diffs(
+    tmp_path: Path,
+) -> None:
+    task_root = tmp_path / "tasks"
+    task_dir = task_root / "task-001"
+    _write_json(
+        task_dir / "task.json",
+        {
+            "task_id": "task-001",
+            "status": "COMPLETED",
+            "original_filename": "original.pdf",
+            "compare_filename": "compare.pdf",
+            "ocr_quality_summary": {
+                "status": "LOW_TEXT_CONFIDENCE",
+                "risk_page_count": 1,
+                "affected_diff_count": 1,
+            },
+            "diffs": [
+                {
+                    "diff_id": "D001",
+                    "title": "OCR punctuation",
+                    "diff_type": "MODIFY",
+                    "source_type": "clause",
+                    "original_snippet": "/",
+                    "compare_snippet": "∠",
+                    "match_score": 99,
+                    "review_flags": ["POSSIBLE_OCR_NOISE"],
+                    "quality_status": "NEEDS_REVIEW",
+                },
+                {
+                    "diff_id": "D002",
+                    "title": "Contract amount",
+                    "diff_type": "MODIFY",
+                    "source_type": "clause",
+                    "original_snippet": "1.5%",
+                    "compare_snippet": "15%",
+                    "match_score": 99,
+                },
+            ],
+        },
+    )
+    debug_dir = task_dir / "debug"
+    for name in ("diff_quality", "diff_decisions", "ocr_quality"):
+        _write_json(debug_dir / f"{name}.json", {"present": True})
+    service = QualityWorkbenchService(
+        case_root=tmp_path / "cases",
+        task_root=task_root,
+        output_root=tmp_path / ".ocr-compare-quality",
+    )
+
+    result = service.review_task("task-001")
+
+    assert result["task_id"] == "task-001"
+    assert result["status"] == "COMPLETED"
+    assert result["original_filename"] == "original.pdf"
+    assert result["compare_filename"] == "compare.pdf"
+    assert result["historical_diff_count"] == 2
+    assert result["retained_diff_count"] == 1
+    assert result["suppressed_diff_count"] == 1
+    assert result["ocr_quality_summary"]["status"] == "LOW_TEXT_CONFIDENCE"
+    assert [diff["diff_id"] for diff in result["retained_diffs"]] == ["D002"]
+    assert result["suppressed_diffs"][0]["diff_id"] == "D001"
+    assert result["suppressed_diffs"][0]["suppression_reason"] == "clause_ocr_noise"
+    assert "original_text" not in result["retained_diffs"][0]
+    assert "compare_text" not in result["suppressed_diffs"][0]
+    assert any(
+        decision["action"] == "suppressed_low_value_noise"
+        and decision["diff_id"] == "D001"
+        for decision in result["quality_decisions"]
+    )
+    assert result["debug_artifacts"] == {
+        "has_diff_quality": True,
+        "has_diff_decisions": True,
+        "has_ocr_quality": True,
+        "has_clause_matches": False,
+    }
+
+
+def test_review_task_rejects_unsafe_task_id(tmp_path: Path) -> None:
+    service = QualityWorkbenchService(
+        case_root=tmp_path / "cases",
+        task_root=tmp_path / "tasks",
+        output_root=tmp_path / ".ocr-compare-quality",
+    )
+
+    with pytest.raises(InvalidQualityWorkbenchIdError):
+        service.review_task("../task")
+
+
+def test_review_task_missing_task_raises(tmp_path: Path) -> None:
+    service = QualityWorkbenchService(
+        case_root=tmp_path / "cases",
+        task_root=tmp_path / "tasks",
+        output_root=tmp_path / ".ocr-compare-quality",
+    )
+
+    with pytest.raises(QualityTaskNotFoundError):
+        service.review_task("missing-task")
+
+
+def test_review_task_reports_cross_source_merged_suppressed_diff(
+    tmp_path: Path,
+) -> None:
+    task_root = tmp_path / "tasks"
+    _write_json(
+        task_root / "task-001" / "task.json",
+        {
+            "task_id": "task-001",
+            "status": "COMPLETED",
+            "diffs": [
+                {
+                    "diff_id": "D001",
+                    "title": "签订日期",
+                    "diff_type": "MODIFY",
+                    "source_type": "metadata",
+                    "original_text": "签订日期：2024年1月1日",
+                    "compare_text": "签订日期：2024年1月2日",
+                    "original_snippet": "2024年1月1日",
+                    "compare_snippet": "2024年1月2日",
+                },
+                {
+                    "diff_id": "D002",
+                    "title": "签订日期",
+                    "diff_type": "MODIFY",
+                    "source_type": "table",
+                    "original_text": "签订日期：2024年1月1日",
+                    "compare_text": "签订日期：2024年1月2日",
+                    "original_snippet": "2024年1月1日",
+                    "compare_snippet": "2024年1月2日",
+                },
+            ],
+        },
+    )
+    service = QualityWorkbenchService(
+        case_root=tmp_path / "cases",
+        task_root=task_root,
+        output_root=tmp_path / ".ocr-compare-quality",
+    )
+
+    result = service.review_task("task-001")
+
+    assert [diff["diff_id"] for diff in result["retained_diffs"]] == ["D001"]
+    assert result["suppressed_diffs"] == [
+        {
+            "diff_id": "D002",
+            "diff_type": "MODIFY",
+            "source_type": "table",
+            "title": "签订日期",
+            "quality_status": "NORMAL",
+            "review_flags": [],
+            "match_score": None,
+            "original_snippet": "2024年1月1日",
+            "compare_snippet": "2024年1月2日",
+            "suppression_reason": "cross_source_merged",
+            "quality_decisions": ["cross_source_merged"],
+        }
+    ]

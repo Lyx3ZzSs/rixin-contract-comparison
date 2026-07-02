@@ -152,8 +152,6 @@ def test_rerank_matching_rejects_invalid_top_k() -> None:
 def test_document_understanding_config_maps_to_nested_settings() -> None:
     app_settings = Settings(
         document_understanding_enabled=True,
-        document_understanding_rule_confidence_accept=0.9,
     )
 
     assert app_settings.document_understanding.enabled is True
-    assert app_settings.document_understanding.rule_confidence_accept == 0.9

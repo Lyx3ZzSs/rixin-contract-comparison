@@ -6,6 +6,7 @@ import {
   evaluateQuality,
   exportQualityCase,
   getQualityCase,
+  getQualityTaskReview,
   listQualityCases,
   runQualityRegression,
   toApiUrl,
@@ -131,6 +132,35 @@ describe("quality api client", () => {
     await getQualityCase("case/with space");
 
     expect(fetchMock).toHaveBeenCalledWith(toApiUrl("/api/quality/cases/case%2Fwith%20space"));
+  });
+
+  it("loads a task review with an encoded task id", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        mockJsonResponse({
+          task_id: "task/with space",
+          status: "COMPLETED",
+          original_filename: "a.pdf",
+          compare_filename: "b.pdf",
+          historical_diff_count: 0,
+          retained_diff_count: 0,
+          suppressed_diff_count: 0,
+          retained_diffs: [],
+          suppressed_diffs: [],
+          quality_decisions: [],
+          debug_artifacts: {
+            has_diff_quality: false,
+            has_diff_decisions: false,
+            has_ocr_quality: false,
+            has_clause_matches: false,
+          },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getQualityTaskReview("task/with space");
+
+    expect(fetchMock).toHaveBeenCalledWith(toApiUrl("/api/quality/tasks/task%2Fwith%20space/review"));
   });
 
   it("deletes expected diffs from the encoded quality case endpoint", async () => {

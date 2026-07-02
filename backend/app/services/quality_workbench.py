@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from app.models import DiffItem
+from app.services.diff_quality import DiffQualityProcessor
 from scripts.export_ocr_compare_gold_case import export_gold_case
 from scripts.evaluate_ocr_compare_quality import evaluate_case_root
 from scripts.run_quality_regression import run_regression
@@ -109,6 +111,50 @@ class QualityWorkbenchService:
             raise QualityTaskNotFoundError(f"Quality task not found: {task_id}")
 
         return export_gold_case(task_dir, case_dir, force=force)
+
+    def review_task(self, task_id: str) -> dict[str, Any]:
+        task_dir = self._task_dir(task_id)
+        task_path = task_dir / "task.json"
+        if not task_path.exists():
+            raise QualityTaskNotFoundError(f"Quality task not found: {task_id}")
+
+        task = _read_json(task_path)
+        historical_diffs = [
+            DiffItem.model_validate(diff)
+            for diff in task.get("diffs", [])
+            if isinstance(diff, dict)
+        ]
+        replay = DiffQualityProcessor().process(historical_diffs)
+        quality_decisions = replay.to_debug_payload()
+
+        retained_ids = {diff.diff_id for diff in replay.diffs}
+        suppression_reasons = _suppression_reasons_by_diff_id(quality_decisions)
+        decisions_by_diff_id = _decision_actions_by_diff_id(quality_decisions)
+        retained_diffs = [_review_diff_payload(diff) for diff in replay.diffs]
+        suppressed_diffs = [
+            _review_diff_payload(
+                diff,
+                suppression_reason=suppression_reasons.get(diff.diff_id, ""),
+                quality_decisions=decisions_by_diff_id.get(diff.diff_id, []),
+            )
+            for diff in historical_diffs
+            if diff.diff_id not in retained_ids
+        ]
+
+        return {
+            "task_id": task.get("task_id") or task_id,
+            "status": task.get("status", ""),
+            "original_filename": task.get("original_filename", ""),
+            "compare_filename": task.get("compare_filename", ""),
+            "historical_diff_count": len(historical_diffs),
+            "retained_diff_count": len(retained_diffs),
+            "suppressed_diff_count": len(suppressed_diffs),
+            "ocr_quality_summary": task.get("ocr_quality_summary") or {},
+            "retained_diffs": retained_diffs,
+            "suppressed_diffs": suppressed_diffs,
+            "quality_decisions": quality_decisions,
+            "debug_artifacts": _debug_artifact_summary(task_dir),
+        }
 
     def update_expected_diff(
         self,
@@ -343,6 +389,79 @@ def _summarize_actual_diff(diff: dict[str, Any]) -> dict[str, Any]:
         "title": diff.get("title", ""),
         "quality_status": diff.get("quality_status", ""),
         "review_flags": diff.get("review_flags", []),
+    }
+
+
+def _review_diff_payload(
+    diff: DiffItem,
+    *,
+    suppression_reason: str | None = None,
+    quality_decisions: list[str] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "diff_id": diff.diff_id,
+        "diff_type": diff.diff_type,
+        "source_type": diff.source_type,
+        "title": diff.title,
+        "quality_status": diff.quality_status,
+        "review_flags": list(diff.review_flags),
+        "match_score": diff.match_score,
+        "original_snippet": diff.original_snippet,
+        "compare_snippet": diff.compare_snippet,
+    }
+    if suppression_reason is not None:
+        payload["suppression_reason"] = suppression_reason
+    if quality_decisions is not None:
+        payload["quality_decisions"] = quality_decisions
+    return payload
+
+
+def _suppression_reasons_by_diff_id(
+    quality_decisions: list[dict[str, Any]],
+) -> dict[str, str]:
+    reasons: dict[str, str] = {}
+    for decision in quality_decisions:
+        action = decision.get("action")
+        detail = decision.get("detail")
+        if not isinstance(detail, dict):
+            continue
+        if action == "cross_source_merged":
+            merged_diff_id = detail.get("merged_diff_id")
+            if isinstance(merged_diff_id, str) and merged_diff_id:
+                reasons[merged_diff_id] = "cross_source_merged"
+            continue
+        if action != "suppressed_low_value_noise":
+            continue
+        reason = detail.get("reason")
+        if isinstance(reason, str):
+            reasons[str(decision.get("diff_id", ""))] = reason
+    return reasons
+
+
+def _decision_actions_by_diff_id(
+    quality_decisions: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    actions: dict[str, list[str]] = {}
+    for decision in quality_decisions:
+        diff_id = str(decision.get("diff_id", ""))
+        action = decision.get("action")
+        if diff_id and isinstance(action, str):
+            actions.setdefault(diff_id, []).append(action)
+        detail = decision.get("detail")
+        if action == "cross_source_merged" and isinstance(detail, dict):
+            merged_diff_id = detail.get("merged_diff_id")
+            if isinstance(merged_diff_id, str) and merged_diff_id:
+                actions.setdefault(merged_diff_id, []).append(action)
+    return actions
+
+
+def _debug_artifact_summary(task_dir: Path) -> dict[str, bool]:
+    debug_dir = task_dir / "debug"
+    return {
+        "has_diff_quality": (debug_dir / "diff_quality.json").exists(),
+        "has_diff_decisions": (debug_dir / "diff_decisions.json").exists(),
+        "has_ocr_quality": (debug_dir / "ocr_quality.json").exists(),
+        "has_clause_matches": (debug_dir / "clause_matches.json").exists(),
     }
 
 

@@ -4,11 +4,21 @@ import {
   createQualityExpectedDiff,
   evaluateQuality,
   getQualityCase,
+  getQualityTaskReview,
   listQualityCases,
   runQualityRegression,
   updateQualityExpectedDiff,
 } from "../lib/api";
-import type { ExpectedDiff, QualityActualDiffSummary, QualityCaseDetail, QualityCaseSummary, QualityRunResponse } from "../types";
+import type {
+  ExpectedDiff,
+  QualityActualDiffSummary,
+  QualityCaseDetail,
+  QualityCaseSummary,
+  QualityTaskReviewDiff,
+  QualityTaskReviewResponse,
+  QualityTaskSuppressedDiff,
+  QualityRunResponse,
+} from "../types";
 
 export function QualityWorkbenchPage() {
   const [cases, setCases] = useState<QualityCaseSummary[]>([]);
@@ -25,6 +35,10 @@ export function QualityWorkbenchPage() {
   const [isSavingEvidence, setIsSavingEvidence] = useState(false);
   const [runResult, setRunResult] = useState<QualityRunResponse | null>(null);
   const [isRunningQuality, setIsRunningQuality] = useState(false);
+  const [taskReviewId, setTaskReviewId] = useState("");
+  const [taskReview, setTaskReview] = useState<QualityTaskReviewResponse | null>(null);
+  const [taskReviewError, setTaskReviewError] = useState("");
+  const [isLoadingTaskReview, setIsLoadingTaskReview] = useState(false);
   const [error, setError] = useState("");
   const detailRequestIdRef = useRef(0);
   const selectedCaseIdRef = useRef("");
@@ -33,6 +47,7 @@ export function QualityWorkbenchPage() {
   const missedDiffRequestIdRef = useRef(0);
   const evidenceRequestIdRef = useRef(0);
   const qualityRunRequestIdRef = useRef(0);
+  const taskReviewRequestIdRef = useRef(0);
 
   const applyCaseDetail = useCallback((nextDetail: QualityCaseDetail) => {
     setDetail(nextDetail);
@@ -294,6 +309,31 @@ export function QualityWorkbenchPage() {
     }
   }, []);
 
+  const loadTaskReview = useCallback(async () => {
+    const taskId = taskReviewId.trim();
+    if (!taskId) return;
+
+    const requestId = taskReviewRequestIdRef.current + 1;
+    taskReviewRequestIdRef.current = requestId;
+    setIsLoadingTaskReview(true);
+    setTaskReviewError("");
+    setTaskReview(null);
+    try {
+      const result = await getQualityTaskReview(taskId);
+      if (taskReviewRequestIdRef.current === requestId) {
+        setTaskReview(result);
+      }
+    } catch (err) {
+      if (taskReviewRequestIdRef.current === requestId) {
+        setTaskReviewError(err instanceof Error ? err.message : "任务复盘加载失败。");
+      }
+    } finally {
+      if (taskReviewRequestIdRef.current === requestId) {
+        setIsLoadingTaskReview(false);
+      }
+    }
+  }, [taskReviewId]);
+
   const expectedDiffs = detail?.expected.expected_diffs ?? [];
 
   return (
@@ -342,6 +382,14 @@ export function QualityWorkbenchPage() {
         </aside>
 
         <main className="quality-case-detail">
+          <TaskReviewPanel
+            taskReviewId={taskReviewId}
+            taskReview={taskReview}
+            taskReviewError={taskReviewError}
+            isLoadingTaskReview={isLoadingTaskReview}
+            onChangeTaskReviewId={setTaskReviewId}
+            onLoadTaskReview={loadTaskReview}
+          />
           {error ? (
             <div className="quality-state error" role="alert">
               <strong>质量工作台加载失败</strong>
@@ -387,6 +435,128 @@ export function QualityWorkbenchPage() {
       </div>
     </section>
   );
+}
+
+function TaskReviewPanel({
+  taskReviewId,
+  taskReview,
+  taskReviewError,
+  isLoadingTaskReview,
+  onChangeTaskReviewId,
+  onLoadTaskReview,
+}: {
+  taskReviewId: string;
+  taskReview: QualityTaskReviewResponse | null;
+  taskReviewError: string;
+  isLoadingTaskReview: boolean;
+  onChangeTaskReviewId: (value: string) => void;
+  onLoadTaskReview: () => void;
+}) {
+  return (
+    <section className="quality-section quality-task-review" aria-labelledby="quality-task-review-title">
+      <div className="quality-section-title">
+        <h2 id="quality-task-review-title">任务复盘</h2>
+      </div>
+      <form
+        className="quality-task-review-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onLoadTaskReview();
+        }}
+      >
+        <label htmlFor="quality-task-review-id">任务 ID</label>
+        <input
+          id="quality-task-review-id"
+          type="text"
+          value={taskReviewId}
+          onChange={(event) => onChangeTaskReviewId(event.target.value)}
+        />
+        <button type="submit" disabled={isLoadingTaskReview || taskReviewId.trim().length === 0}>
+          {isLoadingTaskReview ? "加载中..." : "加载任务复盘"}
+        </button>
+      </form>
+      {taskReviewError && (
+        <div className="quality-inline-error" role="alert">
+          {taskReviewError}
+        </div>
+      )}
+      {taskReview && (
+        <div className="quality-task-review-body">
+          <div className="quality-task-review-metrics" aria-label="任务复盘统计">
+            <span>历史 {taskReview.historical_diff_count}</span>
+            <span>保留 {taskReview.retained_diff_count}</span>
+            <span>抑制 {taskReview.suppressed_diff_count}</span>
+            <span>状态 {taskReview.status || "-"}</span>
+            <span>OCR {formatOcrSummary(taskReview.ocr_quality_summary)}</span>
+          </div>
+          <TaskSuppressedDiffList diffs={taskReview.suppressed_diffs} />
+          <TaskRetainedDiffList diffs={taskReview.retained_diffs} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TaskSuppressedDiffList({ diffs }: { diffs: QualityTaskSuppressedDiff[] }) {
+  return (
+    <section className="quality-task-review-list" aria-labelledby="quality-suppressed-diffs-title">
+      <h3 id="quality-suppressed-diffs-title">被抑制 diff</h3>
+      {diffs.length === 0 ? (
+        <div className="quality-state compact">当前质量过滤未抑制历史 diff</div>
+      ) : (
+        diffs.map((diff) => (
+          <article key={diff.diff_id}>
+            <div>
+              <strong>{diff.diff_id}</strong>
+              <span>{diff.suppression_reason || "-"}</span>
+            </div>
+            <p>{diff.title || "-"}</p>
+            <small>
+              {diff.diff_type} / {diff.source_type || "-"}
+              {diff.quality_decisions.length > 0 ? ` / ${diff.quality_decisions.join(" / ")}` : ""}
+            </small>
+            <code>
+              {diff.original_snippet || "-"} {"->"} {diff.compare_snippet || "-"}
+            </code>
+          </article>
+        ))
+      )}
+    </section>
+  );
+}
+
+function TaskRetainedDiffList({ diffs }: { diffs: QualityTaskReviewDiff[] }) {
+  return (
+    <section className="quality-task-review-list" aria-labelledby="quality-retained-diffs-title">
+      <h3 id="quality-retained-diffs-title">保留 diff</h3>
+      {diffs.length === 0 ? (
+        <div className="quality-state compact">当前质量过滤未保留历史 diff</div>
+      ) : (
+        diffs.map((diff) => (
+          <article key={diff.diff_id}>
+            <div>
+              <strong>{diff.diff_id}</strong>
+              <span>{diff.quality_status || "-"}</span>
+            </div>
+            <p>{diff.title || "-"}</p>
+            <small>
+              {diff.diff_type} / {diff.source_type || "-"} / match {diff.match_score ?? "-"}
+              {diff.review_flags.length > 0 ? ` / ${diff.review_flags.join(" / ")}` : ""}
+            </small>
+            <code>
+              {diff.original_snippet || "-"} {"->"} {diff.compare_snippet || "-"}
+            </code>
+          </article>
+        ))
+      )}
+    </section>
+  );
+}
+
+function formatOcrSummary(summary: Record<string, unknown> | null | undefined): string {
+  if (!summary) return "-";
+  const status = summary.status;
+  return typeof status === "string" && status ? status : "-";
 }
 
 function QualityRunBar({

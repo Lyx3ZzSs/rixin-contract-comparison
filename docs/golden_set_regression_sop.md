@@ -145,6 +145,43 @@ backend/.ocr-compare-quality/baselines/<version>.json
 - 每次通过工作台标注后，仍应运行一次后端回归命令，确认 CLI 与 UI 结果一致。
 - 不要把包含真实敏感合同内容的导出 case 直接提交到仓库；先脱敏，再进入正式 `regression` split。
 
+## 任务级误报复盘
+
+质量工作台支持对已存在的历史任务做只读误报复盘。入口仍然是：
+
+```text
+/quality/workbench
+```
+
+在“任务复盘”区域输入：
+
+```text
+storage/tasks/<task_id>
+```
+
+中的 `<task_id>`，例如：
+
+```text
+fb67bf36-73bd-48c3-a7b3-59696ed4fb12
+```
+
+工作台会读取该任务目录下的 `task.json`，并用当前代码重新运行质量过滤逻辑。它不会重新执行 OCR、条款切分、matcher 或完整比对，也不会改写 `task.json`、`actual.json`、`expected.json` 或任何 golden set 文件。
+
+重点查看：
+
+- `历史 diff 数`：该任务当时输出的差异数量。
+- `保留 diff 数`：当前质量过滤后仍保留的历史差异数量。
+- `抑制 diff 数`：当前质量过滤会过滤掉的历史差异数量。
+- `被抑制 diff`：误报候选及其抑制原因，例如 `clause_ocr_noise` 或 `single_latin_layout_glyph_noise`。
+- `保留 diff`：仍需要人工判断的差异，重点看标题、片段、review flags 和 matcher 分数。
+
+推荐用法：
+
+- 修复某类误报规则后，先用任务复盘确认目标 diff 是否已经被抑制。
+- 如果目标误报仍在“保留 diff”中，继续查看 review flags、证据片段和 debug artifacts，定位规则未命中的原因。
+- 如果任务复盘结果符合预期，再决定是否把该任务脱敏后导出为 golden set。
+- 任务复盘不是回归测试本身；它用于快速排查真实任务，正式质量门禁仍应依赖 golden set 和质量回归命令。
+
 ## 1. 从对比任务导出 draft gold case
 
 先确保已经完成一次合同对比任务，并且任务目录存在：

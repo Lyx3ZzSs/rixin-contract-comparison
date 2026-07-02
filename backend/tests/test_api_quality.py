@@ -256,6 +256,76 @@ def test_export_quality_case(quality_service: QualityWorkbenchService) -> None:
     assert exported["expected_diffs"][0]["review_status"] == "DRAFT"
 
 
+def test_review_quality_task_endpoint(
+    quality_service: QualityWorkbenchService,
+) -> None:
+    _write_json(
+        quality_service.task_root / "task-001" / "task.json",
+        {
+            "task_id": "task-001",
+            "status": "COMPLETED",
+            "original_filename": "original.pdf",
+            "compare_filename": "compare.pdf",
+            "diffs": [
+                {
+                    "diff_id": "D001",
+                    "title": "OCR punctuation",
+                    "diff_type": "MODIFY",
+                    "source_type": "clause",
+                    "original_snippet": "/",
+                    "compare_snippet": "∠",
+                    "match_score": 99,
+                    "review_flags": ["POSSIBLE_OCR_NOISE"],
+                    "quality_status": "NEEDS_REVIEW",
+                },
+                {
+                    "diff_id": "D002",
+                    "title": "Contract amount",
+                    "diff_type": "MODIFY",
+                    "source_type": "clause",
+                    "original_snippet": "1.5%",
+                    "compare_snippet": "15%",
+                    "match_score": 99,
+                },
+            ],
+        },
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/quality/tasks/task-001/review")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["task_id"] == "task-001"
+    assert payload["historical_diff_count"] == 2
+    assert payload["retained_diff_count"] == 1
+    assert payload["suppressed_diff_count"] == 1
+    assert payload["ocr_quality_summary"] == {}
+    assert [diff["diff_id"] for diff in payload["retained_diffs"]] == ["D002"]
+    assert payload["suppressed_diffs"][0]["diff_id"] == "D001"
+    assert payload["suppressed_diffs"][0]["suppression_reason"] == "clause_ocr_noise"
+
+
+def test_review_quality_task_rejects_unsafe_task_id(
+    quality_service: QualityWorkbenchService,
+) -> None:
+    client = TestClient(app)
+
+    response = client.get("/api/quality/tasks/..%2Fsecret/review")
+
+    assert response.status_code == 400
+
+
+def test_review_quality_task_missing_task_returns_404(
+    quality_service: QualityWorkbenchService,
+) -> None:
+    client = TestClient(app)
+
+    response = client.get("/api/quality/tasks/missing-task/review")
+
+    assert response.status_code == 404
+
+
 def test_evaluate_quality_endpoint(quality_service: QualityWorkbenchService) -> None:
     case_dir = _make_case(quality_service.case_root)
     expected = json.loads((case_dir / "expected.json").read_text(encoding="utf-8"))

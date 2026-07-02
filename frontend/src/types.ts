@@ -410,6 +410,51 @@ export interface QualityCaseExportResponse {
   actual_diff_count: number;
 }
 
+export interface QualityTaskReviewDiff {
+  diff_id: string;
+  diff_type: DiffType | string;
+  source_type: string;
+  title: string;
+  quality_status?: DiffQualityStatus | string;
+  review_flags: string[];
+  match_score?: number | null;
+  original_snippet: string;
+  compare_snippet: string;
+}
+
+export interface QualityTaskSuppressedDiff extends QualityTaskReviewDiff {
+  suppression_reason: string;
+  quality_decisions: string[];
+}
+
+export interface QualityDecisionSummary {
+  diff_id: string;
+  action: string;
+  detail: Record<string, unknown>;
+}
+
+export interface QualityDebugArtifactSummary {
+  has_diff_quality: boolean;
+  has_diff_decisions: boolean;
+  has_ocr_quality: boolean;
+  has_clause_matches: boolean;
+}
+
+export interface QualityTaskReviewResponse {
+  task_id: string;
+  status: string;
+  original_filename: string;
+  compare_filename: string;
+  historical_diff_count: number;
+  retained_diff_count: number;
+  suppressed_diff_count: number;
+  ocr_quality_summary: Record<string, unknown>;
+  retained_diffs: QualityTaskReviewDiff[];
+  suppressed_diffs: QualityTaskSuppressedDiff[];
+  quality_decisions: QualityDecisionSummary[];
+  debug_artifacts: QualityDebugArtifactSummary;
+}
+
 export interface QualityRunRequest {
   dataset_splits?: Array<GoldDatasetSplit | string>;
   run_id?: string;

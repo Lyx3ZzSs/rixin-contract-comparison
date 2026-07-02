@@ -59,6 +59,55 @@ class QualityCaseExportResponse(BaseModel):
     actual_diff_count: int = 0
 
 
+class QualityTaskReviewDiffResponse(BaseModel):
+    diff_id: str
+    diff_type: str
+    source_type: str = ""
+    title: str = ""
+    quality_status: str = "NORMAL"
+    review_flags: list[str] = Field(default_factory=list)
+    match_score: float | None = None
+    original_snippet: str = ""
+    compare_snippet: str = ""
+
+
+class QualityTaskSuppressedDiffResponse(QualityTaskReviewDiffResponse):
+    suppression_reason: str = ""
+    quality_decisions: list[str] = Field(default_factory=list)
+
+
+class QualityDebugArtifactSummaryResponse(BaseModel):
+    has_diff_quality: bool = False
+    has_diff_decisions: bool = False
+    has_ocr_quality: bool = False
+    has_clause_matches: bool = False
+
+
+class QualityDecisionSummaryResponse(BaseModel):
+    action: str
+    diff_id: str
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class QualityTaskReviewResponse(BaseModel):
+    task_id: str
+    status: str = ""
+    original_filename: str = ""
+    compare_filename: str = ""
+    historical_diff_count: int = 0
+    retained_diff_count: int = 0
+    suppressed_diff_count: int = 0
+    ocr_quality_summary: dict[str, Any] = Field(default_factory=dict)
+    retained_diffs: list[QualityTaskReviewDiffResponse] = Field(default_factory=list)
+    suppressed_diffs: list[QualityTaskSuppressedDiffResponse] = Field(
+        default_factory=list
+    )
+    quality_decisions: list[QualityDecisionSummaryResponse] = Field(
+        default_factory=list
+    )
+    debug_artifacts: QualityDebugArtifactSummaryResponse
+
+
 class QualityRunRequest(BaseModel):
     dataset_splits: list[DatasetSplit] | None = None
     run_id: str = "local-eval"
