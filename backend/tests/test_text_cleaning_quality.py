@@ -4468,6 +4468,55 @@ def test_diff_quality_keeps_short_meaningful_seal_region_text() -> None:
     assert [item.diff_id for item in result.diffs] == [item.diff_id for item in diffs]
 
 
+def test_diff_quality_keeps_e9_real_visual_differences() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D050",
+            diff_type="MODIFY",
+            source_type="clause",
+            original_text="按以下第一种方式处理:",
+            compare_text="按以下第二种方式处理:",
+            original_snippet="一",
+            compare_snippet="二",
+            review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        ),
+        DiffItem(
+            diff_id="D032",
+            diff_type="MODIFY",
+            source_type="clause",
+            original_text="人民币(大写)柒万捌仟元整(¥73000.00元)",
+            compare_text="人民币(大写)柒万叁仟元整(¥73000.00元)",
+            original_snippet="捌仟",
+            compare_snippet="叁仟",
+            review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        ),
+        DiffItem(
+            diff_id="D082",
+            diff_type="MODIFY",
+            source_type="clause",
+            original_text="电监安全(2006)34号",
+            compare_text="电监安全〔2006〕34号",
+            original_snippet="(2006)34",
+            compare_snippet="〔2006〕34",
+            review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        ),
+        DiffItem(
+            diff_id="D073",
+            diff_type="MODIFY",
+            source_type="clause",
+            original_text="按以下第一种方式处理:",
+            compare_text="按以下第二种方式处理:",
+            original_snippet="一/",
+            compare_snippet="二",
+            review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+
+    assert [item.diff_id for item in result.diffs] == ["D050", "D032", "D082", "D073"]
+
+
 def test_diff_quality_marks_row_level_table_noise_for_review_not_critical() -> None:
     diff = DiffItem(
         diff_id="D001",
