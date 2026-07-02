@@ -157,6 +157,8 @@ class ClauseBoundaryCoverageFilter:
             return "short_heading_text_covered_by_bare_number"
         if self._heading_with_bare_number_and_body_covered(diff, context):
             return "heading_with_bare_number_and_body_covered"
+        if self._ocr_stitched_count_heading_body_covered(diff, context):
+            return "ocr_stitched_count_heading_body_covered"
         if self._low_coverage_split_fragments_covered_by_opposite_page(diff, context):
             return "low_coverage_split_page_fragment_covered"
         if self._changed_fragments_covered_by_neighbor_clauses(diff, context):
@@ -222,17 +224,6 @@ class ClauseBoundaryCoverageFilter:
         ):
             return False
 
-        changed = (diff.original_text or diff.original_snippet) if diff.diff_type == "DELETE" else (diff.compare_text or diff.compare_snippet)
-        changed_key = normalize_for_coverage(changed)
-        short_numeric_heading = bool(re.fullmatch(r"\d{1,2}", changed_key))
-        if not short_numeric_heading and not _safe_for_page_text_coverage(changed, changed_key):
-            return False
-        material_heading_risk = (
-            (diff.diff_type == "ADD" and _contains_material_heading_fragment(diff, changed))
-            or (diff.diff_type == "DELETE" and _contains_delete_material_heading_fragment(diff, changed))
-        )
-        if material_heading_risk:
-            return False
         opposite_document = context.compare_document if diff.diff_type == "DELETE" else context.original_document
         if opposite_document is None:
             return False
@@ -241,23 +232,55 @@ class ClauseBoundaryCoverageFilter:
         if not candidate_pages:
             return False
         search_pages = {page_no + offset for page_no in candidate_pages for offset in (-1, 0, 1)}
+        candidates = self._page_text_coverage_candidates(diff)
+        if not candidates:
+            return False
 
         for page in opposite_document.pages:
             if page.page_no not in search_pages:
                 continue
             page_lines = _page_block_lines(page)
             page_text = "\n".join(page_lines)
-            if short_numeric_heading:
-                if any(
-                    _line_has_numeric_heading_boundary(line, changed_key)
-                    and re.search(r"[\u4e00-\u9fff]", line)
-                    for line in page_lines
-                ):
+            for _changed, changed_key in candidates:
+                short_numeric_heading = bool(re.fullmatch(r"\d{1,2}", changed_key))
+                if short_numeric_heading:
+                    if any(
+                        _line_has_numeric_heading_boundary(line, changed_key)
+                        and re.search(r"[\u4e00-\u9fff]", line)
+                        for line in page_lines
+                    ):
+                        return True
+                    continue
+                if _page_text_contains_changed_text(page_text, page_lines, changed_key):
                     return True
-                continue
-            if _page_text_contains_changed_text(page_text, page_lines, changed_key):
-                return True
         return False
+
+    @staticmethod
+    def _page_text_coverage_candidates(diff: DiffItem) -> list[tuple[str, str]]:
+        if diff.diff_type == "DELETE":
+            raw_candidates = [diff.original_snippet] if (diff.original_snippet or "").strip() else [diff.original_text]
+        elif diff.diff_type == "ADD":
+            raw_candidates = [diff.compare_snippet] if (diff.compare_snippet or "").strip() else [diff.compare_text]
+        else:
+            raw_candidates = []
+
+        candidates: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for changed in raw_candidates:
+            changed = (changed or "").strip()
+            changed_key = normalize_for_coverage(changed)
+            if not changed_key or changed_key in seen:
+                continue
+            short_numeric_heading = bool(re.fullmatch(r"\d{1,2}", changed_key))
+            if not short_numeric_heading and not _safe_for_page_text_coverage(changed, changed_key):
+                continue
+            if diff.diff_type == "ADD" and _contains_material_heading_fragment(diff, changed):
+                continue
+            if diff.diff_type == "DELETE" and _contains_delete_material_heading_fragment(diff, changed):
+                continue
+            seen.add(changed_key)
+            candidates.append((changed, changed_key))
+        return candidates
 
     def _candidate_pages_for_diff(self, diff: DiffItem, context: BoundaryCoverageContext) -> set[int]:
         pages = self._evidence_pages(diff)
@@ -288,7 +311,13 @@ class ClauseBoundaryCoverageFilter:
         changed_key = normalize_for_coverage(changed)
         if not _safe_for_page_text_coverage(changed, changed_key):
             return False
-        if _contains_material_heading_fragment(diff, changed):
+        evidence = diff.original_evidence if has_original else diff.compare_evidence
+        evidence_texts = [item.text for item in evidence if item.text]
+        if _contains_material_heading_fragment(
+            diff,
+            changed,
+            _material_heading_guard_evidence_texts(evidence_texts),
+        ):
             return False
         opposite_document = context.compare_document if has_original else context.original_document
         if opposite_document is None:
@@ -379,12 +408,51 @@ class ClauseBoundaryCoverageFilter:
             return False
         return self._document_pages_contain_all(context.original_document, pages, {body_key})
 
+    def _ocr_stitched_count_heading_body_covered(
+        self,
+        diff: DiffItem,
+        context: BoundaryCoverageContext,
+    ) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if not flags.issuperset({"POSSIBLE_OCR_NOISE", "SPATIAL_SUBSTRING_COVERAGE_REPAIRED"}):
+            return False
+        details = diff.match_score_details or {}
+        if details.get("body_length_coverage", 0.0) < 0.70:
+            return False
+        if (diff.original_snippet or "").strip() or not (diff.compare_snippet or "").strip():
+            return False
+
+        changed_key = normalize_for_coverage(diff.compare_snippet)
+        match = re.fullmatch(r"\d{1,2}(份数)", changed_key)
+        if not match:
+            return False
+        title = match.group(1)
+        parent_no = self._parent_number_from_title_line(diff.compare_text, title)
+        if not parent_no:
+            return False
+        pages = self._candidate_pages_for_modify_side(diff, "compare")
+        if not self._opposite_pages_have_bare_parent_number(context.original_document, pages, parent_no):
+            return False
+        return self._opposite_pages_have_count_body(context.original_document, pages)
+
     @staticmethod
     def _parent_number_from_short_heading_line(text: str, heading: str) -> str:
         if not text or not heading:
             return ""
         pattern = re.compile(
             rf"(?:^|\n)\s*(\d{{1,2}})\s*[.．。]\s*{re.escape(heading)}\s*(?:\n|$)"
+        )
+        match = pattern.search(text)
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _parent_number_from_title_line(text: str, title: str) -> str:
+        if not text or not title:
+            return ""
+        pattern = re.compile(
+            rf"(?:^|\n)\s*(\d{{1,2}})\s*[.．。]\s*{re.escape(title)}\s*(?:\n|$)"
         )
         match = pattern.search(text)
         return match.group(1) if match else ""
@@ -493,6 +561,19 @@ class ClauseBoundaryCoverageFilter:
         return False
 
     @staticmethod
+    def _opposite_pages_have_count_body(document: Document | None, pages: set[int]) -> bool:
+        if document is None or not pages:
+            return False
+        search_pages = {page_no + offset for page_no in pages for offset in (-1, 0, 1)}
+        for page in document.pages:
+            if page.page_no not in search_pages:
+                continue
+            page_key = normalize_for_coverage("\n".join(block.text for block in page.blocks if block.text))
+            if "一式" in page_key and "份" in page_key:
+                return True
+        return False
+
+    @staticmethod
     def _candidate_pages_for_modify_side(diff: DiffItem, side: str) -> set[int]:
         evidence = diff.original_evidence if side == "original" else diff.compare_evidence
         return {item.page_no for item in evidence}
@@ -538,7 +619,13 @@ class ClauseBoundaryCoverageFilter:
         changed = diff.original_snippet if has_original else diff.compare_snippet
         evidence = diff.original_evidence if has_original else diff.compare_evidence
         evidence_texts = [item.text for item in evidence if item.text]
-        if _contains_material_heading_fragment(diff, changed, evidence_texts):
+        if _contains_material_heading_fragment(
+            diff,
+            changed,
+            _material_heading_guard_evidence_texts(evidence_texts),
+        ):
+            return False
+        if _looks_like_multi_field_structural_fragment(normalize_for_coverage(changed)) and not _has_sufficient_structural_evidence_fragments(evidence_texts):
             return False
         fragments = _material_fragment_keys(changed, evidence_texts)
         if not fragments:
@@ -830,6 +917,37 @@ def _contains_material_heading_fragment(diff: DiffItem, text: str, evidence_text
     )
 
 
+def _material_heading_guard_evidence_texts(evidence_texts: list[str]) -> list[str]:
+    guarded: list[str] = []
+    for text in evidence_texts:
+        key = normalize_for_coverage(text)
+        if not key:
+            continue
+        if _is_structural_field_or_ocr_shard(key) and not _contains_critical_heading_term(text):
+            continue
+        if not _contains_critical_heading_term(text) and not _looks_like_numbered_heading_text(text):
+            continue
+        guarded.append(text)
+    return guarded
+
+
+def _is_structural_field_or_ocr_shard(key: str) -> bool:
+    if key in {"项目名称", "甲方", "乙方", "协议有效期", "合同编号", "甲", "乙", "方"}:
+        return True
+    return len(key) < 3 and not re.search(r"\d", key)
+
+
+def _looks_like_numbered_heading_text(text: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", text or "").strip()
+    return bool(
+        re.match(
+            r"^(?:第?[一二三四五六七八九十百\d]+(?:章|节|条)?|"
+            r"\d{1,2}(?:\.\d{1,2})*)\s*[.．、:：]\s*\S+",
+            normalized,
+        )
+    )
+
+
 def _contains_delete_material_heading_fragment(diff: DiffItem, text: str) -> bool:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if len(lines) >= 2 and any(
@@ -898,6 +1016,10 @@ def _material_fragment_keys(text: str, evidence_texts: list[str] | None = None) 
             continue
         if not from_evidence and _looks_like_unstable_quoted_fragment(fragment, key):
             continue
+        if not from_evidence and _looks_like_multi_field_structural_fragment(key):
+            continue
+        if not from_evidence and len(key) > 120:
+            continue
         if len(key) < 3 and not re.search(r"\d", key):
             continue
         if re.fullmatch(r"\d{1,3}", key):
@@ -913,6 +1035,31 @@ def _looks_like_unstable_quoted_fragment(fragment: str, key: str) -> bool:
     normalized = unicodedata.normalize("NFKC", fragment or "")
     quote_count = sum(normalized.count(ch) for ch in "“”\"'‘’")
     return quote_count >= 2
+
+
+def _looks_like_multi_field_structural_fragment(key: str) -> bool:
+    if len(key) <= 60:
+        return False
+    field_hits = sum(
+        1
+        for token in ("项目名称", "甲方", "乙方", "协议有效期", "合同编号")
+        if token in key
+    )
+    return field_hits >= 2
+
+
+def _has_sufficient_structural_evidence_fragments(evidence_texts: list[str]) -> bool:
+    material_keys = {
+        normalize_for_coverage(text)
+        for text in evidence_texts
+        if text and not _is_structural_field_or_ocr_shard(normalize_for_coverage(text))
+    }
+    material_keys = {
+        key
+        for key in material_keys
+        if len(key) >= 4 and not re.fullmatch(r"\d{1,4}", key)
+    }
+    return len(material_keys) >= 4
 
 
 def _page_text_contains_all_fragments(page_text: str, page_lines: list[str], fragments: list[str]) -> bool:

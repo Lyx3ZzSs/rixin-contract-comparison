@@ -2343,11 +2343,15 @@ def test_diff_quality_suppresses_existing_clause_add_cut_by_reading_order() -> N
         diff_type="ADD",
         source_type="clause",
         clause_no="4.2.1",
-        compare_text="双方同意采用以下第",
+        compare_text="4.2.1. 双方同意采用以下第\n(一)、",
         compare_snippet="双方同意采用以下第",
         review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
-        structural_flags=["PARAGRAPH_MERGED"],
-        compare_evidence=[EvidenceBox(page_no=4, bbox=BBox(x0=120, y0=160, x1=260, y1=180), text="双方同意采用以下第")],
+        structural_flags=[],
+        compare_evidence=[
+            EvidenceBox(page_no=4, bbox=BBox(x0=80, y0=160, x1=115, y1=180), text="4.2.1."),
+            EvidenceBox(page_no=4, bbox=BBox(x0=120, y0=160, x1=260, y1=180), text="双方同意采用以下第"),
+            EvidenceBox(page_no=4, bbox=BBox(x0=80, y0=180, x1=120, y1=200), text="(一)、"),
+        ],
     )
 
     result = DiffQualityProcessor().process([diff], original_document=original_document)
@@ -2356,6 +2360,32 @@ def test_diff_quality_suppresses_existing_clause_add_cut_by_reading_order() -> N
     assert any(
         decision.action == "suppressed_by_neighbor_clause_coverage"
         and decision.detail["reason"] == "changed_text_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_add_when_only_full_clause_text_is_covered() -> None:
+    original_document = _quality_document(
+        4,
+        "4.2.1. 双方同意采用以下第\n(一)、",
+    )
+    diff = DiffItem(
+        diff_id="D113_REAL_ADD",
+        diff_type="ADD",
+        source_type="clause",
+        clause_no="4.2.1",
+        compare_text="4.2.1. 双方同意采用以下第\n(一)、",
+        compare_snippet="新增付款条件",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        compare_evidence=[EvidenceBox(page_no=4, bbox=BBox(x0=120, y0=160, x1=260, y1=180), text="新增付款条件")],
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D113_REAL_ADD"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D113_REAL_ADD"
         for decision in result.decisions
     )
 
@@ -2584,11 +2614,40 @@ def test_diff_quality_suppresses_false_delete_when_text_exists_on_compare_page()
 def test_diff_quality_suppresses_large_false_delete_when_compare_page_contains_fragments() -> None:
     compare_document = _quality_document(
         14,
-        "项目名称:长源电力随州公司2026年新能源场站功率预测系统授权服务单一来源项目\n"
-        "甲方:国能长源随州发电有限公司随县分公司\n"
-        "乙方:国能日新科技股份有限公司\n"
-        "协议有效期:2026年7月1日至2027年6月30日\n"
-        "为贯彻“安全第一、预防为主、综合治理”的方针。",
+        "项目名称:\n"
+        "长源电力随州公司\n"
+        "2026\n"
+        "年新能源场站功率预测系统授\n"
+        "甲\n"
+        "方:\n"
+        "国能长源随州发电有限公司随县分公司\n"
+        "乙\n"
+        "方:\n"
+        "国能日新科技股份有限公司\n"
+        "协议有效期:\n"
+        "2026\n"
+        "年7月1日\n"
+        "至2027\n"
+        "年6月30日\n"
+        "为贯彻\n"
+        "“安全第一,\n"
+        "预防为主,\n"
+        "综合治理”\n"
+        "的方针,\n"
+        "明确甲乙双\n"
+        "方在项目实施过程中的权利、\n"
+        "义务和安全生产责任,\n"
+        "加强和规范项目\n"
+        "管理工作,\n"
+        "根据\n"
+        "《中华人民共和国安全生产法》《中华人民共和国职\n"
+        "业病防治法》《建设工程安全生产管理条例》《生产安全事故报告和\n"
+        "调查处理条例》\n"
+        "及相关法律、\n"
+        "法规和规章的规定,\n"
+        "甲乙双方经协商一\n"
+        "致,\n"
+        "订立本协议。",
     )
     diff = DiffItem(
         diff_id="D091",
@@ -2603,7 +2662,7 @@ def test_diff_quality_suppresses_large_false_delete_when_compare_page_contains_f
         ),
         compare_text="",
         original_snippet=(
-            "项目名称:长源电力随州公司2026年新能源场站功率预测系统授权服务单一来源项目"
+            "项目名称:长源电力随州公司2026年新能源场站功率预测系统授"
             "甲方:国能长源随州发电有限公司随县分公司"
             "乙方:国能日新科技股份有限公司"
             "协议有效期:2026年7月1日至2027年6月30日"
@@ -2615,13 +2674,34 @@ def test_diff_quality_suppresses_large_false_delete_when_compare_page_contains_f
             "POSSIBLE_MERGED_CLAUSE",
             "TEXT_FOUND_IN_OTHER_CLAUSE",
             "READING_ORDER_RISK",
+            "CRITICAL_FIELD_CHANGE",
+            "CRITICAL_FIELD_DATE_CHANGE",
+            "CRITICAL_FIELD_DURATION_CHANGE",
+            "CRITICAL_FIELD_PARTY_ROLE_CHANGE",
+            "CRITICAL_VALUE_CHANGE",
         ],
         structural_flags=["PARAGRAPH_MERGED"],
         original_evidence=[
-            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=140, x1=450, y1=170), text="项目名称:长源电力随州公司2026年新能源场站功率预测系统授权服务单一来源项目"),
-            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=180, x1=450, y1=210), text="甲方:国能长源随州发电有限公司随县分公司"),
-            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=220, x1=450, y1=250), text="乙方:国能日新科技股份有限公司"),
-            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=260, x1=450, y1=290), text="协议有效期:2026年7月1日至2027年6月30日"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=140, x1=450, y1=170), text="项目名称:"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=170, x1=450, y1=190), text="长源电力随州公司"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=190, x1=450, y1=210), text="2026"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=210, x1=450, y1=230), text="年新能源场站功率预测系统授"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=230, x1=450, y1=250), text="甲"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=250, x1=450, y1=270), text="方:"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=270, x1=450, y1=290), text="国能长源随州发电有限公司随县分公司"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=290, x1=450, y1=310), text="乙"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=310, x1=450, y1=330), text="方:"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=330, x1=450, y1=350), text="国能日新科技股份有限公司"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=350, x1=450, y1=370), text="协议有效期:"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=370, x1=450, y1=390), text="2026"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=390, x1=450, y1=410), text="年7月1日"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=410, x1=450, y1=430), text="至2027"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=430, x1=450, y1=450), text="年6月30日"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=450, x1=450, y1=470), text="为贯彻"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=470, x1=450, y1=490), text="“安全第一,"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=490, x1=450, y1=510), text="预防为主,"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=510, x1=450, y1=530), text="综合治理”"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=530, x1=450, y1=550), text="的方针,"),
         ],
         match_score_details={"body_length_coverage": 0.35, "merged_compare_clause": 1.0},
     )
@@ -2632,6 +2712,89 @@ def test_diff_quality_suppresses_large_false_delete_when_compare_page_contains_f
     assert any(
         decision.action == "suppressed_by_neighbor_clause_coverage"
         and decision.detail["reason"] == "low_coverage_split_page_fragment_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_material_heading_when_only_evidence_preserves_heading_shape() -> None:
+    original_document = _quality_document(
+        3,
+        "12. 合同价格及支付方式\n甲方按合同约定支付价款。",
+    )
+    diff = DiffItem(
+        diff_id="D091_MATERIAL_EVIDENCE",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="甲方按合同约定支付价款。",
+        compare_text="12. 合同价格及支付方式\n甲方按合同约定支付价款。",
+        original_snippet="",
+        compare_snippet="合同价格及支付方式甲方按合同约定支付价款",
+        review_flags=[
+            "LOW_COVERAGE_MATCH_REVIEW",
+            "PARTIAL_CLAUSE_MATCH",
+            "POSSIBLE_SPLIT_CLAUSE",
+            "TEXT_FOUND_IN_OTHER_CLAUSE",
+            "READING_ORDER_RISK",
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        compare_evidence=[
+            EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="合同价格及支付方式"),
+            EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=753, x1=151, y1=776), text="甲方按合同约定支付价款。"),
+        ],
+        match_score_details={"body_length_coverage": 0.25, "split_original_clause": 1.0},
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D091_MATERIAL_EVIDENCE"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D091_MATERIAL_EVIDENCE"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_multi_field_change_when_only_labels_are_covered() -> None:
+    compare_document = _quality_document(
+        14,
+        "项目名称:\n甲方:\n乙方:\n协议有效期:",
+    )
+    diff = DiffItem(
+        diff_id="D091_INCOMPLETE_EVIDENCE",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="项目名称:长源电力随州公司\n甲方:国能长源随州发电有限公司\n乙方:国能日新科技股份有限公司\n协议有效期:2026年7月1日至2027年6月30日",
+        compare_text="",
+        original_snippet="项目名称:长源电力随州公司甲方:国能长源随州发电有限公司乙方:国能日新科技股份有限公司协议有效期:2026年7月1日至2027年6月30日",
+        compare_snippet="",
+        review_flags=[
+            "LOW_COVERAGE_MATCH_REVIEW",
+            "PARTIAL_CLAUSE_MATCH",
+            "POSSIBLE_MERGED_CLAUSE",
+            "TEXT_FOUND_IN_OTHER_CLAUSE",
+            "READING_ORDER_RISK",
+            "CRITICAL_FIELD_CHANGE",
+            "CRITICAL_FIELD_DATE_CHANGE",
+            "CRITICAL_FIELD_DURATION_CHANGE",
+            "CRITICAL_FIELD_PARTY_ROLE_CHANGE",
+            "CRITICAL_VALUE_CHANGE",
+        ],
+        structural_flags=["PARAGRAPH_MERGED"],
+        original_evidence=[
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=140, x1=450, y1=170), text="项目名称:"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=180, x1=450, y1=210), text="甲方:"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=220, x1=450, y1=250), text="乙方:"),
+            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=260, x1=450, y1=290), text="协议有效期:"),
+        ],
+        match_score_details={"body_length_coverage": 0.10, "merged_compare_clause": 1.0},
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_document=compare_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D091_INCOMPLETE_EVIDENCE"]
+    assert not any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D091_INCOMPLETE_EVIDENCE"
         for decision in result.decisions
     )
 
@@ -2664,6 +2827,51 @@ def test_diff_quality_suppresses_short_heading_text_when_original_has_bare_numbe
         decision.action == "suppressed_by_neighbor_clause_coverage"
         and decision.diff_id == "D046"
         and decision.detail["reason"] == "short_heading_text_covered_by_bare_number"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_ocr_stitched_count_heading_fragment() -> None:
+    original_document = _quality_document(
+        11,
+        "17.\n"
+        "本合同在以下条件全部满足时生效:\n"
+        "18.\n"
+        "本合同一式伍份，甲方执肆份，乙方执壹份，经双方共同协商认可使用可靠的电子签名签订的电子合同与纸质合同具有同等法律效力。\n"
+        "19.",
+    )
+    diff = DiffItem(
+        diff_id="D053",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="(1)",
+        original_text="(1)合同经甲乙双方法定代表人或其授权代表签字并加盖单位公章。\n18.\n本合同一式伍份。",
+        compare_text="(1)合同经甲乙双方法定代表人或其授权代表签字并加盖单位公章。\n(2)1\n18. 份数\n本合同一式伍份。",
+        original_snippet="",
+        compare_snippet="1份数",
+        review_flags=[
+            "LOW_CONFIDENCE_MATCH",
+            "POSSIBLE_CLAUSE_MISMATCH",
+            "READING_ORDER_RISK",
+            "SPATIAL_SUBSTRING_COVERAGE_REPAIRED",
+            "OCR_REMEDIATION_PLANNED",
+            "POSSIBLE_OCR_NOISE",
+        ],
+        structural_flags=["PARAGRAPH_MERGED", "CROSS_PAGE_CONTINUATION_MERGED"],
+        compare_evidence=[
+            EvidenceBox(page_no=11, bbox=BBox(x0=80, y0=720, x1=90, y1=740), text="1"),
+            EvidenceBox(page_no=11, bbox=BBox(x0=110, y0=720, x1=150, y1=740), text="份数"),
+        ],
+        match_score_details={"body_length_coverage": 0.77},
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D053"
+        and decision.detail["reason"] == "ocr_stitched_count_heading_body_covered"
         for decision in result.decisions
     )
 
