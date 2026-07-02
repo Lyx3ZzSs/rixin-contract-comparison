@@ -4404,6 +4404,70 @@ def test_diff_quality_keeps_signing_table_signature_and_date_additions() -> None
     assert [item.diff_id for item in result.diffs] == ["D021", "D022"]
 
 
+def test_diff_quality_suppresses_isolated_seal_region_ocr_fragment() -> None:
+    diff = DiffItem(
+        diff_id="D027",
+        diff_type="ADD",
+        source_type="seal",
+        title="印章区域（第29页）",
+        compare_text="图",
+        compare_snippet="图",
+        review_flags=[
+            "OCR_LOW_CONFIDENCE",
+            "PAGE_UNRELIABLE",
+            "READING_ORDER_RISK",
+            "SEAL_OR_SIGNATURE_RISK",
+            "OCR_REMEDIATION_MANUAL_REVIEW",
+            "OCR_REMEDIATION_PLANNED",
+        ],
+        compare_evidence=[EvidenceBox(page_no=29, bbox=BBox(x0=420, y0=300, x1=440, y1=330), text="图")],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.detail["reason"] == "isolated_seal_artifact_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_real_seal_or_signature_region_addition() -> None:
+    diff = DiffItem(
+        diff_id="D026",
+        diff_type="ADD",
+        source_type="seal",
+        title="印章区域（第29页）",
+        compare_text="甲方（盖章） 法定代表人（负责人）/授权代表（签字） 42130130002406",
+        compare_snippet="甲方（盖章） 法定代表人（负责人）/授权代表（签字） 42130130002406",
+        review_flags=["SEAL_OR_SIGNATURE_RISK", "OCR_REMEDIATION_MANUAL_REVIEW", "OCR_REMEDIATION_PLANNED"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D026"]
+
+
+def test_diff_quality_keeps_short_meaningful_seal_region_text() -> None:
+    diffs = [
+        DiffItem(
+            diff_id=f"D026_{index}",
+            diff_type="ADD",
+            source_type="seal",
+            title="印章区域（第29页）",
+            compare_text=text,
+            compare_snippet=text,
+            review_flags=["SEAL_OR_SIGNATURE_RISK", "OCR_REMEDIATION_MANUAL_REVIEW"],
+        )
+        for index, text in enumerate(["张三", "签字", "公章", "甲", "10", "￥5"], start=1)
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+
+    assert [item.diff_id for item in result.diffs] == [item.diff_id for item in diffs]
+
+
 def test_diff_quality_marks_row_level_table_noise_for_review_not_critical() -> None:
     diff = DiffItem(
         diff_id="D001",

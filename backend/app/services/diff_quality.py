@@ -121,6 +121,7 @@ class DiffQualityProcessor:
         "form_separator_equivalent",
         "page_number_edge_annotation_noise",
         "seal_occluded_signing_label_covered",
+        "isolated_seal_artifact_text",
         "single_latin_layout_glyph_noise",
         "table_header_serialization_equivalent",
     }
@@ -344,6 +345,8 @@ class DiffQualityProcessor:
             return "table_header_serialization_equivalent"
         if self._looks_like_seal_occluded_signing_label_covered(diff):
             return "seal_occluded_signing_label_covered"
+        if self._looks_like_isolated_seal_artifact_text(diff):
+            return "isolated_seal_artifact_text"
         if self._has_critical_field_change(diff):
             return ""
         if self._is_range_connector_equivalent_clause_change(diff):
@@ -463,6 +466,22 @@ class DiffQualityProcessor:
         ):
             return False
         return _signing_label_residual(diff.original_text) == _signing_label_residual(diff.compare_text)
+
+    def _looks_like_isolated_seal_artifact_text(self, diff: DiffItem) -> bool:
+        if diff.source_type != "seal":
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if "SEAL_OR_SIGNATURE_RISK" not in flags:
+            return False
+        changed = self._compact(self._changed_text(diff))
+        if not changed or len(changed) > 2:
+            return False
+        text = self._changed_text(diff)
+        if self.business_token_pattern.search(text) or self._canonical_date(text):
+            return False
+        if re.search(r"[\d¥￥]|甲|乙|签|章|[\u4e00-\u9fff]{2}", text or ""):
+            return False
+        return changed in {"图", "圈", "圆", "印", "红", "点", "口", "o"}
 
     def _flag_boundary_drift(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         clause_diffs = [diff for diff in diffs if diff.source_type == "clause"]
