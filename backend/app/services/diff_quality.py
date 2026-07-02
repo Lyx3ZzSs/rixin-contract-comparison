@@ -39,6 +39,38 @@ def _company_name_set(text: str) -> set[str]:
     }
 
 
+def _party_company_map(text: str, reference: dict[str, str] | None = None) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    reference = reference or {}
+    columns = [column.strip() for column in re.split(r"\|", text or "") if column.strip()]
+    reference_roles = list(reference)
+    for index, column in enumerate(columns):
+        role_match = re.search(r"(甲方|乙方)", column)
+        role = role_match.group(1) if role_match else ""
+        companies = sorted(_company_name_set(column), key=len, reverse=True)
+        if not companies:
+            continue
+        company = companies[0]
+        if not role and index < len(reference_roles):
+            role = reference_roles[index]
+        if role:
+            mapping[role] = company
+    return mapping
+
+
+def _signing_label_residual(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text or "")
+    columns = re.split(r"[|｜]", normalized)
+    residual_columns: list[str] = []
+    for column in columns:
+        column = column.strip()
+        column = re.sub(r"^(甲方|乙方)\s*(?:\(\s*(?:盖章|章|公章)\s*\)|（\s*(?:盖章|章|公章)\s*）)?\s*[:：]?", "", column)
+        column = re.sub(r"^(?:盖章|公章|单位名称)\s*[:：]?", "", column)
+        column = re.sub(r"^(?:\(\s*章\s*\)|（\s*章\s*）)\s*[:：]?", "", column)
+        residual_columns.append(re.sub(r"[\s:：，,。；;、（）()]+", "", column))
+    return "".join(residual_columns)
+
+
 @dataclass
 class DiffQualityDecision:
     action: str
@@ -86,8 +118,11 @@ class DiffQualityProcessor:
     header_footer_pattern = re.compile(r"(?:页眉|页脚|页码|第\s*\d+\s*页|共\s*\d+\s*页)")
     directly_suppressible_review_reasons = {
         "edge_annotation_clause_noise",
+        "form_separator_equivalent",
         "page_number_edge_annotation_noise",
+        "seal_occluded_signing_label_covered",
         "single_latin_layout_glyph_noise",
+        "table_header_serialization_equivalent",
     }
 
     def __init__(self) -> None:
@@ -303,6 +338,12 @@ class DiffQualityProcessor:
             return "edge_annotation_clause_noise"
         if self._looks_like_page_number_edge_annotation_noise(diff):
             return "page_number_edge_annotation_noise"
+        if self._looks_like_form_separator_equivalent(diff):
+            return "form_separator_equivalent"
+        if self._looks_like_table_header_serialization_equivalent(diff):
+            return "table_header_serialization_equivalent"
+        if self._looks_like_seal_occluded_signing_label_covered(diff):
+            return "seal_occluded_signing_label_covered"
         if self._has_critical_field_change(diff):
             return ""
         if self._is_range_connector_equivalent_clause_change(diff):
@@ -369,6 +410,59 @@ class DiffQualityProcessor:
     def _has_range_connector(text: str) -> bool:
         normalized = unicodedata.normalize("NFKC", text or "")
         return bool(re.search(r"(?<=[0-9%％])(?:一|﹣|－|–|—|-|~|～|至)(?=[0-9])", normalized))
+
+    def _looks_like_form_separator_equivalent(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        if self.critical_field_flag in diff.review_flags:
+            return False
+        original_raw = diff.original_text or diff.original_snippet
+        compare_raw = diff.compare_text or diff.compare_snippet
+        combined = f"{original_raw}{compare_raw}{diff.original_snippet}{diff.compare_snippet}"
+        if not re.search(r"[/\\_＿—－-]{2,}", combined):
+            return False
+        if self._form_separator_touches_digit(original_raw) or self._form_separator_touches_digit(compare_raw):
+            return False
+        original = self._compact(re.sub(r"[/\\_＿—－-]+", "", original_raw))
+        compare = self._compact(re.sub(r"[/\\_＿—－-]+", "", compare_raw))
+        return bool(original and original == compare)
+
+    @staticmethod
+    def _form_separator_touches_digit(text: str) -> bool:
+        normalized = unicodedata.normalize("NFKC", text or "")
+        return bool(re.search(r"\d\s*[/\\_＿—－-]+|[/\\_＿—－-]+\s*\d", normalized))
+
+    def _looks_like_table_header_serialization_equivalent(self, diff: DiffItem) -> bool:
+        if diff.source_type != "table" or diff.diff_type != "MODIFY":
+            return False
+        original = self._compact((diff.original_text or diff.original_snippet).replace("|", ""))
+        compare = self._compact((diff.compare_text or diff.compare_snippet).replace("|", ""))
+        if not original or original != compare:
+            return False
+        text = f"{diff.original_text} {diff.compare_text}"
+        return "要求" in text and "乙方响应" in text
+
+    def _looks_like_seal_occluded_signing_label_covered(self, diff: DiffItem) -> bool:
+        if diff.source_type != "table" or diff.diff_type != "MODIFY":
+            return False
+        text = f"{diff.title} {diff.original_text} {diff.compare_text}"
+        if not re.search(r"盖章|甲方|乙方", text):
+            return False
+        if self._canonical_date(text) or re.search(r"授权代表|签字|签订时间", diff.compare_text or ""):
+            return False
+        original_companies = _company_name_set(diff.original_text)
+        compare_companies = _company_name_set(diff.compare_text)
+        if not (original_companies and compare_companies and original_companies == compare_companies):
+            return False
+        original_party_companies = _party_company_map(diff.original_text)
+        compare_party_companies = _party_company_map(diff.compare_text, original_party_companies)
+        if not (
+            original_party_companies
+            and compare_party_companies
+            and original_party_companies == compare_party_companies
+        ):
+            return False
+        return _signing_label_residual(diff.original_text) == _signing_label_residual(diff.compare_text)
 
     def _flag_boundary_drift(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         clause_diffs = [diff for diff in diffs if diff.source_type == "clause"]

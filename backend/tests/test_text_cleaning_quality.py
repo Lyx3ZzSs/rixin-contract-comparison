@@ -4164,7 +4164,7 @@ def test_diff_quality_treats_party_contact_table_as_regular_table_change() -> No
     assert "D003" not in by_id
 
 
-def test_diff_quality_downgrades_unreliable_signing_contact_table_to_review() -> None:
+def test_diff_quality_suppresses_unreliable_signing_contact_table_label_loss_without_prior_review_flag() -> None:
     diff = DiffItem(
         diff_id="D020",
         diff_type="MODIFY",
@@ -4176,10 +4176,232 @@ def test_diff_quality_downgrades_unreliable_signing_contact_table_to_review() ->
 
     result = DiffQualityProcessor().process([diff])
 
-    assert len(result.diffs) == 1
-    assert "CRITICAL_VALUE_CHANGE" not in result.diffs[0].review_flags
-    assert "TABLE_REGION_REVIEW" in result.diffs[0].review_flags
+    assert result.diffs == []
     assert any(decision.action == "table_region_review" and decision.diff_id == "D020" for decision in result.decisions)
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D020"
+        and decision.detail["reason"] == "seal_occluded_signing_label_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_form_separator_only_change() -> None:
+    diff = DiffItem(
+        diff_id="D036",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="(二)",
+        original_text="（三）_____/_____费用由乙方承担;",
+        compare_text="（三）//费用由乙方承担;",
+        original_snippet="(三)费用由乙方承担:",
+        compare_snippet="(三)//费用由乙方承担;",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.detail["reason"] == "form_separator_equivalent"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_seal_occluded_signing_label_table_text() -> None:
+    diff = DiffItem(
+        diff_id="D020",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：联系人",
+        original_text="甲方（盖章）： 国能长源随州发电有限公司随县分公司 | 乙方（盖章）： 国能日新科技股份有限公司",
+        compare_text="甲方 国能长源随州发电有限公司随县分公司 | 国能日新科技股份有限公司",
+        review_flags=["TABLE_REGION_REVIEW"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.detail["reason"] == "seal_occluded_signing_label_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_signing_table_party_role_swap() -> None:
+    diff = DiffItem(
+        diff_id="D020_ROLE_SWAP",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：联系人",
+        original_text="甲方（盖章）： 华北能源有限公司 | 乙方（盖章）： 国能日新科技股份有限公司",
+        compare_text="乙方（盖章）： 华北能源有限公司 | 甲方（盖章）： 国能日新科技股份有限公司",
+        review_flags=["TABLE_REGION_REVIEW"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D020_ROLE_SWAP"]
+    assert not any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.detail["reason"] == "seal_occluded_signing_label_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_signing_table_contact_field_change() -> None:
+    diff = DiffItem(
+        diff_id="D020_CONTACT_CHANGE",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：联系人",
+        original_text="甲方（盖章）： 华北能源有限公司 地址：北京市海淀区1号 | 乙方（盖章）： 国能日新科技股份有限公司",
+        compare_text="甲方 华北能源有限公司 地址：上海市浦东新区2号 | 国能日新科技股份有限公司",
+        review_flags=["TABLE_REGION_REVIEW"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D020_CONTACT_CHANGE"]
+    assert not any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.detail["reason"] == "seal_occluded_signing_label_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_signing_table_address_change_with_zhang_character() -> None:
+    diff = DiffItem(
+        diff_id="D020_ADDRESS_ZHANG_CHANGE",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：联系人",
+        original_text="甲方（盖章）： 华北能源有限公司 地址：山东省济南市章丘区1号 | 乙方（盖章）： 国能日新科技股份有限公司",
+        compare_text="甲方 华北能源有限公司 地址：山东省济南市丘区1号 | 国能日新科技股份有限公司",
+        review_flags=["TABLE_REGION_REVIEW"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D020_ADDRESS_ZHANG_CHANGE"]
+    assert not any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.detail["reason"] == "seal_occluded_signing_label_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_signing_table_contact_role_text_change() -> None:
+    diff = DiffItem(
+        diff_id="D020_CONTACT_ROLE_TEXT_CHANGE",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：联系人",
+        original_text="甲方（盖章）： 华北能源有限公司 联系人：乙方项目经理张三 | 乙方（盖章）： 国能日新科技股份有限公司",
+        compare_text="甲方 华北能源有限公司 联系人：甲方项目经理张三 | 国能日新科技股份有限公司",
+        review_flags=["TABLE_REGION_REVIEW"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D020_CONTACT_ROLE_TEXT_CHANGE"]
+    assert not any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.detail["reason"] == "seal_occluded_signing_label_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_signing_table_remark_with_seal_word_change() -> None:
+    diff = DiffItem(
+        diff_id="D020_REMARK_SEAL_WORD_CHANGE",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：联系人",
+        original_text="甲方（盖章）： 华北能源有限公司 备注：公章编号A | 乙方（盖章）： 国能日新科技股份有限公司",
+        compare_text="甲方 华北能源有限公司 备注：编号A | 国能日新科技股份有限公司",
+        review_flags=["TABLE_REGION_REVIEW"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D020_REMARK_SEAL_WORD_CHANGE"]
+    assert not any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.detail["reason"] == "seal_occluded_signing_label_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_signing_table_party_qualifier_change() -> None:
+    diff = DiffItem(
+        diff_id="D020_PARTY_QUALIFIER_CHANGE",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：联系人",
+        original_text="甲方（采购方）： 华北能源有限公司 | 乙方（供应商）： 国能日新科技股份有限公司",
+        compare_text="甲方（业主方）： 华北能源有限公司 | 乙方（供应商）： 国能日新科技股份有限公司",
+        review_flags=["TABLE_REGION_REVIEW"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D020_PARTY_QUALIFIER_CHANGE"]
+    assert not any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.detail["reason"] == "seal_occluded_signing_label_covered"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_table_header_serialization_equivalent() -> None:
+    diff = DiffItem(
+        diff_id="D023",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：封面信息",
+        original_text="要求（甲方填写） | 乙方响应",
+        compare_text="要求（甲方填写）乙方响应",
+        original_snippet="要求（甲方填写） | 乙方响应",
+        compare_snippet="要求（甲方填写）乙方响应",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.detail["reason"] == "table_header_serialization_equivalent"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_signing_table_signature_and_date_additions() -> None:
+    signature_diff = DiffItem(
+        diff_id="D021",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：联系人",
+        original_text="法定代表人（负责人）或 授权代表（签字）： | 法定代表人（负责人）或 授权代表（签字）：",
+        compare_text="法定负责人 授权代表300240 | 法定代表负责人 或 各商专用 授权代表 22号3",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "TABLE_REGION_REVIEW"],
+    )
+    date_diff = DiffItem(
+        diff_id="D022",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：联系人",
+        original_text="签订时间: | 签订时间:",
+        compare_text="签订时间：2026年5月15日 | 签订时间：2026年5月15日",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "TABLE_REGION_REVIEW"],
+    )
+
+    result = DiffQualityProcessor().process([signature_diff, date_diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D021", "D022"]
 
 
 def test_diff_quality_marks_row_level_table_noise_for_review_not_critical() -> None:
