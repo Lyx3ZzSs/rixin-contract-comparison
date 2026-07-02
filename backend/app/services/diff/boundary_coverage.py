@@ -145,6 +145,16 @@ class ClauseBoundaryCoverageFilter:
     def _suppression_reason(self, diff: DiffItem, context: BoundaryCoverageContext) -> str:
         if self._short_appendix_heading_covered(diff, context):
             return "short_appendix_heading_covered"
+        if self._changed_text_covered_by_opposite_page_text(diff, context):
+            return "changed_text_covered_by_opposite_page_text"
+        if self._heading_add_covered_by_opposite_numbering(diff, context):
+            return "heading_add_covered_by_opposite_numbering"
+        if self._heading_layer_mismatch_covered_by_both_pages(diff, context):
+            return "heading_layer_mismatch_covered_by_both_pages"
+        if self._modify_fragment_covered_by_opposite_page_text(diff, context):
+            return "modify_fragment_covered_by_opposite_page_text"
+        if self._short_heading_text_covered_by_bare_number(diff, context):
+            return "short_heading_text_covered_by_bare_number"
         if self._changed_fragments_covered_by_neighbor_clauses(diff, context):
             return "changed_fragments_covered_by_neighbor_clauses"
         return ""
@@ -186,6 +196,221 @@ class ClauseBoundaryCoverageFilter:
         if diff.diff_type == "DELETE":
             return {evidence.page_no for evidence in diff.original_evidence}
         return {evidence.page_no for evidence in diff.compare_evidence}
+
+    def _changed_text_covered_by_opposite_page_text(self, diff: DiffItem, context: BoundaryCoverageContext) -> bool:
+        if diff.source_type != "clause" or diff.diff_type not in {"ADD", "DELETE"}:
+            return False
+        if not _eligible_page_text_coverage_diff(diff):
+            return False
+
+        changed = (diff.original_text or diff.original_snippet) if diff.diff_type == "DELETE" else (diff.compare_text or diff.compare_snippet)
+        changed_key = normalize_for_coverage(changed)
+        if not _safe_for_page_text_coverage(changed, changed_key):
+            return False
+
+        opposite_document = context.compare_document if diff.diff_type == "DELETE" else context.original_document
+        if opposite_document is None:
+            return False
+
+        candidate_pages = self._candidate_pages_for_diff(diff, context)
+        if not candidate_pages:
+            return False
+        search_pages = {page_no + offset for page_no in candidate_pages for offset in (-1, 0, 1)}
+
+        for page in opposite_document.pages:
+            if page.page_no not in search_pages:
+                continue
+            page_lines = [block.text for block in page.blocks if block.text]
+            page_text = "\n".join(page_lines)
+            if _page_text_contains_changed_text(page_text, page_lines, changed_key):
+                return True
+        return False
+
+    def _candidate_pages_for_diff(self, diff: DiffItem, context: BoundaryCoverageContext) -> set[int]:
+        pages = self._evidence_pages(diff)
+        if pages:
+            return pages
+        clauses = context.original_clauses if diff.diff_type == "DELETE" else context.compare_clauses
+        clause_id = diff.original_clause_id if diff.diff_type == "DELETE" else diff.compare_clause_id
+        for clause in clauses:
+            if clause.clause_id == clause_id:
+                return set(clause.page_numbers)
+        return set()
+
+    def _modify_fragment_covered_by_opposite_page_text(
+        self,
+        diff: DiffItem,
+        context: BoundaryCoverageContext,
+    ) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        if not _eligible_page_text_coverage_diff(diff):
+            return False
+        has_original = bool((diff.original_snippet or "").strip())
+        has_compare = bool((diff.compare_snippet or "").strip())
+        if has_original == has_compare:
+            return False
+
+        changed = diff.original_snippet if has_original else diff.compare_snippet
+        changed_key = normalize_for_coverage(changed)
+        if not _safe_for_page_text_coverage(changed, changed_key):
+            return False
+
+        opposite_document = context.compare_document if has_original else context.original_document
+        if opposite_document is None:
+            return False
+        pages = self._candidate_pages_for_modify_side(diff, "original" if has_original else "compare")
+        if not pages:
+            return False
+
+        search_pages = {page_no + offset for page_no in pages for offset in (-1, 0, 1)}
+        for page in opposite_document.pages:
+            if page.page_no not in search_pages:
+                continue
+            page_lines = [block.text for block in page.blocks if block.text]
+            page_text = "\n".join(page_lines)
+            if _page_text_contains_changed_text(page_text, page_lines, changed_key):
+                return True
+        return False
+
+    def _short_heading_text_covered_by_bare_number(
+        self,
+        diff: DiffItem,
+        context: BoundaryCoverageContext,
+    ) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if not flags.intersection({"LOW_CONFIDENCE_MATCH", "POSSIBLE_CLAUSE_MISMATCH", "READING_ORDER_RISK"}):
+            return False
+        if (diff.original_snippet or "").strip() or not (diff.compare_snippet or "").strip():
+            return False
+
+        changed = diff.compare_snippet.strip()
+        changed_key = normalize_for_coverage(changed)
+        if not _safe_for_heading_number_coverage(changed, changed_key):
+            return False
+
+        parent_no = self._parent_number_from_short_heading_line(diff.compare_text, changed)
+        if not parent_no:
+            return False
+        pages = self._candidate_pages_for_modify_side(diff, "compare")
+        return self._opposite_pages_have_bare_parent_and_child(
+            context.original_document,
+            pages,
+            parent_no,
+        )
+
+    @staticmethod
+    def _parent_number_from_short_heading_line(text: str, heading: str) -> str:
+        if not text or not heading:
+            return ""
+        pattern = re.compile(
+            rf"(?:^|\n)\s*(\d{{1,2}})\s*[.．。]\s*{re.escape(heading)}\s*(?:\n|$)"
+        )
+        match = pattern.search(text)
+        return match.group(1) if match else ""
+
+    def _heading_layer_mismatch_covered_by_both_pages(self, diff: DiffItem, context: BoundaryCoverageContext) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if not flags.intersection({"LOW_CONFIDENCE_MATCH", "POSSIBLE_CLAUSE_MISMATCH", "READING_ORDER_RISK"}):
+            return False
+        if _contains_protected_value(diff.original_snippet) or _contains_protected_value(diff.compare_snippet):
+            return False
+        original_key = normalize_for_coverage(diff.original_snippet or diff.original_text)
+        compare_key = normalize_for_coverage(diff.compare_snippet or diff.compare_text)
+        if not original_key or not compare_key:
+            return False
+        if len(original_key) > 40 or len(compare_key) > 40:
+            return False
+        keys = {original_key, compare_key}
+        original_pages = self._candidate_pages_for_modify_side(diff, "original")
+        compare_pages = self._candidate_pages_for_modify_side(diff, "compare")
+        return self._document_pages_contain_all(
+            context.original_document, original_pages, keys
+        ) and self._document_pages_contain_all(context.compare_document, compare_pages, keys)
+
+    def _heading_add_covered_by_opposite_numbering(self, diff: DiffItem, context: BoundaryCoverageContext) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "ADD":
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if not flags.intersection({"READING_ORDER_REPAIRED", "READING_ORDER_RISK", "POSSIBLE_SEGMENTATION_DRIFT"}):
+            return False
+        changed = diff.compare_text or diff.compare_snippet
+        changed_key = normalize_for_coverage(changed)
+        if not _safe_for_heading_number_coverage(changed, changed_key):
+            return False
+        compare_clause = self._clause_by_id(context.compare_clauses, diff.compare_clause_id)
+        if compare_clause is None:
+            return False
+        parent_no = self._heading_parent_number(compare_clause, context.compare_index)
+        if not parent_no:
+            return False
+        pages = self._candidate_pages_for_diff(diff, context) or set(compare_clause.page_numbers)
+        return self._opposite_pages_have_bare_parent_and_child(
+            context.original_document,
+            pages,
+            parent_no,
+        )
+
+    @staticmethod
+    def _clause_by_id(clauses: list[Clause], clause_id: str | None) -> Clause | None:
+        if not clause_id:
+            return None
+        return next((clause for clause in clauses if clause.clause_id == clause_id), None)
+
+    @staticmethod
+    def _heading_parent_number(clause: Clause, index: _ClauseIndex) -> str:
+        direct = re.fullmatch(r"(\d{1,2})", clause.clause_no.strip())
+        if direct:
+            return direct.group(1)
+        position = index.positions.get(clause.clause_id)
+        if position is None:
+            return ""
+        for neighbor in index.clauses[position + 1 : position + 4]:
+            child = re.fullmatch(r"(\d{1,2})\.\d+", neighbor.clause_no.strip())
+            if child:
+                return child.group(1)
+        return ""
+
+    @staticmethod
+    def _opposite_pages_have_bare_parent_and_child(
+        document: Document | None,
+        pages: set[int],
+        parent_no: str,
+    ) -> bool:
+        if document is None or not pages:
+            return False
+        search_pages = {page_no + offset for page_no in pages for offset in (-1, 0, 1)}
+        bare_parent = re.compile(rf"(?:^|\n)\s*{re.escape(parent_no)}\s*[.．。]?\s*(?:\n|$)")
+        child = re.compile(rf"(?:^|\n)\s*{re.escape(parent_no)}\.\d+\s*")
+        for page in document.pages:
+            if page.page_no not in search_pages:
+                continue
+            page_text = "\n".join(block.text for block in page.blocks if block.text)
+            if bare_parent.search(page_text) and child.search(page_text):
+                return True
+        return False
+
+    @staticmethod
+    def _candidate_pages_for_modify_side(diff: DiffItem, side: str) -> set[int]:
+        evidence = diff.original_evidence if side == "original" else diff.compare_evidence
+        return {item.page_no for item in evidence}
+
+    @staticmethod
+    def _document_pages_contain_all(document: Document | None, pages: set[int], keys: set[str]) -> bool:
+        if document is None or not pages:
+            return False
+        search_pages = {page_no + offset for page_no in pages for offset in (-1, 0, 1)}
+        for page in document.pages:
+            if page.page_no not in search_pages:
+                continue
+            page_key = normalize_for_coverage("\n".join(block.text for block in page.blocks if block.text))
+            if all(key in page_key for key in keys):
+                return True
+        return False
 
     def _changed_fragments_covered_by_neighbor_clauses(self, diff: DiffItem, context: BoundaryCoverageContext) -> bool:
         if not _eligible_structural_clause_diff(diff):
@@ -347,6 +572,67 @@ def compact_text(text: str) -> str:
 
 def normalize_for_coverage(text: str) -> str:
     return _COVERAGE_SEPARATOR_PATTERN.sub("", compact_text(text))
+
+
+def _eligible_page_text_coverage_diff(diff: DiffItem) -> bool:
+    flags = set(diff.review_flags) | set(diff.structural_flags)
+    return bool(
+        flags.intersection(
+            STRUCTURAL_RISK_FLAGS
+            | {
+                "SHORT_CLAUSE_MATCH_REVIEW",
+                "PUNCTUATED_HEADING",
+                "TEXT_FOUND_IN_OTHER_CLAUSE",
+                "POSSIBLE_SEGMENTATION_DRIFT",
+                "POSSIBLE_SPLIT_CLAUSE",
+                "POSSIBLE_MERGED_CLAUSE",
+            }
+        )
+    )
+
+
+def _safe_for_page_text_coverage(text: str, changed_key: str) -> bool:
+    if not changed_key or len(changed_key) < 3 or len(changed_key) > 120:
+        return False
+    normalized = unicodedata.normalize("NFKC", text or "")
+    if _contains_protected_value(normalized):
+        return False
+    return True
+
+
+def _safe_for_heading_number_coverage(text: str, changed_key: str) -> bool:
+    if not changed_key or len(changed_key) < 2 or len(changed_key) > 40:
+        return False
+    normalized = unicodedata.normalize("NFKC", text or "")
+    if _contains_protected_value(normalized):
+        return False
+    return bool(re.search(r"[\u4e00-\u9fff]", normalized))
+
+
+def _contains_protected_value(text: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", text or "")
+    return bool(
+        re.search(r"(¥|￥|元|万元|亿元|%|％|‰|统一社会信用代码|合同编号)", normalized)
+        or re.search(r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日", normalized)
+        or re.search(r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", normalized)
+    )
+
+
+def _page_text_contains_changed_text(page_text: str, page_lines: list[str], changed_key: str) -> bool:
+    if not changed_key:
+        return False
+    if len(changed_key) <= 8:
+        return any(_short_line_covers_changed_text(line, changed_key) for line in page_lines)
+    return changed_key in normalize_for_coverage(page_text)
+
+
+def _short_line_covers_changed_text(line: str, changed_key: str) -> bool:
+    line_key = normalize_for_coverage(line)
+    if not line_key:
+        return False
+    if line_key == changed_key:
+        return True
+    return bool(re.fullmatch(r"(?:第)?[一二三四五六七八九十百\d]+(?:章|节|条)?\.?" + re.escape(changed_key), line_key))
 
 
 def protected_fragments(text: str) -> list[CoverageFragment]:

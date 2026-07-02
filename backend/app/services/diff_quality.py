@@ -10,6 +10,35 @@ from app.services.diff.boundary_coverage import BoundaryCoverageContext, ClauseB
 from app.services.diff.range_refiner import layout_punctuation_equivalent
 
 
+def _is_signing_contact_table_label_loss(diff: DiffItem, flags: set[str]) -> bool:
+    if diff.diff_type != "MODIFY":
+        return False
+    if "联系人" not in (diff.title or ""):
+        return False
+    original = diff.original_text or diff.original_snippet
+    compare = diff.compare_text or diff.compare_snippet
+    if not original or not compare:
+        return False
+    signing_markers = ("盖章", "法定代表", "负责人", "授权代表", "签订时间")
+    if not any(marker in original or marker in compare for marker in signing_markers):
+        return False
+    original_companies = _company_name_set(original)
+    compare_companies = _company_name_set(compare)
+    if original_companies and compare_companies and original_companies != compare_companies:
+        return False
+    if flags.intersection({"TABLE_STRUCTURE_UNRELIABLE", "READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"}):
+        return True
+    return bool(original_companies and original_companies == compare_companies)
+
+
+def _company_name_set(text: str) -> set[str]:
+    normalized = unicodedata.normalize("NFKC", text or "")
+    return {
+        re.sub(r"\s+", "", match.group(0))
+        for match in re.finditer(r"[\u4e00-\u9fffA-Za-z0-9（）()·\-]{2,80}?(?:分公司|公司)", normalized)
+    }
+
+
 @dataclass
 class DiffQualityDecision:
     action: str
@@ -56,6 +85,8 @@ class DiffQualityProcessor:
     single_latin_layout_glyphs = {"i", "l", "|"}
     header_footer_pattern = re.compile(r"(?:页眉|页脚|页码|第\s*\d+\s*页|共\s*\d+\s*页)")
     directly_suppressible_review_reasons = {
+        "edge_annotation_clause_noise",
+        "page_number_edge_annotation_noise",
         "single_latin_layout_glyph_noise",
     }
 
@@ -183,6 +214,23 @@ class DiffQualityProcessor:
                     )
                 )
                 continue
+            if self._trim_edge_annotation_from_mixed_diff(diff):
+                decisions.append(
+                    DiffQualityDecision(
+                        action="trimmed_edge_annotation_noise",
+                        diff_id=diff.diff_id,
+                        detail={"reason": "mixed_clause_edge_annotation"},
+                    )
+                )
+            if self._reclassify_unit_separator_change(diff):
+                decisions.append(
+                    DiffQualityDecision(
+                        action="unit_separator_change_reclassified",
+                        diff_id=diff.diff_id,
+                        detail={"reason": "slash_unit_separator_only"},
+                    )
+                )
+                continue
             if self._has_critical_field_change(diff):
                 self._add_flag(diff, "CRITICAL_VALUE_CHANGE")
                 decisions.append(DiffQualityDecision(action="critical_field_change", diff_id=diff.diff_id))
@@ -251,6 +299,10 @@ class DiffQualityProcessor:
             return "cover_annotation_noise"
         if self._looks_like_header_footer_noise(diff):
             return "header_footer_noise"
+        if self._looks_like_edge_annotation_clause_noise(diff):
+            return "edge_annotation_clause_noise"
+        if self._looks_like_page_number_edge_annotation_noise(diff):
+            return "page_number_edge_annotation_noise"
         if self._has_critical_field_change(diff):
             return ""
         if self._is_range_connector_equivalent_clause_change(diff):
@@ -455,9 +507,14 @@ class DiffQualityProcessor:
         changed = {unicodedata.normalize("NFKC", item) for item in [diff.original_snippet, diff.compare_snippet] if item}
         for evidence in [*diff.original_evidence, *diff.compare_evidence]:
             text = unicodedata.normalize("NFKC", evidence.text or "")
-            if changed and text not in changed:
+            if changed and text not in changed and not any(text and text in item for item in changed):
                 continue
-            if evidence.bbox.x0 <= 36.0 or evidence.bbox.x1 <= 40.0:
+            if (
+                evidence.bbox.x0 <= 36.0
+                or evidence.bbox.x1 <= 40.0
+                or evidence.bbox.x0 >= 480.0
+                or evidence.bbox.y0 >= 760.0
+            ):
                 return True
         return False
 
@@ -721,7 +778,7 @@ class DiffQualityProcessor:
         if diff.source_type != "table":
             return False
         flags = set(diff.structural_flags) | set(diff.review_flags)
-        return "table_region_coverage_gap" in flags
+        return "table_region_coverage_gap" in flags or _is_signing_contact_table_label_loss(diff, flags)
 
     def _row_level_table_has_protected_change(self, diff: DiffItem) -> bool:
         if diff.diff_type != "MODIFY":
@@ -809,6 +866,145 @@ class DiffQualityProcessor:
         if self.header_footer_pattern.search(text):
             return True
         return len(self._compact(self._changed_text(diff))) <= 12
+
+    def _looks_like_page_number_edge_annotation_noise(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if not flags.intersection({"READING_ORDER_RISK", "READING_ORDER_REPAIRED", "PAGE_UNRELIABLE"}):
+            return False
+        original = unicodedata.normalize("NFKC", diff.original_snippet or "")
+        compare = unicodedata.normalize("NFKC", diff.compare_snippet or "")
+        if not (self._contains_page_number_marker(original) or self._contains_page_number_marker(compare)):
+            return False
+        changed_compact = self._compact(f"{original}{compare}")
+        has_edge_evidence = self._changed_evidence_is_near_page_edge(diff)
+        if len(changed_compact) > 16 and not has_edge_evidence:
+            return False
+        residual = self._compact(self._remove_page_number_markers(f"{original}{compare}"))
+        if not residual:
+            return True
+        if has_edge_evidence:
+            edge_text = "".join(self._changed_evidence_texts_near_page_edge(diff))
+            return self._changed_text_is_footer_annotation_residual(edge_text or f"{original}{compare}")
+        if not re.fullmatch(r"[\u4e00-\u9fff]{1,4}", residual):
+            return False
+        return "OCR_REMEDIATION_PLANNED" in flags and len(residual) <= 2
+
+    def _trim_edge_annotation_from_mixed_diff(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        changed = diff.compare_snippet or diff.compare_text
+        if not changed:
+            return False
+        updated = changed
+        for text in self._changed_evidence_texts_near_page_edge(diff):
+            compact = self._compact(text)
+            if compact and len(compact) <= 4 and not self.business_token_pattern.search(compact):
+                updated = updated.replace(text, "")
+        updated = updated.strip()
+        if not updated or updated == changed:
+            return False
+        if not self._mixed_diff_residual_is_meaningful(updated):
+            return False
+        diff.compare_snippet = updated
+        if changed in diff.compare_text:
+            diff.compare_text = diff.compare_text.replace(changed, updated)
+        return True
+
+    def _mixed_diff_residual_is_meaningful(self, text: str) -> bool:
+        compact = self._compact(text)
+        if not compact:
+            return False
+        return bool(self.business_token_pattern.search(text) or re.search(r"\d", compact))
+
+    def _reclassify_unit_separator_change(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        original = unicodedata.normalize("NFKC", diff.original_text or "")
+        compare = unicodedata.normalize("NFKC", diff.compare_text or "")
+        if not re.search(r"\d+\s*万元\s*/\s*人次", original):
+            return False
+        if not re.search(r"\d+\s*万元\s*人次", compare):
+            return False
+        if self._compact(original.replace("/", "")) != self._compact(compare):
+            return False
+        self._remove_flag(diff, "CRITICAL_FIELD_AMOUNT_CHANGE")
+        self._remove_flag(diff, "CRITICAL_VALUE_CHANGE")
+        self._add_flag(diff, "UNIT_FORMAT_CHANGE_REVIEW")
+        diff.quality_status = "NEEDS_REVIEW"
+        return True
+
+    def _looks_like_edge_annotation_clause_noise(self, diff: DiffItem) -> bool:
+        if diff.source_type != "clause":
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if not flags.intersection({"READING_ORDER_RISK", "READING_ORDER_REPAIRED", "PAGE_UNRELIABLE"}):
+            return False
+        if not flags.intersection(
+            {"POSSIBLE_OCR_NOISE", "POSSIBLE_CLAUSE_MISMATCH", "LOW_CONFIDENCE_MATCH", "PUNCTUATED_HEADING"}
+        ):
+            return False
+        changed = self._compact(self._changed_text(diff))
+        if self._changed_text_has_business_token(diff):
+            return False
+        if re.fullmatch(r"[\u4e00-\u9fffA-Za-z#\d]{1,12}", changed):
+            return self._changed_evidence_is_near_page_edge(diff)
+        edge_text = self._compact("".join(self._changed_evidence_texts_near_page_edge(diff)))
+        if edge_text and len(edge_text) <= 12 and self._changed_evidence_is_near_page_edge(diff):
+            return True
+        return (
+            "PUNCTUATED_HEADING" in flags
+            and self._compare_evidence_is_short_signing_or_footer_noise(diff)
+            and self._changed_evidence_is_near_page_edge(diff)
+        )
+
+    def _changed_evidence_texts_near_page_edge(self, diff: DiffItem) -> list[str]:
+        texts: list[str] = []
+        for evidence in [*diff.original_evidence, *diff.compare_evidence]:
+            bbox = evidence.bbox
+            if bbox.y0 >= 760.0 or bbox.x0 <= 36.0 or bbox.x0 >= 390.0:
+                texts.append(evidence.text or "")
+        return texts
+
+    def _changed_text_is_footer_annotation_residual(self, text: str) -> bool:
+        compact = self._compact(self._remove_page_number_markers(text))
+        if not compact:
+            return True
+        if len(compact) <= 8 and not self.business_token_pattern.search(compact):
+            return True
+        return bool(re.fullmatch(r"[\u4e00-\u9fffA-Za-z#]{1,8}", compact))
+
+    def _compare_evidence_is_short_signing_or_footer_noise(self, diff: DiffItem) -> bool:
+        if not diff.compare_evidence:
+            return False
+        text = self._compact("".join(evidence.text or "" for evidence in diff.compare_evidence))
+        if not text or len(text) > 12 or self.business_token_pattern.search(text):
+            return False
+        return any(
+            evidence.bbox.y0 >= 760.0
+            or evidence.bbox.x0 <= 36.0
+            or evidence.bbox.x0 >= 390.0
+            or (evidence.bbox.y1 - evidence.bbox.y0) >= 36.0
+            for evidence in diff.compare_evidence
+        )
+
+    @staticmethod
+    def _contains_page_number_marker(text: str) -> bool:
+        normalized = unicodedata.normalize("NFKC", text or "")
+        return bool(
+            re.search(r"[—－-]\s*\d{1,3}\s*[—－-]", normalized)
+            or re.search(r"^\s*\d{1,3}\s*[—－-]\s*$", normalized)
+            or re.search(r"^\s*[—－-]\s*\d{1,3}\s*$", normalized)
+        )
+
+    @staticmethod
+    def _remove_page_number_markers(text: str) -> str:
+        normalized = unicodedata.normalize("NFKC", text or "")
+        normalized = re.sub(r"[—－-]\s*\d{1,3}\s*[—－-]", "", normalized)
+        normalized = re.sub(r"^\s*\d{1,3}\s*[—－-]\s*", "", normalized)
+        normalized = re.sub(r"^\s*[—－-]\s*\d{1,3}\s*", "", normalized)
+        return normalized
 
     def _dedupe_key(self, text: str) -> str:
         return self._compact(text)

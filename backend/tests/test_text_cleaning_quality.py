@@ -1581,6 +1581,545 @@ def test_diff_quality_suppresses_single_sided_payment_blank_tail_symbol_noise() 
     )
 
 
+def test_diff_quality_suppresses_page_number_with_edge_annotation_from_clause_body() -> None:
+    diff = DiffItem(
+        diff_id="D054",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="2.4 甲方有权通过日常巡查、专项检查、随机抽查等方式,监督。\n—14—",
+        compare_text="2.4 甲方有权通过日常巡查、专项检查、随机抽查等方式,监督。\n-14-\n黄科",
+        original_snippet="—14—",
+        compare_snippet="-14- 黄科",
+        match_score=100,
+        structural_flags=["PARAGRAPH_MERGED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        quality_status="NEEDS_REVIEW",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=15,
+                bbox=BBox(x0=500, y0=790, x1=560, y1=820),
+                method="char_exact",
+                text="黄科",
+                confidence=0.98,
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D054"
+        and decision.detail["reason"] == "page_number_edge_annotation_noise"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_standalone_edge_annotation_from_clause_body() -> None:
+    diff = DiffItem(
+        diff_id="D035",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="5.1 甲方义务",
+        compare_text="5.1 甲方义务\n黄科",
+        original_snippet="",
+        compare_snippet="黄科",
+        match_score=100,
+        review_flags=[
+            "LOW_CONFIDENCE_MATCH",
+            "POSSIBLE_CLAUSE_MISMATCH",
+            "READING_ORDER_RISK",
+            "OCR_REMEDIATION_PLANNED",
+            "POSSIBLE_OCR_NOISE",
+        ],
+        quality_status="NEEDS_REVIEW",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=4,
+                bbox=BBox(x0=505, y0=792, x1=560, y1=820),
+                method="char_exact",
+                text="黄科",
+                confidence=0.98,
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D035"
+        and decision.detail["reason"] == "edge_annotation_clause_noise"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_page_footer_annotation_even_with_long_original_context() -> None:
+    diff = DiffItem(
+        diff_id="D063",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="4.4",
+        title="因乙方未履行安全管理责任",
+        original_text="4.4 因乙方未履行安全管理责任。\n—23—\n担全部法律责任。",
+        compare_text="4.4 因乙方未履行安全管理责任。\n-23-\n黄科",
+        original_snippet="—23—担全部法律责任",
+        compare_snippet="-23-黄科",
+        structural_flags=["PARAGRAPH_MERGED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        quality_status="NEEDS_REVIEW",
+        original_evidence=[
+            EvidenceBox(page_no=24, bbox=BBox(x0=288, y0=784, x1=320, y1=800), text="—23—"),
+            EvidenceBox(page_no=25, bbox=BBox(x0=65, y0=75, x1=178, y1=91), text="担全部法律责任"),
+        ],
+        compare_evidence=[
+            EvidenceBox(page_no=24, bbox=BBox(x0=258, y0=777, x1=284, y1=793), text="-23-"),
+            EvidenceBox(page_no=24, bbox=BBox(x0=448, y0=775, x1=502, y1=813), text="黄科"),
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D063"
+        and decision.detail["reason"] == "page_number_edge_annotation_noise"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_incomplete_page_marker_with_edge_annotation() -> None:
+    diff = DiffItem(
+        diff_id="D071",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="第一条",
+        title="和",
+        original_text="第一条和\n—30",
+        compare_text="第一条和\n-30\n黄科",
+        original_snippet="—30",
+        compare_snippet="-30黄科",
+        structural_flags=["PARAGRAPH_MERGED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        quality_status="NEEDS_REVIEW",
+        original_evidence=[
+            EvidenceBox(page_no=31, bbox=BBox(x0=283, y0=781, x1=302, y1=795), text="—30"),
+        ],
+        compare_evidence=[
+            EvidenceBox(page_no=31, bbox=BBox(x0=282, y0=781, x1=301, y1=797), text="-30"),
+            EvidenceBox(page_no=31, bbox=BBox(x0=395, y0=790, x1=454, y1=830), text="黄科"),
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D071"
+        and decision.detail["reason"] == "page_number_edge_annotation_noise"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_signature_footer_noise_inside_clause() -> None:
+    diff = DiffItem(
+        diff_id="D074",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="15.3",
+        title="在争议解决期间,合同中未涉及争议部分的条款仍须履行。",
+        original_text="15.3 在争议解决期间,合同中未涉及争议部分的条款仍须履行。\n参与人员:",
+        compare_text="15.3 在争议解决期间,合同中未涉及争议部分的条款仍须履行。\n共评静\n44意\n黄科",
+        original_snippet="参与人员:",
+        compare_snippet="共评静44意黄科",
+        structural_flags=["PUNCTUATED_HEADING"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        quality_status="NEEDS_REVIEW",
+        compare_evidence=[
+            EvidenceBox(page_no=34, bbox=BBox(x0=135, y0=439, x1=244, y1=488), text="共评静"),
+            EvidenceBox(page_no=34, bbox=BBox(x0=99, y0=778, x1=154, y1=821), text="44意"),
+            EvidenceBox(page_no=34, bbox=BBox(x0=439, y0=783, x1=494, y1=821), text="黄科"),
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.diff_id == "D074"
+        and decision.detail["reason"] == "edge_annotation_clause_noise"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_short_clause_delete_covered_by_opposite_page_text() -> None:
+    original_clause = _quality_clause(
+        "OC109",
+        "1.1 不发生人身轻伤以上事故。",
+        order_index=109,
+        page_no=14,
+        split_flags=["PUNCTUATED_HEADING"],
+    )
+    compare_document = _quality_document(
+        14,
+        "1 安全目标\n1.1 不发生人身轻伤以上事故。\n1.2 不发生一般及以上设备事故。",
+    )
+    diff = DiffItem(
+        diff_id="D100",
+        diff_type="DELETE",
+        source_type="clause",
+        original_clause_id="OC109",
+        clause_no="1.1",
+        title="不发生人身轻伤以上事故。",
+        original_text=original_clause.text,
+        original_snippet=original_clause.text,
+        structural_flags=["PUNCTUATED_HEADING"],
+        review_flags=["SHORT_CLAUSE_MATCH_REVIEW", "CRITICAL_VALUE_CHANGE"],
+        original_evidence=original_clause.bboxes,
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_document=compare_document,
+    )
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D100"
+        and decision.detail["reason"] == "changed_text_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_heading_add_covered_by_original_page_text() -> None:
+    compare_clause = _quality_clause(
+        "NC111",
+        "服务期限与进度要求",
+        side_prefix="N",
+        order_index=12,
+        page_no=3,
+        split_flags=["READING_ORDER_REPAIRED"],
+    )
+    original_document = _quality_document(
+        3,
+        "乙方应按合同约定向甲方提供以下技术服务:\n"
+        "3. 服务期限与进度要求\n"
+        "3.1 乙方提供服务的期限为合同签订后一年。\n"
+        "4. 合同价格及支付",
+    )
+    diff = DiffItem(
+        diff_id="D111",
+        diff_type="ADD",
+        source_type="clause",
+        compare_clause_id="NC111",
+        title="服务期限与进度要求",
+        compare_text="服务期限与进度要求",
+        compare_snippet="服务期限与进度要求",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        compare_evidence=compare_clause.bboxes,
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        compare_clauses=[compare_clause],
+        original_document=original_document,
+    )
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D111"
+        and decision.detail["reason"] == "changed_text_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_heading_add_when_original_has_bare_number_and_child_clause() -> None:
+    compare_heading = _quality_clause(
+        "NC111",
+        "服务期限与进度要求",
+        side_prefix="N",
+        order_index=12,
+        page_no=3,
+        split_flags=["READING_ORDER_REPAIRED"],
+    )
+    compare_child = _quality_clause(
+        "NC112",
+        "3.1 乙方提供服务的期限为合同签订后一年。",
+        side_prefix="N",
+        order_index=13,
+        page_no=3,
+    )
+    compare_child.clause_no = "3.1"
+    original_document = _quality_document(
+        3,
+        "在执行合同过程中如发现有任何漏项和短缺。\n"
+        "3.\n"
+        "3.1 乙方提供服务的期限为合同签订后一年。\n"
+        "3.2 乙方应按以下进度计划开展服务工作。",
+    )
+    diff = DiffItem(
+        diff_id="D111",
+        diff_type="ADD",
+        source_type="clause",
+        compare_clause_id="NC111",
+        title="服务期限与进度要求",
+        compare_text="服务期限与进度要求",
+        compare_snippet="服务期限与进度要求",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        compare_evidence=compare_heading.bboxes,
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        compare_clauses=[compare_heading, compare_child],
+        original_document=original_document,
+    )
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D111"
+        and decision.detail["reason"] == "heading_add_covered_by_opposite_numbering"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_one_sided_modify_fragment_covered_by_opposite_page_text() -> None:
+    original_document = _quality_document(
+        3,
+        "在执行合同过程中如发现有任何漏项和短缺。\n"
+        "而且确实是乙方服务范围中应该有的,并且是满足合同及附件对本项目性能保证\n"
+        "值要求所必须的,均应由乙方按要求补上,发生的费用由乙方承担。\n"
+        "3.1 乙方提供服务的期限为合同签订后一年。",
+    )
+    diff = DiffItem(
+        diff_id="D030",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="3.1",
+        title="值要求所必须的,均应由乙方按要求补上,发生的费用由乙方承担。",
+        original_text="3.1 乙方提供服务的期限为合同签订后一年。",
+        compare_text="值要求所必须的,均应由乙方按要求补上,发生的费用由乙方承担。",
+        original_snippet="",
+        compare_snippet="值要求所必须的,均应由乙方按要求补上,发生的费用由乙方承担。",
+        structural_flags=["PARAGRAPH_MERGED", "READING_ORDER_REPAIRED"],
+        review_flags=[
+            "CRITICAL_FIELD_CHANGE",
+            "CRITICAL_FIELD_PARTY_ROLE_CHANGE",
+            "LOW_CONFIDENCE_MATCH",
+            "POSSIBLE_CLAUSE_MISMATCH",
+            "READING_ORDER_RISK",
+        ],
+        compare_evidence=[
+            EvidenceBox(page_no=3, bbox=BBox(x0=104, y0=177, x1=442, y1=196), text="值要求所必须的,均应由乙方按要求补上,发生的费用由乙方承担。"),
+        ],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D030"
+        and decision.detail["reason"] == "modify_fragment_covered_by_opposite_page_text"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_short_heading_text_when_original_has_bare_number() -> None:
+    original_document = _quality_document(
+        9,
+        "12.4 如果不可抗力事件的影响已达60天。\n13.\n13.1 甲方有权就乙方服务中的质量缺陷提出索赔。",
+    )
+    diff = DiffItem(
+        diff_id="D046",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="12.4",
+        title="如果不可抗力事件的影响已达60天",
+        original_text="12.4 如果不可抗力事件的影响已达60天。\n13.\n协商解决。",
+        compare_text="12.4 如果不可抗力事件的影响已达60天。\n协商解决。\n13. 索赔",
+        original_snippet="",
+        compare_snippet="索赔",
+        structural_flags=["PARAGRAPH_MERGED"],
+        review_flags=["LOW_CONFIDENCE_MATCH", "POSSIBLE_CLAUSE_MISMATCH", "READING_ORDER_RISK"],
+        compare_evidence=[EvidenceBox(page_no=9, bbox=BBox(x0=117, y0=468, x1=148, y1=491), text="索赔")],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D046"
+        and decision.detail["reason"] == "short_heading_text_covered_by_bare_number"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_real_dispute_method_change_not_heading_coverage() -> None:
+    original_document = _quality_document(
+        11,
+        "15.2 若争议经协商仍无法解决的,按以下第一种方式处理:\n方式一:诉讼。",
+    )
+    diff = DiffItem(
+        diff_id="D050",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="15.2",
+        title="若争议经协商仍无法解决的,按以下第二种方式处理:",
+        original_text="15.2 若争议经协商仍无法解决的,按以下第一种方式处理:",
+        compare_text="15.2 若争议经协商仍无法解决的,按以下第二种方式处理:",
+        original_snippet="一",
+        compare_snippet="二",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process([diff], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D050"]
+
+
+def test_diff_quality_suppresses_heading_layer_mismatch_when_both_pages_contain_both_headings() -> None:
+    original_document = _quality_document(
+        41,
+        "第三章 合同范围\n3.1 服务范围\n本合同项目主要服务范围包括:随县鹿鹤光伏电站功率预测系统授权服务。",
+    )
+    compare_document = _quality_document(
+        41,
+        "第三章 合同范围\n3.1 服务范围\n本合同项目主要服务范围包括:随县鹿鹤光伏电站功率预测系统授权服务。",
+    )
+    diff = DiffItem(
+        diff_id="D078",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="第三章",
+        title="服务范围",
+        original_text="第三章 合同范围",
+        compare_text="3.1 服务范围",
+        original_snippet="第三章 合同范围",
+        compare_snippet="3.1 服务范围",
+        structural_flags=["PARAGRAPH_MERGED"],
+        review_flags=[
+            "BUSINESS_TOKEN_MISMATCH_REVIEW",
+            "LOW_CONFIDENCE_MATCH",
+            "POSSIBLE_CLAUSE_MISMATCH",
+            "READING_ORDER_RISK",
+            "OCR_REMEDIATION_PLANNED",
+            "CRITICAL_VALUE_CHANGE",
+        ],
+        original_evidence=[EvidenceBox(page_no=41, bbox=BBox(x0=218, y0=123, x1=286, y1=148), text="第三章")],
+        compare_evidence=[EvidenceBox(page_no=41, bbox=BBox(x0=87, y0=212, x1=103, y1=236), text="3.1")],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_document=original_document,
+        compare_document=compare_document,
+    )
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D078"
+        and decision.detail["reason"] == "heading_layer_mismatch_covered_by_both_pages"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_real_amount_uppercase_change_with_same_numeric_value() -> None:
+    diff = DiffItem(
+        diff_id="D032",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="总价为人民币(大写)柒万捌仟元整(¥73000.00元)。",
+        compare_text="总价为人民币(大写)柒万叁仟元整(¥73000.00元)。",
+        original_snippet="捌仟",
+        compare_snippet="叁仟",
+        match_score=100,
+        structural_flags=["PARAGRAPH_MERGED", "READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D032"]
+
+
+def test_diff_quality_keeps_reference_punctuation_change_but_trims_edge_annotation() -> None:
+    diff = DiffItem(
+        diff_id="D082",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="(7)",
+        title="《电力二次系统安全防护总体方案》国家电力监管委员会电监安全",
+        original_text="会电监安全(2006)34号。",
+        compare_text="会电监安全〔2006〕34号。\n黄科",
+        original_snippet="(2006)34",
+        compare_snippet="〔2006〕34黄科",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        compare_evidence=[
+            EvidenceBox(page_no=44, bbox=BBox(x0=141, y0=312, x1=201, y1=335), text="〔2006〕34"),
+            EvidenceBox(page_no=44, bbox=BBox(x0=423, y0=783, x1=484, y1=822), text="黄科"),
+        ],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D082"]
+    assert result.diffs[0].compare_snippet == "〔2006〕34"
+    assert any(
+        decision.action == "trimmed_edge_annotation_noise" and decision.diff_id == "D082"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_slash_unit_format_change_but_not_amount_change() -> None:
+    diff = DiffItem(
+        diff_id="D068",
+        diff_type="MODIFY",
+        source_type="clause",
+        clause_no="6.3",
+        title="乙方发生生产安全人身死亡责任事故的,应按照100万元",
+        original_text="应按照100万元/人次的标准向甲方支付违约金。",
+        compare_text="应按照100万元\n人次的标准向甲方支付违约金。",
+        original_snippet="/",
+        compare_snippet="",
+        review_flags=[
+            "CRITICAL_FIELD_AMOUNT_CHANGE",
+            "CRITICAL_FIELD_CHANGE",
+            "EVIDENCE_UNRELIABLE",
+            "OCR_REMEDIATION_PLANNED",
+            "CRITICAL_VALUE_CHANGE",
+        ],
+        quality_status="NEEDS_REVIEW",
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [item.diff_id for item in result.diffs] == ["D068"]
+    assert "CRITICAL_FIELD_AMOUNT_CHANGE" not in result.diffs[0].review_flags
+    assert "UNIT_FORMAT_CHANGE_REVIEW" in result.diffs[0].review_flags
+
+
 def test_diff_quality_suppresses_reading_order_contact_fields_covered_by_neighbor_clause() -> None:
     original_previous = _quality_clause(
         "OC146",
@@ -2817,6 +3356,24 @@ def test_diff_quality_treats_party_contact_table_as_regular_table_change() -> No
     assert "CRITICAL_VALUE_CHANGE" not in by_id["D002"].review_flags
     assert "SEAL_REVIEW" in by_id["D002"].review_flags
     assert "D003" not in by_id
+
+
+def test_diff_quality_downgrades_unreliable_signing_contact_table_to_review() -> None:
+    diff = DiffItem(
+        diff_id="D020",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：联系人",
+        original_text="甲方（盖章）： 国能长源随州发电有限公司随县分公司 | 乙方（盖章）： 国能日新科技股份有限公司",
+        compare_text="甲方 国能长源随州发电有限公司随县分公司 | 国能日新科技股份有限公司",
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert len(result.diffs) == 1
+    assert "CRITICAL_VALUE_CHANGE" not in result.diffs[0].review_flags
+    assert "TABLE_REGION_REVIEW" in result.diffs[0].review_flags
+    assert any(decision.action == "table_region_review" and decision.diff_id == "D020" for decision in result.decisions)
 
 
 def test_diff_quality_marks_row_level_table_noise_for_review_not_critical() -> None:
