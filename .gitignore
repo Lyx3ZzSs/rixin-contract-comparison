@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 .DS_Store
 .idea/
+.worktrees/
 
 # C 扩展
 *.so
