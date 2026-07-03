@@ -3,7 +3,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createQualityExpectedDiff,
   evaluateQuality,
-  exportQualityCase,
   getQualityCase,
   getQualityTaskReview,
   listQualityCases,
@@ -29,7 +28,6 @@ export function QualityWorkbenchPage() {
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [isAddingMissedDiff, setIsAddingMissedDiff] = useState(false);
   const [isSavingMissedDiff, setIsSavingMissedDiff] = useState(false);
-  const [isSavingNegativeExpectedDiff, setIsSavingNegativeExpectedDiff] = useState(false);
   const [missedTitle, setMissedTitle] = useState("");
   const [editingEvidenceIndex, setEditingEvidenceIndex] = useState<number | null>(null);
   const [evidenceJson, setEvidenceJson] = useState("");
@@ -41,23 +39,15 @@ export function QualityWorkbenchPage() {
   const [taskReview, setTaskReview] = useState<QualityTaskReviewResponse | null>(null);
   const [taskReviewError, setTaskReviewError] = useState("");
   const [isLoadingTaskReview, setIsLoadingTaskReview] = useState(false);
-  const [draftCaseId, setDraftCaseId] = useState("");
-  const [draftExportError, setDraftExportError] = useState("");
-  const [draftExportMessage, setDraftExportMessage] = useState("");
-  const [isExportingDraftCase, setIsExportingDraftCase] = useState(false);
   const [error, setError] = useState("");
   const detailRequestIdRef = useRef(0);
   const selectedCaseIdRef = useRef("");
   const expectedDiffMutationRequestIdRef = useRef(0);
   const missedDiffRequestInFlightRef = useRef(false);
   const missedDiffRequestIdRef = useRef(0);
-  const negativeExpectedDiffRequestInFlightRef = useRef(false);
-  const negativeExpectedDiffRequestIdRef = useRef(0);
   const evidenceRequestIdRef = useRef(0);
   const qualityRunRequestIdRef = useRef(0);
   const taskReviewRequestIdRef = useRef(0);
-  const draftExportRequestIdRef = useRef(0);
-  const caseListRequestIdRef = useRef(0);
 
   const applyCaseDetail = useCallback((nextDetail: QualityCaseDetail) => {
     setDetail(nextDetail);
@@ -89,9 +79,6 @@ export function QualityWorkbenchPage() {
     expectedDiffMutationRequestIdRef.current += 1;
     missedDiffRequestInFlightRef.current = false;
     missedDiffRequestIdRef.current += 1;
-    negativeExpectedDiffRequestInFlightRef.current = false;
-    negativeExpectedDiffRequestIdRef.current += 1;
-    setIsSavingNegativeExpectedDiff(false);
     evidenceRequestIdRef.current += 1;
     qualityRunRequestIdRef.current += 1;
     setMissedTitle("");
@@ -121,44 +108,35 @@ export function QualityWorkbenchPage() {
       });
   }, [applyCaseDetail]);
 
-  const refreshQualityCases = useCallback(async () => {
-    const payload = await listQualityCases();
-    return payload.cases;
-  }, []);
-
   useEffect(() => {
     let isCurrent = true;
-    const requestId = caseListRequestIdRef.current + 1;
-    caseListRequestIdRef.current = requestId;
     setIsLoadingCases(true);
     setError("");
 
-    void refreshQualityCases()
-      .then((nextCases) => {
-        if (!isCurrent || caseListRequestIdRef.current !== requestId) return;
-        setCases(nextCases);
-        if (nextCases.length > 0) {
-          openCase(nextCases[0].case_id);
+    void listQualityCases()
+      .then((payload) => {
+        if (!isCurrent) return;
+        setCases(payload.cases);
+        if (payload.cases.length > 0) {
+          openCase(payload.cases[0].case_id);
         }
       })
       .catch((err) => {
-        if (isCurrent && caseListRequestIdRef.current === requestId) {
+        if (isCurrent) {
           setCases([]);
           setDetail(null);
           setError(err instanceof Error ? err.message : "质量样本列表加载失败。");
         }
       })
       .finally(() => {
-        if (isCurrent && caseListRequestIdRef.current === requestId) {
-          setIsLoadingCases(false);
-        }
+        if (isCurrent) setIsLoadingCases(false);
       });
 
     return () => {
       isCurrent = false;
       detailRequestIdRef.current += 1;
     };
-  }, [openCase, refreshQualityCases]);
+  }, [openCase]);
 
   const markExpectedDiff = useCallback(
     async (index: number, payload: Partial<ExpectedDiff>) => {
@@ -231,54 +209,6 @@ export function QualityWorkbenchPage() {
       }
     }
   }, [applyCaseDetail, detail, missedTitle]);
-
-  const createNegativeExpectedDiff = useCallback(
-    async (diff: QualityActualDiffSummary) => {
-      if (!detail) return;
-      if (negativeExpectedDiffRequestInFlightRef.current) return;
-
-      const requestCaseId = detail.summary.case_id;
-      const saveRequestId = negativeExpectedDiffRequestIdRef.current + 1;
-      negativeExpectedDiffRequestIdRef.current = saveRequestId;
-      negativeExpectedDiffRequestInFlightRef.current = true;
-      setIsSavingNegativeExpectedDiff(true);
-      setError("");
-      try {
-        const nextDetail = await createQualityExpectedDiff(requestCaseId, {
-          review_status: "REJECTED",
-          should_not_match_again: true,
-          false_positive_reason: "manual_false_positive",
-          source_actual_diff_id: diff.diff_id,
-          diff_type: diff.diff_type,
-          source_type: diff.source_type,
-          title_contains: diff.title || diff.diff_id,
-        });
-        if (
-          negativeExpectedDiffRequestIdRef.current === saveRequestId &&
-          selectedCaseIdRef.current === requestCaseId &&
-          nextDetail.summary.case_id === requestCaseId
-        ) {
-          applyCaseDetail(nextDetail);
-        }
-      } catch (err) {
-        if (
-          negativeExpectedDiffRequestIdRef.current === saveRequestId &&
-          selectedCaseIdRef.current === requestCaseId
-        ) {
-          setError(err instanceof Error ? err.message : "负向误报标注失败。");
-        }
-      } finally {
-        if (
-          negativeExpectedDiffRequestIdRef.current === saveRequestId &&
-          selectedCaseIdRef.current === requestCaseId
-        ) {
-          negativeExpectedDiffRequestInFlightRef.current = false;
-          setIsSavingNegativeExpectedDiff(false);
-        }
-      }
-    },
-    [applyCaseDetail, detail],
-  );
 
   const openEvidenceEditor = useCallback((index: number, diff: ExpectedDiff) => {
     setEditingEvidenceIndex(index);
@@ -385,18 +315,13 @@ export function QualityWorkbenchPage() {
 
     const requestId = taskReviewRequestIdRef.current + 1;
     taskReviewRequestIdRef.current = requestId;
-    draftExportRequestIdRef.current += 1;
-    setIsExportingDraftCase(false);
     setIsLoadingTaskReview(true);
     setTaskReviewError("");
-    setDraftExportError("");
-    setDraftExportMessage("");
     setTaskReview(null);
     try {
       const result = await getQualityTaskReview(taskId);
       if (taskReviewRequestIdRef.current === requestId) {
         setTaskReview(result);
-        setDraftCaseId(result.task_id);
       }
     } catch (err) {
       if (taskReviewRequestIdRef.current === requestId) {
@@ -408,42 +333,6 @@ export function QualityWorkbenchPage() {
       }
     }
   }, [taskReviewId]);
-
-  const exportDraftGoldenCase = useCallback(async () => {
-    if (!taskReview) return;
-    const caseId = draftCaseId.trim();
-    if (!caseId) return;
-
-    const requestId = draftExportRequestIdRef.current + 1;
-    draftExportRequestIdRef.current = requestId;
-    setIsExportingDraftCase(true);
-    setDraftExportError("");
-    setDraftExportMessage("");
-    try {
-      await exportQualityCase({
-        task_id: taskReview.task_id,
-        case_id: caseId,
-        force: false,
-      });
-      const nextCases = await refreshQualityCases();
-      if (draftExportRequestIdRef.current === requestId) {
-        caseListRequestIdRef.current += 1;
-        setCases(nextCases);
-        if (nextCases.some((qualityCase) => qualityCase.case_id === caseId)) {
-          openCase(caseId);
-        }
-        setDraftExportMessage(`已导出 draft golden set：${caseId}`);
-      }
-    } catch (err) {
-      if (draftExportRequestIdRef.current === requestId) {
-        setDraftExportError(err instanceof Error ? err.message : "Draft Golden Set 导出失败。");
-      }
-    } finally {
-      if (draftExportRequestIdRef.current === requestId) {
-        setIsExportingDraftCase(false);
-      }
-    }
-  }, [draftCaseId, openCase, refreshQualityCases, taskReview]);
 
   const expectedDiffs = detail?.expected.expected_diffs ?? [];
 
@@ -498,14 +387,8 @@ export function QualityWorkbenchPage() {
             taskReview={taskReview}
             taskReviewError={taskReviewError}
             isLoadingTaskReview={isLoadingTaskReview}
-            draftCaseId={draftCaseId}
-            draftExportError={draftExportError}
-            draftExportMessage={draftExportMessage}
-            isExportingDraftCase={isExportingDraftCase}
             onChangeTaskReviewId={setTaskReviewId}
-            onChangeDraftCaseId={setDraftCaseId}
             onLoadTaskReview={loadTaskReview}
-            onExportDraftGoldenCase={exportDraftGoldenCase}
           />
           {error ? (
             <div className="quality-state error" role="alert">
@@ -525,11 +408,7 @@ export function QualityWorkbenchPage() {
                 onRunEvaluation={runQualityEvaluation}
                 onRunRegression={runQualityRegressionCheck}
               />
-              <ActualDiffList
-                diffs={detail.actual_diffs}
-                isSavingNegativeExpectedDiff={isSavingNegativeExpectedDiff}
-                onCreateNegativeExpectedDiff={createNegativeExpectedDiff}
-              />
+              <ActualDiffList diffs={detail.actual_diffs} />
               <ExpectedDiffList
                 diffs={expectedDiffs}
                 editingEvidenceIndex={editingEvidenceIndex}
@@ -563,30 +442,16 @@ function TaskReviewPanel({
   taskReview,
   taskReviewError,
   isLoadingTaskReview,
-  draftCaseId,
-  draftExportError,
-  draftExportMessage,
-  isExportingDraftCase,
   onChangeTaskReviewId,
-  onChangeDraftCaseId,
   onLoadTaskReview,
-  onExportDraftGoldenCase,
 }: {
   taskReviewId: string;
   taskReview: QualityTaskReviewResponse | null;
   taskReviewError: string;
   isLoadingTaskReview: boolean;
-  draftCaseId: string;
-  draftExportError: string;
-  draftExportMessage: string;
-  isExportingDraftCase: boolean;
   onChangeTaskReviewId: (value: string) => void;
-  onChangeDraftCaseId: (value: string) => void;
   onLoadTaskReview: () => void;
-  onExportDraftGoldenCase: () => void;
 }) {
-  const canExportDraftCase = Boolean(taskReview?.task_id) && draftCaseId.trim().length > 0 && !isExportingDraftCase;
-
   return (
     <section className="quality-section quality-task-review" aria-labelledby="quality-task-review-title">
       <div className="quality-section-title">
@@ -615,36 +480,6 @@ function TaskReviewPanel({
           {taskReviewError}
         </div>
       )}
-      <div className="quality-draft-export" aria-labelledby="quality-draft-export-title">
-        <div>
-          <h3 id="quality-draft-export-title">导出 Draft Golden Set</h3>
-          <p>导出的 expected diff 默认为 DRAFT，需要人工审核后才进入可信回归。</p>
-        </div>
-        <form
-          className="quality-draft-export-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onExportDraftGoldenCase();
-          }}
-        >
-          <label htmlFor="quality-draft-case-id">case_id</label>
-          <input
-            id="quality-draft-case-id"
-            type="text"
-            value={draftCaseId}
-            onChange={(event) => onChangeDraftCaseId(event.target.value)}
-          />
-          <button type="submit" disabled={!canExportDraftCase}>
-            {isExportingDraftCase ? "导出中..." : "导出 Draft Golden Set"}
-          </button>
-        </form>
-        {draftExportError && (
-          <div className="quality-inline-error" role="alert">
-            {draftExportError}
-          </div>
-        )}
-        {draftExportMessage && <div className="quality-inline-success">{draftExportMessage}</div>}
-      </div>
       {taskReview && (
         <div className="quality-task-review-body">
           <div className="quality-task-review-metrics" aria-label="任务复盘统计">
@@ -806,15 +641,7 @@ function CaseSummary({ summary }: { summary: QualityCaseSummary }) {
   );
 }
 
-function ActualDiffList({
-  diffs,
-  isSavingNegativeExpectedDiff,
-  onCreateNegativeExpectedDiff,
-}: {
-  diffs: QualityActualDiffSummary[];
-  isSavingNegativeExpectedDiff: boolean;
-  onCreateNegativeExpectedDiff: (diff: QualityActualDiffSummary) => void;
-}) {
+function ActualDiffList({ diffs }: { diffs: QualityActualDiffSummary[] }) {
   return (
     <section className="quality-section" aria-labelledby="quality-actual-title">
       <h2 id="quality-actual-title">ActualDiffList</h2>
@@ -836,15 +663,6 @@ function ActualDiffList({
               <dd>{diff.quality_status}</dd>
             </dl>
             {diff.review_flags.length > 0 && <small>{diff.review_flags.join(" / ")}</small>}
-            <div className="quality-diff-actions">
-              <button
-                type="button"
-                onClick={() => onCreateNegativeExpectedDiff(diff)}
-                disabled={isSavingNegativeExpectedDiff}
-              >
-                {isSavingNegativeExpectedDiff ? "标注中..." : "标为负向误报"}
-              </button>
-            </div>
           </article>
         ))
       )}
