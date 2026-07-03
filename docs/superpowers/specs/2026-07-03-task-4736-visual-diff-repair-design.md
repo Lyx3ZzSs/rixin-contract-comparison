@@ -312,6 +312,31 @@ Expected verification outcome:
 - Real option change `第一种方式 -> 第二种方式` remains in the main diff list.
 - Debug decisions explain every suppression or reclassification.
 
+## Rerun Verification Procedure
+
+Implementation is not complete until the task is rerun and visually checked against rendered PDFs.
+
+Required procedure:
+
+1. Preserve a pre-fix summary from the existing `storage/tasks/4736c006-cb0e-4ef0-8b39-3594ac73aced/task.json`, including diff count by `source_type`, main-diff titles, and known false-positive/false-negative markers.
+2. Rerun the same compare task with the uploaded original and compare PDFs from the task directory so the new code regenerates `task.json` and `debug/` artifacts.
+3. Export a post-fix summary with the same fields as the pre-fix summary.
+4. Render the key pages listed above from both PDFs after the rerun, using side-by-side images for manual inspection.
+5. Compare pre-fix and post-fix summaries:
+   - Known false positives must be absent from the main body/key-field diff list.
+   - Known false negatives must appear as focused key-field or visual/signing/scan diffs.
+   - Real protected-value changes, especially `第一种方式 -> 第二种方式`, must remain.
+6. Inspect rendered pages and evidence boxes for page 2, page 27, page 34, page 36, page 44, page 12, page 29, and page 53.
+7. Record the verification artifact paths in the final implementation report.
+
+The rerun verification should produce local artifacts under a temporary or task-specific directory, such as:
+
+- `tmp/pdfs/task-4736c006/after/`
+- `tmp/pdfs/task-4736c006/after/side_by_side/`
+- `tmp/task-4736c006-before-after-diff-summary.json`
+
+If the rerun cannot be completed because an OCR service, dependency, or container is unavailable, the implementation is incomplete. In that case, report the blocking dependency and keep the change unclaimed.
+
 ## Rollout
 
 1. Implement native text indexing and equality guard.
@@ -319,8 +344,8 @@ Expected verification outcome:
 3. Add key-field extraction for page 2 identity fields and signing/appendix cover fields.
 4. Add heading coverage suppression.
 5. Stabilize seal/signature descriptions and grouping metadata.
-6. Run unit tests, compile checks, and targeted task rerun.
-7. Render key pages and compare before/after task outputs.
+6. Run unit tests and compile checks.
+7. Execute the rerun verification procedure and compare before/after task outputs.
 
 ## Success Criteria
 
