@@ -182,6 +182,75 @@ fb67bf36-73bd-48c3-a7b3-59696ed4fb12
 - 如果任务复盘结果符合预期，再决定是否把该任务脱敏后导出为 golden set。
 - 任务复盘不是回归测试本身；它用于快速排查真实任务，正式质量门禁仍应依赖 golden set 和质量回归命令。
 
+## 从任务复盘导出 Draft Golden Set
+
+当某个历史任务值得沉淀为回归样本时，可以直接在质量工作台中从任务复盘导出 draft golden set。
+
+操作步骤：
+
+```text
+1. 打开 /quality/workbench
+2. 在“任务复盘”区域输入 task_id
+3. 点击“加载任务复盘”
+4. 检查历史 diff、保留 diff、抑制 diff
+5. 在“导出 Draft Golden Set”区域确认或修改 case_id
+6. 点击“导出 Draft Golden Set”
+7. 导出成功后，工作台会刷新 case 列表并打开新 case
+8. 在 expected diff 列表中继续人工标注
+```
+
+导出的 case 仍然只是草稿：
+
+- `actual.json` 是任务实际输出快照。
+- `expected.json` 中的 diff 默认是 `DRAFT`。
+- `DRAFT` 不进入可信质量指标。
+- 必须人工把真实差异标为 `APPROVED`，把误报标为 `REJECTED`。
+- 如果希望误报以后不再出现，再设置 `should_not_match_again: true`。
+
+注意事项：
+
+- 导出不会重新执行 OCR、matcher 或完整合同对比。
+- 导出不会自动判断差异真假。
+- 如果 `case_id` 已存在，工作台会提示冲突；推荐换一个新的 `case_id`，不要直接覆盖已审核 case。
+- 包含真实合同内容的 draft case 不能直接提交到仓库；必须先完成脱敏和人工审核。
+
+## 从 actual diff 标为负向误报
+
+已导出并打开 draft/gold case 后，可以在质量工作台把人工确认的 actual diff 沉淀为负向 Golden Set。这个流程用于记录“系统曾经报出、但人工确认不应再次匹配”的误报样本，后续评估和回归会据此检查同类误报是否复现。
+
+操作步骤：
+
+```text
+1. 打开 /quality/workbench
+2. 打开已有 case，或先从任务复盘导出 draft golden set
+3. 查看 ActualDiffList 中的实际输出差异
+4. 人工确认某条 actual diff 是误报
+5. 点击“标为负向误报”
+6. 在 ExpectedDiffList 中确认新增的 REJECTED 条目
+7. 运行质量评估或质量回归
+8. 如果同类误报再次出现，评估结果会记录 known_false_positive_regression_count
+```
+
+默认创建的 expected diff JSON 会包含以下字段：
+
+```json
+{
+  "review_status": "REJECTED",
+  "should_not_match_again": true,
+  "false_positive_reason": "manual_false_positive",
+  "source_actual_diff_id": "<actual_diff_id>",
+  "diff_type": "<actual_diff.diff_type>",
+  "source_type": "<actual_diff.source_type>",
+  "title_contains": "<actual_diff.title>"
+}
+```
+
+注意事项：
+
+- 这是人工确认操作，系统不会自动判断某条 actual diff 是否为误报。
+- 不要把真实合同差异标成负向样本，否则后续回归会把应识别的差异当成误报压制。
+- 包含真实合同内容的 draft/gold case 仍需先脱敏，再提交到仓库或纳入正式回归集。
+
 ## 1. 从对比任务导出 draft gold case
 
 先确保已经完成一次合同对比任务，并且任务目录存在：
