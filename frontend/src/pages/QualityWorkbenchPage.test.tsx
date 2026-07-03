@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createQualityExpectedDiff,
   evaluateQuality,
+  exportQualityCase,
   getQualityCase,
   getQualityTaskReview,
   listQualityCases,
@@ -103,6 +104,50 @@ const secondCaseDetail: QualityCaseDetail = {
   },
 };
 
+const exportedCaseSummary: QualityCaseSummary = {
+  case_id: "task-001",
+  schema_version: "1.1",
+  dataset_split: "dev",
+  case_tags: ["exported", "requires_human_review"],
+  baseline_required: false,
+  source_task_id: "task-001",
+  original_filename: "原合同.pdf",
+  compare_filename: "新合同.pdf",
+  approved_expected_count: 0,
+  draft_expected_count: 10,
+  rejected_expected_count: 0,
+  actual_diff_count: 10,
+  has_actual_json: true,
+  has_source_pdfs: false,
+};
+
+const exportedCaseDetail: QualityCaseDetail = {
+  summary: exportedCaseSummary,
+  readme: "exported draft case readme",
+  expected: {
+    case_id: "task-001",
+    source_task_id: "task-001",
+    expected_diffs: [
+      {
+        diff_type: "ADD",
+        source_type: "metadata",
+        title_contains: "封面字段：合同编号",
+        review_status: "DRAFT",
+      },
+    ],
+  },
+  actual_diffs: [
+    {
+      diff_id: "D001",
+      diff_type: "ADD",
+      source_type: "metadata",
+      title: "封面字段：合同编号",
+      quality_status: "NEEDS_REVIEW",
+      review_flags: ["PAGE_UNRELIABLE"],
+    },
+  ],
+};
+
 const taskReviewResponse: QualityTaskReviewResponse = {
   task_id: "task-001",
   status: "COMPLETED",
@@ -193,6 +238,171 @@ describe("QualityWorkbenchPage", () => {
     expect(screen.getByText("D007")).toBeInTheDocument();
     expect(screen.getByText("clause_ocr_noise")).toBeInTheDocument();
     expect(screen.getByText("签订日期")).toBeInTheDocument();
+  });
+
+  it("defaults draft case id from the loaded task review and disables export before review", async () => {
+    vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
+    vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);
+    vi.mocked(getQualityTaskReview).mockResolvedValueOnce(taskReviewResponse);
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导出 Draft Golden Set" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "task-001" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+
+    expect(await screen.findByText("历史 10")).toBeInTheDocument();
+    expect(screen.getByLabelText("case_id")).toHaveValue("task-001");
+    expect(screen.getByRole("button", { name: "导出 Draft Golden Set" })).toBeEnabled();
+  });
+
+  it("exports a loaded task review as a draft golden set and opens the exported case", async () => {
+    vi.mocked(listQualityCases)
+      .mockResolvedValueOnce({ cases: [caseSummary] })
+      .mockResolvedValueOnce({ cases: [caseSummary, exportedCaseSummary] });
+    vi.mocked(getQualityCase)
+      .mockResolvedValueOnce(caseDetail)
+      .mockResolvedValueOnce(exportedCaseDetail);
+    vi.mocked(getQualityTaskReview).mockResolvedValueOnce(taskReviewResponse);
+    vi.mocked(exportQualityCase).mockResolvedValueOnce({
+      case_id: "task-001",
+      task_id: "task-001",
+      expected_diff_count: 10,
+      actual_diff_count: 10,
+    });
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "task-001" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "导出 Draft Golden Set" }));
+    });
+
+    expect(exportQualityCase).toHaveBeenCalledWith({
+      task_id: "task-001",
+      case_id: "task-001",
+      force: false,
+    });
+    expect(listQualityCases).toHaveBeenCalledTimes(2);
+    expect(getQualityCase).toHaveBeenLastCalledWith("task-001");
+    expect(await screen.findByText("已导出 draft golden set：task-001")).toBeInTheDocument();
+    expect((await screen.findAllByText("封面字段：合同编号")).length).toBeGreaterThan(1);
+  });
+
+  it("shows draft export errors without clearing the loaded task review", async () => {
+    vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
+    vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);
+    vi.mocked(getQualityTaskReview).mockResolvedValueOnce(taskReviewResponse);
+    vi.mocked(exportQualityCase).mockRejectedValueOnce(new Error("Quality case already exists: task-001"));
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "task-001" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "导出 Draft Golden Set" }));
+    });
+
+    expect(await screen.findByText("Quality case already exists: task-001")).toBeInTheDocument();
+    expect(screen.getByText("历史 10")).toBeInTheDocument();
+    expect(screen.getByText("D007")).toBeInTheDocument();
+  });
+
+  it("resets draft case id when a different task review is loaded", async () => {
+    const secondTaskReview: QualityTaskReviewResponse = {
+      ...taskReviewResponse,
+      task_id: "task-002",
+      historical_diff_count: 3,
+      retained_diff_count: 3,
+      suppressed_diff_count: 0,
+      suppressed_diffs: [],
+    };
+    vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
+    vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);
+    vi.mocked(getQualityTaskReview).mockResolvedValueOnce(taskReviewResponse).mockResolvedValueOnce(secondTaskReview);
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "task-001" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+
+    expect(screen.getByLabelText("case_id")).toHaveValue("task-001");
+
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "task-002" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+
+    expect(await screen.findByText("历史 3")).toBeInTheDocument();
+    expect(screen.getByLabelText("case_id")).toHaveValue("task-002");
+  });
+
+  it("ignores stale draft export completion after loading another task review", async () => {
+    const exportResult = createDeferred<{
+      case_id: string;
+      task_id: string;
+      expected_diff_count: number;
+      actual_diff_count: number;
+    }>();
+    const secondTaskReview: QualityTaskReviewResponse = {
+      ...taskReviewResponse,
+      task_id: "task-002",
+      historical_diff_count: 3,
+      retained_diff_count: 3,
+      suppressed_diff_count: 0,
+      suppressed_diffs: [],
+    };
+    vi.mocked(listQualityCases)
+      .mockResolvedValueOnce({ cases: [caseSummary] })
+      .mockResolvedValueOnce({ cases: [caseSummary, exportedCaseSummary] });
+    vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);
+    vi.mocked(getQualityTaskReview).mockResolvedValueOnce(taskReviewResponse).mockResolvedValueOnce(secondTaskReview);
+    vi.mocked(exportQualityCase).mockReturnValueOnce(exportResult.promise);
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "task-001" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "导出 Draft Golden Set" }));
+    });
+
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "task-002" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+    await act(async () => {
+      exportResult.resolve({
+        case_id: "task-001",
+        task_id: "task-001",
+        expected_diff_count: 10,
+        actual_diff_count: 10,
+      });
+      await exportResult.promise;
+    });
+
+    expect(screen.queryByText("已导出 draft golden set：task-001")).not.toBeInTheDocument();
+    expect(getQualityCase).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("case_id")).toHaveValue("task-002");
   });
 
   it("renders task review load errors", async () => {
@@ -486,6 +696,167 @@ describe("QualityWorkbenchPage", () => {
       should_not_match_again: true,
       false_positive_reason: "manual_false_positive",
     });
+  });
+
+  it("creates a negative expected diff from an actual diff", async () => {
+    const rejectedDetail: QualityCaseDetail = {
+      ...caseDetail,
+      summary: {
+        ...caseSummary,
+        rejected_expected_count: 1,
+      },
+      expected: {
+        ...caseDetail.expected,
+        expected_diffs: [
+          ...caseExpectedDiffs,
+          {
+            review_status: "REJECTED",
+            should_not_match_again: true,
+            false_positive_reason: "manual_false_positive",
+            source_actual_diff_id: "diff-001",
+            diff_type: "MODIFY",
+            source_type: "clause",
+            title_contains: "实际日期变更",
+          },
+        ],
+      },
+    };
+    vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
+    vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);
+    vi.mocked(createQualityExpectedDiff).mockResolvedValueOnce(rejectedDetail);
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "标为负向误报" }));
+    });
+
+    expect(createQualityExpectedDiff).toHaveBeenCalledWith("case-001", {
+      review_status: "REJECTED",
+      should_not_match_again: true,
+      false_positive_reason: "manual_false_positive",
+      source_actual_diff_id: "diff-001",
+      diff_type: "MODIFY",
+      source_type: "clause",
+      title_contains: "实际日期变更",
+    });
+    expect(await screen.findByText("REJECTED")).toBeInTheDocument();
+  });
+
+  it("does not create a negative expected diff twice while save is pending", async () => {
+    const rejectedDetail: QualityCaseDetail = {
+      ...caseDetail,
+      summary: {
+        ...caseSummary,
+        rejected_expected_count: 1,
+      },
+      expected: {
+        ...caseDetail.expected,
+        expected_diffs: [
+          ...caseExpectedDiffs,
+          {
+            review_status: "REJECTED",
+            should_not_match_again: true,
+            false_positive_reason: "manual_false_positive",
+            source_actual_diff_id: "diff-001",
+            diff_type: "MODIFY",
+            source_type: "clause",
+            title_contains: "实际日期变更",
+          },
+        ],
+      },
+    };
+    const createResult = createDeferred<QualityCaseDetail>();
+    vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
+    vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);
+    vi.mocked(createQualityExpectedDiff).mockReturnValueOnce(createResult.promise);
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    const negativeButton = screen.getByRole("button", { name: "标为负向误报" });
+    fireEvent.click(negativeButton);
+    fireEvent.click(negativeButton);
+
+    expect(createQualityExpectedDiff).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      createResult.resolve(rejectedDetail);
+      await createResult.promise;
+    });
+  });
+
+  it("does not apply a stale negative expected diff result after switching cases", async () => {
+    const staleRejectedDetail: QualityCaseDetail = {
+      ...caseDetail,
+      summary: {
+        ...caseSummary,
+        rejected_expected_count: 1,
+      },
+      expected: {
+        ...caseDetail.expected,
+        expected_diffs: [
+          ...caseExpectedDiffs,
+          {
+            review_status: "REJECTED",
+            should_not_match_again: true,
+            false_positive_reason: "manual_false_positive",
+            source_actual_diff_id: "diff-001",
+            diff_type: "MODIFY",
+            source_type: "clause",
+            title_contains: "实际日期变更",
+          },
+        ],
+      },
+    };
+    const secondDetailWithoutDateActual: QualityCaseDetail = {
+      ...secondCaseDetail,
+      actual_diffs: [],
+    };
+    const createResult = createDeferred<QualityCaseDetail>();
+    vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary, secondCaseSummary] });
+    vi.mocked(getQualityCase).mockImplementation((caseId) => {
+      if (caseId === "case-001") {
+        return Promise.resolve(caseDetail);
+      }
+      if (caseId === "case-002") {
+        return Promise.resolve(secondDetailWithoutDateActual);
+      }
+      return Promise.reject(new Error(`Unexpected case id: ${caseId}`));
+    });
+    vi.mocked(createQualityExpectedDiff).mockReturnValueOnce(createResult.promise);
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "标为负向误报" }));
+    fireEvent.click(screen.getByRole("button", { name: /case-002/ }));
+
+    expect(await screen.findByText("付款金额")).toBeInTheDocument();
+
+    await act(async () => {
+      createResult.resolve(staleRejectedDetail);
+      await createResult.promise;
+    });
+
+    expect(screen.getByText("付款金额")).toBeInTheDocument();
+    expect(screen.queryByText("实际日期变更")).not.toBeInTheDocument();
+  });
+
+  it("shows an error when creating a negative expected diff fails", async () => {
+    vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
+    vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);
+    vi.mocked(createQualityExpectedDiff).mockRejectedValueOnce(new Error("negative create failed"));
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "标为负向误报" }));
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("negative create failed");
   });
 
   it("adds a manual missed expected diff", async () => {
