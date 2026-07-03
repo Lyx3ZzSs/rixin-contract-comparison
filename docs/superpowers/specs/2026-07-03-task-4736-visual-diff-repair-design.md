@@ -26,6 +26,7 @@ The current output has many false positives and several false negatives because 
 - Do not suppress uncertain protected-value changes unless another reliable source proves equality.
 - Do not remove signature, seal, handwriting, or meaningful scanner-mark changes from the task output; move them out of the main body-diff stream.
 - Do not commit real contract PDFs or rendered images as normal regression fixtures without a separate desensitization decision.
+- Do not classify signing areas by global keyword matching alone.
 
 ## Confirmed False Positives
 
@@ -193,6 +194,29 @@ Expected output:
 - Page 34 participant signatures are reported in the visual/signing/scan group.
 - Page 29 and page 53 signing visuals remain visible but are not described as body text changes.
 
+## Signing Region Detection
+
+Signing-region extraction must not be keyword-only. Keywords such as `签字`, `盖章`, `日期`, `甲方`, `乙方`, and `参与人员` are anchors for recall, not final classification.
+
+A signing-region candidate should require multiple signals:
+
+- Page type signal: signing page, appendix cover, technical agreement cover, participant list, or a page bottom signing block.
+- Layout signal: labels and blank/form regions clustered near the lower part of the page or inside a compact signing table.
+- Visual signal: seal blocks, image blocks, handwriting-like strokes, filled form blanks, or red stamp-like regions.
+- Text signal: signing labels appear as labels or table cells, not as ordinary body-sentence words.
+
+Once a candidate is found, comparison is limited to local regions:
+
+- Build a region bbox around the label cluster and its adjacent fill area.
+- Compare original and scanned pages by page or neighbor page, region role, relative position, and bbox overlap.
+- Do not pair every occurrence of `日期` or `甲方` across the whole page.
+
+Negative constraints:
+
+- A keyword inside a numbered clause, long sentence, body paragraph, normal obligation table, or explanatory term is not a signing-region match by itself.
+- If the region has no layout or visual support, keep it in normal text flow.
+- If classification is uncertain and the text may be a protected value, keep the diff with `NEEDS_REVIEW` instead of moving or suppressing it.
+
 ## Seal and Signature Output
 
 Change seal/signature diff descriptions to prefer stable region descriptions over low-confidence OCR text.
@@ -257,6 +281,8 @@ Add focused unit tests around existing services:
 - Page 2 title and party A are recovered as key-field diffs.
 - Page 36 signing date is extracted as a focused field diff.
 - Seal/signature regions with low-confidence OCR use stable descriptions.
+- Global signing keywords inside body clauses do not create signing-region diffs.
+- Signing-region comparison is constrained to local bbox/page-neighbor matches and does not cross-pair unrelated labels.
 
 Add protection tests:
 
