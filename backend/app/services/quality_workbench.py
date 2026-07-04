@@ -189,7 +189,14 @@ class QualityWorkbenchService:
             expected_diffs = []
             expected["expected_diffs"] = expected_diffs
 
-        expected_diffs.append(_allowed_expected_diff(payload))
+        next_diff = _allowed_expected_diff(payload)
+        if _is_negative_expected_diff(next_diff) and _has_same_negative_expected_diff(
+            expected_diffs,
+            next_diff["source_actual_diff_id"],
+        ):
+            return self.get_case(case_id)
+
+        expected_diffs.append(next_diff)
         _write_json_atomic(case_dir / "expected.json", expected)
         return self.get_case(case_id)
 
@@ -361,6 +368,32 @@ def _allowed_expected_diff(payload: dict[str, Any]) -> dict[str, Any]:
         for key, value in payload.items()
         if key in EXPECTED_DIFF_ALLOWED_FIELDS
     }
+
+
+def _is_negative_expected_diff(diff: dict[str, Any]) -> bool:
+    source_actual_diff_id = diff.get("source_actual_diff_id")
+    return (
+        diff.get("review_status") == "REJECTED"
+        and diff.get("should_not_match_again") is True
+        and isinstance(source_actual_diff_id, str)
+        and len(source_actual_diff_id) > 0
+    )
+
+
+def _has_same_negative_expected_diff(
+    expected_diffs: list[Any],
+    source_actual_diff_id: str,
+) -> bool:
+    for diff in expected_diffs:
+        if not isinstance(diff, dict):
+            continue
+        if (
+            diff.get("review_status") == "REJECTED"
+            and diff.get("should_not_match_again") is True
+            and diff.get("source_actual_diff_id") == source_actual_diff_id
+        ):
+            return True
+    return False
 
 
 def _count_expected_statuses(expected_diffs: Any) -> dict[str, int]:

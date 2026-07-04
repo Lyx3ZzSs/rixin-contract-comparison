@@ -466,3 +466,54 @@ def test_create_and_delete_quality_expected_diff(
         diff.get("title_contains") != "warranty"
         for diff in deleted["expected"]["expected_diffs"]
     )
+
+
+def test_create_quality_expected_diff_is_idempotent_for_same_negative_actual_diff(
+    quality_service: QualityWorkbenchService,
+) -> None:
+    _make_case(quality_service.case_root)
+    client = TestClient(app)
+    payload = {
+        "review_status": "REJECTED",
+        "should_not_match_again": True,
+        "false_positive_reason": "manual_false_positive",
+        "source_actual_diff_id": "D001",
+        "diff_type": "MODIFY",
+        "source_type": "metadata",
+        "title_contains": "date",
+    }
+
+    first_response = client.post(
+        "/api/quality/cases/case-001/expected-diffs",
+        json=payload,
+    )
+    second_response = client.post(
+        "/api/quality/cases/case-001/expected-diffs",
+        json=payload,
+    )
+
+    assert first_response.status_code == 200, first_response.text
+    assert second_response.status_code == 200, second_response.text
+    first = first_response.json()
+    second = second_response.json()
+    negative_matches = [
+        diff
+        for diff in second["expected"]["expected_diffs"]
+        if diff.get("source_actual_diff_id") == "D001"
+        and diff.get("review_status") == "REJECTED"
+        and diff.get("should_not_match_again") is True
+    ]
+
+    assert len(first["expected"]["expected_diffs"]) == 3
+    assert len(second["expected"]["expected_diffs"]) == 3
+    assert negative_matches == [
+        {
+            "review_status": "REJECTED",
+            "should_not_match_again": True,
+            "false_positive_reason": "manual_false_positive",
+            "source_actual_diff_id": "D001",
+            "diff_type": "MODIFY",
+            "source_type": "metadata",
+            "title_contains": "date",
+        }
+    ]

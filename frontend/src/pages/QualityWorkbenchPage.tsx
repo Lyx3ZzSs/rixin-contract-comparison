@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createQualityExpectedDiff,
@@ -446,6 +446,19 @@ export function QualityWorkbenchPage() {
   }, [draftCaseId, openCase, refreshQualityCases, taskReview]);
 
   const expectedDiffs = detail?.expected.expected_diffs ?? [];
+  const negativeExpectedActualDiffIds = useMemo(() => {
+    return new Set(
+      expectedDiffs
+        .filter(
+          (diff) =>
+            diff.review_status === "REJECTED" &&
+            diff.should_not_match_again === true &&
+            typeof diff.source_actual_diff_id === "string" &&
+            diff.source_actual_diff_id.length > 0,
+        )
+        .map((diff) => diff.source_actual_diff_id as string),
+    );
+  }, [expectedDiffs]);
 
   return (
     <section className="quality-workbench" aria-labelledby="quality-workbench-title">
@@ -528,6 +541,7 @@ export function QualityWorkbenchPage() {
               <ActualDiffList
                 diffs={detail.actual_diffs}
                 isSavingNegativeExpectedDiff={isSavingNegativeExpectedDiff}
+                negativeExpectedActualDiffIds={negativeExpectedActualDiffIds}
                 onCreateNegativeExpectedDiff={createNegativeExpectedDiff}
               />
               <ExpectedDiffList
@@ -809,10 +823,12 @@ function CaseSummary({ summary }: { summary: QualityCaseSummary }) {
 function ActualDiffList({
   diffs,
   isSavingNegativeExpectedDiff,
+  negativeExpectedActualDiffIds,
   onCreateNegativeExpectedDiff,
 }: {
   diffs: QualityActualDiffSummary[];
   isSavingNegativeExpectedDiff: boolean;
+  negativeExpectedActualDiffIds: Set<string>;
   onCreateNegativeExpectedDiff: (diff: QualityActualDiffSummary) => void;
 }) {
   return (
@@ -837,13 +853,22 @@ function ActualDiffList({
             </dl>
             {diff.review_flags.length > 0 && <small>{diff.review_flags.join(" / ")}</small>}
             <div className="quality-diff-actions">
-              <button
-                type="button"
-                onClick={() => onCreateNegativeExpectedDiff(diff)}
-                disabled={isSavingNegativeExpectedDiff}
-              >
-                {isSavingNegativeExpectedDiff ? "标注中..." : "标为负向误报"}
-              </button>
+              {(() => {
+                const isNegativeExpectedDiff = negativeExpectedActualDiffIds.has(diff.diff_id);
+                return (
+                  <button
+                    type="button"
+                    onClick={() => onCreateNegativeExpectedDiff(diff)}
+                    disabled={isSavingNegativeExpectedDiff || isNegativeExpectedDiff}
+                  >
+                    {isSavingNegativeExpectedDiff
+                      ? "标注中..."
+                      : isNegativeExpectedDiff
+                        ? "已标为负向误报"
+                        : "标为负向误报"}
+                  </button>
+                );
+              })()}
             </div>
           </article>
         ))

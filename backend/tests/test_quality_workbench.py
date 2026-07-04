@@ -463,6 +463,78 @@ def test_create_and_delete_expected_diff(tmp_path: Path) -> None:
     )
 
 
+def test_create_expected_diff_is_idempotent_for_same_negative_actual_diff(
+    tmp_path: Path,
+) -> None:
+    case_root = tmp_path / "cases"
+    service = QualityWorkbenchService(
+        case_root=case_root,
+        task_root=tmp_path / "tasks",
+        output_root=tmp_path / ".ocr-compare-quality",
+    )
+    _make_case(case_root)
+
+    payload = {
+        "review_status": "REJECTED",
+        "should_not_match_again": True,
+        "false_positive_reason": "manual_false_positive",
+        "source_actual_diff_id": "D001",
+        "diff_type": "MODIFY",
+        "source_type": "metadata",
+        "title_contains": "date",
+    }
+
+    first = service.create_expected_diff("case-001", payload)
+    second = service.create_expected_diff("case-001", payload)
+
+    first_diffs = first["expected"]["expected_diffs"]
+    second_diffs = second["expected"]["expected_diffs"]
+    negative_matches = [
+        diff
+        for diff in second_diffs
+        if diff.get("source_actual_diff_id") == "D001"
+        and diff.get("review_status") == "REJECTED"
+        and diff.get("should_not_match_again") is True
+    ]
+
+    assert len(first_diffs) == 4
+    assert len(second_diffs) == 4
+    assert negative_matches == [payload]
+
+
+def test_create_expected_diff_appends_same_actual_diff_when_not_negative(
+    tmp_path: Path,
+) -> None:
+    case_root = tmp_path / "cases"
+    service = QualityWorkbenchService(
+        case_root=case_root,
+        task_root=tmp_path / "tasks",
+        output_root=tmp_path / ".ocr-compare-quality",
+    )
+    _make_case(case_root)
+
+    payload = {
+        "review_status": "APPROVED",
+        "source_actual_diff_id": "D001",
+        "diff_type": "MODIFY",
+        "source_type": "metadata",
+        "title_contains": "date",
+    }
+
+    first = service.create_expected_diff("case-001", payload)
+    second = service.create_expected_diff("case-001", payload)
+    approved_matches = [
+        diff
+        for diff in second["expected"]["expected_diffs"]
+        if diff.get("source_actual_diff_id") == "D001"
+        and diff.get("review_status") == "APPROVED"
+    ]
+
+    assert len(first["expected"]["expected_diffs"]) == 4
+    assert len(second["expected"]["expected_diffs"]) == 5
+    assert approved_matches == [payload, payload]
+
+
 def test_expected_diff_index_out_of_range_raises(tmp_path: Path) -> None:
     case_root = tmp_path / "cases"
     service = QualityWorkbenchService(

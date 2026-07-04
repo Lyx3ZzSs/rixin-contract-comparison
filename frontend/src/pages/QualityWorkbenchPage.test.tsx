@@ -742,6 +742,43 @@ describe("QualityWorkbenchPage", () => {
       title_contains: "实际日期变更",
     });
     expect(await screen.findByText("REJECTED")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "已标为负向误报" })).toBeDisabled();
+  });
+
+  it("disables negative marking when the actual diff already has a negative expected diff", async () => {
+    const negativeDetail: QualityCaseDetail = {
+      ...caseDetail,
+      summary: {
+        ...caseSummary,
+        rejected_expected_count: 1,
+      },
+      expected: {
+        ...caseDetail.expected,
+        expected_diffs: [
+          ...caseExpectedDiffs,
+          {
+            review_status: "REJECTED",
+            should_not_match_again: true,
+            false_positive_reason: "manual_false_positive",
+            source_actual_diff_id: "diff-001",
+            diff_type: "MODIFY",
+            source_type: "clause",
+            title_contains: "实际日期变更",
+          },
+        ],
+      },
+    };
+    vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
+    vi.mocked(getQualityCase).mockResolvedValueOnce(negativeDetail);
+
+    render(<QualityWorkbenchPage />);
+
+    expect(await screen.findByText("签订日期")).toBeInTheDocument();
+    const negativeButton = screen.getByRole("button", { name: "已标为负向误报" });
+
+    expect(negativeButton).toBeDisabled();
+    fireEvent.click(negativeButton);
+    expect(createQualityExpectedDiff).not.toHaveBeenCalled();
   });
 
   it("does not create a negative expected diff twice while save is pending", async () => {
