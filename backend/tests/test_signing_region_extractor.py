@@ -161,3 +161,21 @@ def test_extractor_detects_straddling_seal_using_effective_bbox() -> None:
     assert len(regions) == 1
     assert "seal" in {element.element_type.value for element in regions[0].elements}
     assert regions[0].confidence >= 0.7
+
+
+def test_extractor_normalizes_out_of_page_region_bbox() -> None:
+    doc = _document(
+        [
+            _block("label", "甲方（盖章）：", _bbox(800, 650, 900, 675)),
+            _block("seal", "合同专用章", _bbox(820, 680, 920, 780), block_type="seal"),
+            _block("date", "签订日期：2026年5月6日", _bbox(800, 790, 980, 815)),
+        ]
+    )
+
+    regions = SigningRegionExtractor().extract(doc)
+
+    assert len(regions) == 1
+    bbox = regions[0].bbox
+    page = doc.pages[0]
+    assert 0 <= bbox.x0 <= bbox.x1 <= page.width
+    assert 0 <= bbox.y0 <= bbox.y1 <= page.height

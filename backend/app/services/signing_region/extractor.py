@@ -181,16 +181,30 @@ class SigningRegionExtractor:
         return block.layout_bbox or block.bbox
 
     def _padded_union(self, bboxes: list[BBox], page: Page) -> BBox:
+        x0 = min(min(bbox.x0, bbox.x1) for bbox in bboxes) - self.padding
+        y0 = min(min(bbox.y0, bbox.y1) for bbox in bboxes) - self.padding
+        x1 = max(max(bbox.x0, bbox.x1) for bbox in bboxes) + self.padding
+        y1 = max(max(bbox.y0, bbox.y1) for bbox in bboxes) + self.padding
+        x0, x1 = self._clamp_ordered_axis(x0, x1, page.width)
+        y0, y1 = self._clamp_ordered_axis(y0, y1, page.height)
         return BBox(
-            x0=max(0.0, min(bbox.x0 for bbox in bboxes) - self.padding),
-            y0=max(0.0, min(bbox.y0 for bbox in bboxes) - self.padding),
-            x1=min(page.width, max(bbox.x1 for bbox in bboxes) + self.padding),
-            y1=min(page.height, max(bbox.y1 for bbox in bboxes) + self.padding),
+            x0=x0,
+            y0=y0,
+            x1=x1,
+            y1=y1,
         )
 
     @staticmethod
     def _compact(text: str) -> str:
         return re.sub(r"\s+", "", text or "")
+
+    @staticmethod
+    def _clamp_ordered_axis(start: float, end: float, limit: float) -> tuple[float, float]:
+        if limit <= 0:
+            return 0.0, 0.0
+        clamped_start = min(max(start, 0.0), limit)
+        clamped_end = min(max(end, 0.0), limit)
+        return min(clamped_start, clamped_end), max(clamped_start, clamped_end)
 
     @staticmethod
     def _form_like(text: str) -> bool:
