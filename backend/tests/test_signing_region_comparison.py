@@ -1,7 +1,8 @@
 import pytest
 
-from app.models import BBox
+from app.models import BBox, DiffItem, EvidenceBox
 from app.services.signing_region.comparator import SigningRegionComparator
+from app.services.signing_region.coverage import SigningRegionCoverageBuilder
 from app.services.signing_region.diff_builder import SigningRegionDiffBuilder
 from app.services.signing_region.matcher import SigningRegionMatcher
 from app.services.signing_region.models import SigningElement, SigningElementType, SigningRegion, SigningRegionRole
@@ -148,3 +149,31 @@ def test_diff_builder_outputs_signing_region_diff() -> None:
     assert "A公司" in diffs[0].original_text
     assert "B公司" in diffs[0].compare_text
     assert diffs[0].original_evidence[0].method == "signing_region"
+
+
+def test_coverage_hides_overlapping_seal_diff() -> None:
+    region_diff = SigningRegionDiffBuilder().build_diffs(
+        [
+            SigningRegionComparator().compare(
+                _region("O1", "A公司"),
+                _region("C1", "B公司"),
+                match_confidence=0.9,
+            )
+        ],
+        start_index=10,
+    )[0]
+    legacy = DiffItem(
+        diff_id="D002",
+        diff_type="ADD",
+        source_type="seal",
+        title="印章区域（第1页）",
+        compare_text="B公司",
+        compare_evidence=[
+            EvidenceBox(page_no=1, bbox=BBox(x0=90, y0=680, x1=180, y1=760), method="seal_region", text="B公司")
+        ],
+    )
+
+    result = SigningRegionCoverageBuilder().build([region_diff], [legacy])
+
+    assert result.covered_diff_ids == {"D002"}
+    assert result.entries[0].signing_region_diff_id == "D010"
