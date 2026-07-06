@@ -12,7 +12,7 @@ EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
-DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal", "page"]
+DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal", "page", "signing_region"]
 LayoutMatchStatus = Literal[
     "matched",
     "ambiguous",
@@ -349,6 +349,7 @@ class CompareOptions(BaseModel):
     ignore_punctuation: bool = False
     ignore_headers_footers: bool = False
     ignore_stamps: bool = False
+    signing_region_mode: Literal["full", "off"] = "full"
 
 
 class OcrRawResultSidePaths(BaseModel):

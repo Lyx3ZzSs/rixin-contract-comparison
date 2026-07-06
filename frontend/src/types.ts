@@ -147,9 +147,12 @@ export interface CompareResponse {
   errors: string[];
 }
 
+export type SigningRegionMode = "full" | "off";
+
 export interface CompareContractOptions {
   ignoreStamps: boolean;
   ignoreHeadersFooters: boolean;
+  signingRegionMode?: SigningRegionMode;
 }
 
 export interface CompareTask extends CompareResponse {

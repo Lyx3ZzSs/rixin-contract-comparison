@@ -111,6 +111,13 @@ class Settings(BaseSettings):
 
     document_understanding_enabled: bool = True
 
+    # -- Signing visual detection (flat env vars) ------------------------
+
+    signing_visual_detector_url: str = ""
+    signing_visual_detector_timeout: int = 30
+    signing_visual_local_model_path: str = ""
+    signing_visual_enabled: bool = True
+
     # -- Matching (flat env vars) -----------------------------------------
 
     match_threshold: int = Field(default=85, ge=0, le=100)

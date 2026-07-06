@@ -287,7 +287,24 @@ def test_api_compare_persists_enabled_exclusion_options(tmp_path: Path) -> None:
         "ignore_punctuation": False,
         "ignore_headers_footers": True,
         "ignore_stamps": True,
+        "signing_region_mode": "full",
     }
+
+
+def test_compare_options_support_signing_region_mode() -> None:
+    from app.models import CompareOptions
+
+    options = CompareOptions(signing_region_mode="off")
+
+    assert options.signing_region_mode == "off"
+
+
+def test_compare_options_default_signing_region_mode_full() -> None:
+    from app.models import CompareOptions
+
+    options = CompareOptions()
+
+    assert options.signing_region_mode == "full"
 
 
 def test_compare_progress_stream_sends_current_snapshot(tmp_path: Path) -> None:
