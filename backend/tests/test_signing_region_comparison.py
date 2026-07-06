@@ -1,3 +1,5 @@
+import pytest
+
 from app.models import BBox
 from app.services.signing_region.comparator import SigningRegionComparator
 from app.services.signing_region.diff_builder import SigningRegionDiffBuilder
@@ -5,7 +7,14 @@ from app.services.signing_region.matcher import SigningRegionMatcher
 from app.services.signing_region.models import SigningElement, SigningElementType, SigningRegion, SigningRegionRole
 
 
-def _region(region_id: str, text: str, *, page_no: int = 1, x0: float = 60) -> SigningRegion:
+def _region(
+    region_id: str,
+    text: str,
+    *,
+    page_no: int = 1,
+    x0: float = 60,
+    element_type: SigningElementType = SigningElementType.SEAL,
+) -> SigningRegion:
     return SigningRegion(
         region_id=region_id,
         page_no=page_no,
@@ -15,8 +24,8 @@ def _region(region_id: str, text: str, *, page_no: int = 1, x0: float = 60) -> S
         confidence_reasons=["test"],
         elements=[
             SigningElement(
-                element_id=f"{region_id}-seal",
-                element_type=SigningElementType.SEAL,
+                element_id=f"{region_id}-{element_type.value}",
+                element_type=element_type,
                 page_no=page_no,
                 bbox=BBox(x0=x0 + 20, y0=680, x1=x0 + 120, y1=760),
                 text=text,
@@ -36,6 +45,24 @@ def test_matcher_pairs_regions_by_page_and_role() -> None:
     assert pairs == [(original[0], compare[0], 1.0)]
 
 
+def test_matcher_does_not_pair_same_page_zero_overlap_regions() -> None:
+    original = [_region("O1", "A公司", x0=60)]
+    compare = [_region("C1", "A公司", x0=360)]
+
+    pairs = SigningRegionMatcher().match(original, compare)
+
+    assert pairs == [(original[0], None, 0.0), (None, compare[0], 0.0)]
+
+
+def test_matcher_does_not_pair_adjacent_page_zero_overlap_regions() -> None:
+    original = [_region("O1", "A公司", page_no=1, x0=60)]
+    compare = [_region("C1", "A公司", page_no=2, x0=360)]
+
+    pairs = SigningRegionMatcher().match(original, compare)
+
+    assert pairs == [(original[0], None, 0.0), (None, compare[0], 0.0)]
+
+
 def test_comparator_detects_seal_text_change() -> None:
     comparison = SigningRegionComparator().compare(_region("O1", "A公司"), _region("C1", "B公司"), match_confidence=0.9)
 
@@ -43,6 +70,71 @@ def test_comparator_detects_seal_text_change() -> None:
     assert comparison.seal_changes[0]["original_text"] == "A公司"
     assert comparison.seal_changes[0]["compare_text"] == "B公司"
     assert "SIGNING_SEAL_CHANGE" in comparison.review_flags
+
+
+@pytest.mark.parametrize(
+    ("element_type", "changes_attr", "flag", "original_text", "compare_text"),
+    [
+        (SigningElementType.DATE_FIELD, "date_changes", "SIGNING_DATE_CHANGE", "签订日期：2026年5月1日", "签订日期：2026年5月2日"),
+        (SigningElementType.SIGNATURE, "signature_changes", "SIGNING_SIGNATURE_CHANGE", "张三", "李四"),
+        (SigningElementType.LABEL, "label_changes", "SIGNING_LABEL_CHANGE", "甲方（盖章）：", "乙方（盖章）："),
+        (SigningElementType.SIGNING_TABLE, "table_changes", "SIGNING_TABLE_CHANGE", "授权代表：张三", "授权代表：李四"),
+        (SigningElementType.VISUAL_AREA, "visual_changes", "SIGNING_VISUAL_CHANGE", "视觉区域A", "视觉区域B"),
+    ],
+)
+def test_comparator_detects_non_seal_element_text_changes(
+    element_type: SigningElementType,
+    changes_attr: str,
+    flag: str,
+    original_text: str,
+    compare_text: str,
+) -> None:
+    comparison = SigningRegionComparator().compare(
+        _region("O1", original_text, element_type=element_type),
+        _region("C1", compare_text, element_type=element_type),
+        match_confidence=0.9,
+    )
+
+    changes = getattr(comparison, changes_attr)
+    assert comparison.diff_type == "MODIFY"
+    assert changes[0]["original_text"] == original_text
+    assert changes[0]["compare_text"] == compare_text
+    assert flag in comparison.review_flags
+
+
+def test_comparator_no_change_does_not_build_diff() -> None:
+    comparison = SigningRegionComparator().compare(_region("O1", "A公司"), _region("C1", "A公司"), match_confidence=1.0)
+
+    diffs = SigningRegionDiffBuilder().build_diffs([comparison])
+
+    assert comparison.diff_type is None
+    assert diffs == []
+
+
+def test_diff_builder_add_uses_compare_side_only() -> None:
+    comparison = SigningRegionComparator().compare(None, _region("C1", "B公司"), match_confidence=0.0)
+
+    diffs = SigningRegionDiffBuilder().build_diffs([comparison])
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "ADD"
+    assert diffs[0].original_evidence == []
+    assert len(diffs[0].compare_evidence) == 1
+    assert diffs[0].original_change_ranges == []
+    assert len(diffs[0].compare_change_ranges) == 1
+
+
+def test_diff_builder_delete_uses_original_side_only() -> None:
+    comparison = SigningRegionComparator().compare(_region("O1", "A公司"), None, match_confidence=0.0)
+
+    diffs = SigningRegionDiffBuilder().build_diffs([comparison])
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "DELETE"
+    assert len(diffs[0].original_evidence) == 1
+    assert diffs[0].compare_evidence == []
+    assert len(diffs[0].original_change_ranges) == 1
+    assert diffs[0].compare_change_ranges == []
 
 
 def test_diff_builder_outputs_signing_region_diff() -> None:

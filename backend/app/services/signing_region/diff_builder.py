@@ -5,6 +5,16 @@ from app.services.signing_region.models import SigningRegion, SigningRegionCompa
 from app.utils.id_utils import generate_diff_id
 
 
+READABLE_CHANGE_FIELDS = (
+    ("seal_changes", "印章文字变化"),
+    ("date_changes", "签署日期变化"),
+    ("signature_changes", "签字文字变化"),
+    ("label_changes", "签章标签变化"),
+    ("table_changes", "签章表格变化"),
+    ("visual_changes", "签章视觉区域变化"),
+)
+
+
 class SigningRegionDiffBuilder:
     def build_diffs(self, comparisons: list[SigningRegionComparison], start_index: int = 1) -> list[DiffItem]:
         diffs: list[DiffItem] = []
@@ -55,10 +65,12 @@ class SigningRegionDiffBuilder:
     @staticmethod
     def _readable_change(comparison: SigningRegionComparison) -> str:
         messages: list[str] = []
-        for change in comparison.seal_changes:
-            messages.append(f"印章文字变化：{change.get('original_text', '')} → {change.get('compare_text', '')}")
-        for change in comparison.signature_changes:
-            messages.append(str(change.get("detail") or "签章区变化"))
+        for field_name, label in READABLE_CHANGE_FIELDS:
+            for change in getattr(comparison, field_name):
+                if change.get("detail"):
+                    messages.append(str(change["detail"]))
+                else:
+                    messages.append(f"{label}：{change.get('original_text', '')} → {change.get('compare_text', '')}")
         return "；".join(messages) or "签章区发生变化"
 
     @staticmethod
