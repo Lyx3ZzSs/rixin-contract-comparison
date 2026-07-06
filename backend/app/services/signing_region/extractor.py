@@ -14,7 +14,11 @@ from app.services.signing_region.models import (
 SIGNING_ANCHOR_RE = re.compile(r"甲方|乙方|丙方|丁方|盖章|签章|签字|签署|签订日期|签署日期|法定代表人|授权代表|年月日")
 BODY_RE = re.compile(r"应当|负责|承担|履行|支付|违约|权利|义务|为准|合同经|生效|协商|约定")
 NUMBERED_RE = re.compile(r"^\s*(?:第[一二三四五六七八九十百千万0-9]+[章节条款]|[一二三四五六七八九十百千万0-9]+[、.．]|\d+(?:\.\d+){0,4}[、.．]?)")
-DATE_RE = re.compile(r"\d{4}\s*年\s*\d{0,2}\s*月\s*\d{0,2}\s*日|年\s*月\s*日|____?年")
+DATE_RE = re.compile(
+    r"(?:\d{4}|[_＿]{2,4})\s*年\s*(?:\d{1,2}|[_＿]{1,4})?\s*月\s*(?:\d{1,2}|[_＿]{1,4})?\s*日"
+    r"|年\s*(?:\d{1,2}|[_＿]{1,4})?\s*月\s*(?:\d{1,2}|[_＿]{1,4})?\s*日"
+    r"|[_＿]{2,4}\s*年"
+)
 VISUAL_TYPES = {"seal", "stamp", "image", "figure", "table"}
 
 
@@ -57,7 +61,8 @@ class SigningRegionExtractor:
     def _is_candidate(self, block: TextBlock, page: Page) -> bool:
         text = self._compact(block.text)
         block_type = (block.block_type or "").lower()
-        in_bottom = page.height > 0 and block.bbox.y0 >= page.height * self.bottom_ratio
+        bbox = self._effective_bbox(block)
+        in_bottom = self._is_in_bottom_region(bbox, page)
         has_visual = block_type in VISUAL_TYPES
         has_anchor = bool(SIGNING_ANCHOR_RE.search(text))
         has_date = bool(DATE_RE.search(text))
@@ -80,14 +85,17 @@ class SigningRegionExtractor:
         return form_like or has_date or label_like
 
     def _cluster(self, blocks: list[TextBlock]) -> list[list[TextBlock]]:
-        ordered = sorted(blocks, key=lambda block: (block.page_no, block.bbox.y0, block.bbox.x0))
+        ordered = sorted(
+            blocks,
+            key=lambda block: (block.page_no, self._effective_bbox(block).y0, self._effective_bbox(block).x0),
+        )
         clusters: list[list[TextBlock]] = []
         for block in ordered:
             if not clusters:
                 clusters.append([block])
                 continue
             previous = clusters[-1][-1]
-            if block.bbox.y0 - previous.bbox.y1 <= self.cluster_gap:
+            if self._effective_bbox(block).y0 - self._effective_bbox(previous).y1 <= self.cluster_gap:
                 clusters[-1].append(block)
             else:
                 clusters.append([block])
@@ -99,7 +107,7 @@ class SigningRegionExtractor:
             element_id=f"{block.block_id}-signing-{region_index}",
             element_type=self._element_type(block),
             page_no=block.page_no,
-            bbox=block.layout_bbox or block.bbox,
+            bbox=self._effective_bbox(block),
             text=block.text,
             confidence=block.confidence if block.confidence is not None else 0.8,
             source="layout" if block_type in VISUAL_TYPES else "ocr",
@@ -155,11 +163,22 @@ class SigningRegionExtractor:
             return SigningRegionRole.PARTY_A
         if "乙方" in text:
             return SigningRegionRole.PARTY_B
-        x0 = min(block.bbox.x0 for block in blocks)
-        x1 = max(block.bbox.x1 for block in blocks)
+        x0 = min(self._effective_bbox(block).x0 for block in blocks)
+        x1 = max(self._effective_bbox(block).x1 for block in blocks)
         if page.width > 0 and x0 < page.width * 0.25 and x1 > page.width * 0.75:
             return SigningRegionRole.BOTH_PARTIES
         return SigningRegionRole.UNKNOWN
+
+    def _is_in_bottom_region(self, bbox: BBox, page: Page) -> bool:
+        if page.height <= 0:
+            return False
+        threshold = page.height * self.bottom_ratio
+        center_y = (bbox.y0 + bbox.y1) / 2
+        return bbox.y0 >= threshold or center_y >= threshold or bbox.y1 >= threshold
+
+    @staticmethod
+    def _effective_bbox(block: TextBlock) -> BBox:
+        return block.layout_bbox or block.bbox
 
     def _padded_union(self, bboxes: list[BBox], page: Page) -> BBox:
         return BBox(

@@ -44,8 +44,16 @@ def _block(
     *,
     block_type: str = "text",
     page_no: int = 1,
+    layout_bbox: BBox | None = None,
 ) -> TextBlock:
-    return TextBlock(block_id=block_id, page_no=page_no, text=text, bbox=bbox, block_type=block_type)
+    return TextBlock(
+        block_id=block_id,
+        page_no=page_no,
+        text=text,
+        bbox=bbox,
+        block_type=block_type,
+        layout_bbox=layout_bbox,
+    )
 
 
 def _document(blocks: list[TextBlock], *, page_no: int = 1) -> Document:
@@ -115,3 +123,41 @@ def test_extractor_detects_form_like_signature_page_without_seal_block() -> None
 
     assert len(regions) == 1
     assert regions[0].confidence >= 0.5
+
+
+def test_extractor_detects_no_seal_signature_form_with_short_date_placeholder() -> None:
+    doc = _document(
+        [
+            _block("party_a", "甲方：__________    乙方：__________", _bbox(60, 650, 460, 675)),
+            _block("sign", "授权代表（签字）：__________", _bbox(60, 700, 280, 725)),
+            _block("date", "日期：__年__月__日", _bbox(60, 750, 260, 775)),
+        ]
+    )
+
+    regions = SigningRegionExtractor().extract(doc)
+
+    assert len(regions) == 1
+    assert "date_field" in {element.element_type.value for element in regions[0].elements}
+    assert regions[0].confidence >= 0.5
+
+
+def test_extractor_detects_straddling_seal_using_effective_bbox() -> None:
+    doc = _document(
+        [
+            _block("label", "甲方（盖章）：", _bbox(60, 650, 170, 675)),
+            _block(
+                "seal",
+                "合同专用章",
+                _bbox(80, 500, 190, 620),
+                block_type="seal",
+                layout_bbox=_bbox(80, 500, 190, 680),
+            ),
+            _block("date", "签订日期：2026年5月6日", _bbox(60, 700, 240, 725)),
+        ]
+    )
+
+    regions = SigningRegionExtractor().extract(doc)
+
+    assert len(regions) == 1
+    assert "seal" in {element.element_type.value for element in regions[0].elements}
+    assert regions[0].confidence >= 0.7
