@@ -177,3 +177,31 @@ def test_coverage_hides_overlapping_seal_diff() -> None:
 
     assert result.covered_diff_ids == {"D002"}
     assert result.entries[0].signing_region_diff_id == "D010"
+
+
+def test_coverage_does_not_hide_same_bbox_seal_diff_on_different_page() -> None:
+    region_diff = SigningRegionDiffBuilder().build_diffs(
+        [
+            SigningRegionComparator().compare(
+                _region("O1", "A公司", page_no=1),
+                _region("C1", "B公司", page_no=1),
+                match_confidence=0.9,
+            )
+        ],
+        start_index=10,
+    )[0]
+    legacy = DiffItem(
+        diff_id="D002",
+        diff_type="ADD",
+        source_type="seal",
+        title="印章区域（第2页）",
+        compare_text="B公司",
+        compare_evidence=[
+            EvidenceBox(page_no=2, bbox=BBox(x0=60, y0=650, x1=220, y1=780), method="seal_region", text="B公司")
+        ],
+    )
+
+    result = SigningRegionCoverageBuilder().build([region_diff], [legacy])
+
+    assert result.covered_diff_ids == set()
+    assert result.entries == []

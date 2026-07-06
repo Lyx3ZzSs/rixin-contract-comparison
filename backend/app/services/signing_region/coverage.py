@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.models import BBox, DiffItem
+from app.models import BBox, DiffItem, EvidenceBox
 from app.services.signing_region.models import SigningCoverageEntry
 
 
@@ -22,16 +22,14 @@ class SigningRegionCoverageBuilder:
         for signing_diff in signing_region_diffs:
             covered: list[str] = []
             reasons: dict[str, str] = {}
-            signing_boxes = [
-                evidence.bbox for evidence in [*signing_diff.original_evidence, *signing_diff.compare_evidence]
-            ]
+            signing_evidence = [*signing_diff.original_evidence, *signing_diff.compare_evidence]
             for legacy in legacy_diffs:
                 if legacy.source_type not in LEGACY_SOURCES:
                     continue
                 if not self._looks_signing_related(legacy):
                     continue
-                legacy_boxes = [evidence.bbox for evidence in [*legacy.original_evidence, *legacy.compare_evidence]]
-                if self._any_overlap(signing_boxes, legacy_boxes):
+                legacy_evidence = [*legacy.original_evidence, *legacy.compare_evidence]
+                if self._any_overlap(signing_evidence, legacy_evidence):
                     covered.append(legacy.diff_id)
                     reasons[legacy.diff_id] = "overlaps_confirmed_signing_region"
                     result.covered_diff_ids.add(legacy.diff_id)
@@ -53,8 +51,12 @@ class SigningRegionCoverageBuilder:
         return any(marker in text for marker in SIGNING_TEXT_MARKERS)
 
     @staticmethod
-    def _any_overlap(left: list[BBox], right: list[BBox]) -> bool:
-        return any(SigningRegionCoverageBuilder._overlap_ratio(a, b) >= 0.2 for a in left for b in right)
+    def _any_overlap(left: list[EvidenceBox], right: list[EvidenceBox]) -> bool:
+        return any(
+            a.page_no == b.page_no and SigningRegionCoverageBuilder._overlap_ratio(a.bbox, b.bbox) >= 0.2
+            for a in left
+            for b in right
+        )
 
     @staticmethod
     def _overlap_ratio(a: BBox, b: BBox) -> float:
