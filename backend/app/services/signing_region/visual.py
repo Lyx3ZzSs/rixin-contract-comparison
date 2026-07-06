@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Protocol
+
+import httpx
+
+from app.config import settings
+from app.models import BBox
+from app.services.signing_region.models import SigningRegion, VisualDetection, VisualDetectionResult
+
+logger = logging.getLogger(__name__)
+
+
+class VisualSignatureDetector(Protocol):
+    def detect(self, pdf_path: Path, regions: list[SigningRegion], task_id: str) -> VisualDetectionResult: ...
+
+
+class LocalCpuVisualSignatureDetector:
+    def __init__(self, model_path: str | None = None) -> None:
+        self.model_path = model_path if model_path is not None else settings.signing_visual_local_model_path
+
+    def detect(self, pdf_path: Path, regions: list[SigningRegion], task_id: str) -> VisualDetectionResult:
+        del pdf_path, regions, task_id
+        if not self.model_path:
+            return VisualDetectionResult(available=False, error="local_model_not_configured")
+        return VisualDetectionResult(available=False, error="local_model_unavailable")
+
+
+class RemoteVisualSignatureDetector:
+    def __init__(self, base_url: str | None = None, timeout: int | None = None) -> None:
+        self.base_url = (base_url if base_url is not None else settings.signing_visual_detector_url).strip().rstrip("/")
+        self.timeout = timeout if timeout is not None else settings.signing_visual_detector_timeout
+
+    def detect(self, pdf_path: Path, regions: list[SigningRegion], task_id: str) -> VisualDetectionResult:
+        if not self.base_url:
+            return VisualDetectionResult(available=False, error="remote_url_not_configured")
+        payload = {
+            "task_id": task_id,
+            "pdf_path": str(pdf_path),
+            "regions": [
+                {
+                    "region_id": region.region_id,
+                    "page_no": region.page_no,
+                    "bbox": region.bbox.model_dump(),
+                }
+                for region in regions
+            ],
+        }
+        try:
+            response = httpx.post(f"{self.base_url}/detect-signatures", json=payload, timeout=self.timeout)
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.debug("Signing visual detector failed: %s", exc)
+            return VisualDetectionResult(available=False, error="remote_call_failed")
+        detections: list[VisualDetection] = []
+        for item in data.get("detections", []):
+            bbox = item.get("bbox") or {}
+            detections.append(
+                VisualDetection(
+                    page_no=int(item.get("page_no", 0)),
+                    bbox=BBox(**bbox),
+                    label=str(item.get("label") or "signature"),
+                    confidence=float(item.get("confidence") or 0.0),
+                    model_name=str(data.get("model_name") or item.get("model_name") or "remote"),
+                    raw_data=item,
+                )
+            )
+        return VisualDetectionResult(
+            available=True,
+            model_name=str(data.get("model_name") or "remote"),
+            detections=detections,
+        )
+
+
+class OpenCvSigningRegionFingerprinter:
+    def fingerprint_region(self, pdf_path: Path, region: SigningRegion) -> dict[str, str | float]:
+        del pdf_path, region
+        return {"status": "unavailable", "reason": "fingerprint_not_configured"}
