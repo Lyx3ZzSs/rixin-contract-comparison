@@ -1,4 +1,5 @@
-from app.models import BBox
+from app.models import BBox, Document, Page, TextBlock
+from app.services.signing_region.extractor import SigningRegionExtractor
 from app.services.signing_region.models import (
     SigningElement,
     SigningElementType,
@@ -30,3 +31,87 @@ def test_signing_region_model_holds_elements_and_reasons() -> None:
     assert region.elements[0].element_type == SigningElementType.SEAL
     assert region.region_role == SigningRegionRole.PARTY_A
     assert "seal_block" in region.confidence_reasons
+
+
+def _bbox(x0: float, y0: float, x1: float, y1: float) -> BBox:
+    return BBox(x0=x0, y0=y0, x1=x1, y1=y1)
+
+
+def _block(
+    block_id: str,
+    text: str,
+    bbox: BBox,
+    *,
+    block_type: str = "text",
+    page_no: int = 1,
+) -> TextBlock:
+    return TextBlock(block_id=block_id, page_no=page_no, text=text, bbox=bbox, block_type=block_type)
+
+
+def _document(blocks: list[TextBlock], *, page_no: int = 1) -> Document:
+    return Document(
+        filename="test.pdf",
+        path="test.pdf",
+        page_count=1,
+        pages=[Page(page_no=page_no, width=595, height=842, blocks=blocks)],
+    )
+
+
+def test_extractor_detects_seal_label_and_date_region() -> None:
+    doc = _document(
+        [
+            _block("label", "甲方（盖章）：", _bbox(60, 650, 170, 675)),
+            _block("seal", "合同专用章", _bbox(80, 680, 190, 780), block_type="seal"),
+            _block("date", "签订日期：2026年5月6日", _bbox(60, 790, 240, 815)),
+        ]
+    )
+
+    regions = SigningRegionExtractor().extract(doc)
+
+    assert len(regions) == 1
+    assert {element.element_type.value for element in regions[0].elements} >= {"seal", "label", "date_field"}
+    assert regions[0].confidence >= 0.7
+
+
+def test_extractor_rejects_keyword_only_body_text() -> None:
+    doc = _document(
+        [
+            _block(
+                "body",
+                "13.2 对本合同的修改以双方签章的书面协议为准。甲方应当配合乙方履行义务。",
+                _bbox(60, 680, 520, 720),
+            ),
+        ]
+    )
+
+    regions = SigningRegionExtractor().extract(doc)
+
+    assert regions == []
+
+
+def test_extractor_rejects_single_bottom_keyword() -> None:
+    doc = _document(
+        [
+            _block("footer_word", "甲方", _bbox(60, 760, 90, 780)),
+        ]
+    )
+
+    regions = SigningRegionExtractor().extract(doc)
+
+    assert regions == []
+
+
+def test_extractor_detects_form_like_signature_page_without_seal_block() -> None:
+    doc = _document(
+        [
+            _block("context", "以下无正文，为签署页", _bbox(60, 520, 240, 545)),
+            _block("party_a", "甲方：__________    乙方：__________", _bbox(60, 650, 460, 675)),
+            _block("sign", "授权代表（签字）：__________", _bbox(60, 700, 280, 725)),
+            _block("date", "日期：____年__月__日", _bbox(60, 750, 260, 775)),
+        ]
+    )
+
+    regions = SigningRegionExtractor().extract(doc)
+
+    assert len(regions) == 1
+    assert regions[0].confidence >= 0.5
