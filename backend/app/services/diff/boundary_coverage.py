@@ -145,6 +145,8 @@ class ClauseBoundaryCoverageFilter:
     def _suppression_reason(self, diff: DiffItem, context: BoundaryCoverageContext) -> str:
         if self._short_appendix_heading_covered(diff, context):
             return "short_appendix_heading_covered"
+        if self._heading_text_present_on_opposite_page(diff, context):
+            return "heading_text_present_on_opposite_page"
         if self._changed_text_covered_by_opposite_page_text(diff, context):
             return "changed_text_covered_by_opposite_page_text"
         if self._heading_add_covered_by_opposite_numbering(diff, context):
@@ -202,6 +204,43 @@ class ClauseBoundaryCoverageFilter:
         if diff.diff_type == "DELETE":
             return {evidence.page_no for evidence in diff.original_evidence}
         return {evidence.page_no for evidence in diff.compare_evidence}
+
+    def _heading_text_present_on_opposite_page(self, diff: DiffItem, context: BoundaryCoverageContext) -> bool:
+        if diff.source_type != "clause" or diff.diff_type not in {"ADD", "DELETE"}:
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if not flags.intersection(STRUCTURAL_RISK_FLAGS | _PAGE_TEXT_COVERAGE_REVIEW_FLAGS):
+            return False
+
+        changed = (
+            (diff.original_snippet or diff.original_text)
+            if diff.diff_type == "DELETE"
+            else (diff.compare_snippet or diff.compare_text)
+        ).strip()
+        changed_key = normalize_for_coverage(changed)
+        if not _safe_for_heading_number_coverage(changed, changed_key):
+            return False
+        if _is_subclause_heading_fragment(changed):
+            return False
+        if not _looks_like_top_level_numbered_heading_line(changed):
+            return False
+        if not _looks_like_explicit_heading_fragment(changed):
+            return False
+
+        evidence_pages = self._evidence_pages(diff)
+        if not evidence_pages:
+            return False
+        opposite_document = context.compare_document if diff.diff_type == "DELETE" else context.original_document
+        if opposite_document is None:
+            return False
+
+        search_pages = {page_no + offset for page_no in evidence_pages for offset in (-1, 0, 1)}
+        for page in opposite_document.pages:
+            if page.page_no not in search_pages:
+                continue
+            if any(normalize_for_coverage(line) == changed_key for line in _page_block_lines(page)):
+                return True
+        return False
 
     def _changed_text_covered_by_opposite_page_text(self, diff: DiffItem, context: BoundaryCoverageContext) -> bool:
         if diff.source_type not in {"clause", "metadata"} or diff.diff_type not in {"ADD", "DELETE"}:
@@ -943,6 +982,16 @@ def _looks_like_numbered_heading_text(text: str) -> bool:
         re.match(
             r"^(?:第?[一二三四五六七八九十百\d]+(?:章|节|条)?|"
             r"\d{1,2}(?:\.\d{1,2})*)\s*[.．、:：]\s*\S+",
+            normalized,
+        )
+    )
+
+
+def _looks_like_top_level_numbered_heading_line(text: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", text or "").strip()
+    return bool(
+        re.match(
+            r"^(?:第?[一二三四五六七八九十百]+(?:章|节|条)?|\d{1,2})\s*(?:[.．、:：]|\s+)\s*\S+",
             normalized,
         )
     )

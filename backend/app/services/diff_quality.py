@@ -121,6 +121,7 @@ class DiffQualityProcessor:
         "form_separator_equivalent",
         "page_number_edge_annotation_noise",
         "seal_occluded_signing_label_covered",
+        "signing_contact_table_label_noise",
         "isolated_seal_artifact_text",
         "single_latin_layout_glyph_noise",
         "table_header_serialization_equivalent",
@@ -283,6 +284,13 @@ class DiffQualityProcessor:
                 decisions.append(DiffQualityDecision(action="row_level_table_review", diff_id=diff.diff_id))
                 continue
             if self._is_table_region_review_diff(diff):
+                pre_review_flags = set(diff.structural_flags) | set(diff.review_flags)
+                if (
+                    "TABLE_REGION_REVIEW" not in pre_review_flags
+                    and _is_signing_contact_table_label_loss(diff, pre_review_flags)
+                    and not self._looks_like_table_signing_date_fill(diff)
+                ):
+                    self._add_flag(diff, "SIGNING_TABLE_LABEL_NOISE")
                 self._remove_flag(diff, "CRITICAL_VALUE_CHANGE")
                 self._add_flag(diff, "TABLE_REGION_REVIEW")
                 diff.quality_status = "NEEDS_REVIEW"
@@ -345,6 +353,8 @@ class DiffQualityProcessor:
             return "table_header_serialization_equivalent"
         if self._looks_like_seal_occluded_signing_label_covered(diff):
             return "seal_occluded_signing_label_covered"
+        if self._looks_like_signing_contact_table_label_noise(diff):
+            return "signing_contact_table_label_noise"
         if self._looks_like_isolated_seal_artifact_text(diff):
             return "isolated_seal_artifact_text"
         if self._has_critical_field_change(diff):
@@ -466,6 +476,17 @@ class DiffQualityProcessor:
         ):
             return False
         return _signing_label_residual(diff.original_text) == _signing_label_residual(diff.compare_text)
+
+    @staticmethod
+    def _looks_like_signing_contact_table_label_noise(diff: DiffItem) -> bool:
+        if diff.source_type != "table" or diff.diff_type != "MODIFY":
+            return False
+        if "SIGNING_TABLE_LABEL_NOISE" not in diff.review_flags:
+            return False
+        text = f"{diff.original_text}\n{diff.compare_text}"
+        if re.search(r"\d{4}\s*年|\d{8}|[\d０-９]{1,2}\s*月\s*[\d０-９]{1,2}\s*日", text):
+            return False
+        return True
 
     def _looks_like_isolated_seal_artifact_text(self, diff: DiffItem) -> bool:
         if diff.source_type != "seal":
@@ -695,17 +716,23 @@ class DiffQualityProcessor:
         return any(evidence.method == "cover_extra" and evidence.bbox.y0 <= 96.0 for evidence in evidences)
 
     def _reclassify_signing_date_field_change(self, diff: DiffItem) -> bool:
-        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+        if diff.diff_type != "MODIFY":
             return False
         flags = set(diff.review_flags)
-        if "CRITICAL_FIELD_CHANGE" not in flags:
-            return False
-        if not flags.intersection({"CRITICAL_FIELD_DATE_CHANGE", "CRITICAL_FIELD_DURATION_CHANGE"}):
-            return False
-        context = f"{diff.original_text}\n{diff.compare_text}"
-        if not self._has_signing_date_context(context):
-            return False
-        if not self._changed_text_is_signing_date_fill(diff):
+        if diff.source_type == "clause":
+            if "CRITICAL_FIELD_CHANGE" not in flags:
+                return False
+            if not flags.intersection({"CRITICAL_FIELD_DATE_CHANGE", "CRITICAL_FIELD_DURATION_CHANGE"}):
+                return False
+            context = f"{diff.original_text}\n{diff.compare_text}"
+            if not self._has_signing_date_context(context):
+                return False
+            if not self._changed_text_is_signing_date_fill(diff):
+                return False
+        elif diff.source_type == "table":
+            if not self._looks_like_table_signing_date_fill(diff):
+                return False
+        else:
             return False
         diff.source_type = "metadata"
         diff.title = "签署日期"
@@ -733,6 +760,19 @@ class DiffQualityProcessor:
         ):
             self._remove_flag(diff, flag)
         return True
+
+    def _looks_like_table_signing_date_fill(self, diff: DiffItem) -> bool:
+        if diff.source_type != "table" or diff.diff_type != "MODIFY":
+            return False
+        flags = set(diff.review_flags)
+        if "TABLE_REGION_REVIEW" in flags:
+            return False
+        context = f"{diff.title}\n{diff.original_text}\n{diff.compare_text}"
+        if not re.search(r"签订时间|签署日期|签字日期|签订日期", context):
+            return False
+        if self._text_contains_filled_date(diff.original_text or diff.original_snippet):
+            return False
+        return self._text_contains_filled_date(diff.compare_text or diff.compare_snippet)
 
     def _trim_signing_form_ocr_noise_from_date_change(self, diff: DiffItem) -> bool:
         if diff.source_type != "clause" or diff.diff_type != "MODIFY":
