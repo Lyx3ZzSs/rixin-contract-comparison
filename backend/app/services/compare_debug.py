@@ -100,6 +100,9 @@ class CompareDebugWriter:
     def write_table_repair(self, task_id: str, payload: dict[str, Any]) -> str:
         return str(self._write_json(task_id, "table_repair.json", payload))
 
+    def write_signing_region(self, task_id: str, payload: dict[str, Any]) -> str:
+        return str(self._write_json(task_id, "signing_region.json", payload))
+
     def write_matches(self, task_id: str, pairs: list[ClausePair]) -> str:
         payload = []
         for pair in pairs:

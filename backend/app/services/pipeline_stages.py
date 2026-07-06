@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from app.config import settings
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
@@ -39,6 +40,11 @@ from app.services.evidence_relocator import EvidenceRelocationResult, EvidenceRe
 from app.services.page_diff import PageDiffConsolidator
 from app.services.pipeline import PipelineContext
 from app.services.seal_comparator import build_seal_diffs
+from app.services.signing_region.comparator import SigningRegionComparator
+from app.services.signing_region.coverage import SigningRegionCoverageBuilder
+from app.services.signing_region.diff_builder import SigningRegionDiffBuilder
+from app.services.signing_region.extractor import SigningRegionExtractor
+from app.services.signing_region.matcher import SigningRegionMatcher
 from app.services.table_compare import TableComparator
 from app.services.text_coordinate_locator import TextCoordinateLocator
 
@@ -92,6 +98,20 @@ def _write_debug_artifact(
 def _emit_progress(ctx: PipelineContext, progress: int, stage: str, sub_stage: str) -> None:
     if ctx.progress_callback:
         ctx.progress_callback(progress, stage, {"sub_stage": sub_stage})
+
+
+def _jsonable(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, set):
+        return sorted(_jsonable(item) for item in value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    return value
 
 
 class ExtractionStage:
@@ -431,6 +451,89 @@ class PreClauseDiffStage:
                     block.text = seal.text
 
 
+class SigningRegionStage:
+    name = "签章区域识别中"
+    start_progress = 40
+    progress = 42
+
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.extractor = SigningRegionExtractor()
+        self.matcher = SigningRegionMatcher()
+        self.comparator = SigningRegionComparator()
+        self.diff_builder = SigningRegionDiffBuilder()
+        self.coverage_builder = SigningRegionCoverageBuilder()
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+
+    def execute(self, ctx: PipelineContext) -> None:
+        if ctx.task.compare_options.ignore_stamps or ctx.task.compare_options.signing_region_mode == "off":
+            ctx.signing_regions_original = []
+            ctx.signing_regions_compare = []
+            ctx.signing_region_diffs = []
+            ctx.signing_region_covered_diff_ids = set()
+            ctx.signing_region_debug = {"skipped": True}
+            _write_debug_artifact(
+                ctx.task,
+                "signing_region",
+                lambda: self.debug_writer.write_signing_region(ctx.task.task_id, ctx.signing_region_debug),
+            )
+            _emit_progress(ctx, 42, self.name, "signing_region_skipped")
+            return
+
+        extractions = ctx.require_extractions()
+        original_regions = self.extractor.extract(extractions.original.document)
+        compare_regions = self.extractor.extract(extractions.compare.document)
+        matches = self.matcher.match(original_regions, compare_regions)
+        comparisons = [
+            self.comparator.compare(original, compare, match_confidence=match_confidence)
+            for original, compare, match_confidence in matches
+        ]
+        legacy_diffs = self._legacy_diffs(ctx)
+        signing_region_diffs = self.diff_builder.build_diffs(
+            comparisons,
+            start_index=len(legacy_diffs) + 1,
+        )
+        coverage = self.coverage_builder.build(signing_region_diffs, legacy_diffs)
+
+        ctx.signing_regions_original = original_regions
+        ctx.signing_regions_compare = compare_regions
+        ctx.signing_region_diffs = signing_region_diffs
+        ctx.signing_region_covered_diff_ids = coverage.covered_diff_ids
+        ctx.signing_region_debug = {
+            "skipped": False,
+            "original_regions": _jsonable(original_regions),
+            "compare_regions": _jsonable(compare_regions),
+            "matches": [
+                {
+                    "original_region_id": original.region_id if original is not None else None,
+                    "compare_region_id": compare.region_id if compare is not None else None,
+                    "score": match_confidence,
+                }
+                for original, compare, match_confidence in matches
+            ],
+            "comparisons": _jsonable(comparisons),
+            "diffs": _jsonable(signing_region_diffs),
+            "coverage": {
+                "entries": _jsonable(coverage.entries),
+                "covered_diff_ids": sorted(coverage.covered_diff_ids),
+            },
+        }
+        _write_debug_artifact(
+            ctx.task,
+            "signing_region",
+            lambda: self.debug_writer.write_signing_region(ctx.task.task_id, ctx.signing_region_debug),
+        )
+        _emit_progress(ctx, 42, self.name, "signing_region_done")
+
+    @staticmethod
+    def _legacy_diffs(ctx: PipelineContext) -> list[DiffItem]:
+        return [
+            *ctx.header_footer_diffs,
+            *ctx.metadata_diffs,
+            *ctx.table_diffs,
+            *ctx.seal_diffs,
+        ]
+
+
 class SplitStage:
     name = "差异识别中"
     start_progress = 41
@@ -552,6 +655,7 @@ class ClauseDiffStage:
             + len(table_diffs.metadata_diffs)
             + len(table_diffs.table_diffs)
             + len(ctx.seal_diffs)
+            + len(ctx.signing_region_diffs)
         )
         clause_diffs = self.diff_engine.build_diffs(
             matches.pairs,
@@ -563,6 +667,7 @@ class ClauseDiffStage:
             *table_diffs.metadata_diffs,
             *table_diffs.table_diffs,
             *ctx.seal_diffs,
+            *ctx.signing_region_diffs,
             *clause_diffs,
         ]
         ctx.set_clause_diffs(clause_diffs, diffs)
@@ -906,22 +1011,28 @@ class DiffQualityStage:
     @staticmethod
     def _remap_ocr_remediation_summary(ctx: PipelineContext, merged_to_winner: dict[str, str]) -> None:
         summary = ctx.task.ocr_remediation_summary
-        if summary is None or not merged_to_winner:
+        if summary is None:
             return
 
+        final_ids = {diff.diff_id for diff in ctx.diffs}
+        remaining_actions: list[OcrRemediationAction] = []
         for action in summary.actions:
             if not action.diff_id:
+                remaining_actions.append(action)
                 continue
             original_diff_id = action.diff_id
-            remapped_diff_id = merged_to_winner.get(original_diff_id)
-            if not remapped_diff_id:
-                continue
-            action.diff_id = remapped_diff_id
-            action.action_id = DiffQualityStage._remapped_ocr_action_id(
-                action,
-                original_diff_id,
-                remapped_diff_id,
-            )
+            remapped_diff_id = merged_to_winner.get(original_diff_id, original_diff_id)
+            if remapped_diff_id != original_diff_id:
+                action.diff_id = remapped_diff_id
+                action.action_id = DiffQualityStage._remapped_ocr_action_id(
+                    action,
+                    original_diff_id,
+                    remapped_diff_id,
+                )
+            if remapped_diff_id in final_ids:
+                remaining_actions.append(action)
+        summary.actions = remaining_actions
+        OcrRemediationStage._refresh_summary_counts(summary)
 
     @staticmethod
     def _remapped_ocr_action_id(
@@ -968,7 +1079,13 @@ class SummaryStage:
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
-        task.diffs, dedupe_remap = _dedupe_final_diffs(_filter_compare_option_diffs(task, ctx.require_diffs()))
+        diffs = [
+            diff
+            for diff in ctx.require_diffs()
+            if diff.diff_id not in ctx.signing_region_covered_diff_ids
+        ]
+        task.diffs, dedupe_remap = _dedupe_final_diffs(_filter_compare_option_diffs(task, diffs))
+        ctx.diffs = task.diffs
         _remap_ocr_quality_summary_after_final_dedupe(task, dedupe_remap)
         DiffQualityStage._remap_ocr_remediation_summary(ctx, dedupe_remap)
         _write_debug_artifact(
@@ -999,6 +1116,9 @@ def _filter_compare_option_diffs(task: CompareTask, diffs: list[DiffItem]) -> li
     excluded_source_types: set[str] = set()
     if task.compare_options.ignore_stamps:
         excluded_source_types.add("seal")
+        excluded_source_types.add("signing_region")
+    if task.compare_options.signing_region_mode == "off":
+        excluded_source_types.add("signing_region")
     if task.compare_options.ignore_headers_footers:
         excluded_source_types.add("header_footer")
     if not excluded_source_types:
@@ -1049,7 +1169,7 @@ def _remap_ocr_quality_summary_after_final_dedupe(
     dedupe_remap: dict[str, str],
 ) -> None:
     summary = task.ocr_quality_summary
-    if summary is None or not dedupe_remap:
+    if summary is None:
         return
 
     final_ids = {diff.diff_id for diff in task.diffs}

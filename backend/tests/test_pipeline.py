@@ -696,10 +696,16 @@ class TestComparePipeline:
             "ModelRoutingStage",
             "DiffQualityStage",
         ]
+        assert stage_names[stage_names.index("PreClauseDiffStage") : stage_names.index("SplitStage") + 1] == [
+            "PreClauseDiffStage",
+            "SigningRegionStage",
+            "SplitStage",
+        ]
         progress_values = {
             type(stage).__name__: (stage.start_progress, stage.progress)
             for stage in ComparePipeline().stages
         }
+        assert progress_values["SigningRegionStage"] == (40, 42)
         assert progress_values["OcrQualityStage"] == (83, 84)
         assert progress_values["OcrRemediationStage"] == (84, 85)
         assert progress_values["ModelRoutingStage"] == (85, 85)
@@ -714,6 +720,11 @@ class TestComparePipeline:
             "OcrRemediationStage",
             "ModelRoutingStage",
             "DiffQualityStage",
+        ]
+        assert stage_names[stage_names.index("PreClauseDiffStage") : stage_names.index("SplitStage") + 1] == [
+            "PreClauseDiffStage",
+            "SigningRegionStage",
+            "SplitStage",
         ]
 
     def test_pipeline_runs_all_stages_in_order(self, tmp_path: Path) -> None:

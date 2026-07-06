@@ -73,6 +73,11 @@ class PipelineContext:
     pairs: list[ClausePair] = field(default_factory=list)
     clause_diffs: list[DiffItem] = field(default_factory=list)
     seal_diffs: list[DiffItem] = field(default_factory=list)
+    signing_regions_original: list[Any] = field(default_factory=list)
+    signing_regions_compare: list[Any] = field(default_factory=list)
+    signing_region_diffs: list[DiffItem] = field(default_factory=list)
+    signing_region_covered_diff_ids: set[str] = field(default_factory=set)
+    signing_region_debug: dict[str, Any] = field(default_factory=dict)
     diffs: list[DiffItem] = field(default_factory=list)
     progress_callback: Callable[[int, str, dict[str, Any] | None], None] | None = None
 
@@ -312,6 +317,7 @@ def _default_stages() -> list[PipelineStage]:
         OcrQualityStage,
         OcrRemediationStage,
         PreClauseDiffStage,
+        SigningRegionStage,
         SplitStage,
         SummaryStage,
         VisualizationStage,
@@ -322,6 +328,7 @@ def _default_stages() -> list[PipelineStage]:
         DocumentUnderstandingStage(),
         DocumentPreparationStage(),
         PreClauseDiffStage(),
+        SigningRegionStage(),
         SplitStage(),
         MatchStage(),
         ClauseDiffStage(),

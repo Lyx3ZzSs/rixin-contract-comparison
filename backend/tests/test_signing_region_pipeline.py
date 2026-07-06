@@ -1,0 +1,243 @@
+import json
+from pathlib import Path
+
+from app.models import (
+    BBox,
+    CompareOptions,
+    CompareTask,
+    DiffItem,
+    Document,
+    EvidenceBox,
+    OcrRemediationAction,
+    Page,
+    PageOcrQualityProfile,
+    TaskOcrQualitySummary,
+    TaskOcrRemediationSummary,
+    TextBlock,
+)
+from app.services.extractors.base import ExtractionResult
+from app.services.pipeline import PipelineContext
+from app.services.pipeline_stages import ClauseDiffStage, PreClauseDiffStage, SigningRegionStage, SummaryStage
+
+
+class _TestArtifactStore:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def debug_json_path(self, task_id: str, filename: str) -> Path:
+        return self.root / task_id / "debug" / filename
+
+    def write_json(self, path: Path, payload) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+
+def _doc(seal_text: str) -> Document:
+    return Document(
+        filename="test.pdf",
+        path="test.pdf",
+        page_count=1,
+        pages=[Page(
+            page_no=1,
+            width=595,
+            height=842,
+            blocks=[
+                TextBlock(block_id="label", page_no=1, text="甲方（盖章）：", bbox=BBox(x0=60, y0=650, x1=170, y1=675)),
+                TextBlock(block_id="seal", page_no=1, text=seal_text, bbox=BBox(x0=80, y0=680, x1=190, y1=780), block_type="seal"),
+            ],
+        )],
+    )
+
+
+def _ctx(tmp_path: Path, options: CompareOptions | None = None) -> PipelineContext:
+    return PipelineContext(
+        task=CompareTask(task_id="task-signing", compare_options=options or CompareOptions()),
+        original_pdf=tmp_path / "original.pdf",
+        compare_pdf=tmp_path / "compare.pdf",
+    )
+
+
+def test_signing_region_stage_builds_diff_and_covers_seal(monkeypatch, tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
+    monkeypatch.setattr(PreClauseDiffStage, "_recognize_seals", staticmethod(lambda *_args: None))
+    artifact_store = _TestArtifactStore(tmp_path / "artifacts")
+
+    PreClauseDiffStage(artifact_store=artifact_store).execute(ctx)
+    SigningRegionStage(artifact_store=artifact_store).execute(ctx)
+
+    assert len(ctx.signing_region_diffs) == 1
+    assert ctx.signing_region_diffs[0].source_type == "signing_region"
+    expected_index = (
+        len(ctx.header_footer_diffs)
+        + len(ctx.metadata_diffs)
+        + len(ctx.table_diffs)
+        + len(ctx.seal_diffs)
+        + 1
+    )
+    assert ctx.signing_region_diffs[0].diff_id == f"D{expected_index:03d}"
+    assert ctx.seal_diffs[0].diff_id in ctx.signing_region_covered_diff_ids
+    assert ctx.seal_diffs[0].diff_id in ctx.signing_region_debug["coverage"]["covered_diff_ids"]
+    assert ctx.task.debug_artifact_paths["signing_region"].endswith("signing_region.json")
+
+
+def test_signing_region_stage_skips_when_stamps_are_ignored(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, CompareOptions(ignore_stamps=True))
+    ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
+
+    SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts")).execute(ctx)
+
+    assert ctx.signing_regions_original == []
+    assert ctx.signing_regions_compare == []
+    assert ctx.signing_region_diffs == []
+    assert ctx.signing_region_covered_diff_ids == set()
+    assert ctx.signing_region_debug == {"skipped": True}
+
+
+def test_signing_region_stage_skips_when_mode_is_off(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, CompareOptions(signing_region_mode="off"))
+    ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
+
+    SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts")).execute(ctx)
+
+    assert ctx.signing_regions_original == []
+    assert ctx.signing_regions_compare == []
+    assert ctx.signing_region_diffs == []
+    assert ctx.signing_region_covered_diff_ids == set()
+    assert ctx.signing_region_debug == {"skipped": True}
+
+
+def test_clause_diff_stage_counts_signing_region_diffs_before_clause_diffs(tmp_path: Path) -> None:
+    class _FakeDiffEngine:
+        def __init__(self) -> None:
+            self.start_index = 0
+
+        def build_diffs(self, _pairs, start_index: int) -> list[DiffItem]:
+            self.start_index = start_index
+            return [
+                DiffItem(
+                    diff_id=f"D{start_index:03d}",
+                    diff_type="MODIFY",
+                    source_type="clause",
+                    title="正文条款",
+                    original_text="原条款",
+                    compare_text="新条款",
+                )
+            ]
+
+    ctx = _ctx(tmp_path)
+    ctx.seal_diffs = [
+        DiffItem(diff_id="D001", diff_type="MODIFY", source_type="seal", title="印章", original_text="A", compare_text="B")
+    ]
+    ctx.signing_region_diffs = [
+        DiffItem(
+            diff_id="D002",
+            diff_type="MODIFY",
+            source_type="signing_region",
+            title="签章区",
+            original_text="甲方：A",
+            compare_text="甲方：B",
+        )
+    ]
+    fake_engine = _FakeDiffEngine()
+    stage = ClauseDiffStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"))
+    stage.diff_engine = fake_engine
+
+    stage.execute(ctx)
+
+    assert fake_engine.start_index == 3
+    assert [diff.source_type for diff in ctx.diffs] == ["seal", "signing_region", "clause"]
+    assert ctx.diffs[-1].diff_id == "D003"
+
+
+def test_summary_stage_hides_legacy_diff_covered_by_signing_region(tmp_path: Path) -> None:
+    signing_diff = DiffItem(
+        diff_id="D002",
+        diff_type="MODIFY",
+        source_type="signing_region",
+        title="签章区（第1页）",
+        original_text="甲方（盖章）：A公司",
+        compare_text="甲方（盖章）：B公司",
+    )
+    covered_seal_diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        source_type="seal",
+        title="印章区域（第1页）",
+        original_text="A公司",
+        compare_text="B公司",
+        original_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=80, y0=680, x1=190, y1=780), method="seal_region")],
+    )
+    ctx = _ctx(tmp_path)
+    ctx.diffs = [covered_seal_diff, signing_diff]
+    ctx.signing_region_covered_diff_ids = {"D001"}
+
+    SummaryStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts")).execute(ctx)
+
+    assert [diff.diff_id for diff in ctx.task.diffs] == ["D002"]
+    assert ctx.task.diff_count == 1
+
+
+def test_summary_stage_removes_covered_legacy_diff_from_ocr_summaries(tmp_path: Path) -> None:
+    signing_diff = DiffItem(
+        diff_id="D002",
+        diff_type="MODIFY",
+        source_type="signing_region",
+        title="签章区（第1页）",
+        original_text="甲方（盖章）：A公司",
+        compare_text="甲方（盖章）：B公司",
+    )
+    covered_seal_diff = DiffItem(
+        diff_id="D001",
+        diff_type="MODIFY",
+        source_type="seal",
+        title="印章区域（第1页）",
+        original_text="A公司",
+        compare_text="B公司",
+    )
+    ctx = _ctx(tmp_path)
+    ctx.diffs = [covered_seal_diff, signing_diff]
+    ctx.signing_region_covered_diff_ids = {"D001"}
+    ctx.task.ocr_quality_summary = TaskOcrQualitySummary(
+        status="LOW_TEXT_CONFIDENCE",
+        requires_review=True,
+        affected_diff_count=1,
+        profiles=[
+            PageOcrQualityProfile(
+                side="original",
+                page_no=1,
+                status="LOW_TEXT_CONFIDENCE",
+                affected_diff_ids=["D001"],
+            )
+        ],
+    )
+    ctx.task.ocr_remediation_summary = TaskOcrRemediationSummary(
+        status="ACTIONS_PLANNED",
+        attempted_action_count=1,
+        unresolved_action_count=1,
+        actions=[
+            OcrRemediationAction(
+                action_id="original:1:D001:RELOCATE_EVIDENCE",
+                action_type="RELOCATE_EVIDENCE",
+                reason="OCR 风险",
+                diff_id="D001",
+                side="original",
+                page_no=1,
+            )
+        ],
+    )
+
+    SummaryStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts")).execute(ctx)
+
+    assert [diff.diff_id for diff in ctx.task.diffs] == ["D002"]
+    assert ctx.task.ocr_quality_summary is not None
+    assert ctx.task.ocr_quality_summary.affected_diff_count == 0
+    assert ctx.task.ocr_quality_summary.profiles[0].affected_diff_ids == []
+    assert ctx.task.ocr_remediation_summary is not None
+    assert ctx.task.ocr_remediation_summary.actions == []
+    assert ctx.task.ocr_remediation_summary.attempted_action_count == 0
+    assert ctx.task.ocr_remediation_summary.unresolved_action_count == 0
