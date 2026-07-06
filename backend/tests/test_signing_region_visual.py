@@ -1,8 +1,22 @@
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from app.models import BBox
 from app.services.signing_region.models import SigningRegion
 from app.services.signing_region.visual import LocalCpuVisualSignatureDetector, RemoteVisualSignatureDetector
+
+
+class _FakeResponse:
+    def __init__(self, payload: Any) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> Any:
+        return self.payload
 
 
 def _region() -> SigningRegion:
@@ -32,3 +46,38 @@ def test_remote_visual_detector_without_url_is_unavailable() -> None:
 
     assert result.available is False
     assert result.error == "remote_url_not_configured"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"detections": ["not-a-dict"]},
+        {"detections": [{"page_no": "bad", "bbox": {"x0": 0, "y0": 0, "x1": 1, "y1": 1}}]},
+        {"detections": [{"page_no": 1, "bbox": {"x0": "bad"}}]},
+        {
+            "detections": [
+                {
+                    "page_no": 1,
+                    "bbox": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                    "confidence": "bad",
+                }
+            ]
+        },
+    ],
+)
+def test_remote_visual_detector_malformed_payload_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: Any,
+) -> None:
+    def fake_post(*_args: Any, **_kwargs: Any) -> _FakeResponse:
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr("app.services.signing_region.visual.httpx.post", fake_post)
+    detector = RemoteVisualSignatureDetector(base_url="http://visual-detector")
+
+    result = detector.detect(Path("sample.pdf"), [_region()], task_id="task-1")
+
+    assert result.available is False
+    assert result.error == "remote_call_failed"
+    assert result.detections == []

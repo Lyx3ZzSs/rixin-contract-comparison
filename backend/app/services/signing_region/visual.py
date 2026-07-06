@@ -52,27 +52,28 @@ class RemoteVisualSignatureDetector:
             response = httpx.post(f"{self.base_url}/detect-signatures", json=payload, timeout=self.timeout)
             response.raise_for_status()
             data = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+
+            detections: list[VisualDetection] = []
+            for item in data.get("detections", []):
+                bbox = item.get("bbox") or {}
+                detections.append(
+                    VisualDetection(
+                        page_no=int(item.get("page_no", 0)),
+                        bbox=BBox(**bbox),
+                        label=str(item.get("label") or "signature"),
+                        confidence=float(item.get("confidence") or 0.0),
+                        model_name=str(data.get("model_name") or item.get("model_name") or "remote"),
+                        raw_data=item,
+                    )
+                )
+            return VisualDetectionResult(
+                available=True,
+                model_name=str(data.get("model_name") or "remote"),
+                detections=detections,
+            )
+        except (httpx.HTTPError, AttributeError, TypeError, ValueError) as exc:
             logger.debug("Signing visual detector failed: %s", exc)
             return VisualDetectionResult(available=False, error="remote_call_failed")
-        detections: list[VisualDetection] = []
-        for item in data.get("detections", []):
-            bbox = item.get("bbox") or {}
-            detections.append(
-                VisualDetection(
-                    page_no=int(item.get("page_no", 0)),
-                    bbox=BBox(**bbox),
-                    label=str(item.get("label") or "signature"),
-                    confidence=float(item.get("confidence") or 0.0),
-                    model_name=str(data.get("model_name") or item.get("model_name") or "remote"),
-                    raw_data=item,
-                )
-            )
-        return VisualDetectionResult(
-            available=True,
-            model_name=str(data.get("model_name") or "remote"),
-            detections=detections,
-        )
 
 
 class OpenCvSigningRegionFingerprinter:
