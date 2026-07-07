@@ -77,6 +77,41 @@ class RemoteVisualSignatureDetector:
 
 
 class OpenCvSigningRegionFingerprinter:
-    def fingerprint_region(self, pdf_path: Path, region: SigningRegion) -> dict[str, str | float]:
-        del pdf_path, region
-        return {"status": "unavailable", "reason": "fingerprint_not_configured"}
+    def fingerprint_region(self, pdf_path: Path, region: SigningRegion) -> dict[str, str | float | bool]:
+        if not pdf_path.exists():
+            return {"status": "unavailable", "reason": "pdf_missing"}
+
+        try:
+            import fitz
+        except Exception:
+            return {"status": "unavailable", "reason": "pymupdf_unavailable"}
+
+        doc = None
+        try:
+            doc = fitz.open(pdf_path)
+            if region.page_no < 1 or region.page_no > len(doc):
+                return {"status": "unavailable", "reason": "page_out_of_range"}
+
+            page = doc[region.page_no - 1]
+            rect = fitz.Rect(region.bbox.x0, region.bbox.y0, region.bbox.x1, region.bbox.y1)
+            pix = page.get_pixmap(clip=rect, matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+            payload = pix.samples
+        except Exception:
+            return {"status": "unavailable", "reason": "render_failed"}
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+
+        import hashlib
+
+        digest = hashlib.sha256(payload).hexdigest()[:24]
+        return {
+            "status": "ok",
+            "hash": digest,
+            "visual_hash": digest,
+            "width": float(pix.width),
+            "height": float(pix.height),
+        }

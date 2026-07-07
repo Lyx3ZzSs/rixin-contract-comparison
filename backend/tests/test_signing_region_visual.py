@@ -5,7 +5,11 @@ import pytest
 
 from app.models import BBox
 from app.services.signing_region.models import SigningRegion
-from app.services.signing_region.visual import LocalCpuVisualSignatureDetector, RemoteVisualSignatureDetector
+from app.services.signing_region.visual import (
+    LocalCpuVisualSignatureDetector,
+    OpenCvSigningRegionFingerprinter,
+    RemoteVisualSignatureDetector,
+)
 
 
 class _FakeResponse:
@@ -27,6 +31,20 @@ def _region() -> SigningRegion:
         confidence=0.8,
         confidence_reasons=["test"],
     )
+
+
+def test_opencv_fingerprinter_returns_unavailable_for_missing_pdf() -> None:
+    region = SigningRegion(
+        region_id="SR-1",
+        page_no=1,
+        bbox=BBox(x0=60, y0=620, x1=520, y1=740),
+        confidence=0.9,
+    )
+
+    result = OpenCvSigningRegionFingerprinter().fingerprint_region(Path("missing.pdf"), region)
+
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "pdf_missing"
 
 
 def test_local_visual_detector_without_model_is_unavailable() -> None:
