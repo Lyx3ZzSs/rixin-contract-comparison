@@ -468,6 +468,7 @@ class SigningRegionStage:
     name = "签章区域识别中"
     start_progress = 40
     progress = 42
+    visual_confidence_threshold = 0.6
 
     def __init__(
         self,
@@ -509,10 +510,24 @@ class SigningRegionStage:
         extractions = ctx.require_extractions()
         original_regions = self.extractor.extract(extractions.original.document)
         compare_regions = self.extractor.extract(extractions.compare.document)
+        suppressed_low_confidence_candidates: list[dict[str, Any]] = []
         visual_status = {
-            "original": self._enrich_visual(ctx.original_pdf, original_regions, ctx.task.task_id),
-            "compare": self._enrich_visual(ctx.compare_pdf, compare_regions, ctx.task.task_id),
+            "original": self._collect_visual(
+                ctx.original_pdf,
+                original_regions,
+                ctx.task.task_id,
+                side="original",
+                suppressed=suppressed_low_confidence_candidates,
+            ),
+            "compare": self._collect_visual(
+                ctx.compare_pdf,
+                compare_regions,
+                ctx.task.task_id,
+                side="compare",
+                suppressed=suppressed_low_confidence_candidates,
+            ),
         }
+        self._apply_visual_enrichment_when_comparable(visual_status)
         matches = self.matcher.match(original_regions, compare_regions)
         comparisons = [
             self.comparator.compare(original, compare, match_confidence=match_confidence)
@@ -543,9 +558,9 @@ class SigningRegionStage:
             ],
             "comparisons": _jsonable(comparisons),
             "diffs": _jsonable(signing_region_diffs),
-            "visual_adapter_status": _jsonable(visual_status),
+            "visual_adapter_status": _jsonable(self._debug_visual_status(visual_status)),
             "configuration": self._debug_configuration(),
-            "suppressed_low_confidence_candidates": [],
+            "suppressed_low_confidence_candidates": suppressed_low_confidence_candidates,
             "coverage": {
                 "entries": _jsonable(coverage.entries),
                 "covered_diff_ids": sorted(coverage.covered_diff_ids),
@@ -567,7 +582,15 @@ class SigningRegionStage:
             *ctx.seal_diffs,
         ]
 
-    def _enrich_visual(self, pdf_path: Path, regions: list[SigningRegion], task_id: str) -> dict[str, Any]:
+    def _collect_visual(
+        self,
+        pdf_path: Path,
+        regions: list[SigningRegion],
+        task_id: str,
+        *,
+        side: str,
+        suppressed: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         status: dict[str, Any] = {
             "enabled": self.visual_enabled,
             "available": False,
@@ -575,6 +598,8 @@ class SigningRegionStage:
             "error": "",
             "detection_count": 0,
             "fingerprint_count": 0,
+            "_detection_elements": [],
+            "_fingerprint_elements": [],
         }
         if not self.visual_enabled:
             status["error"] = "disabled"
@@ -590,9 +615,18 @@ class SigningRegionStage:
             }
         )
         if detection_result.available:
-            self._attach_visual_detections(regions, detection_result)
+            detection_elements = self._visual_detection_elements(
+                regions,
+                detection_result,
+                side=side,
+                suppressed=suppressed,
+            )
+            status["_detection_elements"] = detection_elements
+            status["detection_count"] = len(detection_elements)
 
-        status["fingerprint_count"] = self._attach_visual_fingerprints(pdf_path, regions)
+        fingerprint_elements = self._visual_fingerprint_elements(pdf_path, regions)
+        status["_fingerprint_elements"] = fingerprint_elements
+        status["fingerprint_count"] = len(fingerprint_elements)
         return status
 
     def _detect_visual(self, pdf_path: Path, regions: list[SigningRegion], task_id: str) -> VisualDetectionResult:
@@ -604,16 +638,33 @@ class SigningRegionStage:
             logger.debug("Signing visual detector failed in pipeline: %s", exc, exc_info=True)
             return VisualDetectionResult(available=False, error="visual_detector_failed")
 
-    def _attach_visual_detections(
+    def _visual_detection_elements(
         self,
         regions: list[SigningRegion],
         detection_result: VisualDetectionResult,
-    ) -> None:
+        *,
+        side: str,
+        suppressed: list[dict[str, Any]],
+    ) -> list[tuple[SigningRegion, SigningElement]]:
+        elements: list[tuple[SigningRegion, SigningElement]] = []
         for index, detection in enumerate(detection_result.detections, start=1):
+            if detection.confidence < self.visual_confidence_threshold:
+                suppressed.append(
+                    {
+                        "side": side,
+                        "page_no": detection.page_no,
+                        "bbox": detection.bbox.model_dump(mode="json"),
+                        "label": detection.label,
+                        "confidence": detection.confidence,
+                        "reason": "low_visual_confidence",
+                    }
+                )
+                continue
             region = self._matching_region(regions, detection)
             if region is None:
                 continue
-            region.elements.append(
+            elements.append((
+                region,
                 SigningElement(
                     element_id=f"{region.region_id}-visual-model-{index}",
                     element_type=self._visual_detection_type(detection),
@@ -630,12 +681,13 @@ class SigningRegionStage:
                     model_name=detection.model_name or detection_result.model_name,
                     raw_ref=detection.model_dump(mode="json"),
                 )
-            )
+            ))
+        return elements
 
-    def _attach_visual_fingerprints(self, pdf_path: Path, regions: list[SigningRegion]) -> int:
+    def _visual_fingerprint_elements(self, pdf_path: Path, regions: list[SigningRegion]) -> list[tuple[SigningRegion, SigningElement]]:
         if self.visual_fingerprinter is None:
-            return 0
-        fingerprint_count = 0
+            return []
+        elements: list[tuple[SigningRegion, SigningElement]] = []
         for region in regions:
             try:
                 fingerprint = self.visual_fingerprinter.fingerprint_region(pdf_path, region)
@@ -645,7 +697,8 @@ class SigningRegionStage:
             visual_hash = str(fingerprint.get("hash") or fingerprint.get("visual_hash") or "")
             if not visual_hash:
                 continue
-            region.elements.append(
+            elements.append((
+                region,
                 SigningElement(
                     element_id=f"{region.region_id}-visual-fingerprint",
                     element_type=SigningElementType.VISUAL_AREA,
@@ -656,9 +709,36 @@ class SigningRegionStage:
                     visual_hash=visual_hash,
                     raw_ref=dict(fingerprint),
                 )
-            )
-            fingerprint_count += 1
-        return fingerprint_count
+            ))
+        return elements
+
+    @staticmethod
+    def _apply_visual_enrichment_when_comparable(visual_status: dict[str, dict[str, Any]]) -> None:
+        original_comparable = SigningRegionStage._has_comparable_visual_result(visual_status["original"])
+        compare_comparable = SigningRegionStage._has_comparable_visual_result(visual_status["compare"])
+        if not (original_comparable and compare_comparable):
+            return
+        for status in visual_status.values():
+            for region, element in [
+                *status.get("_detection_elements", []),
+                *status.get("_fingerprint_elements", []),
+            ]:
+                region.elements.append(element)
+
+    @staticmethod
+    def _has_comparable_visual_result(status: dict[str, Any]) -> bool:
+        if not status.get("enabled"):
+            return False
+        if status.get("available") and status.get("detection_count", 0) > 0:
+            return True
+        return status.get("fingerprint_count", 0) > 0
+
+    @staticmethod
+    def _debug_visual_status(visual_status: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        return {
+            side: {key: value for key, value in status.items() if not key.startswith("_")}
+            for side, status in visual_status.items()
+        }
 
     @staticmethod
     def _matching_region(regions: list[SigningRegion], detection: VisualDetection) -> SigningRegion | None:
@@ -697,6 +777,7 @@ class SigningRegionStage:
     def _debug_configuration(self) -> dict[str, Any]:
         return {
             "visual_enabled": self.visual_enabled,
+            "visual_confidence_threshold": self.visual_confidence_threshold,
             "visual_detector": type(self.visual_detector).__name__ if self.visual_detector is not None else "",
             "visual_detector_url_configured": bool(settings.signing_visual_detector_url.strip()),
             "visual_local_model_configured": bool(settings.signing_visual_local_model_path.strip()),

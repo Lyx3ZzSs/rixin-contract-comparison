@@ -67,7 +67,7 @@ def test_signing_region_stage_builds_diff_and_covers_seal(monkeypatch, tmp_path:
     artifact_store = _TestArtifactStore(tmp_path / "artifacts")
 
     PreClauseDiffStage(artifact_store=artifact_store).execute(ctx)
-    SigningRegionStage(artifact_store=artifact_store).execute(ctx)
+    SigningRegionStage(artifact_store=artifact_store, visual_enabled=False).execute(ctx)
 
     assert len(ctx.signing_region_diffs) == 1
     assert ctx.signing_region_diffs[0].source_type == "signing_region"
@@ -89,7 +89,7 @@ def test_signing_region_stage_skips_when_stamps_are_ignored(tmp_path: Path) -> N
     ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
     ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
 
-    SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts")).execute(ctx)
+    SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"), visual_enabled=False).execute(ctx)
 
     assert ctx.signing_regions_original == []
     assert ctx.signing_regions_compare == []
@@ -103,7 +103,7 @@ def test_signing_region_stage_skips_when_mode_is_off(tmp_path: Path) -> None:
     ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
     ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
 
-    SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts")).execute(ctx)
+    SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"), visual_enabled=False).execute(ctx)
 
     assert ctx.signing_regions_original == []
     assert ctx.signing_regions_compare == []
@@ -145,6 +145,7 @@ def test_signing_region_stage_builds_visual_diff_from_detector_and_fingerprint(t
         artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
         visual_detector=_Detector(),
         visual_fingerprinter=_Fingerprinter(),
+        visual_enabled=True,
     )
 
     stage.execute(ctx)
@@ -169,6 +170,7 @@ def test_signing_region_stage_records_unavailable_visual_adapter_without_failing
     stage = SigningRegionStage(
         artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
         visual_detector=_Detector(),
+        visual_enabled=True,
     )
 
     stage.execute(ctx)
@@ -177,6 +179,77 @@ def test_signing_region_stage_records_unavailable_visual_adapter_without_failing
     assert ctx.signing_region_debug["visual_adapter_status"]["original"]["available"] is False
     assert ctx.signing_region_debug["visual_adapter_status"]["original"]["error"] == "remote_call_failed"
     assert ctx.signing_region_debug["configuration"]["visual_enabled"] is True
+
+
+def test_signing_region_stage_ignores_visual_only_change_when_one_side_adapter_fails(tmp_path: Path) -> None:
+    class _Detector:
+        def detect(self, pdf_path: Path, regions, _task_id: str) -> VisualDetectionResult:
+            if pdf_path.name == "compare.pdf":
+                return VisualDetectionResult(available=False, error="remote_call_failed")
+            if not regions:
+                return VisualDetectionResult(available=True, model_name="fake")
+            region = regions[0]
+            return VisualDetectionResult(
+                available=True,
+                model_name="fake",
+                detections=[
+                    VisualDetection(
+                        page_no=region.page_no,
+                        bbox=region.bbox,
+                        label="signature",
+                        confidence=0.91,
+                        model_name="fake",
+                    )
+                ],
+            )
+
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=_doc("合同专用章"), extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=_doc("合同专用章"), extractor_used="test")
+
+    SigningRegionStage(
+        artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
+        visual_detector=_Detector(),
+        visual_enabled=True,
+    ).execute(ctx)
+
+    assert ctx.signing_region_diffs == []
+    assert ctx.signing_region_debug["visual_adapter_status"]["compare"]["available"] is False
+
+
+def test_signing_region_stage_suppresses_low_confidence_visual_detections(tmp_path: Path) -> None:
+    class _Detector:
+        def detect(self, _pdf_path: Path, regions, _task_id: str) -> VisualDetectionResult:
+            if not regions:
+                return VisualDetectionResult(available=True, model_name="fake")
+            region = regions[0]
+            return VisualDetectionResult(
+                available=True,
+                model_name="fake",
+                detections=[
+                    VisualDetection(
+                        page_no=region.page_no,
+                        bbox=region.bbox,
+                        label="signature",
+                        confidence=0.2,
+                        model_name="fake",
+                    )
+                ],
+            )
+
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=_doc("合同专用章"), extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=_doc("合同专用章"), extractor_used="test")
+
+    SigningRegionStage(
+        artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
+        visual_detector=_Detector(),
+        visual_enabled=True,
+    ).execute(ctx)
+
+    assert ctx.signing_region_diffs == []
+    assert len(ctx.signing_region_debug["suppressed_low_confidence_candidates"]) == 2
+    assert ctx.signing_region_debug["suppressed_low_confidence_candidates"][0]["reason"] == "low_visual_confidence"
 
 
 def test_clause_diff_stage_counts_signing_region_diffs_before_clause_diffs(tmp_path: Path) -> None:
