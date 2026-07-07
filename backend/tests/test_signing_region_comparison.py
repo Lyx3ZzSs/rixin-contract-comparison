@@ -166,6 +166,18 @@ def test_diff_builder_outputs_signing_region_diff() -> None:
     assert diffs[0].original_evidence[0].method == "signing_region"
 
 
+def test_diff_builder_title_shows_signing_region_page_for_same_page_match() -> None:
+    comparison = SigningRegionComparator().compare(
+        _region("O1", "日期：", page_no=10),
+        _region("C1", "日期：2026.", page_no=10),
+        match_confidence=0.8,
+    )
+
+    diff = SigningRegionDiffBuilder().build_diffs([comparison], start_index=1)[0]
+
+    assert diff.title == "签署区（第10页）"
+
+
 def test_diff_builder_title_shows_original_and_compare_pages_for_cross_page_match() -> None:
     comparison = SigningRegionComparator().compare(
         _region("O1", "日期：", page_no=10),

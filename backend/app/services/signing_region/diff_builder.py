@@ -64,7 +64,7 @@ class SigningRegionDiffBuilder:
             return f"签署区（原第{original.page_no}页 / 新第{compare.page_no}页）"
         region = original or compare
         page_no = region.page_no if region is not None else 0
-        return f"签章区（第{page_no}页）"
+        return f"签署区（第{page_no}页）"
 
     @staticmethod
     def _readable_change(comparison: SigningRegionComparison) -> str:
