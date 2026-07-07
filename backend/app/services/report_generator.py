@@ -23,9 +23,9 @@ from app.services.audit_summary import AuditItem, build_audit_items
 _SOURCE_TYPE_ORDER = {
     "clause": 0,
     "page": 1,
-    "table": 2,
-    "seal": 3,
-    "signing_region": 4,
+    "signing_region": 2,
+    "table": 3,
+    "seal": 4,
     "header_footer": 5,
     "metadata": 6,
 }

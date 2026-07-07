@@ -18,6 +18,7 @@ from app.models import (
 from app.services.extractors.base import ExtractionResult
 from app.services.pipeline import PipelineContext
 from app.services.pipeline_stages import ClauseDiffStage, PreClauseDiffStage, SigningRegionStage, SummaryStage
+from app.services.signing_region.models import VisualDetection, VisualDetectionResult
 
 
 class _TestArtifactStore:
@@ -109,6 +110,73 @@ def test_signing_region_stage_skips_when_mode_is_off(tmp_path: Path) -> None:
     assert ctx.signing_region_diffs == []
     assert ctx.signing_region_covered_diff_ids == set()
     assert ctx.signing_region_debug == {"skipped": True}
+
+
+def test_signing_region_stage_builds_visual_diff_from_detector_and_fingerprint(tmp_path: Path) -> None:
+    class _Detector:
+        def detect(self, _pdf_path: Path, regions, _task_id: str) -> VisualDetectionResult:
+            if not regions:
+                return VisualDetectionResult(available=True, model_name="fake")
+            region = regions[0]
+            return VisualDetectionResult(
+                available=True,
+                model_name="fake",
+                detections=[
+                    VisualDetection(
+                        page_no=region.page_no,
+                        bbox=region.bbox,
+                        label="signature",
+                        confidence=0.91,
+                        model_name="fake",
+                    )
+                ],
+            )
+
+    class _Fingerprinter:
+        def fingerprint_region(self, pdf_path: Path, region) -> dict[str, str | float]:
+            if pdf_path.name == "original.pdf":
+                return {"status": "ok", "hash": "visual-original", "score": 1.0}
+            return {"status": "ok", "hash": "visual-compare", "score": 1.0}
+
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=_doc("合同专用章"), extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=_doc("合同专用章"), extractor_used="test")
+    stage = SigningRegionStage(
+        artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
+        visual_detector=_Detector(),
+        visual_fingerprinter=_Fingerprinter(),
+    )
+
+    stage.execute(ctx)
+
+    assert len(ctx.signing_region_diffs) == 1
+    diff = ctx.signing_region_diffs[0]
+    assert diff.source_type == "signing_region"
+    assert "SIGNING_VISUAL_CHANGE" in diff.review_flags
+    assert "visual-original" in ctx.signing_region_debug["original_regions"][0]["elements"][-1]["visual_hash"]
+    assert ctx.signing_region_debug["visual_adapter_status"]["original"]["available"] is True
+    assert ctx.signing_region_debug["configuration"]["visual_enabled"] is True
+
+
+def test_signing_region_stage_records_unavailable_visual_adapter_without_failing(tmp_path: Path) -> None:
+    class _Detector:
+        def detect(self, _pdf_path: Path, _regions, _task_id: str) -> VisualDetectionResult:
+            return VisualDetectionResult(available=False, error="remote_call_failed")
+
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
+    stage = SigningRegionStage(
+        artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
+        visual_detector=_Detector(),
+    )
+
+    stage.execute(ctx)
+
+    assert len(ctx.signing_region_diffs) == 1
+    assert ctx.signing_region_debug["visual_adapter_status"]["original"]["available"] is False
+    assert ctx.signing_region_debug["visual_adapter_status"]["original"]["error"] == "remote_call_failed"
+    assert ctx.signing_region_debug["configuration"]["visual_enabled"] is True
 
 
 def test_clause_diff_stage_counts_signing_region_diffs_before_clause_diffs(tmp_path: Path) -> None:

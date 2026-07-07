@@ -18,6 +18,13 @@ ELEMENT_CHANGE_CONFIGS: dict[SigningElementType, ElementChangeConfig] = {
     SigningElementType.VISUAL_AREA: ("visual_changes", "SIGNING_VISUAL_CHANGE"),
 }
 
+VISUAL_COMPARE_TYPES = {
+    SigningElementType.SEAL,
+    SigningElementType.SIGNATURE,
+    SigningElementType.SIGNING_TABLE,
+    SigningElementType.VISUAL_AREA,
+}
+
 
 class SigningRegionComparator:
     def compare(
@@ -54,7 +61,9 @@ class SigningRegionComparator:
         for element_type, (changes_attr, review_flag) in ELEMENT_CHANGE_CONFIGS.items():
             original_text = self._element_text(original, element_type)
             compare_text = self._element_text(compare, element_type)
-            if original_text == compare_text:
+            original_visual = self._element_visual_signature(original, element_type)
+            compare_visual = self._element_visual_signature(compare, element_type)
+            if original_text == compare_text and original_visual == compare_visual:
                 continue
             getattr(comparison, changes_attr).append(
                 {
@@ -62,6 +71,8 @@ class SigningRegionComparator:
                     "element_type": element_type.value,
                     "original_text": original_text,
                     "compare_text": compare_text,
+                    "original_visual": original_visual,
+                    "compare_visual": compare_visual,
                 }
             )
             self._add_review_flag(comparison, review_flag)
@@ -69,6 +80,27 @@ class SigningRegionComparator:
     @staticmethod
     def _element_text(region: SigningRegion, element_type: SigningElementType) -> str:
         return " ".join(element.text.strip() for element in region.elements if element.element_type == element_type and element.text.strip())
+
+    @staticmethod
+    def _element_visual_signature(region: SigningRegion, element_type: SigningElementType) -> str:
+        if element_type not in VISUAL_COMPARE_TYPES:
+            return ""
+        tokens: list[str] = []
+        for element in region.elements:
+            if element.element_type != element_type:
+                continue
+            if element.visual_hash:
+                tokens.append(f"hash:{element.visual_hash}")
+                continue
+            if element.text.strip():
+                continue
+            bbox = element.bbox
+            tokens.append(
+                "bbox:"
+                f"{round(bbox.x0)}:{round(bbox.y0)}:{round(bbox.x1)}:{round(bbox.y1)}:"
+                f"{element.source}:{element.model_name}"
+            )
+        return " ".join(sorted(tokens))
 
     @staticmethod
     def _add_review_flag(comparison: SigningRegionComparison, review_flag: str) -> None:

@@ -45,6 +45,19 @@ from app.services.signing_region.coverage import SigningRegionCoverageBuilder
 from app.services.signing_region.diff_builder import SigningRegionDiffBuilder
 from app.services.signing_region.extractor import SigningRegionExtractor
 from app.services.signing_region.matcher import SigningRegionMatcher
+from app.services.signing_region.models import (
+    SigningElement,
+    SigningElementType,
+    SigningRegion,
+    VisualDetection,
+    VisualDetectionResult,
+)
+from app.services.signing_region.visual import (
+    LocalCpuVisualSignatureDetector,
+    OpenCvSigningRegionFingerprinter,
+    RemoteVisualSignatureDetector,
+    VisualSignatureDetector,
+)
 from app.services.table_compare import TableComparator
 from app.services.text_coordinate_locator import TextCoordinateLocator
 
@@ -456,13 +469,27 @@ class SigningRegionStage:
     start_progress = 40
     progress = 42
 
-    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+    def __init__(
+        self,
+        artifact_store: ArtifactStore = default_artifact_store,
+        *,
+        visual_detector: VisualSignatureDetector | None = None,
+        visual_fingerprinter: OpenCvSigningRegionFingerprinter | None = None,
+        visual_enabled: bool | None = None,
+    ) -> None:
         self.extractor = SigningRegionExtractor()
         self.matcher = SigningRegionMatcher()
         self.comparator = SigningRegionComparator()
         self.diff_builder = SigningRegionDiffBuilder()
         self.coverage_builder = SigningRegionCoverageBuilder()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+        self.visual_enabled = settings.signing_visual_enabled if visual_enabled is None else visual_enabled
+        self.visual_detector = visual_detector if visual_detector is not None else self._default_visual_detector()
+        self.visual_fingerprinter = (
+            visual_fingerprinter
+            if visual_fingerprinter is not None
+            else OpenCvSigningRegionFingerprinter()
+        )
 
     def execute(self, ctx: PipelineContext) -> None:
         if ctx.task.compare_options.ignore_stamps or ctx.task.compare_options.signing_region_mode == "off":
@@ -482,6 +509,10 @@ class SigningRegionStage:
         extractions = ctx.require_extractions()
         original_regions = self.extractor.extract(extractions.original.document)
         compare_regions = self.extractor.extract(extractions.compare.document)
+        visual_status = {
+            "original": self._enrich_visual(ctx.original_pdf, original_regions, ctx.task.task_id),
+            "compare": self._enrich_visual(ctx.compare_pdf, compare_regions, ctx.task.task_id),
+        }
         matches = self.matcher.match(original_regions, compare_regions)
         comparisons = [
             self.comparator.compare(original, compare, match_confidence=match_confidence)
@@ -512,6 +543,9 @@ class SigningRegionStage:
             ],
             "comparisons": _jsonable(comparisons),
             "diffs": _jsonable(signing_region_diffs),
+            "visual_adapter_status": _jsonable(visual_status),
+            "configuration": self._debug_configuration(),
+            "suppressed_low_confidence_candidates": [],
             "coverage": {
                 "entries": _jsonable(coverage.entries),
                 "covered_diff_ids": sorted(coverage.covered_diff_ids),
@@ -532,6 +566,143 @@ class SigningRegionStage:
             *ctx.table_diffs,
             *ctx.seal_diffs,
         ]
+
+    def _enrich_visual(self, pdf_path: Path, regions: list[SigningRegion], task_id: str) -> dict[str, Any]:
+        status: dict[str, Any] = {
+            "enabled": self.visual_enabled,
+            "available": False,
+            "model_name": "",
+            "error": "",
+            "detection_count": 0,
+            "fingerprint_count": 0,
+        }
+        if not self.visual_enabled:
+            status["error"] = "disabled"
+            return status
+
+        detection_result = self._detect_visual(pdf_path, regions, task_id)
+        status.update(
+            {
+                "available": detection_result.available,
+                "model_name": detection_result.model_name,
+                "error": detection_result.error,
+                "detection_count": len(detection_result.detections),
+            }
+        )
+        if detection_result.available:
+            self._attach_visual_detections(regions, detection_result)
+
+        status["fingerprint_count"] = self._attach_visual_fingerprints(pdf_path, regions)
+        return status
+
+    def _detect_visual(self, pdf_path: Path, regions: list[SigningRegion], task_id: str) -> VisualDetectionResult:
+        if self.visual_detector is None:
+            return VisualDetectionResult(available=False, error="visual_detector_not_configured")
+        try:
+            return self.visual_detector.detect(pdf_path, regions, task_id)
+        except Exception as exc:
+            logger.debug("Signing visual detector failed in pipeline: %s", exc, exc_info=True)
+            return VisualDetectionResult(available=False, error="visual_detector_failed")
+
+    def _attach_visual_detections(
+        self,
+        regions: list[SigningRegion],
+        detection_result: VisualDetectionResult,
+    ) -> None:
+        for index, detection in enumerate(detection_result.detections, start=1):
+            region = self._matching_region(regions, detection)
+            if region is None:
+                continue
+            region.elements.append(
+                SigningElement(
+                    element_id=f"{region.region_id}-visual-model-{index}",
+                    element_type=self._visual_detection_type(detection),
+                    page_no=detection.page_no,
+                    bbox=detection.bbox,
+                    text=detection.label,
+                    confidence=detection.confidence,
+                    source="visual_model",
+                    visual_hash=str(
+                        detection.raw_data.get("visual_hash")
+                        or detection.raw_data.get("hash")
+                        or ""
+                    ),
+                    model_name=detection.model_name or detection_result.model_name,
+                    raw_ref=detection.model_dump(mode="json"),
+                )
+            )
+
+    def _attach_visual_fingerprints(self, pdf_path: Path, regions: list[SigningRegion]) -> int:
+        if self.visual_fingerprinter is None:
+            return 0
+        fingerprint_count = 0
+        for region in regions:
+            try:
+                fingerprint = self.visual_fingerprinter.fingerprint_region(pdf_path, region)
+            except Exception as exc:
+                logger.debug("Signing region fingerprint failed: %s", exc, exc_info=True)
+                continue
+            visual_hash = str(fingerprint.get("hash") or fingerprint.get("visual_hash") or "")
+            if not visual_hash:
+                continue
+            region.elements.append(
+                SigningElement(
+                    element_id=f"{region.region_id}-visual-fingerprint",
+                    element_type=SigningElementType.VISUAL_AREA,
+                    page_no=region.page_no,
+                    bbox=region.bbox,
+                    confidence=1.0,
+                    source="visual_fingerprint",
+                    visual_hash=visual_hash,
+                    raw_ref=dict(fingerprint),
+                )
+            )
+            fingerprint_count += 1
+        return fingerprint_count
+
+    @staticmethod
+    def _matching_region(regions: list[SigningRegion], detection: VisualDetection) -> SigningRegion | None:
+        for region in regions:
+            if region.page_no == detection.page_no and SigningRegionStage._overlap_ratio(region.bbox, detection.bbox) >= 0.2:
+                return region
+        return None
+
+    @staticmethod
+    def _overlap_ratio(region_bbox, detection_bbox) -> float:
+        x0 = max(region_bbox.x0, detection_bbox.x0)
+        y0 = max(region_bbox.y0, detection_bbox.y0)
+        x1 = min(region_bbox.x1, detection_bbox.x1)
+        y1 = min(region_bbox.y1, detection_bbox.y1)
+        inter = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+        base = max(1.0, (detection_bbox.x1 - detection_bbox.x0) * (detection_bbox.y1 - detection_bbox.y0))
+        return inter / base
+
+    @staticmethod
+    def _visual_detection_type(detection: VisualDetection) -> SigningElementType:
+        label = detection.label.lower()
+        if "seal" in label or "stamp" in label or "章" in detection.label:
+            return SigningElementType.SEAL
+        if "signature" in label or "sign" in label or "签" in detection.label:
+            return SigningElementType.SIGNATURE
+        return SigningElementType.VISUAL_AREA
+
+    @staticmethod
+    def _default_visual_detector() -> VisualSignatureDetector | None:
+        if settings.signing_visual_detector_url.strip():
+            return RemoteVisualSignatureDetector()
+        if settings.signing_visual_local_model_path.strip():
+            return LocalCpuVisualSignatureDetector()
+        return None
+
+    def _debug_configuration(self) -> dict[str, Any]:
+        return {
+            "visual_enabled": self.visual_enabled,
+            "visual_detector": type(self.visual_detector).__name__ if self.visual_detector is not None else "",
+            "visual_detector_url_configured": bool(settings.signing_visual_detector_url.strip()),
+            "visual_local_model_configured": bool(settings.signing_visual_local_model_path.strip()),
+            "visual_detector_timeout": settings.signing_visual_detector_timeout,
+            "visual_fingerprinter": type(self.visual_fingerprinter).__name__ if self.visual_fingerprinter is not None else "",
+        }
 
 
 class SplitStage:
