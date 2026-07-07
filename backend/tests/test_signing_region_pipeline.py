@@ -255,13 +255,20 @@ def test_signing_pipeline_excludes_cover_table_and_strips_real_signing_blocks(tm
 
     SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"), visual_enabled=False).execute(ctx)
 
+    def _page(document: Document, page_no: int) -> Page:
+        return next(page for page in document.pages if page.page_no == page_no)
+
+    assert ctx.clause_document_original is not None
+    assert ctx.clause_document_compare is not None
     assert all(region.page_no != 1 for region in ctx.signing_regions_original)
-    assert ctx.signing_blocks_original[0].page_no == 10
-    assert ctx.signing_blocks_compare[0].page_no == 11
+    assert all(region.page_no != 1 for region in ctx.signing_regions_compare)
+    assert {block.page_no for block in ctx.signing_blocks_original} == {10}
+    assert {block.page_no for block in ctx.signing_blocks_compare} == {11}
     assert "cover_signing_info_table" in {
         item["reason"] for item in ctx.signing_region_debug["excluded_candidates"]["original"]
     }
-    assert [block.block_id for block in ctx.clause_document_original.pages[1].blocks] == ["o_body"]
+    assert [block.block_id for block in _page(ctx.clause_document_original, 10).blocks] == ["o_body"]
+    assert [block.block_id for block in _page(ctx.clause_document_compare, 11).blocks] == []
 
 
 def test_split_stage_uses_clause_documents_when_available(tmp_path: Path) -> None:
