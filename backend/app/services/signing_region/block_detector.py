@@ -14,7 +14,6 @@ from app.services.signing_region.models import (
 
 
 PARTY_RE = re.compile(r"甲方|乙方|丙方|丁方")
-PARTY_LABEL_RE = re.compile(r"(?:甲方|乙方|丙方|丁方)[:：]")
 SEAL_RE = re.compile(r"盖章|签章|公章")
 SIGN_RE = re.compile(r"签字|签名")
 REPRESENTATIVE_RE = re.compile(r"法定代表人|法人代表|授权代表|授权委托人")
@@ -225,13 +224,7 @@ class SigningBlockDetector:
     def _looks_like_contract_body_text(block: TextBlock, text: str) -> bool:
         if not (BODY_VERB_RE.search(text) or NUMBERED_RE.match(text)):
             return False
-        has_form_signal = (
-            PARTY_LABEL_RE.search(text)
-            or REPRESENTATIVE_RE.search(text)
-            or DATE_LABEL_RE.search(text)
-            or SIGNING_CONTEXT_RE.search(text)
-        )
-        if has_form_signal:
+        if SIGNING_CONTEXT_RE.search(text):
             return False
         if (block.block_type or "").lower() == "table" and SEAL_RE.search(text) and SIGN_RE.search(text):
             return False

@@ -158,6 +158,32 @@ def test_detector_keeps_body_effective_clause_out_of_signing_block() -> None:
     assert signing_page.exclude_full_page_from_clause_diff is False
 
 
+def test_detector_does_not_exclude_body_like_party_label_obligations() -> None:
+    page = Page(
+        page_no=14,
+        width=595,
+        height=842,
+        blocks=[
+            _block(
+                "party_a_obligation",
+                "甲方：应当在签署日期后签字盖章并履行付款义务。",
+                _bbox(70, 650, 520, 675),
+                page_no=14,
+            ),
+            _block(
+                "party_b_obligation",
+                "乙方：应负责按合同约定交付服务。",
+                _bbox(70, 685, 430, 710),
+                page_no=14,
+            ),
+        ],
+    )
+
+    result = SigningBlockDetector().detect(_document(page))
+
+    assert all(not block.exclude_from_clause_diff for block in result.blocks)
+
+
 def test_detector_allows_full_page_exclusion_for_pure_signing_page() -> None:
     page = Page(
         page_no=11,
