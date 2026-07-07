@@ -64,6 +64,21 @@ def test_matcher_does_not_pair_adjacent_page_zero_overlap_regions() -> None:
     assert pairs == [(original[0], None, 0.0), (None, compare[0], 0.0)]
 
 
+def test_matcher_pairs_adjacent_page_signing_blocks_by_text_role_even_when_position_moves() -> None:
+    original = [_region("O1", "甲方：A 乙方：B (盖章) (签字) 日期：", page_no=10, x0=60)]
+    compare = [_region("C1", "甲方：A 乙方：B (盖章) (签字) 日期：2026.", page_no=11, x0=60)]
+    original[0].signing_block_id = "SB-10-1"
+    compare[0].signing_block_id = "SB-11-1"
+    original[0].bbox = BBox(x0=60, y0=620, x1=520, y1=740)
+    compare[0].bbox = BBox(x0=60, y0=60, x1=520, y1=180)
+
+    pairs = SigningRegionMatcher().match(original, compare)
+
+    assert pairs[0][0] is original[0]
+    assert pairs[0][1] is compare[0]
+    assert pairs[0][2] >= 0.55
+
+
 def test_comparator_detects_seal_text_change() -> None:
     comparison = SigningRegionComparator().compare(_region("O1", "A公司"), _region("C1", "B公司"), match_confidence=0.9)
 
@@ -149,6 +164,18 @@ def test_diff_builder_outputs_signing_region_diff() -> None:
     assert "A公司" in diffs[0].original_text
     assert "B公司" in diffs[0].compare_text
     assert diffs[0].original_evidence[0].method == "signing_region"
+
+
+def test_diff_builder_title_shows_original_and_compare_pages_for_cross_page_match() -> None:
+    comparison = SigningRegionComparator().compare(
+        _region("O1", "日期：", page_no=10),
+        _region("C1", "日期：2026.", page_no=11),
+        match_confidence=0.8,
+    )
+
+    diff = SigningRegionDiffBuilder().build_diffs([comparison], start_index=1)[0]
+
+    assert diff.title == "签署区（原第10页 / 新第11页）"
 
 
 def test_coverage_hides_overlapping_seal_diff() -> None:

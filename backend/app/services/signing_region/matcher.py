@@ -38,12 +38,22 @@ class SigningRegionMatcher:
         page_score = self._page_score(original, compare)
         if page_score == 0.0:
             return 0.0
+        text_score = self._text_structure_score(original, compare)
         iou_score = self._iou(original, compare)
         position_score = self._position_score(original, compare)
-        if iou_score == 0.0 and position_score < self.strong_position_threshold:
-            return 0.0
         role_score = 1.0 if original.region_role == compare.region_role else 0.4
-        return round(page_score * 0.35 + role_score * 0.25 + iou_score * 0.25 + position_score * 0.15, 4)
+        if page_score == 1.0 and role_score == 1.0 and iou_score == 1.0 and position_score == 1.0:
+            return 1.0
+        if iou_score == 0.0 and position_score < self.strong_position_threshold and text_score < 0.7:
+            return 0.0
+        return round(
+            page_score * 0.25
+            + role_score * 0.2
+            + iou_score * 0.15
+            + position_score * 0.1
+            + text_score * 0.3,
+            4,
+        )
 
     @staticmethod
     def _page_score(original: SigningRegion, compare: SigningRegion) -> float:
@@ -52,6 +62,22 @@ class SigningRegionMatcher:
         if abs(original.page_no - compare.page_no) <= 1:
             return 0.5
         return 0.0
+
+    @staticmethod
+    def _text_structure_score(original: SigningRegion, compare: SigningRegion) -> float:
+        def tokens(region: SigningRegion) -> set[str]:
+            text = "".join(element.text for element in region.elements)
+            result: set[str] = set()
+            for token in ("甲方", "乙方", "盖章", "签字", "日期", "法人", "授权"):
+                if token in text:
+                    result.add(token)
+            return result
+
+        left = tokens(original)
+        right = tokens(compare)
+        if not left or not right:
+            return 0.0
+        return len(left & right) / len(left | right)
 
     @staticmethod
     def _iou(original: SigningRegion, compare: SigningRegion) -> float:
