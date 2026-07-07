@@ -14,6 +14,7 @@ from app.services.signing_region.models import (
 
 
 PARTY_RE = re.compile(r"甲方|乙方|丙方|丁方")
+PARTY_LABEL_RE = re.compile(r"(?:甲方|乙方|丙方|丁方)[:：]")
 SEAL_RE = re.compile(r"盖章|签章|公章")
 SIGN_RE = re.compile(r"签字|签名")
 REPRESENTATIVE_RE = re.compile(r"法定代表人|法人代表|授权代表|授权委托人")
@@ -109,9 +110,7 @@ class SigningBlockDetector:
         ])
         if not has_signing_signal:
             return False
-        if NUMBERED_RE.match(text) and BODY_VERB_RE.search(text):
-            return False
-        if BODY_VERB_RE.search(text) and len(text) > 45 and not SEAL_RE.search(text) and not SIGN_RE.search(text):
+        if self._looks_like_contract_body_text(block, text):
             return False
         return in_bottom or in_top or bool(SIGNING_CONTEXT_RE.search(text))
 
@@ -221,6 +220,22 @@ class SigningBlockDetector:
         if self._is_candidate(block, page):
             return False
         return len(text) >= 12 or BODY_VERB_RE.search(text) is not None or NUMBERED_RE.match(text) is not None
+
+    @staticmethod
+    def _looks_like_contract_body_text(block: TextBlock, text: str) -> bool:
+        if not (BODY_VERB_RE.search(text) or NUMBERED_RE.match(text)):
+            return False
+        has_form_signal = (
+            PARTY_LABEL_RE.search(text)
+            or REPRESENTATIVE_RE.search(text)
+            or DATE_LABEL_RE.search(text)
+            or SIGNING_CONTEXT_RE.search(text)
+        )
+        if has_form_signal:
+            return False
+        if (block.block_type or "").lower() == "table" and SEAL_RE.search(text) and SIGN_RE.search(text):
+            return False
+        return True
 
     @staticmethod
     def _blocks_cover_full_page_shape(page: Page, blocks: list[SigningBlock]) -> bool:

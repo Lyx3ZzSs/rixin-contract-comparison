@@ -131,6 +131,33 @@ def test_detector_finds_bottom_mixed_page_signing_block() -> None:
     assert signing_page.exclude_full_page_from_clause_diff is False
 
 
+def test_detector_keeps_body_effective_clause_out_of_signing_block() -> None:
+    page = Page(
+        page_no=13,
+        width=595,
+        height=842,
+        blocks=[
+            _block("effective", "本合同经双方签字盖章后生效。", _bbox(80, 580, 340, 600), page_no=13),
+            _block("party", "甲方：A公司  乙方：B公司", _bbox(70, 625, 410, 645), page_no=13),
+            _block("seal_a", "(盖章)", _bbox(70, 660, 120, 680), page_no=13),
+            _block("seal_b", "(盖章)", _bbox(330, 660, 380, 680), page_no=13),
+            _block("sign_a", "(签字)", _bbox(170, 700, 215, 720), page_no=13),
+            _block("sign_b", "(签字)", _bbox(390, 700, 435, 720), page_no=13),
+            _block("date_a", "日期：", _bbox(80, 735, 122, 755), page_no=13),
+            _block("date_b", "日期：", _bbox(325, 735, 365, 755), page_no=13),
+        ],
+    )
+
+    result = SigningBlockDetector().detect(_document(page))
+
+    assert len(result.blocks) == 1
+    assert "effective" not in result.blocks[0].source_block_ids
+    assert len(result.pages) == 1
+    signing_page = result.pages[0]
+    assert signing_page.signing_page_type == SigningPageType.MIXED_PAGE
+    assert signing_page.exclude_full_page_from_clause_diff is False
+
+
 def test_detector_allows_full_page_exclusion_for_pure_signing_page() -> None:
     page = Page(
         page_no=11,
