@@ -73,6 +73,12 @@ class PipelineContext:
     pairs: list[ClausePair] = field(default_factory=list)
     clause_diffs: list[DiffItem] = field(default_factory=list)
     seal_diffs: list[DiffItem] = field(default_factory=list)
+    signing_pages_original: list[Any] = field(default_factory=list)
+    signing_pages_compare: list[Any] = field(default_factory=list)
+    signing_blocks_original: list[Any] = field(default_factory=list)
+    signing_blocks_compare: list[Any] = field(default_factory=list)
+    clause_document_original: Any | None = None
+    clause_document_compare: Any | None = None
     signing_regions_original: list[Any] = field(default_factory=list)
     signing_regions_compare: list[Any] = field(default_factory=list)
     signing_region_diffs: list[DiffItem] = field(default_factory=list)

@@ -40,6 +40,8 @@ from app.services.evidence_relocator import EvidenceRelocationResult, EvidenceRe
 from app.services.page_diff import PageDiffConsolidator
 from app.services.pipeline import PipelineContext
 from app.services.seal_comparator import build_seal_diffs
+from app.services.signing_region.block_detector import SigningBlockDetector
+from app.services.signing_region.clause_document import SigningClauseDocumentBuilder
 from app.services.signing_region.comparator import SigningRegionComparator
 from app.services.signing_region.coverage import SigningRegionCoverageBuilder
 from app.services.signing_region.diff_builder import SigningRegionDiffBuilder
@@ -478,7 +480,9 @@ class SigningRegionStage:
         visual_fingerprinter: OpenCvSigningRegionFingerprinter | None = None,
         visual_enabled: bool | None = None,
     ) -> None:
+        self.block_detector = SigningBlockDetector()
         self.extractor = SigningRegionExtractor()
+        self.clause_document_builder = SigningClauseDocumentBuilder()
         self.matcher = SigningRegionMatcher()
         self.comparator = SigningRegionComparator()
         self.diff_builder = SigningRegionDiffBuilder()
@@ -508,8 +512,24 @@ class SigningRegionStage:
             return
 
         extractions = ctx.require_extractions()
-        original_regions = self.extractor.extract(extractions.original.document)
-        compare_regions = self.extractor.extract(extractions.compare.document)
+        original_structure = self.block_detector.detect(extractions.original.document)
+        compare_structure = self.block_detector.detect(extractions.compare.document)
+        original_regions = self._extract_regions_from_structure(
+            extractions.original.document,
+            original_structure.blocks,
+        )
+        compare_regions = self._extract_regions_from_structure(
+            extractions.compare.document,
+            compare_structure.blocks,
+        )
+        original_clause_doc = self.clause_document_builder.build(
+            extractions.original.document,
+            original_structure.blocks,
+        )
+        compare_clause_doc = self.clause_document_builder.build(
+            extractions.compare.document,
+            compare_structure.blocks,
+        )
         suppressed_low_confidence_candidates: list[dict[str, Any]] = []
         visual_status = {
             "original": self._collect_visual(
@@ -540,12 +560,38 @@ class SigningRegionStage:
         )
         coverage = self.coverage_builder.build(signing_region_diffs, legacy_diffs)
 
+        ctx.signing_pages_original = original_structure.pages
+        ctx.signing_pages_compare = compare_structure.pages
+        ctx.signing_blocks_original = original_structure.blocks
+        ctx.signing_blocks_compare = compare_structure.blocks
+        ctx.clause_document_original = original_clause_doc.document
+        ctx.clause_document_compare = compare_clause_doc.document
         ctx.signing_regions_original = original_regions
         ctx.signing_regions_compare = compare_regions
         ctx.signing_region_diffs = signing_region_diffs
         ctx.signing_region_covered_diff_ids = coverage.covered_diff_ids
         ctx.signing_region_debug = {
             "skipped": False,
+            "signing_pages": {
+                "original": _jsonable(original_structure.pages),
+                "compare": _jsonable(compare_structure.pages),
+            },
+            "signing_blocks": {
+                "original": _jsonable(original_structure.blocks),
+                "compare": _jsonable(compare_structure.blocks),
+            },
+            "excluded_candidates": {
+                "original": original_structure.excluded_candidates,
+                "compare": compare_structure.excluded_candidates,
+            },
+            "low_confidence_candidates": {
+                "original": original_structure.low_confidence_candidates,
+                "compare": compare_structure.low_confidence_candidates,
+            },
+            "clause_exclusion": {
+                "original": original_clause_doc.entries,
+                "compare": compare_clause_doc.entries,
+            },
             "original_regions": _jsonable(original_regions),
             "compare_regions": _jsonable(compare_regions),
             "matches": [
@@ -572,6 +618,12 @@ class SigningRegionStage:
             lambda: self.debug_writer.write_signing_region(ctx.task.task_id, ctx.signing_region_debug),
         )
         _emit_progress(ctx, 42, self.name, "signing_region_done")
+
+    def _extract_regions_from_structure(self, document: Document, blocks: list[Any]) -> list[SigningRegion]:
+        regions = self.extractor.extract_from_blocks(blocks)
+        if regions or blocks:
+            return regions
+        return self.extractor.extract(document)
 
     @staticmethod
     def _legacy_diffs(ctx: PipelineContext) -> list[DiffItem]:

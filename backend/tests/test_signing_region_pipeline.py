@@ -112,6 +112,48 @@ def test_signing_region_stage_skips_when_mode_is_off(tmp_path: Path) -> None:
     assert ctx.signing_region_debug == {"skipped": True}
 
 
+def test_signing_stage_sets_clause_documents_without_signing_blocks(tmp_path: Path) -> None:
+    original = Document(
+        filename="o.pdf",
+        path="o.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=10,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="body",
+                        page_no=10,
+                        text="14.2 正文条款",
+                        bbox=BBox(x0=80, y0=550, x1=520, y1=590),
+                    ),
+                    TextBlock(
+                        block_id="sign",
+                        page_no=10,
+                        text="甲方：A 乙方：B\n(盖章)\n(签字)\n日期：",
+                        bbox=BBox(x0=65, y0=620, x1=485, y1=730),
+                    ),
+                ],
+            )
+        ],
+    )
+    compare = original.model_copy(deep=True)
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=original, extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=compare, extractor_used="test")
+
+    SigningRegionStage(
+        artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
+        visual_enabled=False,
+    ).execute(ctx)
+
+    assert ctx.clause_document_original is not None
+    assert [block.block_id for block in ctx.clause_document_original.pages[0].blocks] == ["body"]
+    assert ctx.signing_region_debug["clause_exclusion"]["original"][0]["block_id"] == "sign"
+
+
 def test_signing_region_stage_builds_visual_diff_from_detector_and_fingerprint(tmp_path: Path) -> None:
     class _Detector:
         def detect(self, _pdf_path: Path, regions, _task_id: str) -> VisualDetectionResult:
