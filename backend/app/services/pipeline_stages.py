@@ -531,10 +531,12 @@ class SigningRegionStage:
         original_clause_doc = self.clause_document_builder.build(
             extractions.original.document,
             original_structure.blocks,
+            signing_pages=original_structure.pages,
         )
         compare_clause_doc = self.clause_document_builder.build(
             extractions.compare.document,
             compare_structure.blocks,
+            signing_pages=compare_structure.pages,
         )
         suppressed_low_confidence_candidates: list[dict[str, Any]] = []
         visual_status = {

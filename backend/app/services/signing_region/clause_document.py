@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.models import BBox, Document, Page, TextBlock
-from app.services.signing_region.models import SigningBlock
+from app.services.signing_region.models import SigningBlock, SigningPage
 
 
 @dataclass
@@ -21,25 +21,42 @@ class SigningClauseDocumentBuilder:
         self,
         document: Document,
         signing_blocks: list[SigningBlock],
+        signing_pages: list[SigningPage] | None = None,
     ) -> SigningClauseDocumentResult:
         blocks_by_page: dict[int, list[SigningBlock]] = {}
         for block in signing_blocks:
             if block.exclude_from_clause_diff:
                 blocks_by_page.setdefault(block.page_no, []).append(block)
+        full_signing_page_nos = {
+            page.page_no
+            for page in signing_pages or []
+            if page.exclude_full_page_from_clause_diff
+        }
 
         excluded: list[str] = []
         entries: list[dict[str, Any]] = []
         new_pages: list[Page] = []
         for page in document.pages:
             signing_page_blocks = blocks_by_page.get(page.page_no, [])
+            exclude_full_page = page.page_no in full_signing_page_nos
             kept_blocks: list[TextBlock] = []
             for text_block in page.blocks:
                 matched = self._matching_signing_block(text_block, signing_page_blocks)
-                if matched is None:
+                if matched is None and not exclude_full_page:
                     kept_blocks.append(text_block)
                     continue
 
                 excluded.append(text_block.block_id)
+                if matched is None:
+                    entries.append(
+                        {
+                            "page_no": page.page_no,
+                            "block_id": text_block.block_id,
+                            "signing_block_id": "",
+                            "reason": "full_signing_page",
+                        }
+                    )
+                    continue
                 entries.append(
                     {
                         "page_no": page.page_no,

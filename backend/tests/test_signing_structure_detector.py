@@ -96,6 +96,29 @@ def test_detector_excludes_cover_signing_info_table() -> None:
     assert result.excluded_candidates[0]["reason"] == "cover_signing_info_table"
 
 
+def test_detector_excludes_cover_signing_info_table_with_signature_labels() -> None:
+    page = Page(
+        page_no=1,
+        width=595,
+        height=842,
+        blocks=[
+            _block("title", "采购合同", _bbox(180, 220, 420, 260), block_type="doc_title"),
+            _block(
+                "cover_table",
+                "甲方\n江苏东大金智信息系统有限公司\n乙方\n国能日新科技股份有限公司\n"
+                "签订地点\n北京\n签订日期\n2026年4月21日\n法定代表人\n签字\n盖章",
+                _bbox(90, 560, 505, 720),
+                block_type="table",
+            ),
+        ],
+    )
+
+    result = SigningBlockDetector().detect(_document(page, page_role="cover"))
+
+    assert result.blocks == []
+    assert result.excluded_candidates[0]["reason"] == "cover_signing_info_table"
+
+
 def test_detector_finds_bottom_mixed_page_signing_block() -> None:
     page = Page(
         page_no=10,

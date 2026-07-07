@@ -4,6 +4,8 @@ from app.services.signing_region.models import (
     SigningBlock,
     SigningBlockConfidenceLevel,
     SigningBlockRole,
+    SigningPage,
+    SigningPageType,
 )
 
 
@@ -149,3 +151,45 @@ def test_builder_prefers_source_block_id_match_before_bbox_overlap() -> None:
 
     assert result.excluded_block_ids == ["signing"]
     assert result.entries[0]["signing_block_id"] == "SB-SOURCE"
+
+
+def test_builder_removes_full_signing_page_context_blocks() -> None:
+    context = TextBlock(
+        block_id="context",
+        page_no=11,
+        text="以下无正文，为签字页",
+        bbox=_bbox(80, 120, 240, 140),
+    )
+    signing = TextBlock(
+        block_id="signing",
+        page_no=11,
+        text="甲方：A 乙方：B\n(盖章)\n(签字)\n日期：",
+        bbox=_bbox(65, 575, 485, 730),
+    )
+    page = Page(page_no=11, width=595, height=842, blocks=[context, signing])
+    doc = Document(filename="x.pdf", path="x.pdf", page_count=1, pages=[page])
+    block = _signing_block(
+        "SB-11-1",
+        11,
+        _bbox(60, 560, 500, 740),
+        source_block_ids=["signing"],
+        text=signing.text,
+    )
+    signing_page = SigningPage(
+        page_no=11,
+        bbox=_bbox(0, 0, 595, 842),
+        signing_page_type=SigningPageType.FULL_PAGE,
+        confidence=0.9,
+        confidence_reasons=["contains_high_confidence_signing_block"],
+        block_ids=["SB-11-1"],
+        exclude_full_page_from_clause_diff=True,
+    )
+
+    result = SigningClauseDocumentBuilder().build(doc, [block], signing_pages=[signing_page])
+
+    assert result.document.pages[0].blocks == []
+    assert result.excluded_block_ids == ["context", "signing"]
+    assert [entry["reason"] for entry in result.entries] == [
+        "full_signing_page",
+        "high_confidence_signing_block",
+    ]

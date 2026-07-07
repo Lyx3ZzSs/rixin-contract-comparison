@@ -153,8 +153,7 @@ class SigningBlockDetector:
         text = self._compact("\n".join(block.text for block in blocks))
         has_cover_table = any((block.block_type or "").lower() == "table" for block in blocks)
         has_only_contract_meta = "签订地点" in text or "签订日期" in text
-        has_strong_signing = SEAL_RE.search(text) or SIGN_RE.search(text) or REPRESENTATIVE_RE.search(text) or SIGNING_CONTEXT_RE.search(text)
-        return has_cover_table and has_only_contract_meta and not has_strong_signing and "cover_page_penalty" in reasons
+        return has_cover_table and has_only_contract_meta and "cover_page_penalty" in reasons
 
     def _cluster(self, blocks: list[TextBlock]) -> list[list[TextBlock]]:
         ordered = sorted(blocks, key=lambda block: (block.page_no, self._effective_bbox(block).y0, self._effective_bbox(block).x0))
