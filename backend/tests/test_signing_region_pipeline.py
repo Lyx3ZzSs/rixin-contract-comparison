@@ -7,10 +7,12 @@ from app.models import (
     CompareTask,
     DiffItem,
     Document,
+    DocumentProfile,
     EvidenceBox,
     OcrRemediationAction,
     Page,
     PageOcrQualityProfile,
+    PageProfile,
     TaskOcrQualitySummary,
     TaskOcrRemediationSummary,
     TextBlock,
@@ -173,6 +175,93 @@ def test_signing_stage_sets_clause_documents_without_signing_blocks(tmp_path: Pa
     assert ctx.clause_document_original is not None
     assert [block.block_id for block in ctx.clause_document_original.pages[0].blocks] == ["body"]
     assert ctx.signing_region_debug["clause_exclusion"]["original"][0]["block_id"] == "sign"
+
+
+def test_signing_pipeline_excludes_cover_table_and_strips_real_signing_blocks(tmp_path: Path) -> None:
+    cover_table = TextBlock(
+        block_id="cover_table",
+        page_no=1,
+        text="甲方\n江苏东大金智信息系统有限公司\n乙方\n国能日新科技股份有限公司\n北京\n签订地点\n签订日期\n2026年4月21日",
+        bbox=BBox(x0=90, y0=560, x1=505, y1=690),
+        block_type="table",
+    )
+    original_signing = TextBlock(
+        block_id="o_signing",
+        page_no=10,
+        text="甲方：江苏东大金智信息系统有限公司 乙方：国能日新科技股份有限公司\n(盖章)\n法人代表或授权委托人：\n(签字)\n日期：",
+        bbox=BBox(x0=65, y0=620, x1=485, y1=730),
+    )
+    compare_signing = TextBlock(
+        block_id="c_signing",
+        page_no=11,
+        text="甲方：江苏东达金智信息系统有限公司 乙方：国能日新科技股份有限公司\n(盖章)\n法人代表或\n日期：2026.",
+        bbox=BBox(x0=60, y0=60, x1=500, y1=180),
+    )
+    original = Document(
+        filename="original.pdf",
+        path="original.pdf",
+        page_count=10,
+        pages=[
+            Page(page_no=1, width=595, height=842, blocks=[cover_table]),
+            Page(
+                page_no=10,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="o_body",
+                        page_no=10,
+                        text="14.2 正文条款",
+                        bbox=BBox(x0=80, y0=550, x1=520, y1=590),
+                    ),
+                    original_signing,
+                ],
+            ),
+        ],
+        profile=DocumentProfile(
+            filename="original.pdf",
+            page_count=10,
+            page_profiles=[
+                PageProfile(page_no=1, width=595, height=842, page_role="cover"),
+                PageProfile(page_no=10, width=595, height=842, page_role="body"),
+            ],
+        ),
+    )
+    compare = Document(
+        filename="compare.pdf",
+        path="compare.pdf",
+        page_count=11,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[cover_table.model_copy(update={"block_id": "compare_cover_table"})],
+            ),
+            Page(page_no=11, width=595, height=842, blocks=[compare_signing]),
+        ],
+        profile=DocumentProfile(
+            filename="compare.pdf",
+            page_count=11,
+            page_profiles=[
+                PageProfile(page_no=1, width=595, height=842, page_role="cover"),
+                PageProfile(page_no=11, width=595, height=842, page_role="body"),
+            ],
+        ),
+    )
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=original, extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=compare, extractor_used="test")
+
+    SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"), visual_enabled=False).execute(ctx)
+
+    assert all(region.page_no != 1 for region in ctx.signing_regions_original)
+    assert ctx.signing_blocks_original[0].page_no == 10
+    assert ctx.signing_blocks_compare[0].page_no == 11
+    assert "cover_signing_info_table" in {
+        item["reason"] for item in ctx.signing_region_debug["excluded_candidates"]["original"]
+    }
+    assert [block.block_id for block in ctx.clause_document_original.pages[1].blocks] == ["o_body"]
 
 
 def test_split_stage_uses_clause_documents_when_available(tmp_path: Path) -> None:
