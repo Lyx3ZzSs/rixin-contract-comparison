@@ -20,13 +20,22 @@ from app.config import settings
 from app.models import CompareTask, DiffItem, DiffType, TextRange
 from app.services.audit_summary import AuditItem, build_audit_items
 
-_SOURCE_TYPE_ORDER = {"clause": 0, "page": 1, "table": 2, "seal": 3, "header_footer": 4, "metadata": 5}
+_SOURCE_TYPE_ORDER = {
+    "clause": 0,
+    "page": 1,
+    "table": 2,
+    "seal": 3,
+    "signing_region": 4,
+    "header_footer": 5,
+    "metadata": 6,
+}
 _SOURCE_TYPE_LABELS = {
     "clause": "条款",
     "page": "页面",
     "table": "表格",
     "metadata": "封面",
     "seal": "印章",
+    "signing_region": "签章区",
     "header_footer": "页眉页脚",
 }
 _CHINESE_NUMBERS = "一二三四五六七八九十"

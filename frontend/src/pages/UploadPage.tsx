@@ -50,7 +50,11 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
     setIsTaskToastVisible(false);
     setMessage("正在上传并创建合同对比任务...");
     try {
-      const payload = await compareContracts(originalFile, compareFile, { ignoreStamps, ignoreHeadersFooters });
+      const payload = await compareContracts(originalFile, compareFile, {
+        ignoreStamps,
+        ignoreHeadersFooters,
+        signingRegionMode: ignoreStamps ? "off" : "full",
+      });
       setOriginalFile(null);
       setCompareFile(null);
       setCreatedTask(payload);

@@ -23,7 +23,7 @@ interface PageHighlight {
   type: "ADD" | "DELETE" | "MODIFY";
   evidence: EvidenceBox;
   fallback: boolean;
-  markKind: "fallback" | "seal" | "table" | "text";
+  markKind: "fallback" | "seal" | "signing-region" | "table" | "text";
 }
 
 export interface PdfDocumentViewerHandle {
@@ -333,6 +333,9 @@ function highlightMarkKind(evidence: EvidenceBox, fallback: boolean): PageHighli
   }
   if (method === "seal_region") {
     return "seal";
+  }
+  if (method.startsWith("signing_region")) {
+    return "signing-region";
   }
   if (method.startsWith("table")) {
     return "table";

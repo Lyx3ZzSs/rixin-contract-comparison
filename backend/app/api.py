@@ -5,6 +5,7 @@ import json
 from datetime import date, datetime
 from math import ceil
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -50,11 +51,13 @@ async def compare_contracts(
     compare_file: UploadFile = File(...),
     ignore_stamps: bool = Form(False),
     ignore_headers_footers: bool = Form(False),
+    signing_region_mode: Literal["full", "off"] = Form("full"),
 ) -> CompareTaskResponse:
     task_id = generate_task_id()
     compare_options = CompareOptions(
         ignore_stamps=ignore_stamps,
         ignore_headers_footers=ignore_headers_footers,
+        signing_region_mode=signing_region_mode,
     )
     try:
         original_path = await save_upload_file(original_file, task_id, "original")

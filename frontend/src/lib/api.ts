@@ -66,6 +66,9 @@ export async function compareContracts(
   if (options?.ignoreHeadersFooters) {
     formData.append("ignore_headers_footers", "true");
   }
+  if (options?.signingRegionMode) {
+    formData.append("signing_region_mode", options.signingRegionMode);
+  }
 
   const response = await fetch(toApiUrl("/api/compare"), {
     method: "POST",

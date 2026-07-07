@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -250,6 +250,38 @@ const mockDiffs: DiffItem[] = [
     compare_evidence: [],
   },
 ];
+
+const signingRegionDiff: DiffItem = {
+  diff_id: "diff-signing",
+  diff_type: "ADD",
+  clause_no: "",
+  title: "签章区",
+  original_text: "",
+  compare_text: "新增授权代表签字",
+  original_snippet: "",
+  compare_snippet: "新增授权代表签字",
+  readable_change: "新增签章区内容。",
+  source_type: "signing_region",
+  review_flags: ["SIGNING_REGION_VISUAL_CHANGE"],
+  review_status: "UNREVIEWED",
+  original_evidence: [],
+  compare_evidence: [
+    {
+      page_no: 1,
+      bbox: { x0: 360, y0: 680, x1: 500, y1: 740 },
+      method: "signing_region_visual",
+      text: "新增授权代表签字",
+      highlight_type: "ADD",
+    },
+  ],
+};
+
+const signingFlagOnlyDiff: DiffItem = {
+  ...signingRegionDiff,
+  diff_id: "diff-signing-flag",
+  source_type: "metadata",
+  review_flags: ["SIGNING_DATE_CHANGE"],
+};
 
 const mockQuality = {
   task_id: "task-1",
@@ -550,6 +582,42 @@ describe("ResultPage", () => {
 
     expect(screen.getByRole("button", { name: "审计定位改动 diff-3:DELETE" })).toHaveTextContent("删除");
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
+  });
+
+  it("groups signing region differences between main and structural audit groups", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getDiffs).mockResolvedValueOnce([mockDiffs[0], signingRegionDiff, mockDiffs[1]]);
+    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    const signingGroup = screen.getByLabelText("签章区差异");
+    expect(within(signingGroup).getByRole("button", { name: "审计定位改动 diff-signing:ADD" })).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("结构与质量提示")).queryByRole("button", { name: "审计定位改动 diff-signing:ADD" }),
+    ).not.toBeInTheDocument();
+    expect(Array.from(container.querySelectorAll(".audit-diff-group-head > strong")).map((node) => node.textContent)).toEqual([
+      "正文差异",
+      "签章区差异",
+      "结构与质量提示",
+    ]);
+  });
+
+  it("groups signing review flags as signing region differences", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getDiffs).mockResolvedValueOnce([mockDiffs[0], signingFlagOnlyDiff, mockDiffs[1]]);
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    expect(
+      within(screen.getByLabelText("签章区差异")).getByRole("button", { name: "审计定位改动 diff-signing-flag:ADD" }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("结构与质量提示")).queryByRole("button", { name: "审计定位改动 diff-signing-flag:ADD" }),
+    ).not.toBeInTheDocument();
   });
 
   it("uses the highest-severity remediation action for every audit card in a diff", async () => {

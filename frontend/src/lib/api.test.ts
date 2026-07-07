@@ -34,6 +34,7 @@ describe("api client URLs", () => {
     expect(body.has("ignore_punctuation")).toBe(false);
     expect(body.has("ignore_headers_footers")).toBe(false);
     expect(body.has("ignore_stamps")).toBe(false);
+    expect(body.has("signing_region_mode")).toBe(false);
 
     vi.unstubAllGlobals();
   });
@@ -54,6 +55,44 @@ describe("api client URLs", () => {
     expect(body.get("ignore_stamps")).toBe("true");
     expect(body.has("ignore_punctuation")).toBe(false);
     expect(body.has("ignore_headers_footers")).toBe(false);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the signing region mode when provided", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ task_id: "task-1", status: "PROCESSING" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await compareContracts(
+      new File(["original"], "original.pdf", { type: "application/pdf" }),
+      new File(["compare"], "compare.pdf", { type: "application/pdf" }),
+      { ignoreStamps: false, ignoreHeadersFooters: false, signingRegionMode: "off" },
+    );
+
+    const body = fetchMock.mock.calls[0][1]?.body as FormData;
+    expect(body.get("signing_region_mode")).toBe("off");
+    expect(body.has("ignore_stamps")).toBe(false);
+    expect(body.has("ignore_headers_footers")).toBe(false);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the full signing region mode when provided", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ task_id: "task-1", status: "PROCESSING" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await compareContracts(
+      new File(["original"], "original.pdf", { type: "application/pdf" }),
+      new File(["compare"], "compare.pdf", { type: "application/pdf" }),
+      { ignoreStamps: false, ignoreHeadersFooters: false, signingRegionMode: "full" },
+    );
+
+    const body = fetchMock.mock.calls[0][1]?.body as FormData;
+    expect(body.get("signing_region_mode")).toBe("full");
 
     vi.unstubAllGlobals();
   });

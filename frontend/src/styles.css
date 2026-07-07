@@ -3667,6 +3667,13 @@ h2 {
   stroke-dasharray: 5 4;
 }
 
+.pdf-highlight-mark.signing-region rect {
+  fill: rgba(14, 116, 144, 0.78);
+  fill-opacity: 0.13;
+  stroke: rgba(180, 83, 9, 0.78);
+  stroke-dasharray: 3 3;
+}
+
 .pdf-highlight-mark.active rect,
 .pdf-highlight-mark:hover rect,
 .pdf-highlight-mark:focus-visible rect {
@@ -3700,6 +3707,15 @@ h2 {
   stroke: rgba(116, 130, 132, 0.9);
   stroke-width: 1.4;
   filter: none;
+}
+
+.pdf-highlight-mark.active.signing-region rect,
+.pdf-highlight-mark.signing-region:hover rect,
+.pdf-highlight-mark.signing-region:focus-visible rect {
+  fill-opacity: 0.25;
+  stroke: rgba(180, 83, 9, 0.96);
+  stroke-width: 1.7;
+  filter: drop-shadow(0 0 3px rgba(14, 116, 144, 0.22));
 }
 
 .empty-pane {
@@ -4249,6 +4265,11 @@ h2 {
 .audit-group-badge.structural {
   background: #eef2ff;
   color: #444ce7;
+}
+
+.audit-group-badge.signing {
+  background: #ecfdf5;
+  color: #047857;
 }
 
 .audit-group-badge.other {

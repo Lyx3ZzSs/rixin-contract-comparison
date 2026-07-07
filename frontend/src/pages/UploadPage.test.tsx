@@ -54,6 +54,7 @@ describe("UploadPage", () => {
     expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File), {
       ignoreStamps: false,
       ignoreHeadersFooters: false,
+      signingRegionMode: "full",
     });
     expect(onTaskCreated).toHaveBeenCalledWith("task-1");
     const taskNotice = screen.getByRole("status", { name: "后台对比任务通知" });
@@ -80,6 +81,7 @@ describe("UploadPage", () => {
     expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File), {
       ignoreStamps: true,
       ignoreHeadersFooters: false,
+      signingRegionMode: "off",
     });
   });
 
@@ -96,6 +98,7 @@ describe("UploadPage", () => {
     expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File), {
       ignoreStamps: false,
       ignoreHeadersFooters: true,
+      signingRegionMode: "full",
     });
   });
 

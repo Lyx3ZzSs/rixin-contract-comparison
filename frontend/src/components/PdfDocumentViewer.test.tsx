@@ -105,6 +105,23 @@ const sealDiff: DiffItem = {
   original_evidence: [],
 };
 
+const signingRegionDiff: DiffItem = {
+  ...diff,
+  diff_id: "diff-signing",
+  diff_type: "MODIFY",
+  source_type: "signing_region",
+  compare_evidence: [
+    {
+      page_no: 1,
+      bbox: { x0: 220, y0: 620, x1: 360, y1: 700 },
+      method: "signing_region_element",
+      text: "授权代表签字",
+      highlight_type: "MODIFY",
+    },
+  ],
+  original_evidence: [],
+};
+
 describe("PDF diff highlights", () => {
   it("filters evidence by side and page", () => {
     const originalHighlights = getPageHighlights([diff], "original", 1);
@@ -234,4 +251,32 @@ describe("PDF diff highlights", () => {
       "active",
     );
   });
+
+  it.each(["signing_region", "signing_region_element", "signing_region_visual"])(
+    "renders %s evidence with the signing region mark kind",
+    (method) => {
+      const methodDiff: DiffItem = {
+        ...signingRegionDiff,
+        compare_evidence: signingRegionDiff.compare_evidence?.map((evidence) => ({ ...evidence, method })),
+      };
+      const highlight = getPageHighlights([methodDiff], "compare", 1)[0];
+
+      render(
+        <PdfHighlightLayer
+          activeDiffId="diff-signing"
+          highlights={[highlight]}
+          pageSize={{ width: 595, height: 842 }}
+          zoom={1}
+          onActivateDiff={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: "定位差异 diff-signing" })).toHaveClass(
+        "pdf-highlight-mark",
+        "modify",
+        "signing-region",
+        "active",
+      );
+    },
+  );
 });

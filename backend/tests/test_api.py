@@ -265,6 +265,7 @@ def test_api_compare_persists_enabled_exclusion_options(tmp_path: Path) -> None:
                     "ignore_punctuation": "true",
                     "ignore_headers_footers": "true",
                     "ignore_stamps": "true",
+                    "signing_region_mode": "off",
                 },
                 files={
                     "original_file": ("original.pdf", original_file, "application/pdf"),
@@ -282,13 +283,66 @@ def test_api_compare_persists_enabled_exclusion_options(tmp_path: Path) -> None:
     assert task.compare_options.ignore_punctuation is False
     assert task.compare_options.ignore_headers_footers is True
     assert task.compare_options.ignore_stamps is True
+    assert task.compare_options.signing_region_mode == "off"
     job = default_task_runner.latest_job(task_id, task_type="compare")
     assert job.payload["compare_options"] == {
         "ignore_punctuation": False,
         "ignore_headers_footers": True,
         "ignore_stamps": True,
-        "signing_region_mode": "full",
+        "signing_region_mode": "off",
     }
+
+
+def test_api_compare_defaults_signing_region_mode_to_full(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    default_task_runner.stop(wait=True)
+    original_autostart = default_task_runner.autostart
+    default_task_runner.autostart = False
+    original = tmp_path / "original.pdf"
+    compare = tmp_path / "compare.pdf"
+    make_pdf(original, ["1. Payment", "Buyer shall pay within 30 days."])
+    make_pdf(compare, ["1. Payment", "Buyer shall pay within 45 days."])
+
+    try:
+        client = TestClient(app)
+        with original.open("rb") as original_file, compare.open("rb") as compare_file:
+            response = client.post(
+                "/api/compare",
+                files={
+                    "original_file": ("original.pdf", original_file, "application/pdf"),
+                    "compare_file": ("compare.pdf", compare_file, "application/pdf"),
+                },
+            )
+    finally:
+        default_task_runner.autostart = original_autostart
+
+    assert response.status_code == 200, response.text
+    task_id = response.json()["task_id"]
+    task = load_task(task_id)
+    assert task.compare_options.signing_region_mode == "full"
+    job = default_task_runner.latest_job(task_id, task_type="compare")
+    assert job.payload["compare_options"]["signing_region_mode"] == "full"
+
+
+def test_api_compare_rejects_invalid_signing_region_mode(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    original = tmp_path / "original.pdf"
+    compare = tmp_path / "compare.pdf"
+    make_pdf(original, ["1. Payment"])
+    make_pdf(compare, ["1. Payment"])
+
+    client = TestClient(app)
+    with original.open("rb") as original_file, compare.open("rb") as compare_file:
+        response = client.post(
+            "/api/compare",
+            data={"signing_region_mode": "summary"},
+            files={
+                "original_file": ("original.pdf", original_file, "application/pdf"),
+                "compare_file": ("compare.pdf", compare_file, "application/pdf"),
+            },
+        )
+
+    assert response.status_code == 422
 
 
 def test_compare_options_support_signing_region_mode() -> None:

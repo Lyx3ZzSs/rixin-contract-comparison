@@ -22,6 +22,9 @@ def test_report_generator_orders_supported_source_types() -> None:
     assert "signature" not in _SOURCE_TYPE_LABELS
     assert "signature" not in _SOURCE_TYPE_ORDER
     assert _SOURCE_TYPE_ORDER["table"] < _SOURCE_TYPE_ORDER["seal"]
+    assert _SOURCE_TYPE_ORDER["seal"] < _SOURCE_TYPE_ORDER["signing_region"]
+    assert _SOURCE_TYPE_ORDER["signing_region"] < _SOURCE_TYPE_ORDER["header_footer"]
+    assert _SOURCE_TYPE_LABELS["signing_region"] == "签章区"
 
 
 def test_report_generator_produces_grouped_tables_with_diff_content(tmp_path) -> None:
