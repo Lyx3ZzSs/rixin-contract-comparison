@@ -44,7 +44,8 @@ class SigningRegionMatcher:
         role_score = 1.0 if original.region_role == compare.region_role else 0.4
         if page_score == 1.0 and role_score == 1.0 and iou_score == 1.0 and position_score == 1.0:
             return 1.0
-        if iou_score == 0.0 and position_score < self.strong_position_threshold and text_score < 0.7:
+        adjacent_page_shift = abs(original.page_no - compare.page_no) == 1 and text_score >= 0.7
+        if iou_score == 0.0 and position_score < self.strong_position_threshold and not adjacent_page_shift:
             return 0.0
         return round(
             page_score * 0.25

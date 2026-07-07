@@ -55,6 +55,15 @@ def test_matcher_does_not_pair_same_page_zero_overlap_regions() -> None:
     assert pairs == [(original[0], None, 0.0), (None, compare[0], 0.0)]
 
 
+def test_matcher_does_not_pair_same_page_far_regions_by_text_structure_only() -> None:
+    original = [_region("O1", "甲方（盖章）： 日期：", x0=60)]
+    compare = [_region("C1", "甲方（盖章）： 日期：", x0=360)]
+
+    pairs = SigningRegionMatcher().match(original, compare)
+
+    assert pairs == [(original[0], None, 0.0), (None, compare[0], 0.0)]
+
+
 def test_matcher_does_not_pair_adjacent_page_zero_overlap_regions() -> None:
     original = [_region("O1", "A公司", page_no=1, x0=60)]
     compare = [_region("C1", "A公司", page_no=2, x0=360)]
