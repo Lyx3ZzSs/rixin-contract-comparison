@@ -591,6 +591,31 @@ class TestSummaryStage:
         assert [diff.diff_id for diff in ctx.task.diffs] == ["D002"]
         assert ctx.task.diff_count == 1
 
+    def test_ignore_stamps_hides_signing_region_diffs_in_summary(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.task.compare_options = CompareOptions(ignore_stamps=True)
+        signing_region_diff = DiffItem(
+            diff_id="D001",
+            diff_type="MODIFY",
+            source_type="signing_region",
+        )
+        seal_diff = DiffItem(
+            diff_id="D002",
+            diff_type="MODIFY",
+            source_type="seal",
+        )
+        clause_diff = DiffItem(
+            diff_id="D003",
+            diff_type="MODIFY",
+            source_type="clause",
+        )
+        ctx.diffs = [signing_region_diff, seal_diff, clause_diff]
+
+        SummaryStage().execute(ctx)
+
+        assert ctx.task.diffs == [clause_diff]
+        assert ctx.task.diff_count == 1
+
     def test_deduplicates_final_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         duplicate = DiffItem(
