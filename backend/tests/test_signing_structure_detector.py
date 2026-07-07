@@ -154,3 +154,34 @@ def test_detector_allows_full_page_exclusion_for_pure_signing_page() -> None:
     signing_page = result.pages[0]
     assert signing_page.signing_page_type == SigningPageType.FULL_PAGE
     assert signing_page.exclude_full_page_from_clause_diff is True
+
+
+def test_detector_allows_full_page_exclusion_for_merged_signing_table() -> None:
+    page = Page(
+        page_no=12,
+        width=595,
+        height=842,
+        blocks=[
+            _block(
+                "signing_table",
+                "以下无正文，为签署页\n"
+                "甲方：A公司\n"
+                "乙方：B公司\n"
+                "法定代表人：\n"
+                "(盖章)\n"
+                "(签字)\n"
+                "日期：",
+                _bbox(70, 120, 525, 735),
+                page_no=12,
+                block_type="table",
+            ),
+        ],
+    )
+
+    result = SigningBlockDetector().detect(_document(page))
+
+    assert [block.source_block_ids for block in result.blocks] == [["signing_table"]]
+    assert len(result.pages) == 1
+    signing_page = result.pages[0]
+    assert signing_page.signing_page_type == SigningPageType.FULL_PAGE
+    assert signing_page.exclude_full_page_from_clause_diff is True

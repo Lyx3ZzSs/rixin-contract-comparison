@@ -204,11 +204,12 @@ class SigningBlockDetector:
         signing_text_ratio = signing_text_chars / total_text_chars if total_text_chars else 0.0
         has_signing_context = any(SIGNING_CONTEXT_RE.search(self._compact(block.text)) for block in page.blocks)
         has_signing_only_blocks = not non_signing_blocks
+        has_full_page_shape = self._blocks_cover_full_page_shape(page, blocks)
+        has_split_signing_blocks = has_signing_only_blocks and signing_source_count >= 3
 
         return (
-            signing_source_count >= 3
-            and (self._blocks_cover_full_page_shape(page, blocks) or has_signing_context or has_signing_only_blocks)
-            and signing_text_ratio >= 0.55
+            signing_text_ratio >= 0.55
+            and (has_signing_context or has_full_page_shape or has_split_signing_blocks)
         )
 
     def _is_substantive_non_signing_block(self, block: TextBlock, page: Page) -> bool:
