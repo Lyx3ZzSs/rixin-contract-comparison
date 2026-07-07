@@ -865,8 +865,8 @@ class SplitStage:
 
     def execute(self, ctx: PipelineContext) -> None:
         extractions = ctx.require_extractions()
-        original_doc = extractions.original.document
-        compare_doc = extractions.compare.document
+        original_doc = ctx.clause_document_original or extractions.original.document
+        compare_doc = ctx.clause_document_compare or extractions.compare.document
 
         clauses = ctx.set_clauses(
             self.splitter.split(original_doc, "O"),

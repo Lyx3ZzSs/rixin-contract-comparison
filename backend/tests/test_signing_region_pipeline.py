@@ -17,7 +17,7 @@ from app.models import (
 )
 from app.services.extractors.base import ExtractionResult
 from app.services.pipeline import PipelineContext
-from app.services.pipeline_stages import ClauseDiffStage, PreClauseDiffStage, SigningRegionStage, SummaryStage
+from app.services.pipeline_stages import ClauseDiffStage, PreClauseDiffStage, SigningRegionStage, SplitStage, SummaryStage
 from app.services.signing_region.block_detector import SigningBlockDetectionResult
 from app.services.signing_region.models import VisualDetection, VisualDetectionResult
 
@@ -173,6 +173,31 @@ def test_signing_stage_sets_clause_documents_without_signing_blocks(tmp_path: Pa
     assert ctx.clause_document_original is not None
     assert [block.block_id for block in ctx.clause_document_original.pages[0].blocks] == ["body"]
     assert ctx.signing_region_debug["clause_exclusion"]["original"][0]["block_id"] == "sign"
+
+
+def test_split_stage_uses_clause_documents_when_available(tmp_path: Path) -> None:
+    class _Splitter:
+        def __init__(self) -> None:
+            self.seen_filenames: list[str] = []
+
+        def split(self, document: Document, prefix: str):
+            self.seen_filenames.append(document.filename)
+            return []
+
+    ctx = _ctx(tmp_path)
+    original = Document(filename="original-full.pdf", path="o.pdf", page_count=1, pages=[])
+    compare = Document(filename="compare-full.pdf", path="c.pdf", page_count=1, pages=[])
+    ctx.original_extraction = ExtractionResult(document=original, extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=compare, extractor_used="test")
+    ctx.clause_document_original = Document(filename="original-clause.pdf", path="o.pdf", page_count=1, pages=[])
+    ctx.clause_document_compare = Document(filename="compare-clause.pdf", path="c.pdf", page_count=1, pages=[])
+    splitter = _Splitter()
+    stage = SplitStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"))
+    stage.splitter = splitter
+
+    stage.execute(ctx)
+
+    assert splitter.seen_filenames == ["original-clause.pdf", "compare-clause.pdf"]
 
 
 def test_signing_stage_does_not_fallback_when_detector_has_rejected_candidates(tmp_path: Path) -> None:
