@@ -126,3 +126,26 @@ def test_builder_matches_by_bbox_overlap_when_source_block_id_is_missing() -> No
             "reason": "high_confidence_signing_block",
         }
     ]
+
+
+def test_builder_prefers_source_block_id_match_before_bbox_overlap() -> None:
+    signing = TextBlock(
+        block_id="signing",
+        page_no=10,
+        text="甲方：A 乙方：B\n(盖章)",
+        bbox=_bbox(70, 620, 470, 720),
+    )
+    page = Page(page_no=10, width=595, height=842, blocks=[signing])
+    doc = Document(filename="x.pdf", path="x.pdf", page_count=1, pages=[page])
+    bbox_match = _signing_block("SB-BBOX", 10, _bbox(65, 615, 475, 725))
+    source_match = _signing_block(
+        "SB-SOURCE",
+        10,
+        _bbox(10, 10, 60, 60),
+        source_block_ids=["signing"],
+    )
+
+    result = SigningClauseDocumentBuilder().build(doc, [bbox_match, source_match])
+
+    assert result.excluded_block_ids == ["signing"]
+    assert result.entries[0]["signing_block_id"] == "SB-SOURCE"

@@ -64,6 +64,8 @@ class SigningClauseDocumentBuilder:
         for signing_block in signing_blocks:
             if text_block.block_id in signing_block.source_block_ids:
                 return signing_block
+
+        for signing_block in signing_blocks:
             if self._overlap_ratio(text_block.bbox, signing_block.bbox) >= self.overlap_threshold:
                 return signing_block
         return None
