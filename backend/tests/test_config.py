@@ -8,6 +8,23 @@ from pydantic import ValidationError
 from app.config import Settings
 
 
+SIGNING_VISUAL_ENV_KEYS = [
+    "SIGNING_VISUAL_BACKEND",
+    "SIGNING_VISUAL_ENABLED",
+    "SIGNING_OPENCV_DETECT_RED_SEAL",
+    "SIGNING_OPENCV_DETECT_HANDWRITING",
+    "SIGNING_OPENCV_SCAN_CANDIDATE_PAGES",
+    "SIGNING_OPENCV_MIN_CONFIDENCE",
+    "SIGNING_OPENCV_MAX_CANDIDATE_PAGES",
+]
+
+
+def _isolated_settings(monkeypatch: pytest.MonkeyPatch, **kwargs) -> Settings:
+    for key in SIGNING_VISUAL_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    return Settings(_env_file=None, **kwargs)
+
+
 def test_ensure_storage_only_precreates_tasks_directory(tmp_path: Path) -> None:
     app_settings = Settings(
         storage_dir=tmp_path / "storage",
@@ -155,3 +172,26 @@ def test_document_understanding_config_maps_to_nested_settings() -> None:
     )
 
     assert app_settings.document_understanding.enabled is True
+
+
+def test_signing_visual_defaults_to_local_opencv_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    app_settings = _isolated_settings(monkeypatch)
+
+    assert app_settings.signing_visual_enabled is True
+    assert app_settings.signing_visual_backend == "opencv"
+    assert app_settings.signing_opencv_detect_red_seal is True
+    assert app_settings.signing_opencv_detect_handwriting is True
+    assert app_settings.signing_opencv_scan_candidate_pages is True
+    assert app_settings.signing_opencv_min_confidence == 0.55
+
+
+def test_signing_visual_backend_accepts_supported_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    for backend in ["opencv", "remote", "local", "off"]:
+        app_settings = _isolated_settings(monkeypatch, signing_visual_backend=backend)
+
+        assert app_settings.signing_visual_backend == backend
+
+
+def test_signing_visual_backend_rejects_unknown_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError, match="SIGNING_VISUAL_BACKEND"):
+        _isolated_settings(monkeypatch, signing_visual_backend="vlm")

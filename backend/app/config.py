@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     signing_visual_detector_timeout: int = 30
     signing_visual_local_model_path: str = ""
     signing_visual_enabled: bool = True
+    signing_visual_backend: str = "opencv"
+    signing_opencv_detect_red_seal: bool = True
+    signing_opencv_detect_handwriting: bool = True
+    signing_opencv_scan_candidate_pages: bool = True
+    signing_opencv_min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    signing_opencv_max_candidate_pages: int = Field(default=6, ge=1, le=20)
 
     # -- Matching (flat env vars) -----------------------------------------
 
@@ -234,6 +240,14 @@ class Settings(BaseSettings):
         if value not in {"v2", "v3", "v3_shadow", "shadow"}:
             raise ValueError("LAYOUT_ANALYSIS_MODE must be one of: v2, v3, v3_shadow, shadow")
         return value
+
+    @field_validator("signing_visual_backend", mode="before")
+    @classmethod
+    def validate_signing_visual_backend(cls, value: Any) -> str:
+        backend = str(value or "opencv").strip().lower()
+        if backend not in {"opencv", "remote", "local", "off"}:
+            raise ValueError("SIGNING_VISUAL_BACKEND must be one of: opencv, remote, local, off")
+        return backend
 
     # -- Model validator: populate nested + storage subdirs --------------
 
