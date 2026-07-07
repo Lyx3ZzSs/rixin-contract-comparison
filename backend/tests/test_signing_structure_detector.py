@@ -123,3 +123,34 @@ def test_detector_finds_bottom_mixed_page_signing_block() -> None:
     assert block.confidence_level == "high"
     assert "seal_signature_date_cluster" in block.confidence_reasons
     assert set(block.source_block_ids) >= {"party", "seal_a", "rep_a", "sign_a", "date_a"}
+
+    assert len(result.pages) == 1
+    signing_page = result.pages[0]
+    assert signing_page.page_role == "body"
+    assert signing_page.signing_page_type == SigningPageType.MIXED_PAGE
+    assert signing_page.exclude_full_page_from_clause_diff is False
+
+
+def test_detector_allows_full_page_exclusion_for_pure_signing_page() -> None:
+    page = Page(
+        page_no=11,
+        width=595,
+        height=842,
+        blocks=[
+            _block("context", "以下无正文，为签字页", _bbox(80, 120, 240, 140), page_no=11),
+            _block("party", "甲方：A公司  乙方：B公司", _bbox(70, 575, 410, 595), page_no=11),
+            _block("seal_a", "(盖章)", _bbox(70, 620, 120, 640), page_no=11),
+            _block("seal_b", "(盖章)", _bbox(330, 620, 380, 640), page_no=11),
+            _block("sign_a", "(签字)", _bbox(170, 665, 215, 685), page_no=11),
+            _block("sign_b", "(签字)", _bbox(390, 665, 435, 685), page_no=11),
+            _block("date_a", "日期：", _bbox(80, 710, 122, 730), page_no=11),
+            _block("date_b", "日期：", _bbox(325, 710, 365, 730), page_no=11),
+        ],
+    )
+
+    result = SigningBlockDetector().detect(_document(page))
+
+    assert len(result.pages) == 1
+    signing_page = result.pages[0]
+    assert signing_page.signing_page_type == SigningPageType.FULL_PAGE
+    assert signing_page.exclude_full_page_from_clause_diff is True

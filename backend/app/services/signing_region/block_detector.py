@@ -173,7 +173,7 @@ class SigningBlockDetector:
         return clusters
 
     def _to_page(self, page: Page, page_role: str, blocks: list[SigningBlock]) -> SigningPage:
-        full_page = len(page.blocks) > 0 and sum(len(block.text.strip()) for block in page.blocks) < 260
+        full_page = self._is_full_signing_page(page, blocks)
         return SigningPage(
             page_no=page.page_no,
             bbox=BBox(x0=0, y0=0, x1=page.width, y1=page.height),
@@ -184,6 +184,48 @@ class SigningBlockDetector:
             block_ids=[block.block_id for block in blocks],
             exclude_full_page_from_clause_diff=full_page and all(block.exclude_from_clause_diff for block in blocks),
         )
+
+    def _is_full_signing_page(self, page: Page, blocks: list[SigningBlock]) -> bool:
+        if not page.blocks or not blocks or not all(block.exclude_from_clause_diff for block in blocks):
+            return False
+
+        signing_source_ids = {block_id for block in blocks for block_id in block.source_block_ids}
+        non_signing_blocks = [block for block in page.blocks if block.block_id not in signing_source_ids]
+        if any(self._is_substantive_non_signing_block(block, page) for block in non_signing_blocks):
+            return False
+
+        signing_source_count = len(signing_source_ids)
+        total_text_chars = sum(len(self._compact(block.text)) for block in page.blocks)
+        signing_text_chars = sum(
+            len(self._compact(block.text))
+            for block in page.blocks
+            if block.block_id in signing_source_ids
+        )
+        signing_text_ratio = signing_text_chars / total_text_chars if total_text_chars else 0.0
+        has_signing_context = any(SIGNING_CONTEXT_RE.search(self._compact(block.text)) for block in page.blocks)
+        has_signing_only_blocks = not non_signing_blocks
+
+        return (
+            signing_source_count >= 3
+            and (self._blocks_cover_full_page_shape(page, blocks) or has_signing_context or has_signing_only_blocks)
+            and signing_text_ratio >= 0.55
+        )
+
+    def _is_substantive_non_signing_block(self, block: TextBlock, page: Page) -> bool:
+        text = self._compact(block.text)
+        if not text:
+            return False
+        if SIGNING_CONTEXT_RE.search(text):
+            return False
+        if self._is_candidate(block, page):
+            return False
+        return len(text) >= 12 or BODY_VERB_RE.search(text) is not None or NUMBERED_RE.match(text) is not None
+
+    @staticmethod
+    def _blocks_cover_full_page_shape(page: Page, blocks: list[SigningBlock]) -> bool:
+        y0 = min(block.bbox.y0 for block in blocks)
+        y1 = max(block.bbox.y1 for block in blocks)
+        return y0 <= page.height * 0.35 and y1 >= page.height * 0.72
 
     @staticmethod
     def _page_roles(document: Document) -> dict[int, str]:
