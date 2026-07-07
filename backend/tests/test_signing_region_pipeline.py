@@ -18,6 +18,7 @@ from app.models import (
 from app.services.extractors.base import ExtractionResult
 from app.services.pipeline import PipelineContext
 from app.services.pipeline_stages import ClauseDiffStage, PreClauseDiffStage, SigningRegionStage, SummaryStage
+from app.services.signing_region.block_detector import SigningBlockDetectionResult
 from app.services.signing_region.models import VisualDetection, VisualDetectionResult
 
 
@@ -59,6 +60,11 @@ def _ctx(tmp_path: Path, options: CompareOptions | None = None) -> PipelineConte
     )
 
 
+class _NoCandidateDetector:
+    def detect(self, _document: Document) -> SigningBlockDetectionResult:
+        return SigningBlockDetectionResult()
+
+
 def test_signing_region_stage_builds_diff_and_covers_seal(monkeypatch, tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
@@ -67,7 +73,9 @@ def test_signing_region_stage_builds_diff_and_covers_seal(monkeypatch, tmp_path:
     artifact_store = _TestArtifactStore(tmp_path / "artifacts")
 
     PreClauseDiffStage(artifact_store=artifact_store).execute(ctx)
-    SigningRegionStage(artifact_store=artifact_store, visual_enabled=False).execute(ctx)
+    stage = SigningRegionStage(artifact_store=artifact_store, visual_enabled=False)
+    stage.block_detector = _NoCandidateDetector()
+    stage.execute(ctx)
 
     assert len(ctx.signing_region_diffs) == 1
     assert ctx.signing_region_diffs[0].source_type == "signing_region"
@@ -81,6 +89,7 @@ def test_signing_region_stage_builds_diff_and_covers_seal(monkeypatch, tmp_path:
     assert ctx.signing_region_diffs[0].diff_id == f"D{expected_index:03d}"
     assert ctx.seal_diffs[0].diff_id in ctx.signing_region_covered_diff_ids
     assert ctx.seal_diffs[0].diff_id in ctx.signing_region_debug["coverage"]["covered_diff_ids"]
+    assert ctx.signing_region_debug["legacy_region_fallback"] == {"original": True, "compare": True}
     assert ctx.task.debug_artifact_paths["signing_region"].endswith("signing_region.json")
 
 
@@ -88,9 +97,21 @@ def test_signing_region_stage_skips_when_stamps_are_ignored(tmp_path: Path) -> N
     ctx = _ctx(tmp_path, CompareOptions(ignore_stamps=True))
     ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
     ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
+    ctx.signing_pages_original = ["stale-page"]
+    ctx.signing_pages_compare = ["stale-page"]
+    ctx.signing_blocks_original = ["stale-block"]
+    ctx.signing_blocks_compare = ["stale-block"]
+    ctx.clause_document_original = _doc("stale")
+    ctx.clause_document_compare = _doc("stale")
 
     SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"), visual_enabled=False).execute(ctx)
 
+    assert ctx.signing_pages_original == []
+    assert ctx.signing_pages_compare == []
+    assert ctx.signing_blocks_original == []
+    assert ctx.signing_blocks_compare == []
+    assert ctx.clause_document_original is None
+    assert ctx.clause_document_compare is None
     assert ctx.signing_regions_original == []
     assert ctx.signing_regions_compare == []
     assert ctx.signing_region_diffs == []
@@ -154,6 +175,61 @@ def test_signing_stage_sets_clause_documents_without_signing_blocks(tmp_path: Pa
     assert ctx.signing_region_debug["clause_exclusion"]["original"][0]["block_id"] == "sign"
 
 
+def test_signing_stage_does_not_fallback_when_detector_has_rejected_candidates(tmp_path: Path) -> None:
+    class _Detector:
+        def detect(self, document: Document) -> SigningBlockDetectionResult:
+            if document.filename == "original.pdf":
+                return SigningBlockDetectionResult(
+                    low_confidence_candidates=[
+                        {
+                            "page_no": 1,
+                            "block_ids": ["label"],
+                            "score": 0.42,
+                            "reasons": ["below_threshold"],
+                            "text": "甲方（盖章）：",
+                        }
+                    ]
+                )
+            return SigningBlockDetectionResult(
+                excluded_candidates=[
+                    {
+                        "page_no": 1,
+                        "block_ids": ["label"],
+                        "reason": "cover_signing_info_table",
+                        "text": "甲方（盖章）：",
+                    }
+                ]
+            )
+
+    class _Extractor:
+        def extract_from_blocks(self, blocks) -> list:
+            assert blocks == []
+            return []
+
+        def extract(self, _document: Document) -> list:
+            raise AssertionError("legacy fallback should not run for detector candidates")
+
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
+    ctx.original_extraction.document.filename = "original.pdf"
+    ctx.compare_extraction.document.filename = "compare.pdf"
+    stage = SigningRegionStage(
+        artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
+        visual_enabled=False,
+    )
+    stage.block_detector = _Detector()
+    stage.extractor = _Extractor()
+
+    stage.execute(ctx)
+
+    assert ctx.signing_regions_original == []
+    assert ctx.signing_regions_compare == []
+    assert ctx.signing_region_debug["legacy_region_fallback"] == {"original": False, "compare": False}
+    assert ctx.signing_region_debug["low_confidence_candidates"]["original"][0]["block_ids"] == ["label"]
+    assert ctx.signing_region_debug["excluded_candidates"]["compare"][0]["reason"] == "cover_signing_info_table"
+
+
 def test_signing_region_stage_builds_visual_diff_from_detector_and_fingerprint(tmp_path: Path) -> None:
     class _Detector:
         def detect(self, _pdf_path: Path, regions, _task_id: str) -> VisualDetectionResult:
@@ -189,6 +265,7 @@ def test_signing_region_stage_builds_visual_diff_from_detector_and_fingerprint(t
         visual_fingerprinter=_Fingerprinter(),
         visual_enabled=True,
     )
+    stage.block_detector = _NoCandidateDetector()
 
     stage.execute(ctx)
 
@@ -214,6 +291,7 @@ def test_signing_region_stage_records_unavailable_visual_adapter_without_failing
         visual_detector=_Detector(),
         visual_enabled=True,
     )
+    stage.block_detector = _NoCandidateDetector()
 
     stage.execute(ctx)
 
@@ -249,11 +327,13 @@ def test_signing_region_stage_ignores_visual_only_change_when_one_side_adapter_f
     ctx.original_extraction = ExtractionResult(document=_doc("合同专用章"), extractor_used="test")
     ctx.compare_extraction = ExtractionResult(document=_doc("合同专用章"), extractor_used="test")
 
-    SigningRegionStage(
+    stage = SigningRegionStage(
         artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
         visual_detector=_Detector(),
         visual_enabled=True,
-    ).execute(ctx)
+    )
+    stage.block_detector = _NoCandidateDetector()
+    stage.execute(ctx)
 
     assert ctx.signing_region_diffs == []
     assert ctx.signing_region_debug["visual_adapter_status"]["compare"]["available"] is False
@@ -283,11 +363,13 @@ def test_signing_region_stage_suppresses_low_confidence_visual_detections(tmp_pa
     ctx.original_extraction = ExtractionResult(document=_doc("合同专用章"), extractor_used="test")
     ctx.compare_extraction = ExtractionResult(document=_doc("合同专用章"), extractor_used="test")
 
-    SigningRegionStage(
+    stage = SigningRegionStage(
         artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
         visual_detector=_Detector(),
         visual_enabled=True,
-    ).execute(ctx)
+    )
+    stage.block_detector = _NoCandidateDetector()
+    stage.execute(ctx)
 
     assert ctx.signing_region_diffs == []
     assert len(ctx.signing_region_debug["suppressed_low_confidence_candidates"]) == 2

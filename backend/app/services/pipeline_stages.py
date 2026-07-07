@@ -40,7 +40,7 @@ from app.services.evidence_relocator import EvidenceRelocationResult, EvidenceRe
 from app.services.page_diff import PageDiffConsolidator
 from app.services.pipeline import PipelineContext
 from app.services.seal_comparator import build_seal_diffs
-from app.services.signing_region.block_detector import SigningBlockDetector
+from app.services.signing_region.block_detector import SigningBlockDetectionResult, SigningBlockDetector
 from app.services.signing_region.clause_document import SigningClauseDocumentBuilder
 from app.services.signing_region.comparator import SigningRegionComparator
 from app.services.signing_region.coverage import SigningRegionCoverageBuilder
@@ -498,6 +498,12 @@ class SigningRegionStage:
 
     def execute(self, ctx: PipelineContext) -> None:
         if ctx.task.compare_options.ignore_stamps or ctx.task.compare_options.signing_region_mode == "off":
+            ctx.signing_pages_original = []
+            ctx.signing_pages_compare = []
+            ctx.signing_blocks_original = []
+            ctx.signing_blocks_compare = []
+            ctx.clause_document_original = None
+            ctx.clause_document_compare = None
             ctx.signing_regions_original = []
             ctx.signing_regions_compare = []
             ctx.signing_region_diffs = []
@@ -514,13 +520,13 @@ class SigningRegionStage:
         extractions = ctx.require_extractions()
         original_structure = self.block_detector.detect(extractions.original.document)
         compare_structure = self.block_detector.detect(extractions.compare.document)
-        original_regions = self._extract_regions_from_structure(
+        original_regions, original_legacy_fallback = self._extract_regions_from_structure(
             extractions.original.document,
-            original_structure.blocks,
+            original_structure,
         )
-        compare_regions = self._extract_regions_from_structure(
+        compare_regions, compare_legacy_fallback = self._extract_regions_from_structure(
             extractions.compare.document,
-            compare_structure.blocks,
+            compare_structure,
         )
         original_clause_doc = self.clause_document_builder.build(
             extractions.original.document,
@@ -581,16 +587,20 @@ class SigningRegionStage:
                 "compare": _jsonable(compare_structure.blocks),
             },
             "excluded_candidates": {
-                "original": original_structure.excluded_candidates,
-                "compare": compare_structure.excluded_candidates,
+                "original": _jsonable(original_structure.excluded_candidates),
+                "compare": _jsonable(compare_structure.excluded_candidates),
             },
             "low_confidence_candidates": {
-                "original": original_structure.low_confidence_candidates,
-                "compare": compare_structure.low_confidence_candidates,
+                "original": _jsonable(original_structure.low_confidence_candidates),
+                "compare": _jsonable(compare_structure.low_confidence_candidates),
             },
             "clause_exclusion": {
-                "original": original_clause_doc.entries,
-                "compare": compare_clause_doc.entries,
+                "original": _jsonable(original_clause_doc.entries),
+                "compare": _jsonable(compare_clause_doc.entries),
+            },
+            "legacy_region_fallback": {
+                "original": original_legacy_fallback,
+                "compare": compare_legacy_fallback,
             },
             "original_regions": _jsonable(original_regions),
             "compare_regions": _jsonable(compare_regions),
@@ -619,11 +629,17 @@ class SigningRegionStage:
         )
         _emit_progress(ctx, 42, self.name, "signing_region_done")
 
-    def _extract_regions_from_structure(self, document: Document, blocks: list[Any]) -> list[SigningRegion]:
-        regions = self.extractor.extract_from_blocks(blocks)
-        if regions or blocks:
-            return regions
-        return self.extractor.extract(document)
+    def _extract_regions_from_structure(
+        self,
+        document: Document,
+        structure: SigningBlockDetectionResult,
+    ) -> tuple[list[SigningRegion], bool]:
+        regions = self.extractor.extract_from_blocks(structure.blocks)
+        if regions or structure.blocks:
+            return regions, False
+        if structure.excluded_candidates or structure.low_confidence_candidates:
+            return [], False
+        return self.extractor.extract(document), True
 
     @staticmethod
     def _legacy_diffs(ctx: PipelineContext) -> list[DiffItem]:
