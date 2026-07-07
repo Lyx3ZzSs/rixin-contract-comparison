@@ -4,6 +4,7 @@ import re
 
 from app.models import BBox, Document, Page, TextBlock
 from app.services.signing_region.models import (
+    SigningBlock,
     SigningElement,
     SigningElementType,
     SigningRegion,
@@ -31,6 +32,35 @@ class SigningRegionExtractor:
         regions: list[SigningRegion] = []
         for page in document.pages:
             regions.extend(self._extract_page(page))
+        return regions
+
+    def extract_from_blocks(self, blocks: list[SigningBlock]) -> list[SigningRegion]:
+        regions: list[SigningRegion] = []
+        for index, block in enumerate(blocks, start=1):
+            elements = block.elements or [
+                SigningElement(
+                    element_id=f"{block.block_id}-summary",
+                    element_type=SigningElementType.SIGNING_TABLE,
+                    page_no=block.page_no,
+                    bbox=block.bbox,
+                    text=block.text,
+                    confidence=block.confidence,
+                    source="inferred",
+                    raw_ref={"source_block_ids": block.source_block_ids},
+                )
+            ]
+            regions.append(
+                SigningRegion(
+                    region_id=f"SR-{block.page_no}-{index}",
+                    signing_block_id=block.block_id,
+                    page_no=block.page_no,
+                    bbox=block.bbox,
+                    region_role=self._role_from_block(block),
+                    confidence=block.confidence,
+                    confidence_reasons=list(block.confidence_reasons),
+                    elements=elements,
+                )
+            )
         return regions
 
     def _extract_page(self, page: Page) -> list[SigningRegion]:
@@ -166,6 +196,16 @@ class SigningRegionExtractor:
         x0 = min(self._effective_bbox(block).x0 for block in blocks)
         x1 = max(self._effective_bbox(block).x1 for block in blocks)
         if page.width > 0 and x0 < page.width * 0.25 and x1 > page.width * 0.75:
+            return SigningRegionRole.BOTH_PARTIES
+        return SigningRegionRole.UNKNOWN
+
+    @staticmethod
+    def _role_from_block(block: SigningBlock) -> SigningRegionRole:
+        if block.block_role.value == "party_a":
+            return SigningRegionRole.PARTY_A
+        if block.block_role.value == "party_b":
+            return SigningRegionRole.PARTY_B
+        if block.block_role.value == "both_parties":
             return SigningRegionRole.BOTH_PARTIES
         return SigningRegionRole.UNKNOWN
 

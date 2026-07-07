@@ -1,5 +1,6 @@
 from app.models import BBox, Document, DocumentProfile, Page, PageProfile, TextBlock
 from app.services.signing_region.block_detector import SigningBlockDetector
+from app.services.signing_region.extractor import SigningRegionExtractor
 from app.services.signing_region.models import (
     SigningBlock,
     SigningBlockConfidenceLevel,
@@ -129,6 +130,28 @@ def test_detector_finds_bottom_mixed_page_signing_block() -> None:
     assert signing_page.page_role == "body"
     assert signing_page.signing_page_type == SigningPageType.MIXED_PAGE
     assert signing_page.exclude_full_page_from_clause_diff is False
+
+
+def test_extractor_builds_region_from_detected_signing_block() -> None:
+    page = Page(
+        page_no=10,
+        width=595,
+        height=842,
+        blocks=[
+            _block("party", "甲方：A公司  乙方：B公司", _bbox(65, 620, 485, 635), page_no=10),
+            _block("seal_a", "(盖章)", _bbox(65, 642, 110, 660), page_no=10),
+            _block("sign_a", "(签字)", _bbox(175, 690, 215, 708), page_no=10),
+            _block("date_a", "日期：", _bbox(84, 713, 122, 730), page_no=10),
+        ],
+    )
+    detection = SigningBlockDetector().detect(_document(page))
+
+    regions = SigningRegionExtractor().extract_from_blocks(detection.blocks)
+
+    assert len(regions) == 1
+    assert regions[0].signing_block_id == "SB-10-1"
+    assert regions[0].page_no == 10
+    assert "盖章" in regions[0].elements[0].text or "签字" in regions[0].elements[0].text
 
 
 def test_detector_keeps_body_effective_clause_out_of_signing_block() -> None:
