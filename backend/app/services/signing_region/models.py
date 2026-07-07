@@ -25,6 +25,27 @@ class SigningRegionRole(str, Enum):
     UNKNOWN = "unknown"
 
 
+class SigningPageType(str, Enum):
+    FULL_PAGE = "full_page"
+    MIXED_PAGE = "mixed_page"
+    CONTINUATION_PAGE = "continuation_page"
+    UNKNOWN = "unknown"
+
+
+class SigningBlockRole(str, Enum):
+    PARTY_A = "party_a"
+    PARTY_B = "party_b"
+    BOTH_PARTIES = "both_parties"
+    CONTINUATION = "continuation"
+    UNKNOWN = "unknown"
+
+
+class SigningBlockConfidenceLevel(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 SigningElementSource = Literal["layout", "ocr", "visual_model", "visual_fingerprint", "inferred"]
 
 
@@ -45,10 +66,47 @@ class SigningRegion(BaseModel):
     region_id: str
     page_no: int
     bbox: BBox
+    signing_block_id: str = ""
     region_role: SigningRegionRole = SigningRegionRole.UNKNOWN
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     confidence_reasons: list[str] = Field(default_factory=list)
     elements: list[SigningElement] = Field(default_factory=list)
+
+
+class SigningVisualFeatures(BaseModel):
+    status: str = "unavailable"
+    has_red_seal: bool = False
+    has_handwriting: bool = False
+    visual_hash: str = ""
+    detected_bboxes: list[BBox] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reasons: list[str] = Field(default_factory=list)
+
+
+class SigningPage(BaseModel):
+    page_no: int
+    bbox: BBox
+    page_role: str = "body"
+    signing_page_type: SigningPageType = SigningPageType.UNKNOWN
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    confidence_reasons: list[str] = Field(default_factory=list)
+    block_ids: list[str] = Field(default_factory=list)
+    exclude_full_page_from_clause_diff: bool = False
+
+
+class SigningBlock(BaseModel):
+    block_id: str
+    page_no: int
+    bbox: BBox
+    block_role: SigningBlockRole = SigningBlockRole.UNKNOWN
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    confidence_level: SigningBlockConfidenceLevel = SigningBlockConfidenceLevel.LOW
+    confidence_reasons: list[str] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
+    text: str = ""
+    elements: list[SigningElement] = Field(default_factory=list)
+    visual_features: SigningVisualFeatures = Field(default_factory=SigningVisualFeatures)
+    exclude_from_clause_diff: bool = False
 
 
 class VisualDetection(BaseModel):
