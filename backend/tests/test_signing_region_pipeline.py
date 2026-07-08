@@ -95,6 +95,27 @@ def test_signing_region_stage_builds_diff_and_covers_seal(monkeypatch, tmp_path:
     assert ctx.task.debug_artifact_paths["signing_region"].endswith("signing_region.json")
 
 
+def test_signing_region_stage_uses_opencv_detector_by_default(monkeypatch, tmp_path: Path) -> None:
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    monkeypatch.setattr("app.config.settings.signing_visual_backend", "opencv")
+    monkeypatch.setattr("app.config.settings.signing_visual_enabled", True)
+
+    stage = SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"))
+
+    assert isinstance(stage.visual_detector, OpenCvVisualSignatureDetector)
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
+    stage.block_detector = _NoCandidateDetector()
+    stage.execute(ctx)
+
+    configuration = ctx.signing_region_debug["configuration"]
+    assert configuration["visual_backend"] == "opencv"
+    assert configuration["visual_detector"] == "OpenCvVisualSignatureDetector"
+    assert "opencv_available" in configuration
+
+
 def test_signing_region_stage_skips_when_stamps_are_ignored(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, CompareOptions(ignore_stamps=True))
     ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")

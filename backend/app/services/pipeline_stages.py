@@ -57,6 +57,7 @@ from app.services.signing_region.models import (
 from app.services.signing_region.visual import (
     LocalCpuVisualSignatureDetector,
     OpenCvSigningRegionFingerprinter,
+    OpenCvVisualSignatureDetector,
     RemoteVisualSignatureDetector,
     VisualSignatureDetector,
 )
@@ -838,21 +839,32 @@ class SigningRegionStage:
 
     @staticmethod
     def _default_visual_detector() -> VisualSignatureDetector | None:
+        backend = settings.signing_visual_backend
+        if backend == "off":
+            return None
+        if backend == "remote":
+            return RemoteVisualSignatureDetector()
+        if backend == "local":
+            return LocalCpuVisualSignatureDetector()
+        if backend == "opencv":
+            return OpenCvVisualSignatureDetector()
         if settings.signing_visual_detector_url.strip():
             return RemoteVisualSignatureDetector()
         if settings.signing_visual_local_model_path.strip():
             return LocalCpuVisualSignatureDetector()
-        return None
+        return OpenCvVisualSignatureDetector()
 
     def _debug_configuration(self) -> dict[str, Any]:
         return {
             "visual_enabled": self.visual_enabled,
+            "visual_backend": settings.signing_visual_backend,
             "visual_confidence_threshold": self.visual_confidence_threshold,
             "visual_detector": type(self.visual_detector).__name__ if self.visual_detector is not None else "",
             "visual_detector_url_configured": bool(settings.signing_visual_detector_url.strip()),
             "visual_local_model_configured": bool(settings.signing_visual_local_model_path.strip()),
             "visual_detector_timeout": settings.signing_visual_detector_timeout,
             "visual_fingerprinter": type(self.visual_fingerprinter).__name__ if self.visual_fingerprinter is not None else "",
+            "opencv_available": OpenCvVisualSignatureDetector._dependencies() is not None,
         }
 
 
