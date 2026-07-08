@@ -420,6 +420,47 @@ def test_signing_region_stage_builds_visual_diff_from_detector_and_fingerprint(t
     assert ctx.signing_region_debug["configuration"]["visual_enabled"] is True
 
 
+def test_signing_region_stage_records_visual_only_candidates_without_final_diff(tmp_path: Path) -> None:
+    class _VisualOnlyDetector:
+        def detect(self, _pdf_path: Path, regions, _task_id: str) -> VisualDetectionResult:
+            detections = [
+                VisualDetection(
+                    page_no=1,
+                    bbox=BBox(x0=80, y0=650, x1=180, y1=760),
+                    label="seal",
+                    confidence=0.88,
+                    model_name="opencv",
+                    raw_data={"reasons": ["red_seal_pixels"]},
+                )
+            ]
+            return VisualDetectionResult(available=True, model_name="opencv", detections=detections)
+
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
+    stage = SigningRegionStage(
+        artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
+        visual_detector=_VisualOnlyDetector(),
+        visual_enabled=True,
+    )
+    stage.block_detector = _NoCandidateDetector()
+    stage.extractor = type(
+        "_NoFallbackExtractor",
+        (),
+        {
+            "extract_from_blocks": lambda self, blocks: [],
+            "extract": lambda self, document: [],
+        },
+    )()
+
+    stage.execute(ctx)
+
+    assert ctx.signing_region_diffs == []
+    assert ctx.signing_region_debug["visual_adapter_status"]["original"]["available"] is True
+    assert ctx.signing_region_debug["visual_candidates"]["original"][0]["label"] == "seal"
+    assert ctx.signing_region_debug["visual_candidates"]["original"][0]["used_for_promotion"] is False
+
+
 def test_signing_region_stage_records_unavailable_visual_adapter_without_failing(tmp_path: Path) -> None:
     class _Detector:
         def detect(self, _pdf_path: Path, _regions, _task_id: str) -> VisualDetectionResult:

@@ -618,6 +618,10 @@ class SigningRegionStage:
             "comparisons": _jsonable(comparisons),
             "diffs": _jsonable(signing_region_diffs),
             "visual_adapter_status": _jsonable(self._debug_visual_status(visual_status)),
+            "visual_candidates": {
+                "original": visual_status["original"].get("_visual_candidates", []),
+                "compare": visual_status["compare"].get("_visual_candidates", []),
+            },
             "configuration": self._debug_configuration(),
             "suppressed_low_confidence_candidates": suppressed_low_confidence_candidates,
             "coverage": {
@@ -671,6 +675,7 @@ class SigningRegionStage:
             "fingerprint_count": 0,
             "_detection_elements": [],
             "_fingerprint_elements": [],
+            "_visual_candidates": [],
         }
         if not self.visual_enabled:
             status["error"] = "disabled"
@@ -686,6 +691,18 @@ class SigningRegionStage:
             }
         )
         if detection_result.available:
+            status["_visual_candidates"] = [
+                {
+                    "page_no": detection.page_no,
+                    "bbox": detection.bbox.model_dump(mode="json"),
+                    "label": detection.label,
+                    "confidence": detection.confidence,
+                    "model_name": detection.model_name or detection_result.model_name,
+                    "reasons": detection.raw_data.get("reasons", []),
+                    "used_for_promotion": False,
+                }
+                for detection in detection_result.detections
+            ]
             detection_elements = self._visual_detection_elements(
                 regions,
                 detection_result,
