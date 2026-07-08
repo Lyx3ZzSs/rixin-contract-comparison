@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from app.models import (
     BBox,
     CompareOptions,
@@ -21,7 +23,13 @@ from app.services.extractors.base import ExtractionResult
 from app.services.pipeline import PipelineContext
 from app.services.pipeline_stages import ClauseDiffStage, PreClauseDiffStage, SigningRegionStage, SplitStage, SummaryStage
 from app.services.signing_region.block_detector import SigningBlockDetectionResult
-from app.services.signing_region.models import VisualDetection, VisualDetectionResult
+from app.services.signing_region.models import (
+    SigningBlock,
+    SigningBlockConfidenceLevel,
+    SigningBlockRole,
+    VisualDetection,
+    VisualDetectionResult,
+)
 
 
 class _TestArtifactStore:
@@ -459,6 +467,331 @@ def test_signing_region_stage_records_visual_only_candidates_without_final_diff(
     assert ctx.signing_region_debug["visual_adapter_status"]["original"]["available"] is True
     assert ctx.signing_region_debug["visual_candidates"]["original"][0]["label"] == "seal"
     assert ctx.signing_region_debug["visual_candidates"]["original"][0]["used_for_promotion"] is False
+
+
+def test_signing_region_stage_promotes_rule_backed_candidate_with_visual_support(tmp_path: Path) -> None:
+    class _Detector:
+        def detect(self, _document: Document) -> SigningBlockDetectionResult:
+            return SigningBlockDetectionResult(
+                low_confidence_candidates=[
+                    {
+                        "page_no": "2",
+                        "bbox": {"x0": 80, "y0": 620, "x1": 520, "y1": 760},
+                        "score": 0.42,
+                        "reasons": ["signing_page_context", "business_signing_form_fields"],
+                        "block_ids": ["candidate"],
+                        "text": "甲方：A公司\n乙方：B公司\n盖章：\n签字：",
+                    }
+                ]
+            )
+
+    class _VisualDetector:
+        def detect(self, _pdf_path: Path, regions, _task_id: str) -> VisualDetectionResult:
+            assert regions
+            region = regions[0]
+            return VisualDetectionResult(
+                available=True,
+                model_name="opencv",
+                detections=[
+                    VisualDetection(
+                        page_no=region.page_no,
+                        bbox=BBox(x0=100, y0=640, x1=500, y1=740),
+                        label="signature",
+                        confidence=0.82,
+                        model_name="opencv",
+                        raw_data={"reasons": ["table_or_stroke_density"]},
+                    )
+                ],
+            )
+
+    original = Document(
+        filename="original.pdf",
+        path="original.pdf",
+        page_count=2,
+        pages=[
+            Page(page_no=1, width=595, height=842, blocks=[]),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="candidate",
+                        page_no=2,
+                        text="甲方：A公司\n乙方：B公司\n盖章：\n签字：",
+                        bbox=BBox(x0=80, y0=620, x1=520, y1=760),
+                    )
+                ],
+            ),
+        ],
+    )
+    compare = original.model_copy(deep=True)
+    compare.filename = "compare.pdf"
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=original, extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=compare, extractor_used="test")
+    stage = SigningRegionStage(
+        artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
+        visual_detector=_VisualDetector(),
+        visual_enabled=True,
+    )
+    stage.block_detector = _Detector()
+
+    stage.execute(ctx)
+
+    assert {block.page_no for block in ctx.signing_blocks_original} == {2}
+    assert ctx.signing_blocks_original[0].confidence_level == "medium"
+    assert "visual_candidate_promoted" in ctx.signing_blocks_original[0].confidence_reasons
+    assert ctx.signing_region_debug["visual_candidates"]["original"][0]["used_for_promotion"] is True
+
+
+@pytest.mark.parametrize(
+    ("candidate_update", "visual_candidate_update", "visual_bbox"),
+    [
+        ({"score": 0.34}, {}, {"x0": 100, "y0": 640, "x1": 500, "y1": 740}),
+        ({"reasons": ["party_label"]}, {}, {"x0": 100, "y0": 640, "x1": 500, "y1": 740}),
+        ({}, {}, {"x0": 20, "y0": 100, "x1": 70, "y1": 150}),
+        ({}, {"confidence": 0.2}, {"x0": 100, "y0": 640, "x1": 500, "y1": 740}),
+        ({}, {"confidence": "bad"}, {"x0": 100, "y0": 640, "x1": 500, "y1": 740}),
+    ],
+)
+def test_signing_region_stage_does_not_promote_candidate_without_required_gates(
+    candidate_update,
+    visual_candidate_update,
+    visual_bbox,
+) -> None:
+    candidate = {
+        "page_no": 2,
+        "bbox": {"x0": 80, "y0": 620, "x1": 520, "y1": 760},
+        "score": 0.42,
+        "reasons": ["signing_page_context", "business_signing_form_fields"],
+        "block_ids": ["candidate"],
+        "text": "甲方：A公司\n乙方：B公司\n盖章：\n签字：",
+    }
+    candidate.update(candidate_update)
+    visual_candidate = {
+        "page_no": 2,
+        "bbox": visual_bbox,
+        "label": "signature",
+        "confidence": 0.82,
+        "model_name": "opencv",
+        "reasons": ["table_or_stroke_density"],
+        "used_for_promotion": False,
+    }
+    visual_candidate.update(visual_candidate_update)
+    structure = SigningBlockDetectionResult(low_confidence_candidates=[candidate])
+
+    SigningRegionStage._promote_visual_supported_candidates(
+        structure,
+        {"_visual_candidates": [visual_candidate]},
+    )
+
+    assert structure.blocks == []
+    assert visual_candidate["used_for_promotion"] is False
+
+
+def test_signing_region_stage_ignores_malformed_low_confidence_candidates() -> None:
+    visual_candidate = {
+        "page_no": 2,
+        "bbox": {"x0": 100, "y0": 640, "x1": 500, "y1": 740},
+        "label": "signature",
+        "confidence": 0.82,
+        "model_name": "opencv",
+        "reasons": ["table_or_stroke_density"],
+        "used_for_promotion": False,
+    }
+    malformed_candidates = [
+        None,
+        "candidate",
+        123,
+        {
+            "page_no": "bad",
+            "bbox": {"x0": 80, "y0": 620, "x1": 520, "y1": 760},
+            "score": 0.42,
+            "reasons": ["signing_page_context"],
+        },
+        {
+            "page_no": 2,
+            "bbox": "bad",
+            "score": 0.42,
+            "reasons": ["signing_page_context"],
+        },
+        {
+            "page_no": 2,
+            "bbox": {"x0": "bad", "y0": 620, "x1": 520, "y1": 760},
+            "score": 0.42,
+            "reasons": ["signing_page_context"],
+        },
+        {
+            "page_no": 2,
+            "bbox": {"x0": 80, "y0": 620, "x1": 520, "y1": 760},
+            "score": "bad",
+            "reasons": ["signing_page_context"],
+        },
+        {
+            "page_no": 2,
+            "bbox": {"x0": 80, "y0": 620, "x1": 520, "y1": 760},
+            "score": 0.42,
+            "reasons": 123,
+            "block_ids": 123,
+        },
+    ]
+    structure = SigningBlockDetectionResult(low_confidence_candidates=malformed_candidates)
+
+    regions = SigningRegionStage._candidate_regions_from_low_confidence(structure.low_confidence_candidates)
+    SigningRegionStage._promote_visual_supported_candidates(
+        structure,
+        {"_visual_candidates": [visual_candidate]},
+    )
+
+    assert all(region.region_id.startswith("LC-") for region in regions)
+    assert structure.blocks == []
+    assert visual_candidate["used_for_promotion"] is False
+
+
+def test_signing_region_stage_normalizes_string_candidate_lists_for_promotion() -> None:
+    candidate = {
+        "page_no": 2,
+        "bbox": {"x0": 80, "y0": 620, "x1": 520, "y1": 760},
+        "score": 0.42,
+        "reasons": "signing_page_context",
+        "block_ids": "candidate",
+        "text": "甲方：A公司\n乙方：B公司\n盖章：\n签字：",
+    }
+    visual_candidate = {
+        "page_no": 2,
+        "bbox": {"x0": 100, "y0": 640, "x1": 500, "y1": 740},
+        "label": "signature",
+        "confidence": 0.82,
+        "model_name": "opencv",
+        "reasons": ["table_or_stroke_density"],
+        "used_for_promotion": False,
+    }
+    structure = SigningBlockDetectionResult(low_confidence_candidates=[candidate])
+
+    regions = SigningRegionStage._candidate_regions_from_low_confidence(structure.low_confidence_candidates)
+    SigningRegionStage._promote_visual_supported_candidates(
+        structure,
+        {"_visual_candidates": [visual_candidate]},
+    )
+
+    assert regions[0].confidence_reasons == ["signing_page_context"]
+    assert structure.blocks[0].confidence_reasons == ["signing_page_context", "visual_candidate_promoted"]
+    assert structure.blocks[0].source_block_ids == ["candidate"]
+    assert visual_candidate["used_for_promotion"] is True
+
+
+def test_signing_region_stage_keeps_visual_enrichment_after_candidate_reextraction(tmp_path: Path) -> None:
+    high_block = SigningBlock(
+        block_id="SB-HIGH-1",
+        page_no=1,
+        bbox=BBox(x0=60, y0=620, x1=520, y1=760),
+        block_role=SigningBlockRole.BOTH_PARTIES,
+        confidence=0.72,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["seal_signature_date_cluster", "paired_parties"],
+        source_block_ids=["signing"],
+        text="甲方：A公司\n乙方：B公司\n盖章：\n签字：\n日期：",
+        exclude_from_clause_diff=False,
+    )
+    low_candidate = {
+        "page_no": 2,
+        "bbox": {"x0": 80, "y0": 620, "x1": 520, "y1": 760},
+        "score": 0.42,
+        "reasons": ["signing_page_context", "business_signing_form_fields"],
+        "block_ids": ["candidate"],
+        "text": "甲方：A公司\n乙方：B公司\n盖章：\n签字：",
+    }
+
+    class _Detector:
+        def detect(self, _document: Document) -> SigningBlockDetectionResult:
+            return SigningBlockDetectionResult(
+                blocks=[high_block.model_copy(deep=True)],
+                low_confidence_candidates=[dict(low_candidate)],
+            )
+
+    class _VisualDetector:
+        call_count = 0
+
+        def detect(self, _pdf_path: Path, regions, _task_id: str) -> VisualDetectionResult:
+            self.call_count += 1
+            assert len(regions) == 2
+            region = regions[0]
+            return VisualDetectionResult(
+                available=True,
+                model_name="opencv",
+                detections=[
+                    VisualDetection(
+                        page_no=region.page_no,
+                        bbox=region.bbox,
+                        label="signature",
+                        confidence=0.88,
+                        model_name="opencv",
+                        raw_data={"reasons": ["table_or_stroke_density"]},
+                    )
+                ],
+            )
+
+    original = Document(
+        filename="original.pdf",
+        path="original.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="signing",
+                        page_no=1,
+                        text="甲方：A公司\n乙方：B公司\n盖章：\n签字：\n日期：",
+                        bbox=BBox(x0=60, y0=620, x1=520, y1=760),
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="candidate",
+                        page_no=2,
+                        text="甲方：A公司\n乙方：B公司\n盖章：\n签字：",
+                        bbox=BBox(x0=80, y0=620, x1=520, y1=760),
+                    )
+                ],
+            ),
+        ],
+    )
+    compare = original.model_copy(deep=True)
+    compare.filename = "compare.pdf"
+    ctx = _ctx(tmp_path)
+    ctx.original_extraction = ExtractionResult(document=original, extractor_used="test")
+    ctx.compare_extraction = ExtractionResult(document=compare, extractor_used="test")
+    visual_detector = _VisualDetector()
+    stage = SigningRegionStage(
+        artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
+        visual_detector=visual_detector,
+        visual_enabled=True,
+    )
+    stage.visual_fingerprinter = None
+    stage.block_detector = _Detector()
+
+    stage.execute(ctx)
+
+    assert visual_detector.call_count == 2
+    assert any(
+        element.source == "visual_model"
+        for region in ctx.signing_regions_original
+        for element in region.elements
+    )
+    assert any(
+        element["source"] == "visual_model"
+        for region in ctx.signing_region_debug["original_regions"]
+        for element in region["elements"]
+    )
 
 
 def test_signing_region_stage_records_unavailable_visual_adapter_without_failing(tmp_path: Path) -> None:

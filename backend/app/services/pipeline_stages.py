@@ -7,6 +7,7 @@ from typing import Any
 from app.config import settings
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.models import (
+    BBox,
     Clause,
     CompareTask,
     DiffItem,
@@ -48,6 +49,9 @@ from app.services.signing_region.diff_builder import SigningRegionDiffBuilder
 from app.services.signing_region.extractor import SigningRegionExtractor
 from app.services.signing_region.matcher import SigningRegionMatcher
 from app.services.signing_region.models import (
+    SigningBlock,
+    SigningBlockConfidenceLevel,
+    SigningBlockRole,
     SigningElement,
     SigningElementType,
     SigningRegion,
@@ -539,6 +543,12 @@ class SigningRegionStage:
             compare_structure.blocks,
             signing_pages=compare_structure.pages,
         )
+        original_candidate_regions = self._candidate_regions_from_low_confidence(
+            original_structure.low_confidence_candidates
+        )
+        compare_candidate_regions = self._candidate_regions_from_low_confidence(
+            compare_structure.low_confidence_candidates
+        )
         suppressed_low_confidence_candidates: list[dict[str, Any]] = []
         visual_status = {
             "original": self._collect_visual(
@@ -547,6 +557,7 @@ class SigningRegionStage:
                 ctx.task.task_id,
                 side="original",
                 suppressed=suppressed_low_confidence_candidates,
+                candidate_regions=original_candidate_regions,
             ),
             "compare": self._collect_visual(
                 ctx.compare_pdf,
@@ -554,8 +565,32 @@ class SigningRegionStage:
                 ctx.task.task_id,
                 side="compare",
                 suppressed=suppressed_low_confidence_candidates,
+                candidate_regions=compare_candidate_regions,
             ),
         }
+        self._promote_visual_supported_candidates(original_structure, visual_status["original"])
+        self._promote_visual_supported_candidates(compare_structure, visual_status["compare"])
+        if original_candidate_regions or compare_candidate_regions:
+            original_regions, original_legacy_fallback = self._extract_regions_from_structure(
+                extractions.original.document,
+                original_structure,
+            )
+            compare_regions, compare_legacy_fallback = self._extract_regions_from_structure(
+                extractions.compare.document,
+                compare_structure,
+            )
+            self._refresh_visual_elements_for_regions(
+                visual_status["original"],
+                original_regions,
+                ctx.original_pdf,
+                side="original",
+            )
+            self._refresh_visual_elements_for_regions(
+                visual_status["compare"],
+                compare_regions,
+                ctx.compare_pdf,
+                side="compare",
+            )
         self._apply_visual_enrichment_when_comparable(visual_status)
         matches = self.matcher.match(original_regions, compare_regions)
         comparisons = [
@@ -657,6 +692,137 @@ class SigningRegionStage:
             *ctx.seal_diffs,
         ]
 
+    @staticmethod
+    def _promote_visual_supported_candidates(
+        structure: SigningBlockDetectionResult,
+        visual_status: dict[str, Any],
+    ) -> None:
+        promoted: list[SigningBlock] = []
+        visual_candidates = visual_status.get("_visual_candidates", [])
+        for candidate in structure.low_confidence_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            try:
+                score = float(candidate.get("score") or 0)
+            except (TypeError, ValueError):
+                continue
+            if score < 0.35:
+                continue
+            try:
+                page_no = int(candidate.get("page_no", 0))
+            except (TypeError, ValueError):
+                continue
+            bbox_payload = candidate.get("bbox")
+            if page_no <= 0 or not isinstance(bbox_payload, dict):
+                continue
+            reasons = SigningRegionStage._candidate_list_value(candidate.get("reasons"))
+            if not SigningRegionStage._candidate_has_rule_support(reasons):
+                continue
+            try:
+                bbox = BBox.model_validate(bbox_payload)
+            except Exception:
+                continue
+            matched_visual = SigningRegionStage._matching_visual_candidate(page_no, bbox, visual_candidates)
+            if matched_visual is None:
+                continue
+            matched_visual["used_for_promotion"] = True
+            promoted.append(
+                SigningBlock(
+                    block_id=f"SB-VISUAL-{page_no}-{len(promoted) + 1}",
+                    page_no=page_no,
+                    bbox=bbox,
+                    block_role=SigningBlockRole.UNKNOWN,
+                    confidence=round(min(0.69, max(0.5, score + 0.15)), 2),
+                    confidence_level=SigningBlockConfidenceLevel.MEDIUM,
+                    confidence_reasons=[*reasons, "visual_candidate_promoted"],
+                    source_block_ids=SigningRegionStage._candidate_list_value(candidate.get("block_ids")),
+                    text=str(candidate.get("text") or ""),
+                    exclude_from_clause_diff=False,
+                )
+            )
+        structure.blocks.extend(promoted)
+
+    @staticmethod
+    def _candidate_list_value(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple, set)):
+            return [item for item in value if isinstance(item, str)]
+        return []
+
+    @staticmethod
+    def _candidate_has_rule_support(reasons: list[object]) -> bool:
+        allowed_reasons = {
+            "signing_page_context",
+            "business_signing_form_fields",
+            "page_signing_context_business_fields",
+            "previous_page_signing_context_business_fields",
+            "terminal_signing_clause_context",
+            "paired_parties",
+        }
+        return any(reason in allowed_reasons for reason in reasons)
+
+    @staticmethod
+    def _matching_visual_candidate(
+        page_no: int,
+        bbox: BBox,
+        visual_candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        for visual_candidate in visual_candidates:
+            if not isinstance(visual_candidate, dict):
+                continue
+            if not SigningRegionStage._visual_candidate_meets_promotion_threshold(visual_candidate):
+                continue
+            if visual_candidate.get("page_no") != page_no:
+                continue
+            visual_bbox_payload = visual_candidate.get("bbox")
+            if not isinstance(visual_bbox_payload, dict):
+                continue
+            try:
+                visual_bbox = BBox.model_validate(visual_bbox_payload)
+            except Exception:
+                continue
+            if SigningRegionStage._overlap_ratio(bbox, visual_bbox) >= 0.2:
+                return visual_candidate
+        return None
+
+    @staticmethod
+    def _visual_candidate_meets_promotion_threshold(visual_candidate: dict[str, Any]) -> bool:
+        try:
+            confidence = float(visual_candidate.get("confidence"))
+        except (TypeError, ValueError):
+            return False
+        return confidence >= SigningRegionStage.visual_confidence_threshold
+
+    @staticmethod
+    def _candidate_regions_from_low_confidence(candidates: list[object]) -> list[SigningRegion]:
+        regions: list[SigningRegion] = []
+        for index, candidate in enumerate(candidates, start=1):
+            if not isinstance(candidate, dict):
+                continue
+            try:
+                page_no = int(candidate.get("page_no", 0))
+            except (TypeError, ValueError):
+                continue
+            bbox_payload = candidate.get("bbox")
+            if page_no <= 0 or not isinstance(bbox_payload, dict):
+                continue
+            try:
+                regions.append(
+                    SigningRegion(
+                        region_id=f"LC-{page_no}-{index}",
+                        page_no=page_no,
+                        bbox=BBox.model_validate(bbox_payload),
+                        confidence=float(candidate.get("score") or 0),
+                        confidence_reasons=SigningRegionStage._candidate_list_value(candidate.get("reasons")),
+                    )
+                )
+            except Exception:
+                continue
+        return regions
+
     def _collect_visual(
         self,
         pdf_path: Path,
@@ -665,6 +831,7 @@ class SigningRegionStage:
         *,
         side: str,
         suppressed: list[dict[str, Any]],
+        candidate_regions: list[SigningRegion] | None = None,
     ) -> dict[str, Any]:
         status: dict[str, Any] = {
             "enabled": self.visual_enabled,
@@ -676,12 +843,15 @@ class SigningRegionStage:
             "_detection_elements": [],
             "_fingerprint_elements": [],
             "_visual_candidates": [],
+            "_detection_result": None,
         }
         if not self.visual_enabled:
             status["error"] = "disabled"
             return status
 
-        detection_result = self._detect_visual(pdf_path, regions, task_id)
+        detector_regions = [*regions, *(candidate_regions or [])]
+        detection_result = self._detect_visual(pdf_path, detector_regions, task_id)
+        status["_detection_result"] = detection_result
         status.update(
             {
                 "available": detection_result.available,
@@ -717,6 +887,32 @@ class SigningRegionStage:
         status["fingerprint_count"] = len(fingerprint_elements)
         return status
 
+    def _refresh_visual_elements_for_regions(
+        self,
+        visual_status: dict[str, Any],
+        regions: list[SigningRegion],
+        pdf_path: Path,
+        *,
+        side: str,
+    ) -> None:
+        if not visual_status.get("enabled"):
+            return
+
+        detection_result = visual_status.get("_detection_result")
+        if isinstance(detection_result, VisualDetectionResult) and detection_result.available:
+            detection_elements = self._visual_detection_elements(
+                regions,
+                detection_result,
+                side=side,
+                suppressed=None,
+            )
+            visual_status["_detection_elements"] = detection_elements
+            visual_status["detection_count"] = len(detection_elements)
+
+        fingerprint_elements = self._visual_fingerprint_elements(pdf_path, regions)
+        visual_status["_fingerprint_elements"] = fingerprint_elements
+        visual_status["fingerprint_count"] = len(fingerprint_elements)
+
     def _detect_visual(self, pdf_path: Path, regions: list[SigningRegion], task_id: str) -> VisualDetectionResult:
         if self.visual_detector is None:
             return VisualDetectionResult(available=False, error="visual_detector_not_configured")
@@ -732,21 +928,22 @@ class SigningRegionStage:
         detection_result: VisualDetectionResult,
         *,
         side: str,
-        suppressed: list[dict[str, Any]],
+        suppressed: list[dict[str, Any]] | None,
     ) -> list[tuple[SigningRegion, SigningElement]]:
         elements: list[tuple[SigningRegion, SigningElement]] = []
         for index, detection in enumerate(detection_result.detections, start=1):
             if detection.confidence < self.visual_confidence_threshold:
-                suppressed.append(
-                    {
-                        "side": side,
-                        "page_no": detection.page_no,
-                        "bbox": detection.bbox.model_dump(mode="json"),
-                        "label": detection.label,
-                        "confidence": detection.confidence,
-                        "reason": "low_visual_confidence",
-                    }
-                )
+                if suppressed is not None:
+                    suppressed.append(
+                        {
+                            "side": side,
+                            "page_no": detection.page_no,
+                            "bbox": detection.bbox.model_dump(mode="json"),
+                            "label": detection.label,
+                            "confidence": detection.confidence,
+                            "reason": "low_visual_confidence",
+                        }
+                    )
                 continue
             region = self._matching_region(regions, detection)
             if region is None:

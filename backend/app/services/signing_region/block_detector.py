@@ -73,6 +73,7 @@ class SigningBlockDetector:
                 result.low_confidence_candidates.append({
                     "page_no": page.page_no,
                     "block_ids": [block.block_id for block in cluster],
+                    "bbox": bbox.model_dump(mode="json"),
                     "score": score,
                     "reasons": reasons,
                     "text": text[:200],
