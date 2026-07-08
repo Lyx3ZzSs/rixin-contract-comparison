@@ -549,6 +549,8 @@ class SigningRegionStage:
         compare_candidate_regions = self._candidate_regions_from_low_confidence(
             compare_structure.low_confidence_candidates
         )
+        original_visual_candidate_regions = self._candidate_regions_for_visual_scan(original_candidate_regions)
+        compare_visual_candidate_regions = self._candidate_regions_for_visual_scan(compare_candidate_regions)
         suppressed_low_confidence_candidates: list[dict[str, Any]] = []
         visual_status = {
             "original": self._collect_visual(
@@ -557,7 +559,7 @@ class SigningRegionStage:
                 ctx.task.task_id,
                 side="original",
                 suppressed=suppressed_low_confidence_candidates,
-                candidate_regions=original_candidate_regions,
+                candidate_regions=original_visual_candidate_regions,
             ),
             "compare": self._collect_visual(
                 ctx.compare_pdf,
@@ -565,12 +567,20 @@ class SigningRegionStage:
                 ctx.task.task_id,
                 side="compare",
                 suppressed=suppressed_low_confidence_candidates,
-                candidate_regions=compare_candidate_regions,
+                candidate_regions=compare_visual_candidate_regions,
             ),
         }
-        self._promote_visual_supported_candidates(original_structure, visual_status["original"])
-        self._promote_visual_supported_candidates(compare_structure, visual_status["compare"])
-        if original_candidate_regions or compare_candidate_regions:
+        self._promote_visual_supported_candidates(
+            original_structure,
+            visual_status["original"],
+            candidate_regions=original_visual_candidate_regions,
+        )
+        self._promote_visual_supported_candidates(
+            compare_structure,
+            visual_status["compare"],
+            candidate_regions=compare_visual_candidate_regions,
+        )
+        if original_visual_candidate_regions or compare_visual_candidate_regions:
             original_regions, original_legacy_fallback = self._extract_regions_from_structure(
                 extractions.original.document,
                 original_structure,
@@ -696,9 +706,19 @@ class SigningRegionStage:
     def _promote_visual_supported_candidates(
         structure: SigningBlockDetectionResult,
         visual_status: dict[str, Any],
+        *,
+        candidate_regions: list[SigningRegion] | None = None,
     ) -> None:
         promoted: list[SigningBlock] = []
         visual_candidates = visual_status.get("_visual_candidates", [])
+        allowed_candidate_keys = (
+            {
+                SigningRegionStage._candidate_region_key(region.page_no, region.bbox)
+                for region in candidate_regions
+            }
+            if candidate_regions is not None
+            else None
+        )
         for candidate in structure.low_confidence_candidates:
             if not isinstance(candidate, dict):
                 continue
@@ -721,6 +741,11 @@ class SigningRegionStage:
             try:
                 bbox = BBox.model_validate(bbox_payload)
             except Exception:
+                continue
+            if (
+                allowed_candidate_keys is not None
+                and SigningRegionStage._candidate_region_key(page_no, bbox) not in allowed_candidate_keys
+            ):
                 continue
             matched_visual = SigningRegionStage._matching_visual_candidate(page_no, bbox, visual_candidates)
             if matched_visual is None:
@@ -822,6 +847,26 @@ class SigningRegionStage:
             except Exception:
                 continue
         return regions
+
+    @staticmethod
+    def _candidate_regions_for_visual_scan(candidate_regions: list[SigningRegion]) -> list[SigningRegion]:
+        if not settings.signing_opencv_scan_candidate_pages:
+            return []
+
+        filtered_regions: list[SigningRegion] = []
+        included_pages: set[int] = set()
+        max_pages = settings.signing_opencv_max_candidate_pages
+        for region in candidate_regions:
+            if region.page_no not in included_pages:
+                if len(included_pages) >= max_pages:
+                    continue
+                included_pages.add(region.page_no)
+            filtered_regions.append(region)
+        return filtered_regions
+
+    @staticmethod
+    def _candidate_region_key(page_no: int, bbox: BBox) -> tuple[int, float, float, float, float]:
+        return (page_no, bbox.x0, bbox.y0, bbox.x1, bbox.y1)
 
     def _collect_visual(
         self,

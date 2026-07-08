@@ -103,14 +103,19 @@ class OpenCvVisualSignatureDetector:
             return VisualDetectionResult(available=False, model_name="opencv", error="opencv_unavailable")
 
         detections: list[VisualDetection] = []
+        rendered_count = 0
         for region in regions:
             image = self._render_region(pdf_path, region)
             if image is None:
                 continue
 
+            rendered_count += 1
             detection = self._detect_region(region, image)
             if detection is not None and detection.confidence >= self.min_confidence:
                 detections.append(detection)
+
+        if regions and rendered_count == 0:
+            return VisualDetectionResult(available=False, model_name="opencv", error="render_failed")
 
         return VisualDetectionResult(available=True, model_name="opencv", detections=detections)
 

@@ -150,6 +150,25 @@ def test_opencv_visual_detector_reports_unavailable_when_dependencies_missing(
     assert result.detections == []
 
 
+def test_opencv_visual_detector_reports_unavailable_when_all_regions_fail_to_render(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    _patch_opencv_dependencies(monkeypatch, OpenCvVisualSignatureDetector)
+    detector = OpenCvVisualSignatureDetector()
+    monkeypatch.setattr(detector, "_render_region", lambda *_args: None)
+
+    result = detector.detect(pdf_path, [_region()], task_id="task-1")
+
+    assert result.available is False
+    assert result.model_name == "opencv"
+    assert result.error == "render_failed"
+    assert result.detections == []
+
+
 def test_opencv_visual_detector_detects_red_seal_in_region(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
