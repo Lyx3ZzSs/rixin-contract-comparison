@@ -259,22 +259,227 @@ class CompareDebugWriter:
         ]
         paragraph_merged = [clause for clause in clauses if "PARAGRAPH_MERGED" in clause.split_flags]
         section_counts: Counter[str] = Counter(clause.section_type for clause in clauses)
+        cross_page_merged = [clause for clause in clauses if "CROSS_PAGE_CONTINUATION_MERGED" in clause.split_flags]
+        reading_order_repaired = [clause for clause in clauses if "READING_ORDER_REPAIRED" in clause.split_flags]
         return {
             "clause_count": len(clauses),
             "section_counts": dict(section_counts),
+            "length_stats": self._length_stats(clauses),
             "short_clause_count": len(short_clauses),
             "long_clause_count": len(long_clauses),
             "low_confidence_count": len(low_confidence),
             "weak_numbered_count": len(weak_numbered),
             "paragraph_merged_count": len(paragraph_merged),
+            "cross_page_merged_count": len(cross_page_merged),
+            "reading_order_repaired_count": len(reading_order_repaired),
             "duplicate_clause_key_count": len(duplicate_keys),
             "duplicate_clause_keys": duplicate_keys[:50],
+            "duplicate_clause_key_groups": self._duplicate_clause_key_groups(clauses, duplicate_keys),
+            "split_flag_counts": self._split_flag_counts(clauses),
+            "segmentation_diagnostics": self._segmentation_diagnostics(clauses),
+            "section_path_diagnostics": self._section_path_diagnostics(clauses),
+            "source_evidence_diagnostics": self._source_evidence_diagnostics(clauses),
+            "result_stage_summary": self._result_stage_summary(clauses),
             "short_clauses": [self._quality_clause_ref(clause) for clause in short_clauses[:50]],
             "long_clauses": [self._quality_clause_ref(clause) for clause in long_clauses[:50]],
             "low_confidence_clauses": [self._quality_clause_ref(clause) for clause in low_confidence[:50]],
             "weak_numbered_clauses": [self._quality_clause_ref(clause) for clause in weak_numbered[:50]],
             "paragraph_merged_clauses": [self._quality_clause_ref(clause) for clause in paragraph_merged[:50]],
+            "cross_page_merged_clauses": [self._quality_clause_ref(clause) for clause in cross_page_merged[:50]],
+            "reading_order_repaired_clauses": [self._quality_clause_ref(clause) for clause in reading_order_repaired[:50]],
         }
+
+    def _length_stats(self, clauses: list[Clause]) -> dict[str, Any]:
+        lengths = [len(clause.normalized_text) for clause in clauses]
+        if not lengths:
+            return {"min": 0, "max": 0, "avg": 0.0}
+        return {
+            "min": min(lengths),
+            "max": max(lengths),
+            "avg": round(sum(lengths) / len(lengths), 2),
+        }
+
+    def _split_flag_counts(self, clauses: list[Clause]) -> dict[str, int]:
+        counts: Counter[str] = Counter()
+        for clause in clauses:
+            counts.update(flag for flag in clause.split_flags if flag)
+        return dict(counts)
+
+    def _segmentation_diagnostics(self, clauses: list[Clause]) -> dict[str, Any]:
+        base_counts: Counter[str] = Counter()
+        order_reason_counts: Counter[str] = Counter()
+        heading_signal_counts: Counter[str] = Counter()
+        heading_risk_counts: Counter[str] = Counter()
+        heading_score_buckets: Counter[str] = Counter()
+        heading_scores: list[float] = []
+        for clause in clauses:
+            parts = self._segmentation_reason_parts(clause.segmentation_reason)
+            if not parts:
+                base_counts["missing"] += 1
+                continue
+            base_counts[self._segmentation_base(parts[0])] += 1
+            for part in parts[1:]:
+                if part.startswith("order:"):
+                    order_reason_counts[part.removeprefix("order:") or "unknown"] += 1
+                elif part.startswith("signals:"):
+                    heading_signal_counts.update(self._csv_values(part.removeprefix("signals:")))
+                elif part.startswith("risks:"):
+                    heading_risk_counts.update(self._csv_values(part.removeprefix("risks:")))
+                elif part.startswith("heading_score:"):
+                    score = self._parse_float(part.removeprefix("heading_score:"))
+                    if score is not None:
+                        heading_scores.append(score)
+                        heading_score_buckets[self._heading_score_bucket(score)] += 1
+        return {
+            "base_counts": dict(base_counts),
+            "order_reason_counts": dict(order_reason_counts),
+            "heading_signal_counts": dict(heading_signal_counts),
+            "heading_risk_counts": dict(heading_risk_counts),
+            "heading_score_buckets": dict(heading_score_buckets),
+            "heading_score_stats": self._score_stats(heading_scores),
+            "missing_reason_count": base_counts.get("missing", 0),
+        }
+
+    @staticmethod
+    def _segmentation_reason_parts(reason: str) -> list[str]:
+        return [part.strip() for part in (reason or "").split("|") if part.strip()]
+
+    @staticmethod
+    def _segmentation_base(first_part: str) -> str:
+        if first_part.startswith("marker:"):
+            return "marker"
+        if first_part == "unnumbered_heading":
+            return "unnumbered_heading"
+        if first_part.startswith("fallback"):
+            return "fallback"
+        return first_part or "unknown"
+
+    @staticmethod
+    def _csv_values(value: str) -> list[str]:
+        return [item.strip() for item in value.split(",") if item.strip()]
+
+    @staticmethod
+    def _parse_float(value: str) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _heading_score_bucket(score: float) -> str:
+        if score < 0.55:
+            return "very_low_lt_0_55"
+        if score < 0.68:
+            return "review_0_55_to_0_68"
+        if score < 0.85:
+            return "normal_0_68_to_0_85"
+        return "strong_gte_0_85"
+
+    def _score_stats(self, scores: list[float]) -> dict[str, Any]:
+        if not scores:
+            return {"count": 0, "min": 0.0, "max": 0.0, "avg": 0.0}
+        return {
+            "count": len(scores),
+            "min": round(min(scores), 2),
+            "max": round(max(scores), 2),
+            "avg": round(sum(scores) / len(scores), 2),
+        }
+
+    def _section_path_diagnostics(self, clauses: list[Clause]) -> dict[str, Any]:
+        path_counts: Counter[str] = Counter()
+        transitions: list[dict[str, Any]] = []
+        previous_key: tuple[str, tuple[str, ...]] | None = None
+        section_path_change_count = 0
+        for index, clause in enumerate(clauses):
+            key = (clause.section_type, tuple(clause.section_path))
+            path_label = self._section_path_label(clause)
+            path_counts[path_label] += 1
+            if previous_key != key:
+                if previous_key is not None:
+                    section_path_change_count += 1
+                transitions.append(
+                    {
+                        "index": index,
+                        "clause_id": clause.clause_id,
+                        "clause_no": clause.clause_no,
+                        "title": clause.title,
+                        "section_type": clause.section_type,
+                        "section_path": clause.section_path,
+                        "page_numbers": clause.page_numbers,
+                    }
+                )
+            previous_key = key
+        return {
+            "unique_section_path_count": len(path_counts),
+            "section_path_change_count": section_path_change_count,
+            "section_path_counts": dict(path_counts),
+            "section_path_transitions": transitions[:100],
+        }
+
+    @staticmethod
+    def _section_path_label(clause: Clause) -> str:
+        path = " / ".join(clause.section_path)
+        return f"{clause.section_type}:{path}" if path else f"{clause.section_type}:"
+
+    def _source_evidence_diagnostics(self, clauses: list[Clause]) -> dict[str, Any]:
+        source_counts = [len(clause.source_block_ids) for clause in clauses]
+        evidence_counts = [len(clause.bboxes) for clause in clauses]
+        multi_page = [clause for clause in clauses if len(set(clause.page_numbers)) > 1]
+        missing_evidence = [clause for clause in clauses if not clause.bboxes]
+        return {
+            "page_span_counts": {
+                "missing_page": sum(1 for clause in clauses if not clause.page_numbers),
+                "single_page": sum(1 for clause in clauses if len(set(clause.page_numbers)) == 1),
+                "multi_page": len(multi_page),
+            },
+            "source_block_stats": self._count_stats(source_counts),
+            "evidence_stats": self._count_stats(evidence_counts),
+            "missing_evidence_count": len(missing_evidence),
+            "multi_page_clause_count": len(multi_page),
+            "multi_page_clauses": [self._quality_clause_ref(clause) for clause in multi_page[:50]],
+            "missing_evidence_clauses": [self._quality_clause_ref(clause) for clause in missing_evidence[:50]],
+        }
+
+    @staticmethod
+    def _count_stats(values: list[int]) -> dict[str, Any]:
+        if not values:
+            return {"min": 0, "max": 0, "avg": 0.0}
+        return {
+            "min": min(values),
+            "max": max(values),
+            "avg": round(sum(values) / len(values), 2),
+        }
+
+    def _result_stage_summary(self, clauses: list[Clause]) -> dict[str, Any]:
+        return {
+            "final_clause_count": len(clauses),
+            "clauses_with_paragraph_merge": sum(1 for clause in clauses if "PARAGRAPH_MERGED" in clause.split_flags),
+            "clauses_with_cross_page_merge": sum(1 for clause in clauses if "CROSS_PAGE_CONTINUATION_MERGED" in clause.split_flags),
+            "clauses_with_reading_order_repair": sum(1 for clause in clauses if "READING_ORDER_REPAIRED" in clause.split_flags),
+            "clauses_with_weak_heading_or_marker": sum(
+                1
+                for clause in clauses
+                if "WEAK_NUMERIC_MARKER" in clause.split_flags or "WEAK_HEADING" in clause.split_flags
+            ),
+            "clauses_with_section_flags": sum(1 for clause in clauses if any(flag.startswith("SECTION_") for flag in clause.split_flags)),
+        }
+
+    def _duplicate_clause_key_groups(self, clauses: list[Clause], duplicate_keys: list[str]) -> list[dict[str, Any]]:
+        duplicate_key_set = set(duplicate_keys)
+        if not duplicate_key_set:
+            return []
+        groups: dict[str, list[Clause]] = {}
+        for clause in clauses:
+            if clause.clause_key in duplicate_key_set:
+                groups.setdefault(clause.clause_key, []).append(clause)
+        return [
+            {
+                "clause_key": key,
+                "count": len(group),
+                "clauses": [self._quality_clause_ref(clause) for clause in group[:20]],
+            }
+            for key, group in list(groups.items())[:50]
+        ]
 
     def _quality_clause_ref(self, clause: Clause) -> dict[str, Any]:
         return {
@@ -282,13 +487,25 @@ class CompareDebugWriter:
             "clause_no": clause.clause_no,
             "title": clause.title,
             "section_type": clause.section_type,
+            "section_path": clause.section_path,
             "clause_key": clause.clause_key,
             "split_flags": clause.split_flags,
+            "segmentation_reason": clause.segmentation_reason,
             "segmentation_confidence": clause.segmentation_confidence,
             "normalized_length": len(clause.normalized_text),
             "page_numbers": clause.page_numbers,
+            "page_span": self._page_span(clause.page_numbers),
+            "source_block_count": len(clause.source_block_ids),
+            "evidence_count": len(clause.bboxes),
             "text_preview": clause.text[:160],
         }
+
+    @staticmethod
+    def _page_span(page_numbers: list[int]) -> dict[str, Any]:
+        if not page_numbers:
+            return {"start": None, "end": None, "count": 0}
+        unique_pages = sorted(set(page_numbers))
+        return {"start": unique_pages[0], "end": unique_pages[-1], "count": len(unique_pages)}
 
     def _section_outline(self, clauses: list[Clause]) -> list[dict[str, Any]]:
         outline = []
