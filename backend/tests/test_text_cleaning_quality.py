@@ -1461,6 +1461,198 @@ def test_clause_splitter_preserves_substantive_preamble_before_first_article() -
     assert clauses[1].clause_no == "第一条"
 
 
+def test_clause_splitter_preserves_substantive_preamble_after_cover_title() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="cover-title",
+                        page_no=1,
+                        text="采购合同",
+                        bbox=BBox(x0=180, y0=40, x1=360, y1=70),
+                        block_type="doc_title",
+                    ),
+                    TextBlock(
+                        block_id="preamble",
+                        page_no=1,
+                        text="鉴于甲方需要采购风功率预测服务，乙方具备相应资质。",
+                        bbox=BBox(x0=50, y0=90, x1=520, y1=115),
+                    ),
+                    TextBlock(
+                        block_id="article",
+                        page_no=1,
+                        text="第一条 服务范围",
+                        bbox=BBox(x0=50, y0=140, x1=220, y1=160),
+                    ),
+                    TextBlock(
+                        block_id="body",
+                        page_no=1,
+                        text="乙方提供系统服务。",
+                        bbox=BBox(x0=70, y0=180, x1=420, y1=200),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert clauses[0].source_block_ids == ["preamble"]
+    assert "鉴于甲方需要采购" in clauses[0].text
+    assert clauses[1].clause_no == "第一条"
+
+
+def test_clause_splitter_repairs_cross_line_reading_order_backtrack_without_layout_order() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="article-1",
+                        page_no=1,
+                        text="第一条 服务范围",
+                        bbox=BBox(x0=50, y0=80, x1=220, y1=100),
+                        reading_order=1,
+                    ),
+                    TextBlock(
+                        block_id="article-1-body",
+                        page_no=1,
+                        text="乙方提供系统服务。",
+                        bbox=BBox(x0=70, y0=120, x1=420, y1=140),
+                        reading_order=3,
+                    ),
+                    TextBlock(
+                        block_id="article-2",
+                        page_no=1,
+                        text="第二条 保密义务",
+                        bbox=BBox(x0=50, y0=200, x1=220, y1=220),
+                        reading_order=2,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.source_block_ids for clause in clauses] == [
+        ["article-1", "article-1-body"],
+        ["article-2"],
+    ]
+    assert "READING_ORDER_REPAIRED" in clauses[0].split_flags
+    assert "乙方提供系统服务" in clauses[0].text
+    assert "乙方提供系统服务" not in clauses[1].text
+
+
+def test_clause_splitter_filters_short_bottom_ocr_fragment_from_clause_body() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="article",
+                        page_no=1,
+                        text="第一条 服务范围",
+                        bbox=BBox(x0=50, y0=100, x1=220, y1=120),
+                        reading_order=1,
+                    ),
+                    TextBlock(
+                        block_id="body",
+                        page_no=1,
+                        text="乙方提供系统服务。",
+                        bbox=BBox(x0=70, y0=140, x1=420, y1=160),
+                        reading_order=2,
+                    ),
+                    TextBlock(
+                        block_id="bottom-fragment",
+                        page_no=1,
+                        text="A1",
+                        bbox=BBox(x0=285, y0=815, x1=330, y1=828),
+                        block_type="ocr_line",
+                        confidence=0.95,
+                        reading_order=3,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert clauses[0].source_block_ids == ["article", "body"]
+    assert "A1" not in clauses[0].text
+
+
+def test_document_preparer_stops_appendix_section_on_formal_main_clause_heading() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="appendix-title",
+                        page_no=1,
+                        text="附件一 技术规范",
+                        bbox=BBox(x0=50, y0=80, x1=220, y1=100),
+                        layout_order=1,
+                    ),
+                    TextBlock(
+                        block_id="appendix-body",
+                        page_no=1,
+                        text="设备应满足接口开放要求。",
+                        bbox=BBox(x0=70, y0=120, x1=420, y1=140),
+                        layout_order=2,
+                    ),
+                    TextBlock(
+                        block_id="main-heading",
+                        page_no=1,
+                        text="第十五条 争议解决",
+                        bbox=BBox(x0=50, y0=180, x1=240, y1=200),
+                        layout_order=3,
+                    ),
+                    TextBlock(
+                        block_id="main-body",
+                        page_no=1,
+                        text="双方协商不成的，提交法院处理。",
+                        bbox=BBox(x0=70, y0=220, x1=480, y1=240),
+                        layout_order=4,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    DocumentPreparer().prepare(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.section_type for clause in clauses] == ["appendix", "main_contract"]
+    assert clauses[1].source_block_ids == ["main-heading", "main-body"]
+
+
 def test_quote_section_is_split_from_main_contract_clause_flow() -> None:
     document = Document(
         filename="sample.pdf",

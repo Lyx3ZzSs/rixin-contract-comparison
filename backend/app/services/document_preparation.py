@@ -87,6 +87,7 @@ class DocumentPreparer:
     formal_clause_heading_pattern = re.compile(
         r"^\s*(?:第[一二三四五六七八九十百千万0-9]+[章节条]|[一二三四五六七八九十百千万]+、)"
     )
+    main_contract_heading_pattern = re.compile(r"^\s*第[一二三四五六七八九十百千万0-9]+[章节条]")
     decimal_clause_heading_pattern = re.compile(r"^\s*(\d+(?:\.\d+){1,3})[、.．]?\s*(.+)$")
     integer_clause_heading_pattern = re.compile(r"^\s*\d+[、.．]\s*(.+)$")
     date_like_pattern = re.compile(r"^\s*(?:19|20)\d{2}[./年-]\d{1,2}(?:[./月-]\d{1,2}日?)?\s*$")
@@ -137,6 +138,8 @@ class DocumentPreparer:
                 active_section_role = section_role
                 self._mark_role(block, side, section_role, "section_classifier", result)
                 continue
+            if active_section_role and self._looks_like_main_contract_heading(compact):
+                active_section_role = None
             if active_section_role and not self._looks_like_main_contract_restart(compact):
                 self._mark_role(block, side, active_section_role, "section_classifier_continuation", result)
                 continue
@@ -167,6 +170,9 @@ class DocumentPreparer:
             return len(decimal_match.group(2).strip("、.．:：")) >= 4
         integer_match = self.integer_clause_heading_pattern.match(compact)
         return bool(integer_match and len(integer_match.group(1).strip("、.．:：")) >= 4)
+
+    def _looks_like_main_contract_heading(self, compact: str) -> bool:
+        return bool(self.main_contract_heading_pattern.match(compact))
 
     def _section_role(self, block: TextBlock, compact: str) -> str | None:
         block_type = (block.block_type or "").lower()

@@ -279,13 +279,18 @@ class ClauseSplitter:
         confidence = block.confidence
         low_confidence = confidence is not None and confidence < self.short_noise_confidence
         tiny_block = width <= max(page_width * 0.035, 16.0) and height <= max(page_height * 0.02, 16.0)
-        edge_ocr_line = block_type == "ocr_line" and self._near_horizontal_edge(bbox, page_width)
+        vertical_edge_ocr_line = block_type == "ocr_line" and self._near_vertical_edge(bbox, page_height)
+        edge_ocr_line = block_type == "ocr_line" and (
+            self._near_horizontal_edge(bbox, page_width) or vertical_edge_ocr_line
+        )
         latin_noise = bool(re.fullmatch(r"[A-Za-z]{1,5}", compact)) and low_confidence
         small_latin_ocr_noise = block_type == "ocr_line" and latin_noise and height <= max(page_height * 0.02, 16.0)
         punctuation_number_noise = bool(re.fullmatch(r"[(（]?[-—_~]*\d{1,2}[)）.]?", compact)) and low_confidence
         symbol_noise = bool(re.fullmatch(r"[\W_]{1,5}", compact)) and low_confidence
+        short_vertical_edge_noise = vertical_edge_ocr_line and self._looks_like_short_edge_noise(compact)
         return bool(
             small_latin_ocr_noise
+            or short_vertical_edge_noise
             or (
                 (tiny_block or edge_ocr_line)
                 and (latin_noise or punctuation_number_noise or symbol_noise)
@@ -317,6 +322,20 @@ class ClauseSplitter:
             return False
         return bbox.x0 <= page_width * 0.03 or bbox.x1 >= page_width * 0.97
 
+    def _near_vertical_edge(self, bbox: BBox, page_height: float) -> bool:
+        if page_height <= 0:
+            return False
+        return bbox.y1 <= page_height * 0.08 or bbox.y0 >= page_height * 0.92
+
+    def _looks_like_short_edge_noise(self, compact: str) -> bool:
+        if len(compact) > 3:
+            return False
+        if re.fullmatch(r"[A-Za-z0-9#]{1,3}", compact):
+            return True
+        if re.fullmatch(r"[\u4e00-\u9fff]", compact):
+            return True
+        return bool(re.fullmatch(r"[\W_]{1,3}", compact))
+
     def _order_units(self, units: list[ClauseUnit]) -> list[ClauseUnit]:
         ordered: list[ClauseUnit] = []
         pages = sorted({unit.page_no for unit in units})
@@ -331,11 +350,17 @@ class ClauseSplitter:
                         unit.block_id,
                     )
                 )
-                if self._reading_order_has_vertical_backtrack(page_units) and self._can_trust_layout_order(page_units):
-                    page_units = self._mark_order_reason(
-                        self._layout_ordered_units(page_units),
-                        "reading_order_vertical_layout_repair",
-                    )
+                if self._reading_order_has_vertical_backtrack(page_units):
+                    if self._can_trust_layout_order(page_units):
+                        page_units = self._mark_order_reason(
+                            self._layout_ordered_units(page_units),
+                            "reading_order_vertical_layout_repair",
+                        )
+                    else:
+                        page_units = self._mark_order_reason(
+                            self._geometry_ordered_units(page_units),
+                            "reading_order_vertical_geometry_repair",
+                        )
                 elif self._reading_order_matches_geometry(page_units):
                     page_units = self._mark_order_reason(page_units, "reading_order")
                 else:
@@ -362,6 +387,18 @@ class ClauseSplitter:
                 unit.layout_order or 0,
                 snapped[unit.block_id],
                 unit.bbox.x0,
+                unit.block_id,
+            ),
+        )
+
+    def _geometry_ordered_units(self, units: list[ClauseUnit]) -> list[ClauseUnit]:
+        snapped = self._snap_y_coordinates(units)
+        return sorted(
+            units,
+            key=lambda unit: (
+                snapped[unit.block_id],
+                unit.bbox.x0,
+                unit.layout_order or 0,
                 unit.block_id,
             ),
         )
@@ -831,9 +868,19 @@ class ClauseSplitter:
         pre_body = units[:start_index]
         if any(self._looks_like_body_numbered_unit(unit) for unit in pre_body):
             return units
-        if not any(self._looks_like_cover_unit(unit) for unit in pre_body):
-            return units
-        return units[start_index:]
+        trim_index = 0
+        saw_cover = False
+        for index, unit in enumerate(pre_body):
+            marker = self._parse_marker(unit.text)
+            if self._looks_like_cover_unit(unit):
+                saw_cover = True
+                trim_index = index + 1
+                continue
+            if saw_cover and self._is_pre_body_noise(unit, marker):
+                trim_index = index + 1
+                continue
+            return units[trim_index:] if saw_cover else units
+        return units[start_index:] if saw_cover else units
 
     def _body_start_index(self, units: list[ClauseUnit]) -> int | None:
         for index, unit in enumerate(units):
