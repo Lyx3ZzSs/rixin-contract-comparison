@@ -42,7 +42,7 @@ def test_fingerprint_normalizes_format_noise_and_keeps_critical_tokens() -> None
     assert left.critical_tokens == tuple(sorted(left.critical_tokens))
     assert left.critical_token_fingerprint == right.critical_token_fingerprint
     assert left.critical_token_fingerprint == "|".join(left.critical_tokens)
-    assert "amount:1000.00" in left.critical_tokens
+    assert "amount:1000" in left.critical_tokens
     assert "date:2026-06-30" in left.critical_tokens
     assert "percent:6%" in left.critical_tokens
 
@@ -135,6 +135,29 @@ def test_amount_tokens_keep_unit_specific_fingerprint() -> None:
     assert set(yuan.critical_tokens) != set(ten_thousand_yuan.critical_tokens)
 
 
+def test_amount_tokens_normalize_equivalent_decimal_formatting() -> None:
+    analyzer = ClauseAlignmentAnalyzer()
+
+    formatted = analyzer.fingerprint(_clause("甲方应支付人民币1,000.00元。"))
+    plain = analyzer.fingerprint(_clause("甲方应支付人民币1000元。"))
+
+    assert formatted.critical_tokens == plain.critical_tokens
+    assert "amount:1000" in formatted.critical_tokens
+    assert "amount_unit:1000元" in formatted.critical_tokens
+
+
+def test_formal_chinese_and_arabic_clause_numbers_share_alignment_key() -> None:
+    analyzer = ClauseAlignmentAnalyzer()
+
+    diagnostics = analyzer.diagnostics(
+        _clause("甲方应付款。", clause_no="第十一条"),
+        _clause("甲方应付款。", clause_no="第11条"),
+    )
+
+    assert diagnostics["number_match"] is True
+    assert diagnostics["risk_flags"] == []
+
+
 def test_contract_number_accepts_space_or_no_separator() -> None:
     analyzer = ClauseAlignmentAnalyzer()
 
@@ -158,7 +181,7 @@ def test_token_overlap_handles_empty_and_set_boundaries() -> None:
     analyzer = ClauseAlignmentAnalyzer()
 
     assert analyzer.token_overlap((), ()) == 1.0
-    assert analyzer.token_overlap(("amount:1000.00",), ()) == 0.0
+    assert analyzer.token_overlap(("amount:1000",), ()) == 0.0
     assert analyzer.token_overlap(("a", "b"), ("b", "c")) == 0.3333
     assert analyzer.token_overlap(("a",), ("b",)) == 0.0
 

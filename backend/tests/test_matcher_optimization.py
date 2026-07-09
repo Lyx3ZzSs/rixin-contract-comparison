@@ -643,8 +643,37 @@ def test_formal_chinese_and_arabic_clause_numbers_match_as_same_number() -> None
 
     assert pair.compare is not None
     assert pair.match_method == "same_clause_no_weighted"
+    assert pair.match_confidence != "LOW"
     assert pair.score_details["clause_no_score"] == 100.0
     assert pair.score_details["weak_numeric_marker"] == 0.0
+    assert pair.score_details["alignment"]["number_match"] is True
+    assert pair.score_details["alignment"]["risk_flags"] == []
+
+
+def test_equivalent_amount_formatting_does_not_trigger_critical_token_conflict() -> None:
+    original = [
+        clause(
+            "O001",
+            "3.1",
+            "付款",
+            "甲方应支付人民币1000.00元。",
+        )
+    ]
+    compare = [
+        clause(
+            "N001",
+            "3.1",
+            "付款",
+            "甲方应支付人民币1000元。",
+        )
+    ]
+
+    pair = ClauseMatcher().match(original, compare)[0]
+
+    assert pair.compare is not None
+    assert pair.match_confidence != "LOW"
+    assert "CRITICAL_TOKEN_CONFLICT" not in pair.score_details["matcher_risk_flags"]
+    assert "CRITICAL_TOKEN_MISMATCH" not in pair.score_details["alignment"]["risk_flags"]
 
 
 def test_match_score_is_capped_and_low_coverage_clause_key_match_is_reviewed() -> None:

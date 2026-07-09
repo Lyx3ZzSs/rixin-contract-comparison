@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 import re
@@ -8,6 +9,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from app.models import Clause
+from app.services.clause_numbering import ClauseNumberParser
 from app.services.normalizer import TextNormalizer
 
 
@@ -60,6 +62,7 @@ class ClauseAlignmentAnalyzer:
 
     def __init__(self, normalizer: TextNormalizer | None = None) -> None:
         self.normalizer = normalizer or TextNormalizer()
+        self.number_parser = ClauseNumberParser()
 
     def fingerprint(self, clause: Clause) -> ClauseAlignmentFingerprint:
         clause_no_key = self._clause_no_key(clause.clause_no)
@@ -170,7 +173,7 @@ class ClauseAlignmentAnalyzer:
         for match in self._NUMERIC_DATE_RE.finditer(normalized):
             tokens.add(self._date_token(match))
         for match in self._AMOUNT_RE.finditer(normalized):
-            amount = match.group("amount").replace(",", "")
+            amount = self._normalize_number(match.group("amount"))
             tokens.add(f"amount:{amount}")
             tokens.add(f"amount_unit:{amount}{match.group('unit')}")
         for match in self._PERCENT_RE.finditer(normalized):
@@ -197,9 +200,19 @@ class ClauseAlignmentAnalyzer:
         return f"date:{year:04d}-{month:02d}-{day:02d}"
 
     def _normalize_number(self, value: str) -> str:
-        if "." not in value:
-            return value
-        return value.rstrip("0").rstrip(".")
+        cleaned = (value or "").replace(",", "")
+        if not cleaned:
+            return ""
+        try:
+            normalized = Decimal(cleaned).normalize()
+        except InvalidOperation:
+            return cleaned
+        text = format(normalized, "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        if text == "-0":
+            return "0"
+        return text or "0"
 
     def _compact(self, text: str) -> str:
         normalized = unicodedata.normalize("NFKC", text or "")
@@ -207,10 +220,7 @@ class ClauseAlignmentAnalyzer:
 
     def _clause_no_key(self, text: str) -> str:
         compact = self._compact(text)
-        match = re.fullmatch(r"第(?P<clause_no>.+)条", compact)
-        if match:
-            return match.group("clause_no")
-        return compact
+        return self.number_parser.normalize_number(compact)
 
     def _stable_key(self, text: str) -> str:
         normalized = unicodedata.normalize("NFKC", text or "").lower()

@@ -285,7 +285,7 @@ def test_clause_splitter_writes_stable_clause_alignment_key() -> None:
 
     assert clause.clause_key.startswith("main_contract/")
     assert "n3_1" in clause.clause_key
-    assert "amount:1000.00" in clause.clause_key
+    assert "amount:1000" in clause.clause_key
     assert "date:2026-06-30" in clause.clause_key
 
     article_document = Document(
@@ -315,7 +315,7 @@ def test_clause_splitter_writes_stable_clause_alignment_key() -> None:
     assert "main_contract/n3_1" in article_clause.clause_key
     assert "第31条" not in article_clause.clause_key
 
-    for token in ("n3_1", "amount:1000.00", "date:2026-06-30"):
+    for token in ("n3_1", "amount:1000", "date:2026-06-30"):
         assert token in article_clause.clause_key
         assert token in clause.clause_key
 

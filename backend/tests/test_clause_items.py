@@ -57,3 +57,38 @@ def test_clause_item_pop_and_insert_fragment_keep_lists_aligned() -> None:
     assert clause.page_numbers == [1, 1]
     assert [box.bbox.y0 for box in clause.bboxes] == [1, 10]
     assert clause.source_block_ids == ["b-extra", "b1"]
+
+
+def test_clause_item_pop_fragment_preserves_multi_evidence_fragment_metadata() -> None:
+    clause = ClauseItem.from_part(
+        clause_no="1",
+        title="付款",
+        section_type="main_contract",
+        section_path=["第一条 付款"],
+        text="跨页合并正文",
+        char_boxes=[],
+        page_numbers=[1, 2],
+        bboxes=[evidence(1, 100), evidence(2, 10)],
+        source_block_ids=["b1", "b2"],
+        segmentation_reason="marker:1",
+        segmentation_confidence=0.9,
+        split_flags=[],
+    )
+    clause.append_part(
+        text="上移片段",
+        char_boxes=[],
+        page_numbers=[1],
+        bboxes=[evidence(1, 50)],
+        source_block_ids=["b3"],
+    )
+
+    fragment = clause.pop_fragment(1)
+
+    assert fragment.text == "上移片段"
+    assert fragment.page_numbers == [1]
+    assert [box.bbox.y0 for box in fragment.bboxes] == [50]
+    assert fragment.source_block_ids == ["b3"]
+    assert clause.texts == ["跨页合并正文"]
+    assert clause.page_numbers == [1, 2]
+    assert [box.bbox.y0 for box in clause.bboxes] == [100, 10]
+    assert clause.source_block_ids == ["b1", "b2"]

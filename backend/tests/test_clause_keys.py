@@ -51,7 +51,7 @@ def test_clause_key_builder_canonicalizes_path_and_alignment_tokens() -> None:
         title_key="付款",
         normalized_body_key="",
         body_fingerprint="",
-        critical_tokens=("amount:1000.00", "date:2026-06-30"),
+        critical_tokens=("amount:1000", "date:2026-06-30"),
         critical_token_fingerprint="",
         structure_key="main_contract",
         page_span=None,
@@ -62,5 +62,5 @@ def test_clause_key_builder_canonicalizes_path_and_alignment_tokens() -> None:
 
     assert base_key == "main_contract/n3_1付款"
     assert "n3_1" in alignment_key
-    assert "amount:1000.00" in alignment_key
+    assert "amount:1000" in alignment_key
     assert "date:2026-06-30" in alignment_key

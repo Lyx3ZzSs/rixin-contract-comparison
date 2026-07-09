@@ -624,8 +624,10 @@ class ClauseSplitter:
         marker = self._parse_marker(text)
         if marker is not None:
             return False
-        anchor = clause.bboxes[0]
-        evidence = clause.bboxes[item_index]
+        anchor = clause.fragment_primary_evidence(0)
+        evidence = clause.fragment_primary_evidence(item_index)
+        if anchor is None or evidence is None:
+            return False
         if evidence.page_no != anchor.page_no:
             return False
         height = max(0.0, anchor.bbox.y1 - anchor.bbox.y0)
@@ -636,10 +638,16 @@ class ClauseSplitter:
 
     def _insert_clause_item_by_geometry(self, clause: ClauseItem, item: ClauseItemFragment) -> None:
         insert_at = len(clause.texts)
-        item_key = self._clause_item_geometry_key(item.page_number, item.bbox)
-        for index, (page_no, evidence) in enumerate(zip(clause.page_numbers, clause.bboxes, strict=False)):
-            if index == 0:
+        item_evidence = item.bbox
+        if item_evidence is None:
+            clause.insert_fragment(insert_at, item)
+            return
+        item_key = self._clause_item_geometry_key(item.page_number, item_evidence)
+        for index in range(1, len(clause.texts)):
+            evidence = clause.fragment_primary_evidence(index)
+            if evidence is None:
                 continue
+            page_no = clause.fragment_primary_page_number(index)
             if self._clause_item_geometry_key(page_no, evidence) > item_key:
                 insert_at = index
                 break
