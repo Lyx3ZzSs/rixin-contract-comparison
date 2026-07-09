@@ -56,7 +56,8 @@ class ClauseNumberParser:
     circled_pattern = re.compile(r"^(?P<number>[①②③④⑤⑥⑦⑧⑨⑩])")
     quantity_or_amount_pattern = re.compile(
         r"^\s*\d+(?:\.\d+)?(?:[~～—-]\d+(?:\.\d+)?)?\s*"
-        r"(万元|亿元|人民币|美元|usd|rmb|cny|元(?!器)|套|台|个|项|批|份|天|月|个月|年|%)",
+        r"(万元|亿元|人民币|美元|usd|rmb|cny|元(?!器)|个工作日|工作日|自然日|"
+        r"日内|个月|套|台|个|项|批|份|天|日|月|年|号|%)",
         re.IGNORECASE,
     )
     date_pattern = re.compile(r"^\s*(?:19|20)\d{2}(?:[./年-]\d{1,2}){1,2}日?\s*$")
@@ -104,8 +105,10 @@ class ClauseNumberParser:
         normalized = self.normalize_number(raw)
         if re.fullmatch(r"\d+(?:\.\d+)+", normalized):
             return min(8, normalized.count(".") + 1)
-        if style == "formal" or re.fullmatch(r"第.+[章节条]", raw):
-            return 1
+        formal_match = self.formal_pattern.match(raw)
+        if style == "formal" or formal_match is not None:
+            unit = formal_match.group("unit") if formal_match is not None else ""
+            return {"章": 1, "节": 2, "条": 3}.get(unit, 3)
         if style == "parenthesized" or re.fullmatch(r"[（(].+[)）]", raw):
             return 4
         if style == "circled":

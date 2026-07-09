@@ -63,7 +63,6 @@ class ClauseHeadingDetector:
     ) -> HeadingCandidate | None:
         text = str(getattr(unit, "text", "") or "")
         block_type = str(getattr(unit, "block_type", "") or "")
-        section_type = str(getattr(unit, "section_type", "main_contract") or "main_contract")
         if marker is None:
             if not self.is_unnumbered_section_title(unit, marker) or self.current_is_bare_marker(current):
                 return None
@@ -90,7 +89,7 @@ class ClauseHeadingDetector:
             return None
         if self.is_quantity_or_amount_marker(text, marker):
             return None
-        if section_type != "main_contract" and self.is_non_contract_numeric_marker(marker):
+        if self._should_suppress_non_contract_numeric_heading(unit, marker):
             return None
         if self.is_weak_numeric_continuation(text, marker):
             return None
@@ -205,3 +204,27 @@ class ClauseHeadingDetector:
     @staticmethod
     def is_attachment_title(compact: str) -> bool:
         return bool(re.fullmatch(r"附件[一二三四五六七八九十0-9]+.*", compact))
+
+    def _should_suppress_non_contract_numeric_heading(
+        self,
+        unit: Any,
+        marker: Marker,
+    ) -> bool:
+        section_type = str(getattr(unit, "section_type", "main_contract") or "main_contract")
+        if section_type == "main_contract":
+            return False
+        if not self.is_non_contract_numeric_marker(marker):
+            return False
+        return not self._allow_numbered_non_contract_heading(unit, marker)
+
+    @staticmethod
+    def _allow_numbered_non_contract_heading(unit: Any, marker: Marker) -> bool:
+        section_type = str(getattr(unit, "section_type", "main_contract") or "main_contract")
+        if section_type not in {"appendix", "safety_agreement"}:
+            return False
+        block_type = str(getattr(unit, "block_type", "") or "")
+        if block_type not in {"paragraph_title", "doc_title", "title"}:
+            return False
+        _, title = marker
+        compact_title = re.sub(r"\s+", "", title or "")
+        return len(compact_title) >= 4

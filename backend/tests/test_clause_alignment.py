@@ -75,6 +75,18 @@ def test_title_key_normalizes_whitespace_nfkc_and_punctuation_noise() -> None:
     assert noisy.title_key == clean.title_key
 
 
+def test_empty_number_and_title_do_not_report_as_matches() -> None:
+    analyzer = ClauseAlignmentAnalyzer()
+
+    diagnostics = analyzer.diagnostics(
+        _clause("甲方提供服务。", clause_no="", title=""),
+        _clause("乙方提供服务。", clause_no="", title=""),
+    )
+
+    assert diagnostics["number_match"] is False
+    assert diagnostics["title_match"] is False
+
+
 def test_page_span_handles_unsorted_and_empty_page_numbers() -> None:
     analyzer = ClauseAlignmentAnalyzer()
 

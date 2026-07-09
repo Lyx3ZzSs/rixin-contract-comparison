@@ -197,7 +197,8 @@ class EvidenceLocator:
                 diff.compare_evidence = kept
 
     def _evidence_conflicts(self, left: EvidenceBox, right: EvidenceBox) -> bool:
-        if (left.method or "").lower() == "page_region" or (right.method or "").lower() == "page_region":
+        semantic_region_methods = {"page_region", "signing_region"}
+        if (left.method or "").lower() in semantic_region_methods or (right.method or "").lower() in semantic_region_methods:
             return False
         if left.page_no != right.page_no:
             return False
@@ -261,7 +262,10 @@ class EvidenceLocator:
     def assign_evidence_confidence(self, diffs: list[DiffItem]) -> None:
         for diff in diffs:
             for evidence in [*diff.original_evidence, *diff.compare_evidence]:
-                confidence = self._confidence_for_method(evidence.method)
+                if (evidence.method or "").lower() == "signing_region" and evidence.confidence is not None:
+                    confidence = evidence.confidence
+                else:
+                    confidence = self._confidence_for_method(evidence.method)
                 if evidence.method == "table_cell" and self._has_possible_ocr_fragment_flag(diff):
                     confidence = min(confidence, 0.55)
                 evidence.confidence = confidence

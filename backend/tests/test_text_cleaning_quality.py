@@ -223,6 +223,48 @@ def test_clause_splitter_does_not_treat_amount_range_as_clause_number() -> None:
     assert "1000~5000元" in clauses[0].text
 
 
+def test_clause_splitter_does_not_treat_numeric_term_as_clause_number() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="title",
+                        page_no=1,
+                        text="服务要求",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="body",
+                        page_no=1,
+                        text="15日内完成系统部署并提交验收材料。",
+                        bbox=BBox(x0=70, y0=125, x1=520, y1=155),
+                    ),
+                    TextBlock(
+                        block_id="next",
+                        page_no=1,
+                        text="2. 付款方式",
+                        bbox=BBox(x0=50, y0=200, x1=500, y1=230),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.clause_no for clause in clauses] == ["", "2"]
+    assert clauses[0].source_block_ids == ["title", "body"]
+    assert "15日内完成系统部署" in clauses[0].text
+
+
 def test_clause_splitter_keeps_deep_decimal_clause_number() -> None:
     document = Document(
         filename="sample.pdf",
@@ -492,6 +534,39 @@ def test_clause_splitter_merges_bare_number_with_following_heading() -> None:
                 blocks=[
                     TextBlock(block_id="number", page_no=1, text="1.", bbox=BBox(x0=50, y0=80, x1=72, y1=110)),
                     TextBlock(block_id="title", page_no=1, text="服务范围", bbox=BBox(x0=80, y0=80, x1=180, y1=110)),
+                    TextBlock(block_id="body", page_no=1, text="甲方提供服务。", bbox=BBox(x0=70, y0=120, x1=500, y1=150)),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert len(clauses) == 1
+    assert clauses[0].clause_no == "1"
+    assert clauses[0].title == "服务范围"
+    assert clauses[0].source_block_ids == ["number", "title", "body"]
+
+
+def test_clause_splitter_merges_bare_number_with_following_paragraph_title() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(block_id="number", page_no=1, text="1.", bbox=BBox(x0=50, y0=80, x1=72, y1=110)),
+                    TextBlock(
+                        block_id="title",
+                        page_no=1,
+                        text="服务范围",
+                        bbox=BBox(x0=80, y0=80, x1=180, y1=110),
+                        block_type="paragraph_title",
+                    ),
                     TextBlock(block_id="body", page_no=1, text="甲方提供服务。", bbox=BBox(x0=70, y0=120, x1=500, y1=150)),
                 ],
             )
@@ -1230,9 +1305,38 @@ def test_clause_splitter_builds_hierarchy_path_from_heading_levels() -> None:
     clauses = ClauseSplitter().split(document, "O")
 
     assert [clause.clause_no for clause in clauses] == ["第一章", "第一条", "1.1", "第二条"]
-    assert clauses[2].section_path == ["第一条 服务范围", "1.1 平台维护服务"]
+    assert clauses[2].section_path == ["第一章 总则", "第一条 服务范围", "1.1 平台维护服务"]
     assert "heading_score" in clauses[2].segmentation_reason
     assert "乙方负责平台日常维护" in clauses[2].text
+
+
+def test_clause_splitter_keeps_chapter_context_in_duplicate_article_keys() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(block_id="c1", page_no=1, text="第一章 总则", bbox=BBox(x0=50, y0=60, x1=500, y1=90)),
+                    TextBlock(block_id="a1", page_no=1, text="第一条 定义", bbox=BBox(x0=50, y0=100, x1=500, y1=130)),
+                    TextBlock(block_id="s1", page_no=1, text="1.1 服务内容", bbox=BBox(x0=50, y0=140, x1=500, y1=170)),
+                    TextBlock(block_id="c2", page_no=1, text="第二章 商务条款", bbox=BBox(x0=50, y0=220, x1=500, y1=250)),
+                    TextBlock(block_id="a2", page_no=1, text="第一条 定义", bbox=BBox(x0=50, y0=260, x1=500, y1=290)),
+                    TextBlock(block_id="s2", page_no=1, text="1.1 服务内容", bbox=BBox(x0=50, y0=300, x1=500, y1=330)),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert clauses[2].section_path == ["第一章 总则", "第一条 定义", "1.1 服务内容"]
+    assert clauses[5].section_path == ["第二章 商务条款", "第一条 定义", "1.1 服务内容"]
+    assert clauses[2].clause_key != clauses[5].clause_key
 
 
 def test_clause_splitter_treats_signing_page_text_as_main_contract() -> None:
@@ -1266,8 +1370,10 @@ def test_clause_splitter_treats_signing_page_text_as_main_contract() -> None:
 
     clauses = ClauseSplitter().split(document, "O")
 
-    assert len(clauses) == 3
+    assert len(clauses) == 2
     assert all(clause.section_type == "main_contract" for clause in clauses)
+    assert clauses[0].clause_no == ""
+    assert "27号金隅智造工场N6" in clauses[0].text
     assert any("联系人" in clause.text for clause in clauses)
 
 
@@ -1310,7 +1416,49 @@ def test_clause_splitter_keeps_signing_numeric_address_as_main_contract_continua
     assert len(clauses) == 2
     assert all(clause.section_type == "main_contract" for clause in clauses)
     assert clauses[0].clause_no == ""
+    assert clauses[1].clause_no == ""
     assert "27号金隅智造工场N6" in clauses[1].text
+
+
+def test_clause_splitter_preserves_substantive_preamble_before_first_article() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="preamble",
+                        page_no=1,
+                        text="鉴于甲方需要采购风功率预测服务，乙方具备相应资质。",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                    ),
+                    TextBlock(
+                        block_id="article",
+                        page_no=1,
+                        text="第一条 服务范围",
+                        bbox=BBox(x0=50, y0=130, x1=500, y1=160),
+                    ),
+                    TextBlock(
+                        block_id="body",
+                        page_no=1,
+                        text="乙方提供系统服务。",
+                        bbox=BBox(x0=70, y0=170, x1=500, y1=200),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert clauses[0].source_block_ids == ["preamble"]
+    assert "鉴于甲方需要采购" in clauses[0].text
+    assert clauses[1].clause_no == "第一条"
 
 
 def test_quote_section_is_split_from_main_contract_clause_flow() -> None:

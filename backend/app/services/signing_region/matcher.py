@@ -1,6 +1,20 @@
 from __future__ import annotations
 
+import re
+
 from app.services.signing_region.models import SigningRegion
+
+
+BUSINESS_FIELD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("address", re.compile(r"地址")),
+    ("contact", re.compile(r"联系人")),
+    ("phone", re.compile(r"电话")),
+    ("fax", re.compile(r"传真")),
+    ("email", re.compile(r"邮箱|电子邮箱|E-?mail", re.IGNORECASE)),
+    ("bank", re.compile(r"开户")),
+    ("account", re.compile(r"账号|帐")),
+    ("credit", re.compile(r"统一社会信用代码|税号|纳税人识别号")),
+)
 
 
 class SigningRegionMatcher:
@@ -44,10 +58,10 @@ class SigningRegionMatcher:
         role_score = 1.0 if original.region_role == compare.region_role else 0.4
         if page_score == 1.0 and role_score == 1.0 and iou_score == 1.0 and position_score == 1.0:
             return 1.0
-        adjacent_page_shift = abs(original.page_no - compare.page_no) == 1 and text_score >= 0.7
+        adjacent_page_shift = abs(original.page_no - compare.page_no) == 1 and text_score >= 0.65
         if iou_score == 0.0 and position_score < self.strong_position_threshold and not adjacent_page_shift:
             return 0.0
-        return round(
+        score = round(
             page_score * 0.25
             + role_score * 0.2
             + iou_score * 0.15
@@ -55,6 +69,15 @@ class SigningRegionMatcher:
             + text_score * 0.3,
             4,
         )
+        high_confidence_adjacent_signing_pair = (
+            adjacent_page_shift
+            and role_score == 1.0
+            and min(original.confidence, compare.confidence) >= 0.7
+            and text_score >= 0.65
+        )
+        if high_confidence_adjacent_signing_pair:
+            return max(score, self.threshold)
+        return score
 
     @staticmethod
     def _page_score(original: SigningRegion, compare: SigningRegion) -> float:
@@ -66,7 +89,7 @@ class SigningRegionMatcher:
 
     @staticmethod
     def _text_structure_score(original: SigningRegion, compare: SigningRegion) -> float:
-        def tokens(region: SigningRegion) -> set[str]:
+        def signing_tokens(region: SigningRegion) -> set[str]:
             text = "".join(element.text for element in region.elements)
             result: set[str] = set()
             for token in ("甲方", "乙方", "盖章", "签字", "日期", "法人", "授权"):
@@ -74,11 +97,19 @@ class SigningRegionMatcher:
                     result.add(token)
             return result
 
-        left = tokens(original)
-        right = tokens(compare)
-        if not left or not right:
-            return 0.0
-        return len(left & right) / len(left | right)
+        def business_tokens(region: SigningRegion) -> set[str]:
+            text = re.sub(r"\s+", "", "".join(element.text for element in region.elements))
+            return {name for name, pattern in BUSINESS_FIELD_PATTERNS if pattern.search(text)}
+
+        def jaccard(left: set[str], right: set[str]) -> float:
+            if not left or not right:
+                return 0.0
+            return len(left & right) / len(left | right)
+
+        return max(
+            jaccard(signing_tokens(original), signing_tokens(compare)),
+            jaccard(business_tokens(original), business_tokens(compare)),
+        )
 
     @staticmethod
     def _iou(original: SigningRegion, compare: SigningRegion) -> float:

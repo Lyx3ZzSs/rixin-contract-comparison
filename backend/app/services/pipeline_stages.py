@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,9 @@ from app.models import (
     DocumentProfile,
     OcrRemediationAction,
     OcrRawResultPaths,
+    Page,
     ParseWarningDetail,
+    TextBlock,
 )
 from app.services.compare_debug import CompareDebugWriter
 from app.services.clause_splitter import ClauseSplitter
@@ -41,7 +44,19 @@ from app.services.evidence_relocator import EvidenceRelocationResult, EvidenceRe
 from app.services.page_diff import PageDiffConsolidator
 from app.services.pipeline import PipelineContext
 from app.services.seal_comparator import build_seal_diffs
-from app.services.signing_region.block_detector import SigningBlockDetectionResult, SigningBlockDetector
+from app.services.signing_region.block_detector import (
+    BODY_VERB_RE,
+    DATE_LABEL_RE,
+    NUMBERED_RE,
+    PARTY_LABEL_RE,
+    PARTY_RE,
+    REPRESENTATIVE_RE,
+    SEAL_RE,
+    SIGN_RE,
+    SIGNING_CONTEXT_RE,
+    SigningBlockDetectionResult,
+    SigningBlockDetector,
+)
 from app.services.signing_region.clause_document import SigningClauseDocumentBuilder
 from app.services.signing_region.comparator import SigningRegionComparator
 from app.services.signing_region.coverage import SigningRegionCoverageBuilder
@@ -525,6 +540,18 @@ class SigningRegionStage:
         extractions = ctx.require_extractions()
         original_structure = self.block_detector.detect(extractions.original.document)
         compare_structure = self.block_detector.detect(extractions.compare.document)
+        self._expand_detected_blocks_with_nearby_fragments(extractions.original.document, original_structure)
+        self._expand_detected_blocks_with_nearby_fragments(extractions.compare.document, compare_structure)
+        self._expand_detected_blocks_with_native_titles(
+            ctx.original_pdf,
+            extractions.original.document,
+            original_structure,
+        )
+        self._expand_detected_blocks_with_native_titles(
+            ctx.compare_pdf,
+            extractions.compare.document,
+            compare_structure,
+        )
         original_regions, original_legacy_fallback = self._extract_regions_from_structure(
             extractions.original.document,
             original_structure,
@@ -694,6 +721,249 @@ class SigningRegionStage:
         return self.extractor.extract(document), True
 
     @staticmethod
+    def _expand_detected_blocks_with_nearby_fragments(
+        document: Document,
+        structure: SigningBlockDetectionResult,
+    ) -> None:
+        pages_by_no = {page.page_no: page for page in document.pages}
+        for signing_block in structure.blocks:
+            page = pages_by_no.get(signing_block.page_no)
+            if page is None:
+                continue
+            SigningRegionStage._expand_block_with_nearby_fragments(page, signing_block)
+
+    @staticmethod
+    def _expand_detected_blocks_with_native_titles(
+        pdf_path: Path,
+        document: Document,
+        structure: SigningBlockDetectionResult,
+    ) -> None:
+        if not structure.blocks:
+            return
+
+        native_titles = SigningRegionStage._native_signing_title_blocks(pdf_path)
+        if not native_titles:
+            return
+
+        pages_by_no = {page.page_no: page for page in document.pages}
+        for signing_block in structure.blocks:
+            page = pages_by_no.get(signing_block.page_no)
+            if page is None:
+                continue
+            for title in sorted(
+                native_titles.get(signing_block.page_no, []),
+                key=lambda item: (item.bbox.y0, item.bbox.x0, item.block_id),
+            ):
+                if title.block_id in signing_block.source_block_ids:
+                    continue
+                if not SigningRegionStage._native_title_belongs_to_block(title, signing_block, page):
+                    continue
+                SigningRegionStage._merge_native_title_into_block(signing_block, title)
+
+    @staticmethod
+    def _native_signing_title_blocks(pdf_path: Path) -> dict[int, list[TextBlock]]:
+        try:
+            import fitz
+        except Exception:
+            logger.debug("PyMuPDF unavailable for native signing title extraction", exc_info=True)
+            return {}
+
+        if not pdf_path.exists():
+            return {}
+
+        titles_by_page: dict[int, list[TextBlock]] = {}
+        try:
+            with fitz.open(str(pdf_path)) as pdf:
+                for page_index, pdf_page in enumerate(pdf, start=1):
+                    line_words: dict[tuple[int, int], list[tuple[Any, ...]]] = {}
+                    for word in pdf_page.get_text("words") or []:
+                        if len(word) < 5:
+                            continue
+                        text = str(word[4] or "").strip()
+                        if not text:
+                            continue
+                        block_no = int(word[5]) if len(word) > 5 else 0
+                        line_no = int(word[6]) if len(word) > 6 else len(line_words)
+                        line_words.setdefault((block_no, line_no), []).append(word)
+
+                    page_titles: list[TextBlock] = []
+                    sorted_lines = sorted(
+                        line_words.values(),
+                        key=lambda words: (
+                            min(float(item[1]) for item in words),
+                            min(float(item[0]) for item in words),
+                        ),
+                    )
+                    for line_index, words in enumerate(sorted_lines, start=1):
+                        ordered_words = sorted(words, key=lambda item: (float(item[0]), float(item[1])))
+                        text = "".join(str(item[4] or "").strip() for item in ordered_words)
+                        compact = SigningRegionStage._compact_candidate_text(text)
+                        if not SigningRegionStage._is_native_signing_title(compact):
+                            continue
+                        page_titles.append(
+                            TextBlock(
+                                block_id=f"native_p{page_index}_signing_title_{line_index}",
+                                page_no=page_index,
+                                text=compact,
+                                bbox=BBox(
+                                    x0=min(float(item[0]) for item in ordered_words),
+                                    y0=min(float(item[1]) for item in ordered_words),
+                                    x1=max(float(item[2]) for item in ordered_words),
+                                    y1=max(float(item[3]) for item in ordered_words),
+                                ),
+                                block_type="paragraph_title",
+                                confidence=1.0,
+                                source="native_pdf_text",
+                                block_role="paragraph_title",
+                                flow_role="heading",
+                            )
+                        )
+                    if page_titles:
+                        titles_by_page[page_index] = page_titles
+        except Exception:
+            logger.debug("Native signing title extraction failed for %s", pdf_path, exc_info=True)
+            return {}
+        return titles_by_page
+
+    @staticmethod
+    def _native_title_belongs_to_block(title: TextBlock, signing_block: SigningBlock, page: Page) -> bool:
+        compact = SigningRegionStage._compact_candidate_text(title.text)
+        if not SigningRegionStage._is_native_signing_title(compact):
+            return False
+        if title.bbox.y0 > page.height * 0.3:
+            return False
+        vertical_gap = signing_block.bbox.y0 - title.bbox.y1
+        if vertical_gap < -16.0 or vertical_gap > max(120.0, page.height * 0.2):
+            return False
+        horizontal_margin = max(36.0, page.width * 0.08)
+        return (
+            title.bbox.x1 >= signing_block.bbox.x0 - horizontal_margin
+            and title.bbox.x0 <= signing_block.bbox.x1 + horizontal_margin
+        )
+
+    @staticmethod
+    def _merge_native_title_into_block(signing_block: SigningBlock, title: TextBlock) -> None:
+        title_text = SigningRegionStage._compact_candidate_text(title.text)
+        existing_compact = SigningRegionStage._compact_candidate_text(signing_block.text)
+        if title_text and title_text not in existing_compact:
+            signing_block.text = "\n".join(part for part in [title_text, signing_block.text] if part)
+
+        signing_block.bbox = SigningRegionStage._union_bbox([title.bbox, signing_block.bbox])
+        if title.block_id not in signing_block.source_block_ids:
+            signing_block.source_block_ids.insert(0, title.block_id)
+        if "native_signing_title" not in signing_block.confidence_reasons:
+            signing_block.confidence_reasons.append("native_signing_title")
+
+    @staticmethod
+    def _is_native_signing_title(compact_text: str) -> bool:
+        return compact_text in {"签署页", "签字页", "签章页"}
+
+    @staticmethod
+    def _expand_block_with_nearby_fragments(page: Page, signing_block: SigningBlock) -> None:
+        source_ids = set(signing_block.source_block_ids)
+        additions: list[TextBlock] = []
+        for block in sorted(page.blocks, key=lambda item: (item.bbox.y0, item.bbox.x0, item.block_id)):
+            if block.block_id in source_ids:
+                continue
+            if SigningRegionStage._is_page_footer_like(block, page):
+                continue
+            if SigningRegionStage._is_ignorable_fragment_block(block):
+                continue
+            if not SigningRegionStage._near_signing_block(signing_block.bbox, block.bbox, page):
+                continue
+            if not SigningRegionStage._absorbable_signing_fragment(signing_block.bbox, block):
+                continue
+            additions.append(block)
+            source_ids.add(block.block_id)
+
+        if not additions:
+            return
+
+        signing_block.bbox = SigningRegionStage._union_bbox([
+            signing_block.bbox,
+            *(block.bbox for block in additions),
+        ])
+        signing_block.source_block_ids.extend(block.block_id for block in additions)
+        if "seal_signature_date_cluster" in signing_block.confidence_reasons:
+            signing_block.exclude_from_clause_diff = True
+
+        existing_text = signing_block.text
+        seen_texts = {
+            SigningRegionStage._compact_candidate_text(part)
+            for part in existing_text.splitlines()
+            if SigningRegionStage._compact_candidate_text(part)
+        }
+        appended_texts: list[str] = []
+        for block in additions:
+            if SigningRegionStage._is_visual_fragment_block(block):
+                continue
+            text = (block.text or "").strip()
+            compact = SigningRegionStage._compact_candidate_text(text)
+            if text and compact not in seen_texts:
+                appended_texts.append(text)
+                seen_texts.add(compact)
+        if appended_texts:
+            signing_block.text = "\n".join(part for part in [existing_text, *appended_texts] if part)
+
+    @staticmethod
+    def _near_signing_block(anchor: BBox, candidate: BBox, page: Page) -> bool:
+        vertical_overlap = min(anchor.y1, candidate.y1) - max(anchor.y0, candidate.y0)
+        vertical_gap = max(0.0, candidate.y0 - anchor.y1, anchor.y0 - candidate.y1)
+        if vertical_overlap <= 0 and vertical_gap > 36.0:
+            return False
+        horizontal_margin = max(36.0, page.width * 0.08)
+        return candidate.x1 >= anchor.x0 - horizontal_margin and candidate.x0 <= anchor.x1 + horizontal_margin
+
+    @staticmethod
+    def _absorbable_signing_fragment(anchor: BBox, block: TextBlock) -> bool:
+        compact = SigningRegionStage._compact_candidate_text(block.text)
+        if not compact:
+            return False
+        vertical_overlap = min(anchor.y1, block.bbox.y1) - max(anchor.y0, block.bbox.y0)
+        if vertical_overlap <= 0:
+            return False
+        if SigningRegionStage._is_visual_fragment_block(block):
+            return block.bbox.x1 >= anchor.x0 and block.bbox.x0 <= anchor.x1
+        if SigningRegionStage._fragment_looks_like_numbered_clause(compact) or BODY_VERB_RE.search(compact):
+            return False
+        if any(pattern.search(compact) for pattern in [SEAL_RE, SIGN_RE, REPRESENTATIVE_RE, DATE_LABEL_RE]):
+            return True
+        return len(compact) <= 8
+
+    @staticmethod
+    def _fragment_looks_like_numbered_clause(compact: str) -> bool:
+        return len(compact) > 8 and NUMBERED_RE.match(compact) is not None
+
+    @staticmethod
+    def _is_visual_fragment_block(block: TextBlock) -> bool:
+        return (block.block_type or "").lower() in {"seal", "stamp", "image", "non_text"} or (
+            block.flow_role or ""
+        ).lower() == "non_text"
+
+    @staticmethod
+    def _is_page_footer_like(block: TextBlock, page: Page) -> bool:
+        compact = SigningRegionStage._compact_candidate_text(block.text)
+        return block.bbox.y0 >= page.height * 0.82 and re.fullmatch(r"[-—_]*\d+[-—_]*", compact) is not None
+
+    @staticmethod
+    def _is_ignorable_fragment_block(block: TextBlock) -> bool:
+        block_type = (block.block_type or "").lower()
+        flow_role = (block.flow_role or "").lower()
+        block_role = (block.block_role or "").lower()
+        ignored_roles = {"aside", "margin", "header", "footer", "noise"}
+        ignored_types = {"aside_text", "header", "footer", "page_number"}
+        return block_type in ignored_types or flow_role in ignored_roles or block_role in ignored_roles
+
+    @staticmethod
+    def _union_bbox(bboxes: list[BBox]) -> BBox:
+        return BBox(
+            x0=min(bbox.x0 for bbox in bboxes),
+            y0=min(bbox.y0 for bbox in bboxes),
+            x1=max(bbox.x1 for bbox in bboxes),
+            y1=max(bbox.y1 for bbox in bboxes),
+        )
+
+    @staticmethod
     def _legacy_diffs(ctx: PipelineContext) -> list[DiffItem]:
         return [
             *ctx.header_footer_diffs,
@@ -736,7 +1006,8 @@ class SigningRegionStage:
             if page_no <= 0 or not isinstance(bbox_payload, dict):
                 continue
             reasons = SigningRegionStage._candidate_list_value(candidate.get("reasons"))
-            if not SigningRegionStage._candidate_has_rule_support(reasons):
+            candidate_text = str(candidate.get("text") or "")
+            if not SigningRegionStage._candidate_has_rule_support(reasons, candidate_text):
                 continue
             try:
                 bbox = BBox.model_validate(bbox_payload)
@@ -749,6 +1020,12 @@ class SigningRegionStage:
                 continue
             matched_visual = SigningRegionStage._matching_visual_candidate(page_no, bbox, visual_candidates)
             if matched_visual is None:
+                continue
+            if not SigningRegionStage._candidate_visual_pair_is_promotable(
+                candidate_text,
+                reasons,
+                matched_visual,
+            ):
                 continue
             matched_visual["used_for_promotion"] = True
             promoted.append(
@@ -778,16 +1055,92 @@ class SigningRegionStage:
         return []
 
     @staticmethod
-    def _candidate_has_rule_support(reasons: list[object]) -> bool:
+    def _candidate_has_rule_support(reasons: list[object], text: str = "") -> bool:
+        compact = SigningRegionStage._compact_candidate_text(text)
+        if SigningRegionStage._candidate_text_looks_like_body(compact):
+            return False
         allowed_reasons = {
             "signing_page_context",
             "business_signing_form_fields",
             "page_signing_context_business_fields",
             "previous_page_signing_context_business_fields",
             "terminal_signing_clause_context",
-            "paired_parties",
+            "signing_context_business_fields",
         }
-        return any(reason in allowed_reasons for reason in reasons)
+        if any(reason in allowed_reasons for reason in reasons):
+            return True
+        if "paired_parties" not in reasons:
+            return False
+        return bool(PARTY_LABEL_RE.search(compact))
+
+    @staticmethod
+    def _candidate_visual_pair_is_promotable(
+        text: str,
+        reasons: list[object],
+        visual_candidate: dict[str, Any],
+    ) -> bool:
+        compact = SigningRegionStage._compact_candidate_text(text)
+        if SigningRegionStage._candidate_text_looks_like_body(compact):
+            return False
+
+        strong_rule_support = any(reason in {
+            "signing_page_context",
+            "business_signing_form_fields",
+            "page_signing_context_business_fields",
+            "previous_page_signing_context_business_fields",
+            "terminal_signing_clause_context",
+            "signing_context_business_fields",
+        } for reason in reasons)
+        if strong_rule_support:
+            return True
+
+        if "paired_parties" not in reasons:
+            return False
+        if not PARTY_LABEL_RE.search(compact):
+            return False
+        return SigningRegionStage._visual_candidate_is_red_seal(visual_candidate)
+
+    @staticmethod
+    def _compact_candidate_text(text: str) -> str:
+        return re.sub(r"\s+", "", text or "")
+
+    @staticmethod
+    def _candidate_text_looks_like_body(compact_text: str) -> bool:
+        if not compact_text:
+            return False
+        has_body_reference_to_signing_page = SigningRegionStage._has_body_reference_to_signing_page(compact_text)
+        if SIGNING_CONTEXT_RE.search(compact_text) and not has_body_reference_to_signing_page:
+            return False
+        has_party_without_label = PARTY_RE.search(compact_text) and not PARTY_LABEL_RE.search(compact_text)
+        has_strong_signing_label = any(pattern.search(compact_text) for pattern in [
+            SEAL_RE,
+            SIGN_RE,
+            REPRESENTATIVE_RE,
+        ])
+        if has_body_reference_to_signing_page:
+            return len(compact_text) > 40 or BODY_VERB_RE.search(compact_text) is not None or NUMBERED_RE.match(compact_text) is not None
+        if has_party_without_label and not has_strong_signing_label:
+            return True
+        if (BODY_VERB_RE.search(compact_text) or NUMBERED_RE.match(compact_text)) and not has_strong_signing_label:
+            return True
+        if DATE_LABEL_RE.search(compact_text) and len(compact_text) > 40 and not has_strong_signing_label:
+            return True
+        return False
+
+    @staticmethod
+    def _has_body_reference_to_signing_page(compact_text: str) -> bool:
+        return bool(
+            re.search(r"(?:本合同|合同)?签署页(?:中|中的|载明|有关|所列|记载)", compact_text)
+            or re.search(r"送达.{0,20}签署页", compact_text)
+        )
+
+    @staticmethod
+    def _visual_candidate_is_red_seal(visual_candidate: dict[str, Any]) -> bool:
+        label = str(visual_candidate.get("label") or "").lower()
+        if "seal" in label or "stamp" in label or "章" in label:
+            return True
+        reasons = SigningRegionStage._candidate_list_value(visual_candidate.get("reasons"))
+        return "red_seal_pixels" in reasons
 
     @staticmethod
     def _matching_visual_candidate(
@@ -856,13 +1209,44 @@ class SigningRegionStage:
         filtered_regions: list[SigningRegion] = []
         included_pages: set[int] = set()
         max_pages = settings.signing_opencv_max_candidate_pages
-        for region in candidate_regions:
+        for region in sorted(candidate_regions, key=SigningRegionStage._visual_scan_candidate_sort_key):
             if region.page_no not in included_pages:
                 if len(included_pages) >= max_pages:
                     continue
                 included_pages.add(region.page_no)
             filtered_regions.append(region)
         return filtered_regions
+
+    @staticmethod
+    def _visual_scan_candidate_sort_key(region: SigningRegion) -> tuple[int, int, int]:
+        reasons = set(region.confidence_reasons)
+        if reasons.intersection(
+            {
+                "seal_signature_date_cluster",
+                "signing_context_business_fields",
+                "terminal_business_signing_fields",
+                "business_signing_form_fields",
+                "page_signing_context_business_fields",
+                "previous_page_signing_context_business_fields",
+                "terminal_signing_clause_context",
+            }
+        ):
+            priority = 0
+        elif {"paired_parties", "two_column_layout"}.issubset(reasons):
+            priority = 1
+        elif "party_label" in reasons:
+            priority = 2
+        elif {"paired_parties", "bottom_signing_position"}.issubset(reasons):
+            priority = 3
+        elif "paired_parties" in reasons:
+            priority = 4
+        elif {"signing_page_context", "bottom_signing_position"}.issubset(reasons):
+            priority = 5
+        elif "signing_page_context" in reasons:
+            priority = 6
+        else:
+            priority = 7
+        return (priority, region.page_no, int(region.bbox.y0))
 
     @staticmethod
     def _candidate_region_key(page_no: int, bbox: BBox) -> tuple[int, float, float, float, float]:
@@ -1202,6 +1586,8 @@ class MatchStage:
             semantic_timeout_seconds=settings.matching.semantic_timeout_seconds,
             semantic_max_retries=settings.matching.semantic_max_retries,
             semantic_weight=settings.matching.semantic_weight,
+            semantic_recall_mode=settings.matching.semantic_recall_mode,
+            semantic_min_rule_candidates=settings.matching.semantic_min_rule_candidates,
             enable_rerank=settings.matching.enable_rerank,
             rerank_base_url=settings.matching.rerank_base_url,
             rerank_api_key=settings.matching.rerank_api_key,

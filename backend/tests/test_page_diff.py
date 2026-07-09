@@ -231,3 +231,53 @@ def test_page_region_evidence_does_not_conflict_with_nested_text_evidence() -> N
     assert len(result[0].compare_evidence) == 1
     assert result[0].compare_evidence[0].method == "page_region"
     assert len(result[1].compare_evidence) == 1
+
+
+def test_consolidate_preserves_existing_diff_ids_when_no_page_diff_is_added() -> None:
+    original = _document([_base_page()])
+    compare = _document([_base_page()])
+    signing_diff = DiffItem(
+        diff_id="D011",
+        diff_type="MODIFY",
+        source_type="signing_region",
+        title="签署区（第13页）",
+        original_text="签字日期：年月日",
+        compare_text="签字日期：2026年05月22日",
+        original_evidence=[_evidence(1, BBox(x0=80, y0=80, x1=520, y1=560), "MODIFY")],
+        compare_evidence=[_evidence(1, BBox(x0=80, y0=80, x1=520, y1=560), "MODIFY")],
+    )
+
+    result = PageDiffConsolidator().consolidate(original, compare, [signing_diff])
+
+    assert [diff.diff_id for diff in result] == ["D011"]
+    assert result[0].source_type == "signing_region"
+
+
+def test_page_diff_uses_next_available_id_without_renumbering_survivors() -> None:
+    original = _document([_base_page()])
+    compare = _document([_base_page(), _added_page(2, "设备报价明细")])
+    table_diff = DiffItem(
+        diff_id="D001",
+        diff_type="ADD",
+        source_type="table",
+        title="表格：标的物",
+        compare_text="新增表格",
+        compare_evidence=[_evidence(2, BBox(x0=60, y0=130, x1=540, y1=560), "ADD")],
+    )
+    signing_diff = DiffItem(
+        diff_id="D011",
+        diff_type="MODIFY",
+        source_type="signing_region",
+        title="签署区（第13页）",
+        original_text="签字日期：年月日",
+        compare_text="签字日期：2026年05月22日",
+        original_evidence=[_evidence(1, BBox(x0=80, y0=80, x1=520, y1=560), "MODIFY")],
+        compare_evidence=[_evidence(1, BBox(x0=80, y0=80, x1=520, y1=560), "MODIFY")],
+    )
+
+    result = PageDiffConsolidator().consolidate(original, compare, [table_diff, signing_diff])
+
+    assert [(diff.diff_id, diff.source_type) for diff in result] == [
+        ("D011", "signing_region"),
+        ("D012", "page"),
+    ]

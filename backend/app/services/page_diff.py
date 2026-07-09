@@ -39,13 +39,13 @@ class PageDiffConsolidator:
     footer_block_types = {"footer", "page_footer"}
 
     def consolidate(self, original: Document, compare: Document, diffs: list[DiffItem]) -> list[DiffItem]:
-        page_diffs = self._build_page_diffs(original, compare, diffs, len(diffs) + 1)
+        page_diffs = self._build_page_diffs(original, compare, diffs, self._next_diff_index(diffs))
         if not page_diffs:
-            return self._renumber(diffs)
+            return diffs
 
         coverage = self._coverage(page_diffs)
         kept = [diff for diff in diffs if not self._covered_duplicate(diff, coverage)]
-        return self._renumber([*kept, *page_diffs])
+        return [*kept, *page_diffs]
 
     def _build_page_diffs(
         self,
@@ -253,8 +253,10 @@ class PageDiffConsolidator:
         return re.sub(r"\s+", "", text or "")
 
     @staticmethod
-    def _renumber(diffs: list[DiffItem]) -> list[DiffItem]:
-        return [
-            diff.model_copy(update={"diff_id": generate_diff_id(index)})
-            for index, diff in enumerate(diffs, start=1)
-        ]
+    def _next_diff_index(diffs: list[DiffItem]) -> int:
+        max_index = 0
+        for diff in diffs:
+            match = re.fullmatch(r"D(\d+)", diff.diff_id or "")
+            if match:
+                max_index = max(max_index, int(match.group(1)))
+        return max(max_index + 1, len(diffs) + 1)

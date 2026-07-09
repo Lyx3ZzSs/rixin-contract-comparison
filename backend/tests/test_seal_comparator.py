@@ -88,3 +88,56 @@ def test_seal_diffs_ignore_text_or_html_changes_inside_matched_regions() -> None
     diffs = build_seal_diffs(original, compare)
 
     assert diffs == []
+
+
+def test_seal_diffs_ignore_no_text_marker_page_artifact_before_signing_page() -> None:
+    compare = Document(
+        filename="compare.pdf",
+        path="compare.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=12,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="no_text",
+                        page_no=12,
+                        text="(以下无正文)",
+                        bbox=BBox(x0=80, y0=118, x1=160, y1=138),
+                    ),
+                    _block(
+                        "ghost_seal",
+                        "合同专用章",
+                        BBox(x0=335, y0=134, x1=448, y1=259),
+                        page_no=12,
+                    ),
+                ],
+            ),
+            Page(
+                page_no=13,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="signing_title",
+                        page_no=13,
+                        text="签署页",
+                        bbox=BBox(x0=265, y0=90, x1=336, y1=114),
+                    ),
+                    TextBlock(
+                        block_id="signing_table",
+                        page_no=13,
+                        text="甲方（盖章）：\n乙方（盖章）：\n法定代表人（负责人）/授权代表（签字）：",
+                        bbox=BBox(x0=89, y0=146, x1=511, y1=508),
+                        block_type="table",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    diffs = build_seal_diffs(_document([]), compare)
+
+    assert diffs == []

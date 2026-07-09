@@ -209,7 +209,7 @@ class DocumentUnderstandingService:
             reason = "cover_metadata_label"
         elif page_role in {"appendix", "quote", "safety_agreement"}:
             role = page_role
-            enter = page_role == "safety_agreement"
+            enter = True
             confidence = 0.8
             reason = f"page_role_{page_role}"
         elif text:

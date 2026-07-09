@@ -331,7 +331,12 @@ class ClauseSplitter:
                         unit.block_id,
                     )
                 )
-                if self._reading_order_matches_geometry(page_units):
+                if self._reading_order_has_vertical_backtrack(page_units) and self._can_trust_layout_order(page_units):
+                    page_units = self._mark_order_reason(
+                        self._layout_ordered_units(page_units),
+                        "reading_order_vertical_layout_repair",
+                    )
+                elif self._reading_order_matches_geometry(page_units):
                     page_units = self._mark_order_reason(page_units, "reading_order")
                 else:
                     page_units = self._mark_order_reason(
@@ -349,6 +354,18 @@ class ClauseSplitter:
             ordered.extend(page_units)
         return ordered
 
+    def _layout_ordered_units(self, units: list[ClauseUnit]) -> list[ClauseUnit]:
+        snapped = self._snap_y_by_layout_group(units)
+        return sorted(
+            units,
+            key=lambda unit: (
+                unit.layout_order or 0,
+                snapped[unit.block_id],
+                unit.bbox.x0,
+                unit.block_id,
+            ),
+        )
+
     def _mark_order_reason(self, units: list[ClauseUnit], reason: str) -> list[ClauseUnit]:
         return [replace(unit, order_reason=reason) for unit in units]
 
@@ -364,6 +381,17 @@ class ClauseSplitter:
 
     def _reading_order_matches_geometry(self, units: list[ClauseUnit]) -> bool:
         return not any(self._line_group_needs_repair(group, units) for group in self._line_groups(units))
+
+    def _reading_order_has_vertical_backtrack(self, units: list[ClauseUnit]) -> bool:
+        if len(units) < 2:
+            return False
+        threshold = max(self._median_height(units) * 0.8, 6.0)
+        max_seen_y = units[0].bbox.y0
+        for unit in units[1:]:
+            if unit.bbox.y0 + threshold < max_seen_y:
+                return True
+            max_seen_y = max(max_seen_y, unit.bbox.y0)
+        return False
 
     def _repair_reading_order_geometry(self, units: list[ClauseUnit]) -> list[ClauseUnit]:
         repaired = list(units)
@@ -664,7 +692,7 @@ class ClauseSplitter:
             return False
         if self._is_quantity_or_amount_marker(unit.text, marker):
             return False
-        if unit.section_type != "main_contract" and self._is_non_contract_numeric_marker(marker):
+        if self._should_suppress_non_contract_numeric_heading(unit, marker):
             return False
         if self._is_weak_numeric_continuation(unit.text, marker):
             return False
@@ -1015,6 +1043,30 @@ class ClauseSplitter:
             return False
         normalized = self.number_parser.normalize_number(clause_no)
         return bool(re.fullmatch(r"\d+(?:\.\d+)?", normalized or ""))
+
+    def _should_suppress_non_contract_numeric_heading(
+        self,
+        unit: ClauseUnit,
+        marker: tuple[str, str],
+    ) -> bool:
+        if unit.section_type == "main_contract":
+            return False
+        if not self._is_non_contract_numeric_marker(marker):
+            return False
+        return not self._allow_numbered_non_contract_heading(unit, marker)
+
+    def _allow_numbered_non_contract_heading(
+        self,
+        unit: ClauseUnit,
+        marker: tuple[str, str],
+    ) -> bool:
+        if unit.section_type not in {"appendix", "safety_agreement"}:
+            return False
+        if unit.block_type not in {"paragraph_title", "doc_title", "title"}:
+            return False
+        _, title = marker
+        compact_title = re.sub(r"\s+", "", title or "")
+        return len(compact_title) >= 4
 
     def _page_looks_like_toc(self, page) -> bool:
         texts = [self.normalizer.normalize(block.text) for block in page.blocks if block.text]

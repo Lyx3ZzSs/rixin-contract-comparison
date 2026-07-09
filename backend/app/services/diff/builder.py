@@ -242,6 +242,8 @@ def review_flags(pair: ClausePair) -> list[str]:
         flags.append("SHORT_CLAUSE_MATCH_REVIEW")
     if pair.score_details.get("section_mismatch_candidate", 0.0) >= 1:
         flags.append("POSSIBLE_SECTION_MISCLASSIFICATION")
+    if "SECTION_PATH_MISMATCH_REVIEW" in pair.score_details.get("matcher_risk_flags", []):
+        flags.append("SECTION_PATH_MISMATCH_REVIEW")
     if pair.match_method in {"section_mismatch_blocked", "same_clause_no_low_similarity"}:
         flags.append("POSSIBLE_CLAUSE_MISMATCH")
     if pair.score_details.get("business_token_mismatch", 0.0) >= 1:

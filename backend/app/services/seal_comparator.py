@@ -8,11 +8,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from app.models import BBox, DiffItem, Document, EvidenceBox, TextBlock, TextRange
+from app.models import BBox, DiffItem, Document, EvidenceBox, Page, TextBlock, TextRange
 from app.utils.id_utils import generate_diff_id
 
 
 SEAL_BLOCK_TYPES = {"seal", "stamp"}
+NO_TEXT_MARKER_RE = re.compile(r"以下无正文")
+SIGNING_TITLE_RE = re.compile(r"签署页|签字页|签章页")
+SIGNING_MARKER_RE = re.compile(r"甲方|乙方|丙方|盖章|签章|法定代表|授权代表|负责人|签字|签名|签署|签订|时间[:：]|日期[:：]")
 
 
 @dataclass(frozen=True)
@@ -60,9 +63,12 @@ def build_seal_diffs(
 def _collect_seals(document: Document) -> list[SealEntry]:
     """Collect seal regions, merging OCR fragments that share one layout region."""
     grouped: dict[tuple[int, tuple[float, float, float, float] | str], list[TextBlock]] = {}
+    pages_by_no = {page.page_no: page for page in document.pages}
     for page in document.pages:
         for block in page.blocks:
             if (block.block_type or "").lower() not in SEAL_BLOCK_TYPES:
+                continue
+            if _is_no_text_marker_artifact_before_signing_page(page, pages_by_no):
                 continue
             key: tuple[int, tuple[float, float, float, float] | str]
             if block.layout_bbox is not None:
@@ -141,6 +147,32 @@ def _merge_text(blocks: list[TextBlock]) -> str:
         parts.append(text)
         seen.add(text)
     return " ".join(parts)
+
+
+def _is_no_text_marker_artifact_before_signing_page(page: Page, pages_by_no: dict[int, Page]) -> bool:
+    page_text = _page_non_seal_text(page)
+    if not NO_TEXT_MARKER_RE.search(page_text):
+        return False
+    next_page = pages_by_no.get(page.page_no + 1)
+    return next_page is not None and _looks_like_signing_page(next_page)
+
+
+def _looks_like_signing_page(page: Page) -> bool:
+    text = _page_non_seal_text(page)
+    if SIGNING_TITLE_RE.search(text):
+        return True
+    markers = set(SIGNING_MARKER_RE.findall(text))
+    has_party = any(marker in markers for marker in ("甲方", "乙方", "丙方"))
+    has_action = any(marker in markers for marker in ("盖章", "签章", "签字", "签名"))
+    return has_party and has_action and len(markers) >= 4
+
+
+def _page_non_seal_text(page: Page) -> str:
+    return "\n".join(
+        block.text.strip()
+        for block in page.blocks
+        if block.text.strip() and (block.block_type or "").lower() not in SEAL_BLOCK_TYPES
+    )
 
 
 def _build_add(entry: SealEntry, index: int) -> DiffItem:

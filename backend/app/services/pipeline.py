@@ -237,6 +237,7 @@ class ComparePipeline:
         ctx.task.status = "COMPLETED"
         ctx.task.stage = "已完成"
         ctx.task.progress_percent = 100
+        ctx.task.errors = []
         ctx.task.updated_at = datetime.now(UTC).isoformat()
         ProgressBus.get_instance().publish(ProgressEvent(
             task_id=ctx.task.task_id,

@@ -88,6 +88,73 @@ def test_matcher_pairs_adjacent_page_signing_blocks_by_text_role_even_when_posit
     assert pairs[0][2] >= 0.55
 
 
+def test_matcher_pairs_high_confidence_adjacent_signing_blocks_when_compare_ocr_misses_some_labels() -> None:
+    original = [_region("O1", "甲方：A 乙方：B (盖章) 法人代表或授权委托人： (签字) 日期：", page_no=10)]
+    compare = [_region("C1", "甲方：A 乙方：B (盖章) 法人代表或 日期：2026.", page_no=11)]
+    original[0].region_role = SigningRegionRole.BOTH_PARTIES
+    compare[0].region_role = SigningRegionRole.BOTH_PARTIES
+    original[0].confidence = 0.85
+    compare[0].confidence = 0.75
+    original[0].bbox = BBox(x0=48, y0=602, x1=501, y1=744)
+    compare[0].bbox = BBox(x0=57, y0=44, x1=524, y1=191)
+
+    pairs = SigningRegionMatcher().match(original, compare)
+
+    assert pairs == [(original[0], compare[0], 0.55)]
+
+
+def test_matcher_pairs_adjacent_business_tail_signing_region_with_full_signature_page() -> None:
+    original = [_region(
+        "O1",
+        "签署页\n甲方：国家电网有限公司华北分部 乙方：国能日新科技股份有限公司\n"
+        "(盖章)\n法定代表人（负责人）或授权代表（签字）：\n签订日期：\n"
+        "地址：北京市西城区广安门内大街482号 地址：北京市海淀区建材城中路27号\n"
+        "联系人：环加飞 联系人：刘玉良\n电话：010-83582793 电话：18811089109\n"
+        "传真：010-83582600 传真：010-83458100\n"
+        "Email: huan.jiafei@nc.sgcc.com.cn Email: yuliang.liu@sprixin.com\n"
+        "统一社会信用代码：91110000053621038D 统一社会信用代码：911101086723891430",
+        page_no=25,
+    )]
+    compare = [_region(
+        "C1",
+        "地址：北京市西城区广安门内大街 地址：北京市海淀区建材城中路\n"
+        "482号 27号金隅智造工场N6\n"
+        "联系人：环加飞 联系人：刘玉良\n"
+        "电话：010-83582793 电话：18811089109\n"
+        "传真：010-83582600 传真：010-83458100\n"
+        "Email: huan.jiafei@nc.sgcc.com.cn Email: yuliang.liu@sprixin.com\n"
+        "统一社会信用代码：91110000053621038D 统一社会信用代码：911101086723891430",
+        page_no=24,
+    )]
+    original[0].region_role = SigningRegionRole.BOTH_PARTIES
+    compare[0].region_role = SigningRegionRole.UNKNOWN
+    original[0].confidence = 1.0
+    compare[0].confidence = 0.7
+    original[0].bbox = BBox(x0=70, y0=70, x1=520, y1=501)
+    compare[0].bbox = BBox(x0=73, y0=281, x1=525, y1=495)
+
+    pairs = SigningRegionMatcher().match(original, compare)
+
+    assert pairs[0][0] is original[0]
+    assert pairs[0][1] is compare[0]
+    assert pairs[0][2] >= 0.55
+
+
+def test_matcher_does_not_use_adjacent_page_fallback_for_low_confidence_visual_candidates() -> None:
+    original = [_region("O1", "甲方：A 乙方：B (盖章) 法人代表或授权委托人： (签字) 日期：", page_no=10)]
+    compare = [_region("C1", "甲方：A 乙方：B (盖章) 法人代表或 日期：2026.", page_no=11)]
+    original[0].region_role = SigningRegionRole.BOTH_PARTIES
+    compare[0].region_role = SigningRegionRole.BOTH_PARTIES
+    original[0].confidence = 0.55
+    compare[0].confidence = 0.55
+    original[0].bbox = BBox(x0=48, y0=602, x1=501, y1=744)
+    compare[0].bbox = BBox(x0=57, y0=44, x1=524, y1=191)
+
+    pairs = SigningRegionMatcher().match(original, compare)
+
+    assert pairs == [(original[0], None, 0.0), (None, compare[0], 0.0)]
+
+
 def test_comparator_detects_seal_text_change() -> None:
     comparison = SigningRegionComparator().compare(_region("O1", "A公司"), _region("C1", "B公司"), match_confidence=0.9)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.config_models import DocumentUnderstandingSettings
 from app.models import BBox, Document, Page, TextBlock
 from app.services.clause_splitter import ClauseSplitter
+from app.services.document_preparation import DocumentPreparer
 from app.services.document_understanding import DocumentUnderstandingService
 
 
@@ -69,3 +70,78 @@ def test_rule_understanding_routes_table_blocks_out_of_clause_compare() -> None:
     assert len(clauses) == 1
     assert clauses[0].source_block_ids == ["title"]
 
+
+def test_rule_understanding_keeps_quote_page_for_section_clause_split() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="quote-title",
+                        page_no=2,
+                        text="报价表格式",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                    ),
+                    TextBlock(
+                        block_id="quote-body",
+                        page_no=2,
+                        text="项目名称：风功率预测服务",
+                        bbox=BBox(x0=50, y0=130, x1=500, y1=160),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    DocumentUnderstandingService(DocumentUnderstandingSettings()).understand(document, "compare")
+    DocumentPreparer().prepare(document, "compare")
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert document.pages[0].semantic_role == "quote"
+    assert [clause.section_type for clause in clauses] == ["quote"]
+    assert clauses[0].source_block_ids == ["quote-title", "quote-body"]
+    assert "SECTION_QUOTE" in clauses[0].split_flags
+
+
+def test_rule_understanding_keeps_appendix_page_for_section_clause_split() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="appendix-title",
+                        page_no=2,
+                        text="附件一：技术规范",
+                        bbox=BBox(x0=50, y0=80, x1=500, y1=110),
+                    ),
+                    TextBlock(
+                        block_id="appendix-body",
+                        page_no=2,
+                        text="设备应满足风功率预测要求。",
+                        bbox=BBox(x0=50, y0=130, x1=500, y1=160),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    DocumentUnderstandingService(DocumentUnderstandingSettings()).understand(document, "compare")
+    DocumentPreparer().prepare(document, "compare")
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert document.pages[0].semantic_role == "appendix"
+    assert [clause.section_type for clause in clauses] == ["appendix"]
+    assert clauses[0].source_block_ids == ["appendix-title", "appendix-body"]
+    assert "SECTION_APPENDIX" in clauses[0].split_flags

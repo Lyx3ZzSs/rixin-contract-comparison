@@ -6,7 +6,13 @@ WORKDIR /build
 
 # Set VITE_API_BASE_URL to empty string so the frontend uses
 # same-origin requests (Nginx proxies /api/ → backend container).
-ENV VITE_API_BASE_URL=
+ARG VITE_BASE_PATH=/
+ARG VITE_API_BASE_PATH=
+ARG VITE_API_BASE_URL=
+
+ENV VITE_BASE_PATH=$VITE_BASE_PATH
+ENV VITE_API_BASE_PATH=$VITE_API_BASE_PATH
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 
 COPY package.json package-lock.json ./
 RUN npm ci

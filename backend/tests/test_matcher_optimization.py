@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from app.models import Clause
+from app.services.clause_keys import ClauseKeyBuilder
 from app.services.diff_engine import DiffEngine
+from app.services.matching import _fuzz
 from app.services.matcher import ClauseMatcher, MatchCandidate, SemanticMatcher
 from app.services.normalizer import TextNormalizer
 
@@ -83,6 +86,41 @@ def candidate(left: Clause, right: Clause, score: float, *, method: str = "body_
     )
 
 
+class FakeSemanticMatcher:
+    enabled = True
+
+    def __init__(
+        self,
+        top_by_original: dict[str, list[int]] | None = None,
+        scores: dict[tuple[str, str], float] | None = None,
+    ) -> None:
+        self.top_by_original = top_by_original or {}
+        self.scores = scores or {}
+        self.prepare_calls = 0
+        self.top_k_calls = 0
+        self.score_calls = 0
+
+    def prepare(self, clauses: list[Clause]) -> dict[int, list[float]]:
+        self.prepare_calls += 1
+        return {index: [float(index + 1), 1.0] for index, _clause in enumerate(clauses)}
+
+    def top_k(
+        self,
+        query: Clause,
+        compare: list[Clause],
+        choices: dict[int, list[float]],
+        *,
+        limit: int,
+        score_cutoff: float,
+    ) -> list[int]:
+        self.top_k_calls += 1
+        return [index for index in self.top_by_original.get(query.clause_id, []) if index in choices and index < len(compare)][:limit]
+
+    def score(self, left: Clause, right: Clause, right_vector: list[float] | None = None) -> float:
+        self.score_calls += 1
+        return self.scores.get((left.clause_id, right.clause_id), 0.0)
+
+
 class ControlledCandidateMatcher(ClauseMatcher):
     def __init__(self, canned_candidates: list[MatchCandidate], **kwargs: object) -> None:
         super().__init__(**kwargs)
@@ -129,6 +167,155 @@ def test_prefilter_uses_body_top_k_for_far_reordered_clause_without_same_number(
     assert matched.compare is not None
     assert matched.compare.clause_id == "N002"
     assert matched.score_details["candidate_source_body_top_k"] == 1.0
+
+
+def test_top_k_indices_uses_rapidfuzz_extract_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    if _fuzz.process is None:
+        pytest.skip("rapidfuzz process API is unavailable")
+    matcher = ClauseMatcher()
+    calls = []
+
+    def fake_extract(
+        query: str,
+        choices: dict[int, str],
+        *,
+        scorer: object,
+        processor: object,
+        limit: int,
+        score_cutoff: float,
+    ) -> list[tuple[str, float, int]]:
+        calls.append((query, choices, scorer, processor, limit, score_cutoff))
+        return [(choices[2], 91.0, 2)]
+
+    monkeypatch.setattr(_fuzz.process, "extract", fake_extract)
+
+    result = matcher._top_k_indices(
+        "service credits",
+        {1: "unrelated", 2: "service credit adjustment"},
+        limit=1,
+        score_cutoff=55.0,
+        scorer=matcher._ratio_score,
+        rapidfuzz_scorer=_fuzz.RAPIDFUZZ_RATIO,
+    )
+
+    assert result == [2]
+    assert calls
+    assert calls[0][1] == {1: "unrelated", 2: "service credit adjustment"}
+
+
+def test_sparse_semantic_recall_skips_when_rule_candidates_are_sufficient() -> None:
+    original = [filler("O", index) for index in range(1, 16)]
+    compare = [filler("N", index) for index in range(1, 16)]
+    fake_semantic = FakeSemanticMatcher()
+    matcher = ClauseMatcher(
+        enable_semantic_match=True,
+        semantic_recall_mode="sparse",
+        semantic_min_rule_candidates=1,
+    )
+    matcher.semantic_matcher = fake_semantic
+
+    pairs = matcher.match(original, compare)
+    matched = next(pair for pair in pairs if pair.original and pair.original.clause_id == "O001")
+
+    assert matched.compare is not None
+    assert matched.score_details["semantic_recall_applied"] == 0.0
+    assert matched.score_details["semantic_recall_rule_candidate_count"] >= 1.0
+    assert fake_semantic.prepare_calls == 0
+    assert fake_semantic.top_k_calls == 0
+
+
+def test_sparse_semantic_recall_applies_when_rule_candidates_are_sparse() -> None:
+    original = [
+        clause(
+            f"O{index:03d}",
+            f"O{index}",
+            f"Original admin clause {index}",
+            f"This original administrative provision is unrelated to billing item {index}.",
+        )
+        for index in range(1, 16)
+    ]
+    compare = [
+        clause(
+            f"N{index:03d}",
+            f"N{index}",
+            f"New operational clause {index}",
+            f"This replacement operational provision is unrelated to invoice item {index}.",
+        )
+        for index in range(1, 16)
+    ]
+    original[12] = clause("O013", "O13", "付款条款", "甲方应在收到发票后三十日内完成全部付款。")
+    compare[1] = clause("N002", "N2", "结算安排", "客户应在收到有效发票后三十日内完成付款。")
+    fake_semantic = FakeSemanticMatcher(
+        top_by_original={"O013": [1]},
+        scores={("O013", "N002"): 96.0},
+    )
+    matcher = ClauseMatcher(
+        enable_semantic_match=True,
+        semantic_recall_mode="sparse",
+        semantic_min_rule_candidates=3,
+    )
+    matcher.semantic_matcher = fake_semantic
+
+    pairs = matcher.match(original, compare)
+    matched = next(pair for pair in pairs if pair.original and pair.original.clause_id == "O013")
+
+    assert matched.compare is not None
+    assert matched.compare.clause_id == "N002"
+    assert matched.score_details["candidate_source_semantic_top_k"] == 1.0
+    assert matched.score_details["semantic_recall_applied"] == 1.0
+    assert matched.score_details["semantic_score"] == 96.0
+    assert fake_semantic.prepare_calls == 1
+    assert fake_semantic.top_k_calls >= 1
+
+
+def test_prefilter_uses_clause_key_for_far_reordered_candidate() -> None:
+    original = [filler("O", index) for index in range(1, 16)]
+    original[12] = clause(
+        "O013",
+        "13",
+        "服务范围",
+        "乙方应提供平台部署、接口联调、历史数据迁移和上线后运维服务。",
+        clause_key="main_contract/服务范围/平台部署",
+    )
+    compare = [filler("N", index) for index in range(1, 16)]
+    compare[1] = clause(
+        "N002",
+        "B",
+        "交付安排",
+        "乙方提供平台部署、接口联调和上线运维支持。",
+        clause_key="main_contract/服务范围/平台部署",
+    )
+
+    pairs = ClauseMatcher().match(original, compare)
+    matched = next(pair for pair in pairs if pair.original and pair.original.clause_id == "O013")
+
+    assert matched.compare is not None
+    assert matched.compare.clause_id == "N002"
+    assert matched.score_details["candidate_source_clause_key"] == 1.0
+
+
+def test_prefilter_uses_canonical_path_for_far_reordered_clause() -> None:
+    original = [filler("O", index) for index in range(1, 16)]
+    original[12] = clause(
+        "O013",
+        "",
+        "服务范围",
+        "乙方应提供平台维护、接口联调、数据迁移和上线后支持服务。",
+    ).model_copy(update={"section_path": ["第一章 总则", "服务范围"]})
+    compare = [filler("N", index) for index in range(1, 16)]
+    compare[1] = clause(
+        "N002",
+        "",
+        "服务范围",
+        "乙方应提供平台维护、接口联调、数据迁移和运行支持服务。",
+    ).model_copy(update={"section_path": ["第一章 总则", "服务范围"]})
+
+    pairs = ClauseMatcher().match(original, compare)
+    matched = next(pair for pair in pairs if pair.original and pair.original.clause_id == "O013")
+
+    assert matched.compare is not None
+    assert matched.compare.clause_id == "N002"
+    assert matched.score_details["candidate_source_canonical_path"] == 1.0
 
 
 def test_clause_matcher_includes_alignment_diagnostics() -> None:
@@ -305,6 +492,29 @@ def test_high_similarity_critical_token_conflict_does_not_score_as_full_match() 
     assert pair.match_confidence == "LOW"
 
 
+def test_greedy_assignment_sorts_candidates_before_selecting_mutual_best() -> None:
+    original = [
+        clause("O001", "", "A", "Template service scope with payment support."),
+        clause("O002", "", "B", "Distinct reporting obligation for monthly operations."),
+    ]
+    compare = [
+        clause("N001", "", "A-like", "Ambiguous template candidate for both obligations."),
+        clause("N002", "", "B-like", "Template service scope with payment support."),
+    ]
+    candidates = [
+        candidate(original[0], compare[0], 80.0),
+        candidate(original[0], compare[1], 95.0),
+        candidate(original[1], compare[0], 94.0),
+    ]
+
+    selected = ClauseMatcher()._select_greedy_candidates(candidates)
+
+    assert {(item.original.clause_id, item.compare.clause_id) for item in selected} == {
+        ("O001", "N002"),
+        ("O002", "N001"),
+    }
+
+
 def test_optimal_assignment_prefers_two_good_pairs_over_one_greedy_pair() -> None:
     original = [
         clause("O001", "", "A", "Template service scope with payment support."),
@@ -405,7 +615,12 @@ def test_private_rerank_score_can_promote_recalled_candidate(monkeypatch) -> Non
             return None
 
         def json(self) -> dict[str, object]:
-            return {"data": [{"score": 0.0}, {"score": 100.0, "reason": "same obligation"}]}
+            return {
+                "results": [
+                    {"index": 0, "relevance_score": 0.0},
+                    {"index": 1, "relevance_score": 1.0, "reason": "same obligation"},
+                ]
+            }
 
     class FakeClient:
         def __init__(self, timeout: int) -> None:
@@ -453,6 +668,12 @@ def test_private_rerank_score_can_promote_recalled_candidate(monkeypatch) -> Non
     assert matched.score_details["rerank_reason_present"] == 1.0
     assert calls[0]["url"] == "http://rerank.local/v1/rerank"
     assert calls[0]["headers"] == {"Content-Type": "application/json", "Authorization": "Bearer secret"}
+    assert calls[0]["json"]["query"] == "付款\n付款\n甲方应在收到发票后三十日内付款。"
+    assert calls[0]["json"]["documents"] == [
+        "结算\n结算\n甲方应在收到发票后四十五日内付款。",
+        "付款安排\n付款安排\n客户应在收到有效发票后三十日内完成付款。",
+    ]
+    assert calls[0]["json"]["top_n"] == 2
     assert calls[0]["json"]["model"] == "contract-reranker"
     assert calls[0]["timeout"] == 9
 
@@ -524,10 +745,10 @@ def test_private_rerank_is_limited_to_top_k_candidates_per_original(monkeypatch)
             return None
 
         def post(self, url: str, *, headers: dict[str, str], json: dict[str, object]) -> FakeResponse:
-            pairs = json["pairs"]
-            assert isinstance(pairs, list)
-            calls.append(pairs)
-            return FakeResponse(len(pairs))
+            documents = json["documents"]
+            assert isinstance(documents, list)
+            calls.append(documents)
+            return FakeResponse(len(documents))
 
     monkeypatch.setattr("app.services.matcher.httpx.Client", FakeClient)
     original = [
@@ -861,6 +1082,70 @@ def test_canonical_path_score_matches_chinese_and_arabic_section_paths() -> None
 
     assert pair.compare is not None
     assert pair.score_details["canonical_path_score"] == 100.0
+
+
+def test_matcher_canonical_path_item_uses_clause_key_label_format() -> None:
+    matcher = ClauseMatcher()
+    builder = ClauseKeyBuilder(
+        normalizer=normalizer,
+        number_parser=matcher.number_parser,
+        title_from_text=lambda text: text.strip().splitlines()[0][:40] if text.strip() else "",
+    )
+
+    assert matcher._canonical_path_item("第3.1条 付款") == normalizer.normalize_for_match(
+        builder.canonical_path_label("第3.1条 付款")
+    )
+
+
+def test_section_path_missing_strong_same_number_match_is_reviewed() -> None:
+    original = [
+        clause(
+            "O031",
+            "3.1",
+            "付款",
+            "甲方应在收到发票后三十个工作日内支付合同款项,并完成内部审批手续。",
+        ).model_copy(update={"section_path": ["第一章 总则", "第一条 付款"]})
+    ]
+    compare = [
+        clause(
+            "N031",
+            "3.1",
+            "付款",
+            "甲方应在收到发票后四十五个工作日内支付合同价款,并完成付款审批流程。",
+        )
+    ]
+
+    pair = ClauseMatcher().match(original, compare)[0]
+    diffs = DiffEngine().build_diffs([pair])
+
+    assert pair.compare is not None
+    assert pair.match_method == "same_clause_no_weighted"
+    assert "SECTION_PATH_MISMATCH_REVIEW" in pair.score_details["matcher_risk_flags"]
+    assert pair.match_confidence == "LOW"
+    assert "SECTION_PATH_MISMATCH_REVIEW" in diffs[0].review_flags
+
+
+def test_different_section_path_same_number_title_requires_body_signal() -> None:
+    original = [
+        clause(
+            "O011",
+            "1.1",
+            "服务范围",
+            "乙方负责提供功率预测平台维护服务、接口联调和数据迁移支持。",
+        ).model_copy(update={"section_path": ["第一章 服务条款", "1.1 服务范围"]})
+    ]
+    compare = [
+        clause(
+            "N011",
+            "1.1",
+            "服务范围",
+            "甲方应在收到发票后十个工作日内完成付款审批并支付合同款项。",
+        ).model_copy(update={"section_path": ["第二章 商务条款", "1.1 服务范围"]})
+    ]
+
+    pairs = ClauseMatcher().match(original, compare)
+
+    assert {pair.match_method for pair in pairs} == {"delete", "add"}
 
 
 def test_unmatched_original_contained_in_matched_compare_clause_is_not_deleted() -> None:

@@ -86,6 +86,8 @@ class MatchingSettings(BaseModel):
     semantic_timeout_seconds: int = Field(default=60, ge=1)
     semantic_max_retries: int = Field(default=2, ge=0)
     semantic_weight: float = Field(default=0.08, ge=0.0, le=0.3)
+    semantic_recall_mode: str = "sparse"
+    semantic_min_rule_candidates: int = Field(default=3, ge=0, le=50)
     enable_rerank: bool = False
     rerank_base_url: str = ""
     rerank_api_key: str = ""
@@ -111,6 +113,14 @@ class MatchingSettings(BaseModel):
         if provider not in {"local", "openai"}:
             raise ValueError("semantic_provider must be one of: local, openai")
         return provider
+
+    @field_validator("semantic_recall_mode")
+    @classmethod
+    def validate_semantic_recall_mode(cls, value: str) -> str:
+        mode = str(value or "sparse").strip().lower()
+        if mode not in {"sparse", "always"}:
+            raise ValueError("semantic_recall_mode must be one of: sparse, always")
+        return mode
 
     @field_validator("semantic_base_url")
     @classmethod

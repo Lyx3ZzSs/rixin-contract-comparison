@@ -1,20 +1,44 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { compareContracts, getApiBaseUrl, getCompareRecords, toApiUrl } from "./api";
 
 describe("api client URLs", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
   it("uses the configured API base URL without duplicate slashes", () => {
+    vi.stubEnv("VITE_API_BASE_PATH", "");
+    vi.stubEnv("VITE_BASE_PATH", "");
     vi.stubEnv("VITE_API_BASE_URL", "http://localhost:9000/");
 
     expect(getApiBaseUrl()).toBe("http://localhost:9000");
     expect(toApiUrl("/api/compare/task-1/report")).toBe("http://localhost:9000/api/compare/task-1/report");
     expect(toApiUrl("api/compare")).toBe("http://localhost:9000/api/compare");
-
-    vi.unstubAllEnvs();
   });
 
   it("keeps absolute URLs unchanged", () => {
     expect(toApiUrl("https://example.test/file.pdf")).toBe("https://example.test/file.pdf");
+  });
+
+  it("uses the configured API base URL before the API base path for local development", () => {
+    vi.stubEnv("VITE_BASE_PATH", "/contract");
+    vi.stubEnv("VITE_API_BASE_PATH", "/contract/api");
+    vi.stubEnv("VITE_API_BASE_URL", "http://127.0.0.1:8000");
+
+    expect(getApiBaseUrl()).toBe("http://127.0.0.1:8000");
+    expect(toApiUrl("/api/compare/records")).toBe("http://127.0.0.1:8000/api/compare/records");
+    expect(toApiUrl("api/compare/task-1/report")).toBe("http://127.0.0.1:8000/api/compare/task-1/report");
+  });
+
+  it("defaults API calls to the app base path when no API override is configured", () => {
+    vi.stubEnv("VITE_BASE_PATH", "/contract");
+    vi.stubEnv("VITE_API_BASE_PATH", "");
+    vi.stubEnv("VITE_API_BASE_URL", "");
+
+    expect(getApiBaseUrl()).toBe("/contract/api");
+    expect(toApiUrl("/api/compare/records")).toBe("/contract/api/compare/records");
   });
 
   it("sends comparison files without exclusion options", async () => {
@@ -35,8 +59,6 @@ describe("api client URLs", () => {
     expect(body.has("ignore_headers_footers")).toBe(false);
     expect(body.has("ignore_stamps")).toBe(false);
     expect(body.has("signing_region_mode")).toBe(false);
-
-    vi.unstubAllGlobals();
   });
 
   it("sends the stamp exclusion option only when enabled", async () => {
@@ -55,8 +77,6 @@ describe("api client URLs", () => {
     expect(body.get("ignore_stamps")).toBe("true");
     expect(body.has("ignore_punctuation")).toBe(false);
     expect(body.has("ignore_headers_footers")).toBe(false);
-
-    vi.unstubAllGlobals();
   });
 
   it("sends the signing region mode when provided", async () => {
@@ -113,8 +133,6 @@ describe("api client URLs", () => {
     expect(body.get("ignore_headers_footers")).toBe("true");
     expect(body.has("ignore_punctuation")).toBe(false);
     expect(body.has("ignore_stamps")).toBe(false);
-
-    vi.unstubAllGlobals();
   });
 
   it("loads comparison records with pagination and date filters", async () => {
@@ -145,8 +163,6 @@ describe("api client URLs", () => {
     );
     expect(payload.total).toBe(12);
     expect(payload.total_pages).toBe(2);
-
-    vi.unstubAllGlobals();
   });
 
 });

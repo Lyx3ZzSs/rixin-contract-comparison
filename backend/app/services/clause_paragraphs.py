@@ -60,7 +60,13 @@ class ParagraphBuilder:
         current_text = str(getattr(current, "text", "") or "").strip()
         if not previous_text or not current_text:
             return False
-        if self._has_strong_boundary_block_type(current):
+        if self._has_strong_boundary_block_type(current) and not self._is_bare_marker_title_continuation(
+            previous,
+            current,
+            previous_text,
+            current_text,
+            parse_marker,
+        ):
             return False
         if self._looks_like_signing_boundary(current_text):
             return False
@@ -102,6 +108,23 @@ class ParagraphBuilder:
     def _has_strong_boundary_block_type(cls, unit: Any) -> bool:
         block_type = str(getattr(unit, "block_type", "") or "").lower()
         return block_type in cls.boundary_block_types or block_type in cls.title_block_types
+
+    def _is_bare_marker_title_continuation(
+        self,
+        previous: Any,
+        current: Any,
+        previous_text: str,
+        current_text: str,
+        parse_marker: Callable[[str], object | None],
+    ) -> bool:
+        previous_marker = parse_marker(previous_text)
+        if previous_marker is None or self._marker_title(previous_marker):
+            return False
+        if parse_marker(current_text) is not None:
+            return False
+        if str(getattr(current, "block_type", "") or "").lower() not in self.title_block_types:
+            return False
+        return self._same_block(previous, current) or self._visually_close(previous, current)
 
     @staticmethod
     def _compact_text(text: str) -> str:

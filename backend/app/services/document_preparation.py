@@ -128,7 +128,7 @@ class DocumentPreparer:
         ]
 
         active_section_role: str | None = None
-        for block in page.blocks:
+        for block in self._section_flow_blocks(page):
             compact = re.sub(r"\s+", "", block.text or "")
             if not compact:
                 continue
@@ -186,10 +186,34 @@ class DocumentPreparer:
             return "quote_section"
         return None
 
+    def _section_flow_blocks(self, page: Page) -> list[TextBlock]:
+        blocks = list(page.blocks)
+        if not blocks:
+            return []
+        if all(block.layout_order is not None for block in blocks):
+            return sorted(
+                blocks,
+                key=lambda block: (
+                    block.layout_order or 0,
+                    block.bbox.y0,
+                    block.bbox.x0,
+                    block.block_id,
+                ),
+            )
+        return sorted(
+            blocks,
+            key=lambda block: (
+                block.bbox.y0,
+                block.bbox.x0,
+                block.reading_order or 0,
+                block.block_id,
+            ),
+        )
+
     def _looks_like_main_contract_restart(self, compact: str) -> bool:
         if self.appendix_title_pattern.match(compact):
             return False
-        return self._looks_like_real_clause_heading(compact) or bool(re.search(r"(?:^正文$|达成合同如下|合同正文)", compact))
+        return bool(re.search(r"(?:^正文$|达成合同如下|合同正文)", compact))
 
     def _median_block_height(self, blocks: list[TextBlock]) -> float:
         heights = sorted(max(0.0, block.bbox.y1 - block.bbox.y0) for block in blocks)

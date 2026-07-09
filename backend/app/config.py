@@ -140,6 +140,8 @@ class Settings(BaseSettings):
     match_semantic_timeout_seconds: int = Field(default=60, ge=1)
     match_semantic_max_retries: int = Field(default=2, ge=0)
     match_semantic_weight: float = Field(default=0.08, ge=0.0, le=0.3)
+    match_semantic_recall_mode: str = "sparse"
+    match_semantic_min_rule_candidates: int = Field(default=3, ge=0, le=50)
     match_enable_rerank: bool = False
     match_rerank_base_url: str = ""
     match_rerank_api_key: str = ""
@@ -226,6 +228,14 @@ class Settings(BaseSettings):
             raise ValueError("MATCH_ASSIGNMENT_STRATEGY must be one of: greedy, optimal")
         return strategy
 
+    @field_validator("match_semantic_recall_mode", mode="before")
+    @classmethod
+    def validate_match_semantic_recall_mode(cls, value: Any) -> str:
+        mode = str(value or "sparse").strip().lower()
+        if mode not in {"sparse", "always"}:
+            raise ValueError("MATCH_SEMANTIC_RECALL_MODE must be one of: sparse, always")
+        return mode
+
     @field_validator("match_semantic_base_url", "match_rerank_base_url")
     @classmethod
     def validate_match_http_url(cls, value: str) -> str:
@@ -279,6 +289,8 @@ class Settings(BaseSettings):
             semantic_timeout_seconds=self.match_semantic_timeout_seconds,
             semantic_max_retries=self.match_semantic_max_retries,
             semantic_weight=self.match_semantic_weight,
+            semantic_recall_mode=self.match_semantic_recall_mode,
+            semantic_min_rule_candidates=self.match_semantic_min_rule_candidates,
             enable_rerank=self.match_enable_rerank,
             rerank_base_url=self.match_rerank_base_url,
             rerank_api_key=self.match_rerank_api_key,

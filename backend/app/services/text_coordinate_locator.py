@@ -59,6 +59,7 @@ class TextCoordinateLocator:
             "table_cell",
             "cover_metadata",
             "seal_region",
+            "signing_region",
             "page_region",
             "text_exact",
         }

@@ -19,11 +19,15 @@ import type {
   QualityRunResponse,
   QualityTaskReviewResponse,
 } from "../types";
-
-const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
+import {
+  getAppBasePath,
+  getConfiguredApiBasePath,
+  getLegacyApiBaseUrl,
+  normalizeBaseUrl,
+} from "./env";
 
 export function getApiBaseUrl(): string {
-  return (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/+$/, "");
+  return getLegacyApiBaseUrl() ?? getConfiguredApiBasePath() ?? normalizeBaseUrl(`${getAppBasePath()}/api`);
 }
 
 export function toApiUrl(path: string): string {
@@ -33,7 +37,10 @@ export function toApiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) {
     return path;
   }
-  return `${getApiBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
+  const apiBaseUrl = getApiBaseUrl();
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const endpointPath = apiBaseUrl.endsWith("/api") ? normalizedPath.replace(/^\/api(?=\/|$)/, "") : normalizedPath;
+  return `${apiBaseUrl}${endpointPath}`;
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {

@@ -110,6 +110,8 @@ def test_semantic_matching_config_maps_to_nested_settings() -> None:
         match_semantic_timeout_seconds=30,
         match_semantic_max_retries=1,
         match_semantic_weight=0.1,
+        match_semantic_recall_mode="always",
+        match_semantic_min_rule_candidates=5,
         match_enable_rerank=True,
         match_rerank_base_url="http://127.0.0.1:8002/v1",
         match_rerank_api_key="rerank-key",
@@ -131,6 +133,8 @@ def test_semantic_matching_config_maps_to_nested_settings() -> None:
     assert app_settings.matching.semantic_timeout_seconds == 30
     assert app_settings.matching.semantic_max_retries == 1
     assert app_settings.matching.semantic_weight == 0.1
+    assert app_settings.matching.semantic_recall_mode == "always"
+    assert app_settings.matching.semantic_min_rule_candidates == 5
     assert app_settings.matching.enable_rerank is True
     assert app_settings.matching.rerank_base_url == "http://127.0.0.1:8002/v1"
     assert app_settings.matching.rerank_api_key == "rerank-key"
@@ -149,6 +153,11 @@ def test_matching_rejects_unknown_assignment_strategy() -> None:
 def test_semantic_matching_rejects_unknown_provider() -> None:
     with pytest.raises(ValidationError, match="MATCH_SEMANTIC_PROVIDER"):
         Settings(match_semantic_provider="custom")
+
+
+def test_semantic_matching_rejects_unknown_recall_mode() -> None:
+    with pytest.raises(ValidationError, match="MATCH_SEMANTIC_RECALL_MODE"):
+        Settings(match_semantic_recall_mode="full")
 
 
 def test_semantic_matching_rejects_invalid_http_url() -> None:

@@ -110,8 +110,16 @@ class ClauseAlignmentAnalyzer:
         )
 
         return {
-            "number_match": original_fingerprint.clause_no_key == compare_fingerprint.clause_no_key,
-            "title_match": original_fingerprint.title_key == compare_fingerprint.title_key,
+            "number_match": bool(
+                original_fingerprint.clause_no_key
+                and compare_fingerprint.clause_no_key
+                and original_fingerprint.clause_no_key == compare_fingerprint.clause_no_key
+            ),
+            "title_match": bool(
+                original_fingerprint.title_key
+                and compare_fingerprint.title_key
+                and original_fingerprint.title_key == compare_fingerprint.title_key
+            ),
             "body_similarity": body_similarity,
             "critical_token_overlap": critical_token_overlap,
             "section_type_match": original_fingerprint.structure_key == compare_fingerprint.structure_key,

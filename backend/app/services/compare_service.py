@@ -152,6 +152,7 @@ class CompareService:
         task.status = "PROCESSING"
         task.stage = "文档解析中"
         task.progress_percent = 8
+        task.errors = []
         task.original_filename = original_filename or task.original_filename or original_pdf.name
         task.compare_filename = compare_filename or task.compare_filename or compare_pdf.name
         task.original_pdf_path = str(original_pdf)
