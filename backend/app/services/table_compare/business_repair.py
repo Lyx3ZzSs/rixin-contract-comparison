@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from app.models import BBox
 from app.models_table import StructuredTable
 from app.services.table_compare.types import (
     _LogicalCell,
@@ -76,6 +77,14 @@ class BusinessRepairMixin:
         if not source_norm:
             return None
 
+        merged_source_text = "\n".join(dict.fromkeys(
+            text
+            for text in (
+                self._source_text_for_row(previous),
+                self._source_text_for_row(continuation),
+            )
+            if text
+        ))
         cells_by_col = {
             cell.col_index: self._clone_logical_cell(cell, previous.row_index, cell.col_index, cell.text)
             for cell in previous.cells
@@ -92,7 +101,13 @@ class BusinessRepairMixin:
             if prev_cell is None:
                 return None
             merged_text = self._join_continuation_text(prev_cell.text, cont_text)
-            cells_by_col[target_col] = self._clone_logical_cell(prev_cell, previous.row_index, target_col, merged_text)
+            cells_by_col[target_col] = self._clone_continuation_merged_cell(
+                prev_cell,
+                cont_cell,
+                previous.row_index,
+                target_col,
+                merged_text,
+            )
             changed = True
 
         if not changed:
@@ -104,7 +119,55 @@ class BusinessRepairMixin:
             source_block_id=previous.source_block_id,
             source_row=previous.source_row,
             section_title=previous.section_title,
-            source_text=self._source_text_for_row(previous),
+            source_text=merged_source_text,
+        )
+
+    def _clone_continuation_merged_cell(
+        self,
+        previous_cell: _LogicalCell,
+        continuation_cell: _LogicalCell,
+        row_index: int,
+        col_index: int,
+        text: str,
+    ) -> _LogicalCell:
+        page_no = previous_cell.page_no
+        source_block_id = previous_cell.source_block_id
+        source_row = previous_cell.source_row
+        source_col = previous_cell.source_col
+        bbox = previous_cell.bbox
+
+        if (
+            continuation_cell.page_no != previous_cell.page_no
+            or continuation_cell.source_block_id != previous_cell.source_block_id
+        ):
+            page_no = continuation_cell.page_no
+            source_block_id = continuation_cell.source_block_id
+            source_row = continuation_cell.source_row
+            source_col = continuation_cell.source_col
+            bbox = continuation_cell.bbox
+        elif previous_cell.bbox is not None and continuation_cell.bbox is not None:
+            bbox = self._merge_bboxes(previous_cell.bbox, continuation_cell.bbox)
+
+        return _LogicalCell(
+            row_index=row_index,
+            col_index=col_index,
+            text=text,
+            bbox=bbox,
+            page_no=page_no,
+            source_block_id=source_block_id,
+            source_row=source_row,
+            source_col=source_col,
+            colspan=previous_cell.colspan,
+            rowspan=previous_cell.rowspan,
+        )
+
+    @staticmethod
+    def _merge_bboxes(left: BBox, right: BBox) -> BBox:
+        return BBox(
+            x0=min(left.x0, right.x0),
+            y0=min(left.y0, right.y0),
+            x1=max(left.x1, right.x1),
+            y1=max(left.y1, right.y1),
         )
 
     def _continuation_target_col(

@@ -221,3 +221,33 @@ class TestCellBboxes:
         )[0]
 
         assert "right_fragment_overflow" in t.geometry_warnings
+
+    def test_multiple_tables_use_each_tables_own_bbox_count(self):
+        html = (
+            "<table><tr><td>A</td><td>B</td></tr></table>"
+            "<table><tr><td>C</td><td>D</td></tr></table>"
+        )
+        tables = parse_html_tables(
+            html,
+            cell_bboxes=[
+                BBox(x0=0, y0=0, x1=40, y1=20),
+                BBox(x0=50, y0=0, x1=90, y1=20),
+                BBox(x0=0, y0=40, x1=40, y1=60),
+                BBox(x0=50, y0=40, x1=90, y1=60),
+            ],
+        )
+
+        assert [table.geometry_status for table in tables] == ["consistent", "consistent"]
+        assert all("bbox_count_mismatch" not in table.geometry_warnings for table in tables)
+        assert [table.bbox_cell_count for table in tables] == [2, 2]
+
+    def test_invalid_span_attributes_fall_back_to_one(self):
+        html = (
+            '<table><tr><td colspan="">A</td><td rowspan="bad">B</td></tr>'
+            '<tr><td colspan="0">C</td><td rowspan="-2">D</td></tr></table>'
+        )
+
+        table = parse_html_tables(html)[0]
+
+        assert table.col_count == 2
+        assert [[cell.text for cell in row.cells] for row in table.rows] == [["A", "B"], ["C", "D"]]

@@ -623,6 +623,94 @@ class TestStructuredTableComparison:
         assert warnings == []
         assert diffs == []
 
+    def test_merged_sequence_with_three_names_from_continuation_rows_is_repaired(self):
+        def row(
+            row_index: int,
+            values: list[str],
+            *,
+            source_text: str = "",
+        ) -> _LogicalRow:
+            return _LogicalRow(
+                row_index=row_index,
+                cells=[
+                    _LogicalCell(
+                        row_index=row_index,
+                        col_index=col,
+                        text=value,
+                        bbox=None,
+                        page_no=1,
+                        source_block_id="p1_table",
+                        source_row=row_index,
+                        source_col=col,
+                    )
+                    for col, value in enumerate(values)
+                    if value
+                ],
+                page_no=1,
+                source_block_id="p1_table",
+                source_row=row_index,
+                source_text=source_text,
+            )
+
+        rows = [
+            row(0, ["2 3 4", "中期模型", "配置A 配置B 配置C", "国能日新 国能日新 国能日新", "套 套 套", "1 1 1"]),
+            row(1, ["短期模型"]),
+            row(2, ["超短期模型"]),
+        ]
+
+        repaired = TableRepairService().normalize_merged_sequence_rows(TableRepairContext(), rows, 6)
+
+        assert [[cell.text for cell in repaired_row.cells[:3]] for repaired_row in repaired] == [
+            ["2", "中期模型", "配置A"],
+            ["3", "短期模型", "配置B"],
+            ["4", "超短期模型", "配置C"],
+        ]
+
+    def test_cross_page_product_continuation_merge_keeps_continuation_location(self):
+        previous_bbox = BBox(x0=10, y0=100, x1=80, y1=120)
+        continuation_bbox = BBox(x0=20, y0=130, x1=160, y1=150)
+
+        previous = _LogicalRow(
+            row_index=0,
+            cells=[
+                _LogicalCell(0, 0, "2", previous_bbox, 1, "p1_table", 0, 0),
+                _LogicalCell(0, 1, "接口模块", previous_bbox, 1, "p1_table", 0, 1),
+                _LogicalCell(0, 2, "型号X-100 支持AB", previous_bbox, 1, "p1_table", 0, 2),
+                _LogicalCell(0, 3, "厂商甲", previous_bbox, 1, "p1_table", 0, 3),
+                _LogicalCell(0, 4, "台", previous_bbox, 1, "p1_table", 0, 4),
+                _LogicalCell(0, 5, "1", previous_bbox, 1, "p1_table", 0, 5),
+                _LogicalCell(0, 6, "200", previous_bbox, 1, "p1_table", 0, 6),
+                _LogicalCell(0, 7, "200", previous_bbox, 1, "p1_table", 0, 7),
+            ],
+            page_no=1,
+            source_block_id="p1_table",
+            source_row=0,
+            source_text="2\n接口模块\n型号X-100 支持AB",
+        )
+        continuation = _LogicalRow(
+            row_index=1,
+            cells=[
+                _LogicalCell(1, 2, "CD接口", continuation_bbox, 2, "p2_table", 0, 2),
+            ],
+            page_no=2,
+            source_block_id="p2_table",
+            source_row=0,
+            source_text="CD接口\n厂商甲\n台\n1\n200\n200",
+        )
+
+        repaired = TableRepairService().repair_product_continuation_rows(
+            TableRepairContext(),
+            [previous, continuation],
+            8,
+        )
+
+        assert len(repaired) == 1
+        detail_cell = next(cell for cell in repaired[0].cells if cell.col_index == 2)
+        assert detail_cell.text == "型号X-100 支持AB CD接口"
+        assert detail_cell.page_no == 2
+        assert detail_cell.source_block_id == "p2_table"
+        assert detail_cell.bbox == continuation_bbox
+
     def test_single_cell_change_detected(self):
         original_html = (
             '<table><tr><td>甲方</td><td>江苏东大</td></tr>'

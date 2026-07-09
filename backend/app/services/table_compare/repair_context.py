@@ -48,7 +48,13 @@ class TableRepairContext:
         )
 
     def source_text_for_block(self, block_id: str, fallback: str = "") -> str:
-        return self.source_text_by_block.get(block_id) or fallback or self.source_text
+        block_text = self.source_text_by_block.get(block_id) or ""
+        if block_text and fallback:
+            block_norm = utils.normalize(block_text)
+            fallback_norm = utils.normalize(fallback)
+            if block_norm and block_norm in fallback_norm and fallback_norm != block_norm:
+                return fallback
+        return block_text or fallback or self.source_text
 
     def source_text_for_row(self, row: _LogicalRow | None) -> str:
         if row is None:

@@ -118,22 +118,32 @@ class StructuralRepairMixin:
         # continuation row has a product-name-like token in its col 0,
         # use that token as the missing name for part 1+.
         name_col = None
-        consumed_cont_text: str | None = None
+        consumed_cont_texts: set[str] = set()
         for cell in row.cells:
             if cell.col_index == sequence_col:
-                 continue
+                continue
             if cell.col_index not in per_col_parts and cell.col_index == 1:
                 name_col = cell.col_index
                 break
         if name_col is not None and continuation_rows:
-            for cont in continuation_rows:
+            name_parts = [self._cell_text_from_row(row, name_col)]
+            for cont in continuation_rows[:max(0, split_count - 1)]:
                 cont_col0 = self._cell_text_from_row(cont, 0)
                 if cont_col0 and self._is_product_name_like(cont_col0):
-                    orig_text = self._cell_text_from_row(row, name_col)
-                    per_col_parts[name_col] = [orig_text, cont_col0]
-                    split_cols.add(name_col)
-                    consumed_cont_text = cont_col0
+                    name_parts.append(cont_col0)
+                else:
                     break
+            if len(name_parts) == split_count:
+                per_col_parts[name_col] = name_parts
+                split_cols.add(name_col)
+                consumed_cont_texts = {utils.normalize(text) for text in name_parts[1:]}
+
+        per_col_parts = {
+            col: parts
+            for col, parts in per_col_parts.items()
+            if len(parts) == split_count
+        }
+        split_cols = set(per_col_parts)
 
         if len(split_cols) <= 1 and not continuation_rows:
             return None
@@ -155,7 +165,7 @@ class StructuralRepairMixin:
                 if continuation_cell is not None and utils.normalize(continuation_cell.text):
                     cont_text = continuation_cell.text
                     # Skip if this continuation text was already used as a name column split part
-                    if consumed_cont_text and utils.normalize(cont_text) == utils.normalize(consumed_cont_text):
+                    if consumed_cont_texts and utils.normalize(cont_text) in consumed_cont_texts:
                         continue
                     if col not in per_col_parts or not utils.normalize(text) or utils.normalize(text) == utils.normalize(cont_text):
                         text = cont_text
