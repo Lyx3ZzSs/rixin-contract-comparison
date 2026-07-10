@@ -10,8 +10,39 @@ from app.models import Document, TextBlock
 from app.services.clause_numbering import ClauseNumberParser
 
 
-PROTECTED_LABEL_RE = re.compile(r"^(?:甲方|乙方|买方|卖方|联系人|电话|传真|邮箱|签字|签章|盖章|日期)[:：]?$")
-VALUE_RE = re.compile(r"^(?:\d+(?:\.\d+)?(?:元|万元|%|天|月|年|份|项|台|套)?|\d{4}年)$")
+PROTECTED_LABEL_RE = re.compile(
+    r"^[\u4e00-\u9fff]{1,12}(?:方|人|名|号|码|话|真|箱|址|字|章|期|日)[:：]?$"
+)
+FIELD_VALUE_RE = re.compile(r"^[^:：\n]{1,24}[:：][^:：\n]{1,80}$")
+VALUE_RE = re.compile(
+    r"^(?:"
+    r"[+-]?\d+(?:\.\d+)?(?:元|万元|亿元|%|天|月|年|份|项|台|套|号)?"
+    r"|(?:19|20)\d{2}(?:年|[-/.]\d{1,2}(?:[-/.]\d{1,2})?)"
+    r"|1\d{10}"
+    r"|[^@\s]+@[^@\s]+\.[^@\s]+"
+    r")$"
+)
+
+MEANINGFUL_BLOCK_TYPES = frozenset(
+    {"paragraph_title", "doc_title", "title", "table", "table_title", "table_cell"}
+)
+MEANINGFUL_ROLES = frozenset(
+    {
+        "heading",
+        "main_clause",
+        "appendix",
+        "appendix_section",
+        "quote",
+        "quote_section",
+        "quote_metadata",
+        "safety_agreement",
+        "safety_section",
+        "table",
+        "table_body",
+        "table_title",
+        "table_cell",
+    }
+)
 
 
 def _compact(text: str) -> str:
@@ -106,15 +137,30 @@ class RepeatedOverlayFilter:
     ) -> str:
         if len(page_counts) < self.min_pages or page_ratio < self.min_page_ratio:
             return "insufficient_page_coverage"
-        if max(page_counts.values()) > 2:
+        if max(page_counts.values()) > 1:
             return "too_many_occurrences_per_page"
         if cluster_ratio < self.min_cluster_ratio:
             return "unstable_position"
-        if PROTECTED_LABEL_RE.fullmatch(key) or VALUE_RE.fullmatch(key):
-            return "protected_label_or_value"
+        if any(self._has_meaningful_metadata(block) for block, _, _ in occurrences):
+            return "meaningful_metadata"
+        if (
+            PROTECTED_LABEL_RE.fullmatch(key)
+            or FIELD_VALUE_RE.fullmatch(key)
+            or VALUE_RE.fullmatch(key)
+        ):
+            return "protected_field_or_value"
         if self.number_parser.parse_line(key) is not None:
             return "numbered_heading_or_clause"
         return ""
+
+    def _has_meaningful_metadata(self, block: TextBlock) -> bool:
+        block_type = (block.block_type or "").lower()
+        roles = {
+            (block.block_role or "").lower(),
+            (block.semantic_role or "").lower(),
+            (block.flow_role or "").lower(),
+        }
+        return block_type in MEANINGFUL_BLOCK_TYPES or bool(roles & MEANINGFUL_ROLES)
 
     def _cluster_ratio(self, occurrences: list[tuple[TextBlock, float, float]]) -> float:
         xs = [x for _, x, _ in occurrences]

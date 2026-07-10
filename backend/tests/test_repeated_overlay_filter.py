@@ -59,3 +59,44 @@ def test_keeps_single_page_contact_name() -> None:
 
     assert result.filtered_block_count == 0
     assert document.pages[0].blocks[-1].enter_clause_compare is None
+
+
+def test_keeps_stable_repeated_meaningful_heading_metadata() -> None:
+    document = _document("条款标题")
+    for page in document.pages:
+        for block in page.blocks:
+            if block.block_id.startswith("overlay-"):
+                block.block_type = "paragraph_title"
+                block.block_role = "safety_section"
+                block.semantic_role = "safety_agreement"
+
+    result = RepeatedOverlayFilter().apply(document)
+
+    overlays = [block for page in document.pages for block in page.blocks if block.block_id.startswith("overlay-")]
+    assert result.filtered_block_count == 0
+    assert all(block.enter_clause_compare is None for block in overlays)
+
+
+def test_keeps_repeated_generic_field_value_text() -> None:
+    document = _document("字段：示例值")
+
+    result = RepeatedOverlayFilter().apply(document)
+
+    overlays = [block for page in document.pages for block in page.blocks if block.block_id.startswith("overlay-")]
+    assert result.filtered_block_count == 0
+    assert all(block.enter_clause_compare is None for block in overlays)
+
+
+def test_keeps_group_with_two_occurrences_on_a_page() -> None:
+    document = _document("黄科")
+    for page in document.pages[:9]:
+        original = next(block for block in page.blocks if block.block_id.startswith("overlay-"))
+        page.blocks.append(
+            original.model_copy(update={"block_id": f"{original.block_id}-duplicate"})
+        )
+
+    result = RepeatedOverlayFilter().apply(document)
+
+    overlays = [block for page in document.pages for block in page.blocks if block.block_id.startswith("overlay-")]
+    assert result.filtered_block_count == 0
+    assert all(block.enter_clause_compare is None for block in overlays)
