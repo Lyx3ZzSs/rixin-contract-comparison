@@ -4,13 +4,16 @@ import re
 from pathlib import Path
 
 import fitz
+import pytest
 
+import app.services.diff.boundary_coverage as boundary_coverage_module
 from app.models import BBox, Clause, ClausePair, DiffItem, Document, EvidenceBox, Page, TextBlock, TextRange
 from app.services.clause_splitter import ClauseSplitter
+from app.services.diff.boundary_coverage import BoundaryCoverageContext, ClauseBoundaryCoverageFilter, contact_field_coverage_sequences
 from app.services.diff_engine import DiffEngine
-from app.services.diff.boundary_coverage import contact_field_coverage_sequences
 from app.services.diff_quality import DiffQualityProcessor
 from app.services.document_preparation import DocumentPreparer
+from app.services.native_heading_repair import NativeHeadingIndex
 from app.services.normalizer import TextNormalizer
 
 
@@ -1863,10 +1866,13 @@ def _quality_document(page_no: int, text: str) -> Document:
     )
 
 
-def _write_quality_heading_pdf(path: Path, heading: str) -> None:
+def _write_quality_heading_pdf(path: Path, heading: str, *, page_no: int = 1, page_count: int | None = None) -> None:
     pdf = fitz.open()
-    page = pdf.new_page(width=595, height=842)
-    page.insert_text((72, 96), heading, fontname="china-s", fontsize=12)
+    total_pages = max(page_count or page_no, page_no)
+    for current_page in range(1, total_pages + 1):
+        page = pdf.new_page(width=595, height=842)
+        if current_page == page_no:
+            page.insert_text((72, 96), heading, fontname="china-s", fontsize=12)
     pdf.save(path)
     pdf.close()
 
@@ -2503,9 +2509,13 @@ def test_diff_quality_keeps_high_risk_heading_add_without_exact_native_evidence(
     _write_quality_heading_pdf(path, "8. 保密")
     original_document = _quality_document(1, "8.\n8.1 甲方拥有工作成果。")
     original_document.path = str(path)
-    compare_heading = _quality_clause("NC080", "8. 知识产权", side_prefix="N", split_flags=["READING_ORDER_REPAIRED"])
+    original_child = _quality_clause("OC081", "8.1 甲方拥有工作成果。", order_index=2)
+    original_child.clause_no = "8.1"
+    compare_heading = _quality_clause("NC080", "8. 知识产权", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"])
     compare_heading.clause_no = "8"
     compare_heading.title = "知识产权"
+    compare_child = _quality_clause("NC081", "8.1 甲方拥有工作成果。", side_prefix="N", order_index=2)
+    compare_child.clause_no = "8.1"
     diff = DiffItem(
         diff_id="D_NATIVE_ADD_KEEP",
         diff_type="ADD",
@@ -2520,7 +2530,12 @@ def test_diff_quality_keeps_high_risk_heading_add_without_exact_native_evidence(
         compare_evidence=compare_heading.bboxes,
     )
 
-    result = DiffQualityProcessor().process([diff], compare_clauses=[compare_heading], original_document=original_document)
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_child],
+        compare_clauses=[compare_heading, compare_child],
+        original_document=original_document,
+    )
 
     assert [item.diff_id for item in result.diffs] == ["D_NATIVE_ADD_KEEP"]
 
@@ -2596,6 +2611,138 @@ def test_diff_quality_keeps_native_heading_add_when_clause_contains_new_body(tmp
     )
 
     assert [item.diff_id for item in result.diffs] == ["D_NATIVE_BODY_ADD"]
+
+
+def test_diff_quality_keeps_high_risk_heading_add_when_diff_payload_is_heading_only_but_clause_has_new_body(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "original.pdf"
+    _write_quality_heading_pdf(path, "8. 知识产权")
+    original_document = _quality_document(1, "8.\n8.1 甲方拥有工作成果。")
+    original_document.path = str(path)
+    original_child = _quality_clause("OC081", "8.1 甲方拥有工作成果。", order_index=2)
+    original_child.clause_no = "8.1"
+    compare_heading = _quality_clause("NC080", "8. 知识产权\n新增许可限制。", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"])
+    compare_heading.clause_no = "8"
+    compare_heading.title = "知识产权"
+    compare_child = _quality_clause("NC081", "8.1 甲方拥有工作成果。", side_prefix="N", order_index=2)
+    compare_child.clause_no = "8.1"
+    diff = DiffItem(
+        diff_id="D_NATIVE_BODY_PAYLOAD_KEEP",
+        diff_type="ADD",
+        source_type="clause",
+        compare_clause_id="NC080",
+        clause_no="8",
+        title="知识产权",
+        compare_text="8. 知识产权",
+        compare_snippet="8. 知识产权",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "CRITICAL_VALUE_CHANGE"],
+        compare_evidence=compare_heading.bboxes,
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_child],
+        compare_clauses=[compare_heading, compare_child],
+        original_document=original_document,
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D_NATIVE_BODY_PAYLOAD_KEEP"]
+
+
+def test_boundary_coverage_context_caches_native_failure_and_stays_fail_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "native-failure.pdf"
+    _write_quality_heading_pdf(path, "8. 知识产权")
+    document = _quality_document(1, "8.\n8.1 甲方拥有工作成果。")
+    document.path = str(path)
+    calls: list[str] = []
+
+    def _fake_loader(requested_path: str) -> NativeHeadingIndex:
+        calls.append(requested_path)
+        return NativeHeadingIndex(warning="native extraction failed")
+
+    monkeypatch.setattr(boundary_coverage_module, "load_native_heading_index", _fake_loader)
+
+    context = BoundaryCoverageContext(original_document=document)
+    first = context.native_heading_index(document)
+    second = context.native_heading_index(document)
+
+    assert first.warning == "native extraction failed"
+    assert second.warning == "native extraction failed"
+    assert calls == [str(path)]
+    assert not ClauseBoundaryCoverageFilter()._native_heading_confirms(document, {1}, "8", "知识产权", context)
+
+
+def test_native_heading_confirm_uses_adjacent_page_window_only(tmp_path: Path) -> None:
+    path = tmp_path / "adjacent-window.pdf"
+    _write_quality_heading_pdf(path, "8. 知识产权", page_no=2, page_count=4)
+    document = _quality_document(1, "占位")
+    document.path = str(path)
+    context = BoundaryCoverageContext(original_document=document)
+    coverage_filter = ClauseBoundaryCoverageFilter()
+
+    assert coverage_filter._native_heading_confirms(document, {1}, "8", "知识产权", context)
+    assert not coverage_filter._native_heading_confirms(document, {4}, "8", "知识产权", context)
+
+
+@pytest.mark.parametrize(
+    ("title", "compare_snippet", "body_similarity", "business_token_mismatch", "original_no", "compare_no"),
+    [
+        ("金额100元", "金额100元", 0.98, 0.0, "17", "17"),
+        ("合同生效", "合同生效", 0.98, 1.0, "17", "17"),
+        ("合同生效", "合同生效", 0.89, 0.0, "17", "17"),
+        ("合同生效", "合同生效", 0.98, 0.0, "17", "18"),
+    ],
+)
+def test_diff_quality_keeps_title_only_modify_when_native_guard_fails(
+    tmp_path: Path,
+    title: str,
+    compare_snippet: str,
+    body_similarity: float,
+    business_token_mismatch: float,
+    original_no: str,
+    compare_no: str,
+) -> None:
+    path = tmp_path / f"{title}-{original_no}-{compare_no}.pdf"
+    _write_quality_heading_pdf(path, f"{original_no}. {title}")
+    original_document = _quality_document(1, f"{original_no}.\n本条款正文保持一致。")
+    original_document.path = str(path)
+    original_clause = _quality_clause("OC170", f"{original_no}.\n本条款正文保持一致。")
+    original_clause.clause_no = original_no
+    compare_clause = _quality_clause("NC170", f"{compare_no}. {title}\n本条款正文保持一致。", side_prefix="N")
+    compare_clause.clause_no = compare_no
+    compare_clause.title = title
+    diff = DiffItem(
+        diff_id=f"D_NATIVE_MODIFY_GUARD_{title}_{original_no}_{compare_no}_{body_similarity}_{business_token_mismatch}",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id="OC170",
+        compare_clause_id="NC170",
+        clause_no=original_no,
+        title=title,
+        original_text=original_clause.text,
+        compare_text=compare_clause.text,
+        original_snippet="",
+        compare_snippet=compare_snippet,
+        match_score_details={
+            "alignment": {"body_similarity": body_similarity},
+            "business_token_mismatch": business_token_mismatch,
+        },
+        review_flags=["READING_ORDER_RISK"],
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause],
+        original_document=original_document,
+    )
+
+    assert [item.diff_id for item in result.diffs] == [diff.diff_id]
 
 
 def test_diff_quality_keeps_critical_heading_add_not_covered_by_larger_numbered_heading() -> None:

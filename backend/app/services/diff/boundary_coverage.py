@@ -649,9 +649,11 @@ class ClauseBoundaryCoverageFilter:
             allowed_keys.add(normalize_for_coverage(f"{parent_no}{clause.title or ''}"))
         allowed_keys.discard(clause_no)
         allowed_keys.discard(parent_no)
-        text_key = normalize_for_coverage(clause.text or changed)
+        clause_text = (clause.text or "").strip()
+        if clause_text:
+            return normalize_for_coverage(clause_text) in allowed_keys
         changed_key = normalize_for_coverage(changed)
-        return text_key in allowed_keys or changed_key in allowed_keys
+        return changed_key in allowed_keys
 
     @staticmethod
     def _native_heading_has_child_for_parent(clauses: list[Clause], parent_no: str) -> bool:
