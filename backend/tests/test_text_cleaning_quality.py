@@ -398,7 +398,7 @@ def test_clause_splitter_uses_native_repair_semantics_for_ordinary_text_heading(
     ("text", "block_type", "semantic_reason"),
     [
         ("18. 100万元", "text", "native_heading_repair:18"),
-        ("2026/07", "text", "native_heading_repair:2026"),
+        ("18. 100份", "text", "native_heading_repair:18"),
         ("18. 份数", "table", "native_heading_repair:18"),
     ],
 )
@@ -440,6 +440,31 @@ def test_clause_splitter_native_reason_does_not_bypass_guarded_shapes(
     clauses = ClauseSplitter().split(document, "O")
 
     assert [item.clause_no for item in clauses] == ["17"]
+
+
+def test_clause_heading_native_reason_date_like_risk_stays_below_acceptance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    splitter = ClauseSplitter()
+    unit = TextBlock(
+        block_id="date-like",
+        page_no=1,
+        text="2026/07",
+        bbox=BBox(x0=70, y0=80, x1=150, y1=104),
+        semantic_reasons=["native_heading_repair:2026"],
+    )
+    monkeypatch.setattr(
+        splitter.heading_detector,
+        "is_quantity_or_amount_marker",
+        lambda _text, _marker: False,
+    )
+
+    candidate = splitter.heading_detector.candidate(unit, ("2026", "07"), None)
+
+    assert candidate is not None
+    assert "native_heading_repair" in candidate.signals
+    assert "DATE_LIKE_HEADING" in candidate.risk_flags
+    assert candidate.score < splitter.heading_accept_score
 
 
 def test_clause_splitter_native_reason_does_not_bypass_global_acceptance_threshold() -> None:

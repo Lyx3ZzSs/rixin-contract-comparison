@@ -18,7 +18,9 @@ TITLE_BLOCK_TYPES = {"paragraph_title", "doc_title", "title"}
 SPLIT_BASELINE_TOLERANCE = 0.4
 SPLIT_GAP_HEIGHT_RATIO = 2.0
 SPLIT_FONT_SIZE_TOLERANCE_RATIO = 0.08
-SPLIT_BODY_DISTANCE_HEIGHT_RATIO = 5.0
+SPLIT_BODY_WINDOW_HEIGHT_RATIO = 12.0
+SPLIT_BODY_MIN_LINES = 2
+SPLIT_BODY_MIN_CHARS = 16
 
 
 def normalize_heading_text(text: str) -> str:
@@ -50,6 +52,14 @@ class NativeLineRecord:
     bbox: BBox
     char_boxes: tuple[CharBox, ...]
     span_styles: tuple[NativeSpanStyle, ...]
+
+
+@dataclass(frozen=True)
+class NativeBodyStyleBaseline:
+    size: float
+    emphasized: bool
+    char_count: int
+    line_count: int
 
 
 @dataclass(frozen=True)
@@ -228,47 +238,91 @@ def _has_split_heading_style_evidence(
     )
     if abs(bare_style.size - title_style.size) > size_tolerance:
         return False
-    body_line = _nearest_body_line(bare_line, title_line, lines)
-    if body_line is None:
-        return False
-    body_style = _dominant_span_style(body_line)
+    body_style = _body_style_baseline(bare_line, title_line, lines)
     if body_style is None:
         return False
     size_advantage = title_style.size - body_style.size >= max(
         1.0,
         body_style.size * 0.12,
     )
-    emphasis_advantage = _is_emphasized_style(title_style) and not _is_emphasized_style(
-        body_style
-    )
+    emphasis_advantage = _is_emphasized_style(title_style) and not body_style.emphasized
     return size_advantage or emphasis_advantage
 
 
-def _nearest_body_line(
+def _body_style_baseline(
     bare_line: NativeLineRecord,
     title_line: NativeLineRecord,
     lines: list[NativeLineRecord],
-) -> NativeLineRecord | None:
+) -> NativeBodyStyleBaseline | None:
     heading_bottom = max(bare_line.bbox.y1, title_line.bbox.y1)
     heading_height = max(
         bare_line.bbox.y1 - bare_line.bbox.y0,
         title_line.bbox.y1 - title_line.bbox.y0,
         1.0,
     )
-    candidates = [
-        line
-        for line in lines
-        if line is not bare_line
-        and line is not title_line
-        and 0 <= line.bbox.y0 - heading_bottom
-        <= heading_height * SPLIT_BODY_DISTANCE_HEIGHT_RATIO
-        and line.bbox.x0 <= title_line.bbox.x0 + heading_height * 3.0
-        and line.bbox.x1 >= bare_line.bbox.x0
-        and len(re.sub(r"\s+", "", line.text or "")) >= 4
-        and BARE_RE.fullmatch(unicodedata.normalize("NFKC", line.text).strip()) is None
-        and HEADING_RE.fullmatch(unicodedata.normalize("NFKC", line.text).strip()) is None
-    ]
-    return min(candidates, key=lambda line: (line.bbox.y0, line.bbox.x0), default=None)
+    weighted_chars: dict[float, int] = {}
+    emphasized_chars: dict[float, int] = {}
+    line_indexes: dict[float, set[int]] = {}
+    for line_index, line in enumerate(lines):
+        if not _is_body_style_evidence_line(
+            line,
+            bare_line=bare_line,
+            title_line=title_line,
+            heading_bottom=heading_bottom,
+            heading_height=heading_height,
+        ):
+            continue
+        for style in line.span_styles:
+            if style.size <= 0 or style.char_count <= 0:
+                continue
+            size_bucket = round(style.size * 2.0) / 2.0
+            weighted_chars[size_bucket] = weighted_chars.get(size_bucket, 0) + style.char_count
+            line_indexes.setdefault(size_bucket, set()).add(line_index)
+            if _is_emphasized_style(style):
+                emphasized_chars[size_bucket] = (
+                    emphasized_chars.get(size_bucket, 0) + style.char_count
+                )
+    if not weighted_chars:
+        return None
+    dominant_size = max(
+        weighted_chars,
+        key=lambda size: (weighted_chars[size], len(line_indexes[size]), size),
+    )
+    char_count = weighted_chars[dominant_size]
+    line_count = len(line_indexes[dominant_size])
+    if char_count < SPLIT_BODY_MIN_CHARS or line_count < SPLIT_BODY_MIN_LINES:
+        return None
+    return NativeBodyStyleBaseline(
+        size=dominant_size,
+        emphasized=emphasized_chars.get(dominant_size, 0) * 2 > char_count,
+        char_count=char_count,
+        line_count=line_count,
+    )
+
+
+def _is_body_style_evidence_line(
+    line: NativeLineRecord,
+    *,
+    bare_line: NativeLineRecord,
+    title_line: NativeLineRecord,
+    heading_bottom: float,
+    heading_height: float,
+) -> bool:
+    if line is bare_line or line is title_line:
+        return False
+    if not 0 <= line.bbox.y0 - heading_bottom <= heading_height * SPLIT_BODY_WINDOW_HEIGHT_RATIO:
+        return False
+    if line.bbox.x0 > title_line.bbox.x0 + heading_height * 3.0:
+        return False
+    if line.bbox.x1 < bare_line.bbox.x0:
+        return False
+    normalized = unicodedata.normalize("NFKC", line.text).strip()
+    compact = re.sub(r"\s+", "", normalized)
+    if len(compact) < 4:
+        return False
+    if BARE_RE.fullmatch(normalized) or HEADING_RE.fullmatch(normalized):
+        return False
+    return not _is_valid_native_title(normalized)
 
 
 def _dominant_span_style(line: NativeLineRecord) -> NativeSpanStyle | None:

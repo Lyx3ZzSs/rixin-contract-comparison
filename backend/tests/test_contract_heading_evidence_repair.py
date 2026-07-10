@@ -49,6 +49,12 @@ def _write_native_pdf(path: Path) -> None:
                 fontname="china-s",
                 fontsize=12,
             )
+            page.insert_textbox(
+                fitz.Rect(92, y + 50, 520, y + 80),
+                "双方继续履行其他约定义务。",
+                fontname="china-s",
+                fontsize=12,
+            )
     pdf.save(path)
     pdf.close()
 
