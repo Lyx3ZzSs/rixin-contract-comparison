@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -238,22 +239,23 @@ def _has_split_heading_style_evidence(
     )
     if abs(bare_style.size - title_style.size) > size_tolerance:
         return False
-    body_style = _body_style_baseline(bare_line, title_line, lines)
-    if body_style is None:
+    body_styles = _body_style_baselines(bare_line, title_line, lines)
+    if not body_styles:
         return False
-    size_advantage = title_style.size - body_style.size >= max(
-        1.0,
-        body_style.size * 0.12,
+    title_is_emphasized = _is_emphasized_style(title_style)
+    return all(
+        title_style.size - body_style.size
+        >= max(1.0, body_style.size * 0.12)
+        or (title_is_emphasized and not body_style.emphasized)
+        for body_style in body_styles
     )
-    emphasis_advantage = _is_emphasized_style(title_style) and not body_style.emphasized
-    return size_advantage or emphasis_advantage
 
 
-def _body_style_baseline(
+def _body_style_baselines(
     bare_line: NativeLineRecord,
     title_line: NativeLineRecord,
     lines: list[NativeLineRecord],
-) -> NativeBodyStyleBaseline | None:
+) -> tuple[NativeBodyStyleBaseline, ...]:
     heading_bottom = max(bare_line.bbox.y1, title_line.bbox.y1)
     heading_height = max(
         bare_line.bbox.y1 - bare_line.bbox.y0,
@@ -275,29 +277,28 @@ def _body_style_baseline(
         for style in line.span_styles:
             if style.size <= 0 or style.char_count <= 0:
                 continue
-            size_bucket = round(style.size * 2.0) / 2.0
+            size_bucket = _font_size_bucket(style.size)
             weighted_chars[size_bucket] = weighted_chars.get(size_bucket, 0) + style.char_count
             line_indexes.setdefault(size_bucket, set()).add(line_index)
             if _is_emphasized_style(style):
                 emphasized_chars[size_bucket] = (
                     emphasized_chars.get(size_bucket, 0) + style.char_count
                 )
-    if not weighted_chars:
-        return None
-    dominant_size = max(
-        weighted_chars,
-        key=lambda size: (weighted_chars[size], len(line_indexes[size]), size),
+    return tuple(
+        NativeBodyStyleBaseline(
+            size=size,
+            emphasized=emphasized_chars.get(size, 0) * 2 > weighted_chars[size],
+            char_count=weighted_chars[size],
+            line_count=len(line_indexes[size]),
+        )
+        for size in sorted(weighted_chars)
+        if weighted_chars[size] >= SPLIT_BODY_MIN_CHARS
+        and len(line_indexes[size]) >= SPLIT_BODY_MIN_LINES
     )
-    char_count = weighted_chars[dominant_size]
-    line_count = len(line_indexes[dominant_size])
-    if char_count < SPLIT_BODY_MIN_CHARS or line_count < SPLIT_BODY_MIN_LINES:
-        return None
-    return NativeBodyStyleBaseline(
-        size=dominant_size,
-        emphasized=emphasized_chars.get(dominant_size, 0) * 2 > char_count,
-        char_count=char_count,
-        line_count=line_count,
-    )
+
+
+def _font_size_bucket(size: float) -> float:
+    return round(math.floor(size * 2.0 + 0.5) / 2.0, 2)
 
 
 def _is_body_style_evidence_line(

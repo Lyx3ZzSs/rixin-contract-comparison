@@ -105,8 +105,8 @@ def test_repairs_ordinary_text_block_from_split_native_heading_lines(tmp_path: P
         [
             (72, 96, "18.", 15, "helv"),
             (106, 96, "份数", 15, "china-s"),
-            (92, 132, "双方按本条约定履行义务。", 12, "china-s"),
-            (92, 160, "双方继续履行其他约定义务。", 12, "china-s"),
+            (92, 132, "双方按本条约定履行义务。", 11.99, "china-s"),
+            (92, 160, "双方继续履行其他约定义务。", 12.01, "china-s"),
         ],
     )
     document = _ocr_document(
@@ -157,6 +157,35 @@ def test_does_not_stitch_same_baseline_short_body_as_native_title(tmp_path: Path
             (92, 132, "注：本页说明。", 10, "china-s"),
             (92, 160, "本合同其他条款继续有效。", 12, "china-s"),
             (92, 188, "双方应依约履行各自义务。", 12, "china-s"),
+        ],
+    )
+    document = _ocr_document(path, "18.", context_text="19. 特别约定")
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.pages[0].blocks[0].text == "18."
+    assert result.repaired_count == 0
+    assert not load_native_heading_index(path).contains_exact(
+        "18",
+        "双方应按合同约定履行",
+        {1},
+    )
+
+
+def test_does_not_stitch_when_smaller_table_text_outweighs_main_body(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "table-style-pollution.pdf"
+    _write_styled_line_pdf(
+        path,
+        [
+            (72, 96, "18.", 12, "helv"),
+            (106, 96, "双方应按合同约定履行", 12, "china-s"),
+            (92, 132, "表格第一行数据说明及金额数量以附件为准。", 10, "china-s"),
+            (92, 156, "表格第二行数据说明及金额数量以附件为准。", 10, "china-s"),
+            (92, 180, "表格第三行数据说明及金额数量以附件为准。", 10, "china-s"),
+            (92, 204, "本合同其他条款继续有效。", 12, "china-s"),
+            (92, 228, "双方应依约履行各自义务。", 12, "china-s"),
         ],
     )
     document = _ocr_document(path, "18.", context_text="19. 特别约定")
