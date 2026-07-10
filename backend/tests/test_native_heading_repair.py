@@ -17,7 +17,28 @@ def _write_pdf(path: Path, lines: list[tuple[float, str]]) -> None:
     pdf.close()
 
 
-def _ocr_document(path: Path, heading: str = "8.", *, title_type: str = "paragraph_title") -> Document:
+def _write_split_line_pdf(path: Path, lines: list[tuple[float, float, str]]) -> None:
+    pdf = fitz.open()
+    page = pdf.new_page(width=595, height=842)
+    for x, baseline, text in lines:
+        fontname = "helv" if text.isascii() else "china-s"
+        page.insert_textbox(
+            fitz.Rect(x, baseline - 14, x + 100, baseline + 16),
+            text,
+            fontname=fontname,
+            fontsize=12,
+        )
+    pdf.save(path)
+    pdf.close()
+
+
+def _ocr_document(
+    path: Path,
+    heading: str = "8.",
+    *,
+    title_type: str = "paragraph_title",
+    context_text: str = "8.1 甲方拥有工作成果。",
+) -> Document:
     return Document(
         filename=path.name,
         path=str(path),
@@ -39,7 +60,7 @@ def _ocr_document(path: Path, heading: str = "8.", *, title_type: str = "paragra
                     TextBlock(
                         block_id="child",
                         page_no=1,
-                        text="8.1 甲方拥有工作成果。",
+                        text=context_text,
                         bbox=BBox(x0=72, y0=116, x1=360, y1=138),
                     ),
                 ],
@@ -63,6 +84,74 @@ def test_repairs_bare_number_from_exact_native_heading(tmp_path: Path) -> None:
     assert "native_heading_repair:8" in heading.semantic_reasons
     assert result.repaired_count == 1
     assert result.decisions[0]["action"] == "repaired"
+
+
+def test_repairs_ordinary_text_block_from_split_native_heading_lines(tmp_path: Path) -> None:
+    path = tmp_path / "split-native.pdf"
+    _write_split_line_pdf(path, [(72, 96, "18."), (106, 96, "份数")])
+    document = _ocr_document(
+        path,
+        "18.",
+        title_type="text",
+        context_text="19. 特别约定",
+    )
+
+    result = NativeHeadingRepairService().repair(document)
+
+    heading = document.pages[0].blocks[0]
+    assert heading.text == "18. 份数"
+    assert heading.block_type == "text"
+    assert heading.semantic_reasons == ["native_heading_repair:18"]
+    assert [(box.char, box.text_index) for box in heading.char_boxes] == [
+        ("1", 0),
+        ("8", 1),
+        (".", 2),
+        ("份", 4),
+        ("数", 5),
+    ]
+    assert result.repaired_count == 1
+    assert result.decisions == [
+        {
+            "action": "repaired",
+            "page_no": 1,
+            "number": "18",
+            "title": "份数",
+            "block_id": "heading",
+            "reason": "exact_native_heading",
+        }
+    ]
+
+    repeated = NativeHeadingRepairService().repair(document)
+
+    assert repeated.repaired_count == 0
+    assert heading.semantic_reasons == ["native_heading_repair:18"]
+
+
+def test_does_not_stitch_vertically_separated_native_lines(tmp_path: Path) -> None:
+    path = tmp_path / "vertically-separated.pdf"
+    _write_split_line_pdf(path, [(72, 96, "18."), (106, 128, "份数")])
+    document = _ocr_document(path, "18.", context_text="19. 特别约定")
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.pages[0].blocks[0].text == "18."
+    assert result.repaired_count == 0
+    assert not load_native_heading_index(path).contains_exact("18", "份数", {1})
+
+
+def test_does_not_stitch_ambiguous_same_baseline_native_titles(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous-split.pdf"
+    _write_split_line_pdf(
+        path,
+        [(72, 96, "18."), (106, 96, "份数"), (112, 96, "合同文本")],
+    )
+    document = _ocr_document(path, "18.", context_text="19. 特别约定")
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.pages[0].blocks[0].text == "18."
+    assert result.repaired_count == 0
+    assert not load_native_heading_index(path).contains_exact("18", "份数", {1})
 
 
 def test_does_not_replace_conflicting_ocr_title(tmp_path: Path) -> None:

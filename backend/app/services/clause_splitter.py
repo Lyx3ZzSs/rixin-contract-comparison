@@ -34,6 +34,7 @@ class ClauseUnit:
     page_numbers: tuple[int, ...] = ()
     evidences: tuple[EvidenceBox, ...] = ()
     source_block_ids: tuple[str, ...] = ()
+    semantic_reasons: tuple[str, ...] = ()
 
 
 class ClauseSplitter:
@@ -181,6 +182,7 @@ class ClauseSplitter:
                                 ),
                             ),
                             source_block_ids=(block.block_id,),
+                            semantic_reasons=tuple(block.semantic_reasons),
                         )
                     )
         return units

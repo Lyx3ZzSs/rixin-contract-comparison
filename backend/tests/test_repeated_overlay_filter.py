@@ -42,6 +42,61 @@ def test_marks_stable_repeated_short_overlay_as_noise() -> None:
     assert result.filtered_block_count == 9
 
 
+def test_filters_only_dominant_position_cluster_and_preserves_spatial_outlier() -> None:
+    document = _document("黄科")
+    for page in document.pages:
+        for block in page.blocks:
+            if block.block_id.startswith("overlay-"):
+                block.bbox = BBox(x0=500, y0=780, x1=540, y1=800)
+    last_page = document.pages[-1]
+    last_page.blocks.append(
+        TextBlock(
+            block_id="overlay-10",
+            page_no=10,
+            text="黄科",
+            bbox=BBox(x0=500, y0=780, x1=540, y1=800),
+            source="ppocrv5",
+        )
+    )
+    outlier = TextBlock(
+        block_id="contact-value",
+        page_no=10,
+        text="黄科",
+        bbox=BBox(x0=90, y0=400, x1=130, y1=420),
+        source="ppocrv5",
+        block_role="cover_metadata",
+    )
+    last_page.blocks.append(outlier)
+
+    result = RepeatedOverlayFilter().apply(document)
+
+    clustered = [
+        block
+        for page in document.pages
+        for block in page.blocks
+        if block.block_id.startswith("overlay-")
+    ]
+    assert len(clustered) == 10
+    assert all(block.enter_clause_compare is False for block in clustered)
+    assert all(block.flow_role == "noise" for block in clustered)
+    assert outlier.enter_clause_compare is None
+    assert outlier.flow_role == ""
+    assert outlier.source == "ppocrv5"
+    assert outlier.semantic_reasons == []
+    assert result.filtered_block_count == 10
+    assert result.decisions == [
+        {
+            "action": "filtered",
+            "text": "黄科",
+            "page_ratio": 1.0,
+            "cluster_ratio": 0.9091,
+            "filtered_block_count": 10,
+            "block_ids": [f"overlay-{page_no}" for page_no in range(1, 11)],
+            "preserved_outlier_count": 1,
+        }
+    ]
+
+
 def test_keeps_unstable_or_protected_repeated_text() -> None:
     unstable = _document("黄科", stable=False)
     party_labels = _document("甲方")

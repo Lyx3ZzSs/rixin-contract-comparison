@@ -117,8 +117,15 @@ class ClauseHeadingDetector:
             and bool(self.weak_numeric_marker_pattern.fullmatch(clause_no or ""))
             and 2 <= len(compact_title) <= 12
         )
+        native_repaired_heading = (
+            f"native_heading_repair:{clause_no}" in getattr(unit, "semantic_reasons", ())
+            and bool(self.weak_numeric_marker_pattern.fullmatch(clause_no or ""))
+            and 2 <= len(compact_title) <= 12
+        )
         if strong_title_block:
             signals.append("strong_title_block")
+        if native_repaired_heading:
+            signals.append("native_heading_repair")
         if 2 <= len(compact_title) <= 36:
             score += 0.12
             signals.append("title_length")
@@ -147,7 +154,9 @@ class ClauseHeadingDetector:
         if self.is_date_like_heading(text, clause_no):
             score -= 0.30
             risk_flags.append("DATE_LIKE_HEADING")
-        if self.is_weak_numeric_marker(text, marker) and not strong_title_block:
+        if self.is_weak_numeric_marker(text, marker) and not (
+            strong_title_block or native_repaired_heading
+        ):
             score = min(score, self.weak_heading_review_score)
             risk_flags.append("WEAK_NUMERIC_MARKER")
 

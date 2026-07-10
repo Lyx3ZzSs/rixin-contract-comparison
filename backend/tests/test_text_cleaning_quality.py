@@ -340,6 +340,59 @@ def test_clause_splitter_keeps_short_top_level_title_blocks_independent() -> Non
     assert next(item for item in clauses if item.clause_no == "18").title == "份数"
 
 
+def test_clause_splitter_uses_native_repair_semantics_for_ordinary_text_heading() -> None:
+    repaired_heading = TextBlock(
+        block_id="h18",
+        page_no=1,
+        text="18. 份数",
+        bbox=BBox(x0=70, y0=180, x1=150, y1=204),
+        block_type="text",
+        semantic_reasons=["native_heading_repair:18"],
+    )
+    document = Document(
+        filename="semantic-heading.pdf",
+        path="semantic-heading.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="h17",
+                        page_no=1,
+                        text="17. 合同生效",
+                        bbox=BBox(x0=70, y0=80, x1=180, y1=104),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="b17",
+                        page_no=1,
+                        text="双方签字盖章后生效。",
+                        bbox=BBox(x0=92, y0=120, x1=500, y1=144),
+                    ),
+                    repaired_heading,
+                    TextBlock(
+                        block_id="b18",
+                        page_no=1,
+                        text="本合同一式伍份。",
+                        bbox=BBox(x0=92, y0=220, x1=500, y1=244),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert repaired_heading.block_type == "text"
+    assert [item.clause_no for item in clauses] == ["17", "18"]
+    assert clauses[1].title == "份数"
+    assert "native_heading_repair" in clauses[1].segmentation_reason
+    assert "WEAK_NUMERIC_MARKER" in clauses[1].split_flags
+
+
 def test_clause_splitter_keeps_short_numeric_values_outside_title_blocks() -> None:
     document = Document(
         filename="values.pdf",

@@ -93,12 +93,19 @@ class RepeatedOverlayFilter:
                     )
                 )
         for key, occurrences in groups.items():
+            dominant_cluster = self._dominant_cluster(occurrences)
             page_counts: dict[int, int] = defaultdict(int)
-            for block, _, _ in occurrences:
+            for block, _, _ in dominant_cluster:
                 page_counts[block.page_no] += 1
             page_ratio = len(page_counts) / max(document.page_count, 1)
-            cluster_ratio = self._cluster_ratio(occurrences)
-            reason = self._rejection_reason(key, occurrences, page_counts, page_ratio, cluster_ratio)
+            cluster_ratio = len(dominant_cluster) / max(len(occurrences), 1)
+            reason = self._rejection_reason(
+                key,
+                dominant_cluster,
+                page_counts,
+                page_ratio,
+                cluster_ratio,
+            )
             if reason:
                 if len(page_counts) >= self.min_pages:
                     result.decisions.append(
@@ -111,7 +118,7 @@ class RepeatedOverlayFilter:
                         }
                     )
                 continue
-            for block, _, _ in occurrences:
+            for block, _, _ in dominant_cluster:
                 block.enter_clause_compare = False
                 block.flow_role = "noise"
                 block.source = "+".join(
@@ -124,8 +131,9 @@ class RepeatedOverlayFilter:
                     "text": key,
                     "page_ratio": round(page_ratio, 4),
                     "cluster_ratio": round(cluster_ratio, 4),
-                    "filtered_block_count": len(occurrences),
-                    "block_ids": [block.block_id for block, _, _ in occurrences],
+                    "filtered_block_count": len(dominant_cluster),
+                    "block_ids": [block.block_id for block, _, _ in dominant_cluster],
+                    "preserved_outlier_count": len(occurrences) - len(dominant_cluster),
                 }
             )
         return result
@@ -166,15 +174,17 @@ class RepeatedOverlayFilter:
         }
         return block_type in MEANINGFUL_BLOCK_TYPES or bool(roles & MEANINGFUL_ROLES)
 
-    def _cluster_ratio(self, occurrences: list[tuple[TextBlock, float, float]]) -> float:
+    def _dominant_cluster(
+        self,
+        occurrences: list[tuple[TextBlock, float, float]],
+    ) -> list[tuple[TextBlock, float, float]]:
         xs = [x for _, x, _ in occurrences]
         ys = [y for _, _, y in occurrences]
         center_x = median(xs)
         center_y = median(ys)
-        clustered = sum(
-            1
-            for _, x, y in occurrences
-            if abs(x - center_x) <= self.position_tolerance
-            and abs(y - center_y) <= self.position_tolerance
-        )
-        return clustered / max(len(occurrences), 1)
+        return [
+            occurrence
+            for occurrence in occurrences
+            if abs(occurrence[1] - center_x) <= self.position_tolerance
+            and abs(occurrence[2] - center_y) <= self.position_tolerance
+        ]

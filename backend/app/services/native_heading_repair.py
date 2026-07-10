@@ -15,6 +15,8 @@ HEADING_RE = re.compile(r"^\s*(?P<number>\d{1,2})\s*[.．、]\s*(?P<title>[\u4e0
 BARE_RE = re.compile(r"^\s*(?P<number>\d{1,2})\s*[.．、]\s*$")
 VALUE_RE = re.compile(r"(?:\d{4}\s*年|\d+(?:\.\d+)?\s*(?:元|万元|%|天|月|年|份|项|台|套))")
 TITLE_BLOCK_TYPES = {"paragraph_title", "doc_title", "title"}
+SPLIT_BASELINE_TOLERANCE = 0.4
+SPLIT_GAP_HEIGHT_RATIO = 2.0
 
 
 def normalize_heading_text(text: str) -> str:
@@ -85,26 +87,13 @@ def _load_native_heading_index_cached(path: str, mtime_ns: int, size: int) -> Na
     candidates: list[NativeHeadingCandidate] = []
     try:
         for page_no, pdf_page in enumerate(pdf, start=1):
-            for text, bbox, char_boxes in _native_lines(pdf_page, page_no):
-                match = HEADING_RE.fullmatch(unicodedata.normalize("NFKC", text).strip())
-                if match is None:
-                    continue
-                title = match.group("title").strip()
-                compact_title = re.sub(r"\s+", "", title)
-                if not 2 <= len(compact_title) <= 24:
-                    continue
-                if VALUE_RE.search(text) or re.search(r"[。；;：:]$", title):
-                    continue
-                candidates.append(
-                    NativeHeadingCandidate(
-                        page_no=page_no,
-                        number=match.group("number"),
-                        title=title,
-                        text=text,
-                        bbox=bbox,
-                        char_boxes=tuple(char_boxes),
-                    )
-                )
+            lines = _native_lines(pdf_page, page_no)
+            candidates.extend(
+                candidate
+                for text, bbox, char_boxes in lines
+                if (candidate := _candidate_from_line(page_no, text, bbox, char_boxes)) is not None
+            )
+            candidates.extend(_split_line_candidates(page_no, lines))
     except Exception as exc:
         return NativeHeadingIndex(warning=f"native PDF extraction failed: {exc}")
     finally:
@@ -112,7 +101,119 @@ def _load_native_heading_index_cached(path: str, mtime_ns: int, size: int) -> Na
             pdf.close()
         except Exception:
             pass
-    return NativeHeadingIndex(candidates=tuple(candidates))
+    return NativeHeadingIndex(candidates=tuple(_deduplicate_candidates(candidates)))
+
+
+def _candidate_from_line(
+    page_no: int,
+    text: str,
+    bbox: BBox,
+    char_boxes: list[CharBox] | tuple[CharBox, ...],
+) -> NativeHeadingCandidate | None:
+    match = HEADING_RE.fullmatch(unicodedata.normalize("NFKC", text).strip())
+    if match is None:
+        return None
+    title = match.group("title").strip()
+    if not _is_valid_native_title(title) or VALUE_RE.search(text):
+        return None
+    return NativeHeadingCandidate(
+        page_no=page_no,
+        number=match.group("number"),
+        title=title,
+        text=text,
+        bbox=bbox,
+        char_boxes=tuple(char_boxes),
+    )
+
+
+def _is_valid_native_title(title: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", title or "").strip()
+    compact = re.sub(r"\s+", "", normalized)
+    return bool(
+        2 <= len(compact) <= 24
+        and re.match(r"^[\u4e00-\u9fffA-Za-z]", normalized)
+        and not VALUE_RE.search(normalized)
+        and not re.search(r"[。；;：:]$", normalized)
+    )
+
+
+def _split_line_candidates(
+    page_no: int,
+    lines: list[tuple[str, BBox, list[CharBox]]],
+) -> list[NativeHeadingCandidate]:
+    candidates: list[NativeHeadingCandidate] = []
+    for bare_text, bare_bbox, bare_char_boxes in lines:
+        if BARE_RE.fullmatch(unicodedata.normalize("NFKC", bare_text).strip()) is None:
+            continue
+        titles = [
+            (title_text, title_bbox, title_char_boxes)
+            for title_text, title_bbox, title_char_boxes in lines
+            if _is_valid_native_title(title_text)
+            and _is_same_heading_line(bare_bbox, title_bbox)
+        ]
+        if len(titles) != 1:
+            continue
+        title_text, title_bbox, title_char_boxes = titles[0]
+        combined_text = f"{bare_text} {title_text}"
+        title_offset = len(bare_text) + 1
+        combined_boxes = [
+            *bare_char_boxes,
+            *[
+                char_box.model_copy(
+                    update={
+                        "text_index": title_offset
+                        + (char_box.text_index if char_box.text_index is not None else index)
+                    }
+                )
+                for index, char_box in enumerate(title_char_boxes)
+            ],
+        ]
+        combined_bbox = BBox(
+            x0=min(bare_bbox.x0, title_bbox.x0),
+            y0=min(bare_bbox.y0, title_bbox.y0),
+            x1=max(bare_bbox.x1, title_bbox.x1),
+            y1=max(bare_bbox.y1, title_bbox.y1),
+        )
+        candidate = _candidate_from_line(
+            page_no,
+            combined_text,
+            combined_bbox,
+            combined_boxes,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    return candidates
+
+
+def _is_same_heading_line(left: BBox, right: BBox) -> bool:
+    if right.x0 < left.x1:
+        return False
+    left_center = (left.y0 + left.y1) / 2
+    right_center = (right.y0 + right.y1) / 2
+    height = max(left.y1 - left.y0, right.y1 - right.y0, 1.0)
+    gap = right.x0 - left.x1
+    return (
+        abs(left_center - right_center) <= height * SPLIT_BASELINE_TOLERANCE
+        and gap <= height * SPLIT_GAP_HEIGHT_RATIO
+    )
+
+
+def _deduplicate_candidates(
+    candidates: list[NativeHeadingCandidate],
+) -> list[NativeHeadingCandidate]:
+    unique: dict[tuple[object, ...], NativeHeadingCandidate] = {}
+    for candidate in candidates:
+        key = (
+            candidate.page_no,
+            candidate.number,
+            normalize_heading_text(candidate.title),
+            round(candidate.bbox.x0, 2),
+            round(candidate.bbox.y0, 2),
+            round(candidate.bbox.x1, 2),
+            round(candidate.bbox.y1, 2),
+        )
+        unique.setdefault(key, candidate)
+    return list(unique.values())
 
 
 def _native_lines(pdf_page, page_no: int) -> list[tuple[str, BBox, list[CharBox]]]:

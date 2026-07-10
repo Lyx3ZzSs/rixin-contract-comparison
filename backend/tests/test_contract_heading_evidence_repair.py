@@ -26,7 +26,18 @@ def _write_native_pdf(path: Path) -> None:
         page = pdf.new_page(width=595, height=842)
         for index, (number, title) in enumerate(HEADINGS.get(page_no, [])):
             y = 96 + index * 140
-            page.insert_text((72, y), f"{number}. {title}", fontname="china-s", fontsize=12)
+            page.insert_textbox(
+                fitz.Rect(72, y - 14, 104, y + 16),
+                f"{number}.",
+                fontname="helv",
+                fontsize=12,
+            )
+            page.insert_textbox(
+                fitz.Rect(106, y - 14, 260, y + 16),
+                title,
+                fontname="china-s",
+                fontsize=12,
+            )
     pdf.save(path)
     pdf.close()
 
@@ -44,7 +55,7 @@ def _ocr_document(path: Path, *, complete_titles: bool, overlay: bool) -> Docume
                     page_no=page_no,
                     text=heading_text,
                     bbox=BBox(x0=70, y0=y0, x1=190 if complete_titles else 92, y1=y0 + 22),
-                    block_type="paragraph_title",
+                    block_type="text" if number == "18" and not complete_titles else "paragraph_title",
                     source="ppocrv5",
                 )
             )
@@ -55,6 +66,16 @@ def _ocr_document(path: Path, *, complete_titles: bool, overlay: bool) -> Docume
                     page_no=page_no,
                     text=body_text,
                     bbox=BBox(x0=92, y0=y0 + 34, x1=500, y1=y0 + 58),
+                )
+            )
+        if page_no == 4:
+            blocks.append(
+                TextBlock(
+                    block_id="p4-h19",
+                    page_no=4,
+                    text="19. 特别约定",
+                    bbox=BBox(x0=70, y0=380, x1=190, y1=404),
+                    block_type="paragraph_title",
                 )
             )
         if overlay:
@@ -88,6 +109,12 @@ def test_generated_heading_evidence_repair_removes_all_title_only_false_diffs(
 
     assert heading_result.repaired_count == 9
     assert overlay_result.filtered_block_count == 5
+    assert next(
+        block
+        for page in original.pages
+        for block in page.blocks
+        if block.block_id == "p4-h18"
+    ).block_type == "text"
     original_by_number = {
         item.clause_no: item for item in original_clauses if item.clause_no in TARGET_NUMBERS
     }
