@@ -265,6 +265,116 @@ def test_clause_splitter_does_not_treat_numeric_term_as_clause_number() -> None:
     assert "15日内完成系统部署" in clauses[0].text
 
 
+def test_clause_splitter_keeps_short_top_level_title_blocks_independent() -> None:
+    document = Document(
+        filename="short-headings.pdf",
+        path="short-headings.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="c124",
+                        page_no=1,
+                        text="12.4 双方协商解决。",
+                        bbox=BBox(x0=70, y0=80, x1=500, y1=105),
+                    ),
+                    TextBlock(
+                        block_id="h13",
+                        page_no=1,
+                        text="13. 索赔",
+                        bbox=BBox(x0=70, y0=130, x1=150, y1=154),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="c131",
+                        page_no=1,
+                        text="13.1 甲方有权提出索赔。",
+                        bbox=BBox(x0=72, y0=170, x1=500, y1=195),
+                    ),
+                    TextBlock(
+                        block_id="h17",
+                        page_no=1,
+                        text="17. 合同生效",
+                        bbox=BBox(x0=70, y0=230, x1=180, y1=254),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="c171",
+                        page_no=1,
+                        text="(1)双方签字盖章。",
+                        bbox=BBox(x0=92, y0=270, x1=500, y1=295),
+                    ),
+                    TextBlock(
+                        block_id="h18",
+                        page_no=1,
+                        text="18. 份数",
+                        bbox=BBox(x0=70, y0=330, x1=150, y1=354),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="c18",
+                        page_no=1,
+                        text="本合同一式伍份。",
+                        bbox=BBox(x0=92, y0=370, x1=500, y1=395),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert "13" in [item.clause_no for item in clauses]
+    assert "18" in [item.clause_no for item in clauses]
+    assert next(item for item in clauses if item.clause_no == "13").title == "索赔"
+    assert next(item for item in clauses if item.clause_no == "18").title == "份数"
+
+
+def test_clause_splitter_keeps_short_numeric_values_outside_title_blocks() -> None:
+    document = Document(
+        filename="values.pdf",
+        path="values.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="h17",
+                        page_no=1,
+                        text="17. 合同生效",
+                        bbox=BBox(x0=70, y0=80, x1=180, y1=104),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="v1",
+                        page_no=1,
+                        text="(2)1",
+                        bbox=BBox(x0=92, y0=120, x1=130, y1=144),
+                    ),
+                    TextBlock(
+                        block_id="v2",
+                        page_no=1,
+                        text="18份",
+                        bbox=BBox(x0=92, y0=160, x1=140, y1=184),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert [item.clause_no for item in clauses] == ["17"]
+    assert "18份" in clauses[0].text
+
+
 def test_clause_splitter_keeps_deep_decimal_clause_number() -> None:
     document = Document(
         filename="sample.pdf",

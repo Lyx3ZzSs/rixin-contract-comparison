@@ -112,6 +112,13 @@ class ClauseHeadingDetector:
             signals.append("single_numeric_marker")
 
         compact_title = re.sub(r"\s+", "", title or "")
+        strong_title_block = (
+            block_type in {"paragraph_title", "doc_title", "title"}
+            and bool(self.weak_numeric_marker_pattern.fullmatch(clause_no or ""))
+            and 2 <= len(compact_title) <= 12
+        )
+        if strong_title_block:
+            signals.append("strong_title_block")
         if 2 <= len(compact_title) <= 36:
             score += 0.12
             signals.append("title_length")
@@ -140,7 +147,7 @@ class ClauseHeadingDetector:
         if self.is_date_like_heading(text, clause_no):
             score -= 0.30
             risk_flags.append("DATE_LIKE_HEADING")
-        if self.is_weak_numeric_marker(text, marker):
+        if self.is_weak_numeric_marker(text, marker) and not strong_title_block:
             score = min(score, self.weak_heading_review_score)
             risk_flags.append("WEAK_NUMERIC_MARKER")
 
