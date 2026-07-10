@@ -38,11 +38,13 @@ from app.services.extractors.base import (
 from app.services.header_footer_compare import HeaderFooterComparator
 from app.services.matcher import ClauseMatcher
 from app.services.model_routing import ModelRoutingAnalyzer
+from app.services.native_heading_repair import NativeHeadingRepairService
 from app.services.ocr_quality import OcrQualityProfiler
 from app.services.ocr_remediation import OcrRemediationPlanner
 from app.services.evidence_relocator import EvidenceRelocationResult, EvidenceRelocator
 from app.services.page_diff import PageDiffConsolidator
 from app.services.pipeline import PipelineContext
+from app.services.repeated_overlay_filter import RepeatedOverlayFilter
 from app.services.seal_comparator import build_seal_diffs
 from app.services.signing_region.block_detector import (
     BODY_VERB_RE,
@@ -160,6 +162,8 @@ class ExtractionStage:
         structured_extractor: DocumentExtractor | None = None,
         artifact_store: ArtifactStore = default_artifact_store,
         require_structured_ocr: bool | None = None,
+        native_heading_repair: NativeHeadingRepairService | None = None,
+        repeated_overlay_filter: RepeatedOverlayFilter | None = None,
     ) -> None:
         self.artifact_store = artifact_store
         self.require_structured_ocr = (
@@ -171,6 +175,8 @@ class ExtractionStage:
         self.structured_extractor = structured_extractor
         self.profiler = DocumentProfiler()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+        self.native_heading_repair = native_heading_repair or NativeHeadingRepairService()
+        self.repeated_overlay_filter = repeated_overlay_filter or RepeatedOverlayFilter()
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
@@ -186,6 +192,39 @@ class ExtractionStage:
             original_extraction, compare_extraction,
         )
         _emit_progress(ctx, 32, self.name, "structured_alignment_done")
+        original_heading_result = self.native_heading_repair.repair(original_extraction.document)
+        compare_heading_result = self.native_heading_repair.repair(compare_extraction.document)
+        original_extraction.warnings.extend(original_heading_result.warnings)
+        compare_extraction.warnings.extend(compare_heading_result.warnings)
+        original_overlay_result = self.repeated_overlay_filter.apply(original_extraction.document)
+        compare_overlay_result = self.repeated_overlay_filter.apply(compare_extraction.document)
+        _write_debug_artifact(
+            task,
+            "native_heading_repair",
+            lambda: self.debug_writer.write_native_heading_repair(
+                task.task_id,
+                original_heading_result.to_debug_payload(),
+                compare_heading_result.to_debug_payload(),
+            ),
+        )
+        _write_debug_artifact(
+            task,
+            "repeated_overlay_filter",
+            lambda: self.debug_writer.write_repeated_overlay_filter(
+                task.task_id,
+                original_overlay_result.to_debug_payload(),
+                compare_overlay_result.to_debug_payload(),
+            ),
+        )
+        task.metrics["native_heading_repair"] = {
+            "original": original_heading_result.repaired_count,
+            "compare": compare_heading_result.repaired_count,
+        }
+        task.metrics["repeated_overlay_filter"] = {
+            "original": original_overlay_result.filtered_block_count,
+            "compare": compare_overlay_result.filtered_block_count,
+        }
+        _emit_progress(ctx, 33, self.name, "extraction_evidence_normalization_done")
         original_extraction = self._ensure_profile(original_extraction)
         compare_extraction = self._ensure_profile(compare_extraction)
         _emit_progress(ctx, 34, self.name, "document_profile_done")

@@ -35,6 +35,7 @@ from app.services.pipeline import ComparePipeline, PipelineContext, _copy_proces
 from app.services.pipeline_stages import (
     ClauseDiffStage,
     DiffQualityStage,
+    ExtractionStage,
     MatchStage,
     ModelRoutingStage,
     OcrQualityStage,
@@ -139,6 +140,99 @@ def _write_text_pdf(path: Path, text: str) -> None:
     page.insert_text((72, 96), text, fontname="china-s")
     doc.save(path)
     doc.close()
+
+
+class _SequentialExtractor:
+    name = "ppstructure_ocr_hybrid"
+
+    def __init__(self, results: list[ExtractionResult]) -> None:
+        self.results = results
+
+    def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+        result = self.results.pop(0)
+        result.document.path = str(path)
+        result.document.filename = Path(path).name
+        return result
+
+
+def test_extraction_stage_repairs_native_heading_and_writes_normalizer_debug(tmp_path: Path) -> None:
+    ctx = make_ctx(tmp_path)
+    _write_text_pdf(ctx.original_pdf, "8. 知识产权\n8.1 甲方拥有工作成果。")
+    _write_text_pdf(ctx.compare_pdf, "8. 知识产权\n8.1 甲方拥有工作成果。")
+    original = Document(
+        filename="original.pdf",
+        path=str(ctx.original_pdf),
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="o8",
+                        page_no=1,
+                        text="8.",
+                        bbox=BBox(x0=70, y0=82, x1=92, y1=102),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="o81",
+                        page_no=1,
+                        text="8.1 甲方拥有工作成果。",
+                        bbox=BBox(x0=72, y0=116, x1=360, y1=138),
+                    ),
+                ],
+            )
+        ],
+    )
+    compare = Document(
+        filename="compare.pdf",
+        path=str(ctx.compare_pdf),
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="n8",
+                        page_no=1,
+                        text="8. 知识产权",
+                        bbox=BBox(x0=70, y0=82, x1=180, y1=102),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="n81",
+                        page_no=1,
+                        text="8.1 甲方拥有工作成果。",
+                        bbox=BBox(x0=72, y0=116, x1=360, y1=138),
+                    ),
+                ],
+            )
+        ],
+    )
+    extractor = _SequentialExtractor(
+        [
+            ExtractionResult(document=original, extractor_used="ppstructure_ocr_hybrid"),
+            ExtractionResult(document=compare, extractor_used="ppstructure_ocr_hybrid"),
+        ]
+    )
+
+    ExtractionStage(extractor=extractor, artifact_store=LocalArtifactStore(settings)).execute(ctx)
+
+    assert ctx.original_extraction is not None
+    assert ctx.original_extraction.document.pages[0].blocks[0].text == "8. 知识产权"
+    assert ctx.original_extraction.profile is not None
+    assert (
+        ctx.original_extraction.profile.total_text_chars
+        == sum(len(block.text.strip()) for block in ctx.original_extraction.document.pages[0].blocks)
+    )
+    assert Path(ctx.task.debug_artifact_paths["native_heading_repair"]).exists()
+    assert Path(ctx.task.debug_artifact_paths["repeated_overlay_filter"]).exists()
+    assert ctx.task.metrics["native_heading_repair"]["original"] == 1
+    assert ctx.task.metrics["repeated_overlay_filter"]["compare"] == 0
 
 
 class TestSplitStage:

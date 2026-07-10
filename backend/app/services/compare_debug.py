@@ -34,6 +34,34 @@ class CompareDebugWriter:
             )
         )
 
+    def write_native_heading_repair(
+        self,
+        task_id: str,
+        original: dict[str, Any],
+        compare: dict[str, Any],
+    ) -> str:
+        return str(
+            self._write_json(
+                task_id,
+                "native_heading_repair.json",
+                {"original": original, "compare": compare},
+            )
+        )
+
+    def write_repeated_overlay_filter(
+        self,
+        task_id: str,
+        original: dict[str, Any],
+        compare: dict[str, Any],
+    ) -> str:
+        return str(
+            self._write_json(
+                task_id,
+                "repeated_overlay_filter.json",
+                {"original": original, "compare": compare},
+            )
+        )
+
     def write_clauses(self, task_id: str, side: str, clauses: list[Clause]) -> str:
         payload = [self._clause_summary(clause) for clause in clauses]
         return str(self._write_json(task_id, f"clauses_{side}.json", payload))
