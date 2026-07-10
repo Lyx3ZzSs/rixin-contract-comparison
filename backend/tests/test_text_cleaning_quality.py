@@ -2689,13 +2689,95 @@ def test_native_heading_confirm_uses_adjacent_page_window_only(tmp_path: Path) -
     assert not coverage_filter._native_heading_confirms(document, {4}, "8", "知识产权", context)
 
 
+def test_diff_quality_keeps_title_only_modify_with_protected_value_even_when_native_confirmation_is_forced(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _AlwaysExactNativeIndex:
+        @staticmethod
+        def contains_exact(number: str, title: str, pages: set[int]) -> bool:
+            return number == "17" and title == "金额100元" and pages == {1, 2}
+
+    path = tmp_path / "protected-value-native.pdf"
+    _write_quality_heading_pdf(path, "17. 无关标题")
+    original_document = _quality_document(1, "17.\n本条款正文保持一致。")
+    original_document.path = str(path)
+    original_clause = _quality_clause("OC170", "17.\n本条款正文保持一致。")
+    original_clause.clause_no = "17"
+    compare_clause = _quality_clause("NC170", "17. 金额100元\n本条款正文保持一致。", side_prefix="N")
+    compare_clause.clause_no = "17"
+    compare_clause.title = "金额100元"
+    diff = DiffItem(
+        diff_id="D_NATIVE_MODIFY_PROTECTED_VALUE",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id="OC170",
+        compare_clause_id="NC170",
+        clause_no="17",
+        title="金额100元",
+        original_text=original_clause.text,
+        compare_text=compare_clause.text,
+        original_snippet="",
+        compare_snippet="金额100元",
+        match_score_details={"alignment": {"body_similarity": 0.98}, "business_token_mismatch": 0.0},
+        review_flags=["READING_ORDER_RISK"],
+    )
+
+    monkeypatch.setattr(boundary_coverage_module, "load_native_heading_index", lambda _path: _AlwaysExactNativeIndex())
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause],
+        original_document=original_document,
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D_NATIVE_MODIFY_PROTECTED_VALUE"]
+
+
+def test_diff_quality_keeps_title_only_modify_when_clause_numbers_differ_even_with_exact_native_evidence(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "clause-number-mismatch.pdf"
+    _write_quality_heading_pdf(path, "18. 合同生效")
+    original_document = _quality_document(1, "17.\n本条款正文保持一致。")
+    original_document.path = str(path)
+    original_clause = _quality_clause("OC170", "17.\n本条款正文保持一致。")
+    original_clause.clause_no = "17"
+    compare_clause = _quality_clause("NC170", "18. 合同生效\n本条款正文保持一致。", side_prefix="N")
+    compare_clause.clause_no = "18"
+    compare_clause.title = "合同生效"
+    diff = DiffItem(
+        diff_id="D_NATIVE_MODIFY_CLAUSE_NO_MISMATCH",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id="OC170",
+        compare_clause_id="NC170",
+        clause_no="17",
+        title="合同生效",
+        original_text=original_clause.text,
+        compare_text=compare_clause.text,
+        original_snippet="",
+        compare_snippet="合同生效",
+        match_score_details={"alignment": {"body_similarity": 0.98}, "business_token_mismatch": 0.0},
+        review_flags=["READING_ORDER_RISK"],
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause],
+        original_document=original_document,
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D_NATIVE_MODIFY_CLAUSE_NO_MISMATCH"]
+
+
 @pytest.mark.parametrize(
-    ("title", "compare_snippet", "body_similarity", "business_token_mismatch", "original_no", "compare_no"),
+    ("title", "compare_snippet", "body_similarity", "business_token_mismatch"),
     [
-        ("金额100元", "金额100元", 0.98, 0.0, "17", "17"),
-        ("合同生效", "合同生效", 0.98, 1.0, "17", "17"),
-        ("合同生效", "合同生效", 0.89, 0.0, "17", "17"),
-        ("合同生效", "合同生效", 0.98, 0.0, "17", "18"),
+        ("合同生效", "合同生效", 0.98, 1.0),
+        ("合同生效", "合同生效", 0.89, 0.0),
     ],
 )
 def test_diff_quality_keeps_title_only_modify_when_native_guard_fails(
@@ -2704,25 +2786,23 @@ def test_diff_quality_keeps_title_only_modify_when_native_guard_fails(
     compare_snippet: str,
     body_similarity: float,
     business_token_mismatch: float,
-    original_no: str,
-    compare_no: str,
 ) -> None:
-    path = tmp_path / f"{title}-{original_no}-{compare_no}.pdf"
-    _write_quality_heading_pdf(path, f"{original_no}. {title}")
-    original_document = _quality_document(1, f"{original_no}.\n本条款正文保持一致。")
+    path = tmp_path / f"{title}-{body_similarity}-{business_token_mismatch}.pdf"
+    _write_quality_heading_pdf(path, f"17. {title}")
+    original_document = _quality_document(1, "17.\n本条款正文保持一致。")
     original_document.path = str(path)
-    original_clause = _quality_clause("OC170", f"{original_no}.\n本条款正文保持一致。")
-    original_clause.clause_no = original_no
-    compare_clause = _quality_clause("NC170", f"{compare_no}. {title}\n本条款正文保持一致。", side_prefix="N")
-    compare_clause.clause_no = compare_no
+    original_clause = _quality_clause("OC170", "17.\n本条款正文保持一致。")
+    original_clause.clause_no = "17"
+    compare_clause = _quality_clause("NC170", f"17. {title}\n本条款正文保持一致。", side_prefix="N")
+    compare_clause.clause_no = "17"
     compare_clause.title = title
     diff = DiffItem(
-        diff_id=f"D_NATIVE_MODIFY_GUARD_{title}_{original_no}_{compare_no}_{body_similarity}_{business_token_mismatch}",
+        diff_id=f"D_NATIVE_MODIFY_GUARD_{title}_{body_similarity}_{business_token_mismatch}",
         diff_type="MODIFY",
         source_type="clause",
         original_clause_id="OC170",
         compare_clause_id="NC170",
-        clause_no=original_no,
+        clause_no="17",
         title=title,
         original_text=original_clause.text,
         compare_text=compare_clause.text,
