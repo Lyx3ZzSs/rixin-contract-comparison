@@ -114,6 +114,33 @@ def test_rejects_ambiguous_native_heading_and_fails_open(tmp_path: Path) -> None
     assert blank_result.repaired_count == 0
 
 
+def test_fails_open_when_native_page_extraction_raises(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "native-page-failure.pdf"
+    _write_pdf(path, [(96, "8. 知识产权")])
+    document = _ocr_document(path)
+    original = document.model_dump()
+
+    class FailingPage:
+        def get_text(self, option: str) -> dict:
+            raise RuntimeError(f"native page extraction failed for {option}")
+
+    class FailingPdf:
+        def __iter__(self):
+            return iter([FailingPage()])
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("app.services.native_heading_repair.fitz.open", lambda _: FailingPdf())
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.model_dump() == original
+    assert result.repaired_count == 0
+    assert result.warnings
+    assert "native PDF extraction failed" in result.warnings[0]
+
+
 def test_native_heading_index_requires_exact_number_and_title(tmp_path: Path) -> None:
     path = tmp_path / "index.pdf"
     _write_pdf(path, [(96, "17. 合同生效"), (160, "18. 份数")])

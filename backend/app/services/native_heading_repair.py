@@ -105,8 +105,13 @@ def _load_native_heading_index_cached(path: str, mtime_ns: int, size: int) -> Na
                         char_boxes=tuple(char_boxes),
                     )
                 )
+    except Exception as exc:
+        return NativeHeadingIndex(warning=f"native PDF extraction failed: {exc}")
     finally:
-        pdf.close()
+        try:
+            pdf.close()
+        except Exception:
+            pass
     return NativeHeadingIndex(candidates=tuple(candidates))
 
 
