@@ -225,8 +225,8 @@ class ExtractionStage:
             "compare": compare_overlay_result.filtered_block_count,
         }
         _emit_progress(ctx, 33, self.name, "extraction_evidence_normalization_done")
-        original_extraction = self._ensure_profile(original_extraction)
-        compare_extraction = self._ensure_profile(compare_extraction)
+        original_extraction = self._refresh_profile_after_normalization(original_extraction)
+        compare_extraction = self._refresh_profile_after_normalization(compare_extraction)
         _emit_progress(ctx, 34, self.name, "document_profile_done")
 
         task.extractor_used = self._merge_extractor_names(
@@ -282,6 +282,11 @@ class ExtractionStage:
         if extraction.profile is None:
             extraction.profile = self.profiler.profile(extraction.document, extraction.extractor_used)
             extraction.document.profile = extraction.profile
+        return extraction
+
+    def _refresh_profile_after_normalization(self, extraction: ExtractionResult) -> ExtractionResult:
+        extraction.profile = self.profiler.profile(extraction.document, extraction.extractor_used)
+        extraction.document.profile = extraction.profile
         return extraction
 
     def _record_profile(self, task: CompareTask, side: str, profile: DocumentProfile | None) -> None:

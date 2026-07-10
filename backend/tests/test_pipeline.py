@@ -31,6 +31,8 @@ from app.models import (
 from app.services.extractors.base import ExtractionResult
 from app.services.compare_service import CompareService
 from app.services.diff_quality import DiffQualityResult
+from app.services.document_profiler import DocumentProfiler
+from app.services.native_heading_repair import NativeHeadingRepairResult
 from app.services.pipeline import ComparePipeline, PipelineContext, _copy_processing_result
 from app.services.pipeline_stages import (
     ClauseDiffStage,
@@ -44,6 +46,7 @@ from app.services.pipeline_stages import (
     SplitStage,
     SummaryStage,
 )
+from app.services.repeated_overlay_filter import RepeatedOverlayFilterResult
 
 
 def make_document(text: str = "test clause text") -> Document:
@@ -155,10 +158,34 @@ class _SequentialExtractor:
         return result
 
 
-def test_extraction_stage_repairs_native_heading_and_writes_normalizer_debug(tmp_path: Path) -> None:
+def _attach_profile(document: Document, extractor_used: str = "ppstructure_ocr_hybrid") -> Document:
+    profile = DocumentProfiler().profile(document, extractor_used)
+    document.profile = profile
+    return document
+
+
+class _StubNativeHeadingRepairService:
+    def __init__(self, results: list[NativeHeadingRepairResult]) -> None:
+        self.results = results
+
+    def repair(self, document: Document) -> NativeHeadingRepairResult:
+        return self.results.pop(0)
+
+
+class _StubRepeatedOverlayFilter:
+    def __init__(self, results: list[RepeatedOverlayFilterResult] | None = None) -> None:
+        self.results = results or [RepeatedOverlayFilterResult(), RepeatedOverlayFilterResult()]
+
+    def apply(self, document: Document) -> RepeatedOverlayFilterResult:
+        return self.results.pop(0)
+
+
+def test_extraction_stage_repairs_native_heading_refreshes_preattached_profiles_and_writes_normalizer_debug(
+    tmp_path: Path,
+) -> None:
     ctx = make_ctx(tmp_path)
     _write_text_pdf(ctx.original_pdf, "8. 知识产权\n8.1 甲方拥有工作成果。")
-    _write_text_pdf(ctx.compare_pdf, "8. 知识产权\n8.1 甲方拥有工作成果。")
+    _write_text_pdf(ctx.compare_pdf, "9. 违约责任\n9.1 乙方承担违约责任。")
     original = Document(
         filename="original.pdf",
         path=str(ctx.original_pdf),
@@ -186,6 +213,7 @@ def test_extraction_stage_repairs_native_heading_and_writes_normalizer_debug(tmp
             )
         ],
     )
+    stale_original_chars = sum(len(block.text.strip()) for block in original.pages[0].blocks)
     compare = Document(
         filename="compare.pdf",
         path=str(ctx.compare_pdf),
@@ -199,16 +227,107 @@ def test_extraction_stage_repairs_native_heading_and_writes_normalizer_debug(tmp
                     TextBlock(
                         block_id="n8",
                         page_no=1,
-                        text="8. 知识产权",
-                        bbox=BBox(x0=70, y0=82, x1=180, y1=102),
+                        text="9.",
+                        bbox=BBox(x0=70, y0=82, x1=92, y1=102),
                         block_type="paragraph_title",
                     ),
                     TextBlock(
                         block_id="n81",
                         page_no=1,
-                        text="8.1 甲方拥有工作成果。",
+                        text="9.1 乙方承担违约责任。",
                         bbox=BBox(x0=72, y0=116, x1=360, y1=138),
                     ),
+                ],
+            )
+        ],
+    )
+    stale_compare_chars = sum(len(block.text.strip()) for block in compare.pages[0].blocks)
+    original = _attach_profile(original)
+    compare = _attach_profile(compare)
+    extractor = _SequentialExtractor(
+        [
+            ExtractionResult(
+                document=original,
+                extractor_used="ppstructure_ocr_hybrid",
+                profile=original.profile,
+            ),
+            ExtractionResult(
+                document=compare,
+                extractor_used="ppstructure_ocr_hybrid",
+                profile=compare.profile,
+            ),
+        ]
+    )
+
+    ExtractionStage(extractor=extractor, artifact_store=LocalArtifactStore(settings)).execute(ctx)
+
+    assert ctx.original_extraction is not None
+    assert ctx.compare_extraction is not None
+    assert ctx.original_extraction.document.pages[0].blocks[0].text == "8. 知识产权"
+    assert ctx.compare_extraction.document.pages[0].blocks[0].text == "9. 违约责任"
+    assert ctx.original_extraction.profile is not None
+    assert ctx.compare_extraction.profile is not None
+    repaired_original_chars = sum(
+        len(block.text.strip()) for block in ctx.original_extraction.document.pages[0].blocks
+    )
+    repaired_compare_chars = sum(
+        len(block.text.strip()) for block in ctx.compare_extraction.document.pages[0].blocks
+    )
+    assert repaired_original_chars > stale_original_chars
+    assert repaired_compare_chars > stale_compare_chars
+    assert ctx.original_extraction.profile.total_text_chars == repaired_original_chars
+    assert ctx.compare_extraction.profile.total_text_chars == repaired_compare_chars
+    assert ctx.original_extraction.document.profile is not None
+    assert ctx.compare_extraction.document.profile is not None
+    assert ctx.original_extraction.document.profile.total_text_chars == repaired_original_chars
+    assert ctx.compare_extraction.document.profile.total_text_chars == repaired_compare_chars
+    assert Path(ctx.task.debug_artifact_paths["native_heading_repair"]).exists()
+    assert Path(ctx.task.debug_artifact_paths["repeated_overlay_filter"]).exists()
+    assert ctx.task.metrics["native_heading_repair"]["original"] == 1
+    assert ctx.task.metrics["native_heading_repair"]["compare"] == 1
+    assert ctx.task.metrics["repeated_overlay_filter"]["compare"] == 0
+
+
+def test_extraction_stage_propagates_native_heading_warning_to_task_parse_warnings(tmp_path: Path) -> None:
+    ctx = make_ctx(tmp_path)
+    _write_text_pdf(ctx.original_pdf, "第一条 付款")
+    _write_text_pdf(ctx.compare_pdf, "第一条 付款")
+    original = Document(
+        filename="original.pdf",
+        path=str(ctx.original_pdf),
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="o1",
+                        page_no=1,
+                        text="第一条 付款",
+                        bbox=BBox(x0=70, y0=82, x1=180, y1=102),
+                    )
+                ],
+            )
+        ],
+    )
+    compare = Document(
+        filename="compare.pdf",
+        path=str(ctx.compare_pdf),
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="n1",
+                        page_no=1,
+                        text="第一条 付款",
+                        bbox=BBox(x0=70, y0=82, x1=180, y1=102),
+                    )
                 ],
             )
         ],
@@ -219,20 +338,29 @@ def test_extraction_stage_repairs_native_heading_and_writes_normalizer_debug(tmp
             ExtractionResult(document=compare, extractor_used="ppstructure_ocr_hybrid"),
         ]
     )
+    stage = ExtractionStage(
+        extractor=extractor,
+        artifact_store=LocalArtifactStore(settings),
+        native_heading_repair=_StubNativeHeadingRepairService(
+            [
+                NativeHeadingRepairResult(warnings=["native heading repair warning"]),
+                NativeHeadingRepairResult(),
+            ]
+        ),
+        repeated_overlay_filter=_StubRepeatedOverlayFilter(),
+    )
 
-    ExtractionStage(extractor=extractor, artifact_store=LocalArtifactStore(settings)).execute(ctx)
+    stage.execute(ctx)
 
     assert ctx.original_extraction is not None
-    assert ctx.original_extraction.document.pages[0].blocks[0].text == "8. 知识产权"
-    assert ctx.original_extraction.profile is not None
-    assert (
-        ctx.original_extraction.profile.total_text_chars
-        == sum(len(block.text.strip()) for block in ctx.original_extraction.document.pages[0].blocks)
+    assert "native heading repair warning" in ctx.original_extraction.warnings
+    assert "native heading repair warning" in ctx.task.parse_warnings
+    assert any(
+        item.code == "PARSE_WARNING"
+        and item.message == "native heading repair warning"
+        and item.source == "original_extractor"
+        for item in ctx.task.parse_warning_details
     )
-    assert Path(ctx.task.debug_artifact_paths["native_heading_repair"]).exists()
-    assert Path(ctx.task.debug_artifact_paths["repeated_overlay_filter"]).exists()
-    assert ctx.task.metrics["native_heading_repair"]["original"] == 1
-    assert ctx.task.metrics["repeated_overlay_filter"]["compare"] == 0
 
 
 class TestSplitStage:
