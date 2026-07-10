@@ -7,6 +7,7 @@ from typing import Any
 
 from app.models import Clause, DiffItem, Document, EvidenceBox, TextRange
 from app.services.diff.text_utils import shorten
+from app.services.native_heading_repair import NativeHeadingIndex, load_native_heading_index, normalize_heading_text
 
 STRUCTURAL_RISK_FLAGS = {
     "POSSIBLE_SPLIT_DRIFT",
@@ -93,6 +94,7 @@ class BoundaryCoverageContext:
     compare_document: Document | None = None
     _original_index: _ClauseIndex | None = field(default=None, init=False, repr=False)
     _compare_index: _ClauseIndex | None = field(default=None, init=False, repr=False)
+    _native_indexes: dict[str, NativeHeadingIndex] = field(default_factory=dict, init=False, repr=False)
 
     @property
     def original_index(self) -> _ClauseIndex:
@@ -105,6 +107,13 @@ class BoundaryCoverageContext:
         if self._compare_index is None:
             self._compare_index = _ClauseIndex.from_clauses(self.compare_clauses)
         return self._compare_index
+
+    def native_heading_index(self, document: Document | None) -> NativeHeadingIndex:
+        if document is None or not document.path:
+            return NativeHeadingIndex()
+        if document.path not in self._native_indexes:
+            self._native_indexes[document.path] = load_native_heading_index(document.path)
+        return self._native_indexes[document.path]
 
 
 @dataclass
@@ -149,6 +158,10 @@ class ClauseBoundaryCoverageFilter:
             return "heading_text_present_on_opposite_page"
         if self._changed_text_covered_by_opposite_page_text(diff, context):
             return "changed_text_covered_by_opposite_page_text"
+        if self._heading_add_covered_by_native_heading(diff, context):
+            return "heading_add_covered_by_native_heading"
+        if self._native_heading_title_only_modify_covered(diff, context):
+            return "native_heading_title_only_covered"
         if self._heading_add_covered_by_opposite_numbering(diff, context):
             return "heading_add_covered_by_opposite_numbering"
         if self._heading_layer_mismatch_covered_by_both_pages(diff, context):
@@ -541,6 +554,111 @@ class ClauseBoundaryCoverageFilter:
             pages,
             parent_no,
         )
+
+    def _heading_add_covered_by_native_heading(
+        self,
+        diff: DiffItem,
+        context: BoundaryCoverageContext,
+    ) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "ADD":
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if not flags.intersection({"READING_ORDER_REPAIRED", "READING_ORDER_RISK", "POSSIBLE_SEGMENTATION_DRIFT"}):
+            return False
+        changed = diff.compare_text or diff.compare_snippet
+        changed_key = normalize_for_coverage(changed)
+        if not _safe_for_heading_number_coverage(changed, changed_key):
+            return False
+        if not _contains_critical_heading_term(changed):
+            return False
+        compare_clause = self._clause_by_id(context.compare_clauses, diff.compare_clause_id)
+        if compare_clause is None:
+            return False
+        parent_no = self._heading_parent_number(compare_clause, context.compare_index)
+        if not parent_no or not self._native_heading_parent_only_clause(compare_clause, changed, parent_no):
+            return False
+        if not (
+            self._native_heading_has_child_for_parent(context.original_clauses, parent_no)
+            and self._native_heading_has_child_for_parent(context.compare_clauses, parent_no)
+        ):
+            return False
+        pages = self._candidate_pages_for_diff(diff, context) or set(compare_clause.page_numbers)
+        if not self._native_heading_confirms(
+            context.original_document,
+            pages,
+            parent_no,
+            compare_clause.title,
+            context,
+        ):
+            return False
+        return self._opposite_pages_have_bare_parent_and_child(
+            context.original_document,
+            pages,
+            parent_no,
+        )
+
+    def _native_heading_confirms(
+        self,
+        document: Document | None,
+        pages: set[int],
+        number: str,
+        title: str,
+        context: BoundaryCoverageContext,
+    ) -> bool:
+        if not pages or not number or not title:
+            return False
+        candidate_pages = {page + offset for page in pages for offset in (-1, 0, 1) if page + offset > 0}
+        return context.native_heading_index(document).contains_exact(number, title, candidate_pages)
+
+    def _native_heading_title_only_modify_covered(self, diff: DiffItem, context: BoundaryCoverageContext) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        original_clause = self._clause_by_id(context.original_clauses, diff.original_clause_id)
+        compare_clause = self._clause_by_id(context.compare_clauses, diff.compare_clause_id)
+        if original_clause is None or compare_clause is None:
+            return False
+        if not original_clause.clause_no or original_clause.clause_no != compare_clause.clause_no:
+            return False
+        details = diff.match_score_details or {}
+        alignment = details.get("alignment") if isinstance(details.get("alignment"), dict) else {}
+        body_similarity = float(alignment.get("body_similarity", details.get("body_similarity", 0.0)) or 0.0)
+        if body_similarity < 0.90 or float(details.get("business_token_mismatch", 0.0) or 0.0) > 0.0:
+            return False
+        changed = (diff.compare_snippet or "").strip()
+        title = compare_clause.title or diff.title
+        changed_key = normalize_heading_text(changed)
+        allowed = {normalize_heading_text(title), normalize_heading_text(f"{compare_clause.clause_no}{title}")}
+        if changed_key not in allowed or _contains_protected_value(changed):
+            return False
+        original_changed = (diff.original_snippet or "").strip()
+        if original_changed and not re.fullmatch(r"\d{1,2}\s*[.．、]?", unicodedata.normalize("NFKC", original_changed)):
+            return False
+        pages = self._candidate_pages_for_modify_side(diff, "original") or set(original_clause.page_numbers)
+        return self._native_heading_confirms(context.original_document, pages, compare_clause.clause_no, title, context)
+
+    @staticmethod
+    def _native_heading_parent_only_clause(clause: Clause, changed: str, parent_no: str) -> bool:
+        clause_no = unicodedata.normalize("NFKC", clause.clause_no or "").strip()
+        title_key = normalize_for_coverage(clause.title or "")
+        if not title_key:
+            return False
+        allowed_keys = {title_key}
+        if re.fullmatch(r"\d{1,2}", clause_no):
+            allowed_keys.add(normalize_for_coverage(f"{clause_no}{clause.title or ''}"))
+        if parent_no:
+            allowed_keys.add(normalize_for_coverage(f"{parent_no}{clause.title or ''}"))
+        allowed_keys.discard(clause_no)
+        allowed_keys.discard(parent_no)
+        text_key = normalize_for_coverage(clause.text or changed)
+        changed_key = normalize_for_coverage(changed)
+        return text_key in allowed_keys or changed_key in allowed_keys
+
+    @staticmethod
+    def _native_heading_has_child_for_parent(clauses: list[Clause], parent_no: str) -> bool:
+        if not parent_no:
+            return False
+        child_pattern = re.compile(rf"{re.escape(parent_no)}\.\d+")
+        return any(child_pattern.fullmatch((clause.clause_no or "").strip()) for clause in clauses)
 
     @staticmethod
     def _clause_by_id(clauses: list[Clause], clause_id: str | None) -> Clause | None:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
+import fitz
 
 from app.models import BBox, Clause, ClausePair, DiffItem, Document, EvidenceBox, Page, TextBlock, TextRange
 from app.services.clause_splitter import ClauseSplitter
@@ -1860,6 +1863,14 @@ def _quality_document(page_no: int, text: str) -> Document:
     )
 
 
+def _write_quality_heading_pdf(path: Path, heading: str) -> None:
+    pdf = fitz.open()
+    page = pdf.new_page(width=595, height=842)
+    page.insert_text((72, 96), heading, fontname="china-s", fontsize=12)
+    pdf.save(path)
+    pdf.close()
+
+
 def test_contact_field_coverage_sequences_pairs_columnar_contacts_after_prior_field() -> None:
     sequences = contact_field_coverage_sequences(
         "传真:010-83458100\n"
@@ -2448,6 +2459,143 @@ def test_diff_quality_keeps_critical_flagged_material_heading_add_with_bare_numb
         and decision.detail["reason"] == "heading_add_covered_by_opposite_numbering"
         for decision in result.decisions
     )
+
+
+def test_diff_quality_suppresses_high_risk_heading_add_with_exact_native_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "original.pdf"
+    _write_quality_heading_pdf(path, "8. 知识产权")
+    original_document = _quality_document(1, "8.\n8.1 甲方拥有工作成果。")
+    original_document.path = str(path)
+    original_child = _quality_clause("OC081", "8.1 甲方拥有工作成果。", order_index=2)
+    original_child.clause_no = "8.1"
+    compare_heading = _quality_clause("NC080", "8. 知识产权", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"])
+    compare_heading.clause_no = "8"
+    compare_heading.title = "知识产权"
+    compare_child = _quality_clause("NC081", "8.1 甲方拥有工作成果。", side_prefix="N", order_index=2)
+    compare_child.clause_no = "8.1"
+    diff = DiffItem(
+        diff_id="D_NATIVE_ADD",
+        diff_type="ADD",
+        source_type="clause",
+        compare_clause_id="NC080",
+        clause_no="8",
+        title="知识产权",
+        compare_text="8. 知识产权",
+        compare_snippet="8. 知识产权",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "CRITICAL_VALUE_CHANGE"],
+        compare_evidence=compare_heading.bboxes,
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_child],
+        compare_clauses=[compare_heading, compare_child],
+        original_document=original_document,
+    )
+
+    assert result.diffs == []
+    assert any(item.detail.get("reason") == "heading_add_covered_by_native_heading" for item in result.decisions)
+
+
+def test_diff_quality_keeps_high_risk_heading_add_without_exact_native_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "original.pdf"
+    _write_quality_heading_pdf(path, "8. 保密")
+    original_document = _quality_document(1, "8.\n8.1 甲方拥有工作成果。")
+    original_document.path = str(path)
+    compare_heading = _quality_clause("NC080", "8. 知识产权", side_prefix="N", split_flags=["READING_ORDER_REPAIRED"])
+    compare_heading.clause_no = "8"
+    compare_heading.title = "知识产权"
+    diff = DiffItem(
+        diff_id="D_NATIVE_ADD_KEEP",
+        diff_type="ADD",
+        source_type="clause",
+        compare_clause_id="NC080",
+        clause_no="8",
+        title="知识产权",
+        compare_text="8. 知识产权",
+        compare_snippet="8. 知识产权",
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "CRITICAL_VALUE_CHANGE"],
+        compare_evidence=compare_heading.bboxes,
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_clauses=[compare_heading], original_document=original_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D_NATIVE_ADD_KEEP"]
+
+
+def test_diff_quality_suppresses_title_only_modify_with_native_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "original.pdf"
+    _write_quality_heading_pdf(path, "17. 合同生效")
+    original_document = _quality_document(1, "17.\n本合同在双方签章后生效。")
+    original_document.path = str(path)
+    original_clause = _quality_clause("OC170", "17.\n本合同在双方签章后生效。")
+    original_clause.clause_no = "17"
+    compare_clause = _quality_clause("NC170", "17. 合同生效\n本合同在双方签章后生效。", side_prefix="N")
+    compare_clause.clause_no = "17"
+    compare_clause.title = "合同生效"
+    diff = DiffItem(
+        diff_id="D_NATIVE_MODIFY",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id="OC170",
+        compare_clause_id="NC170",
+        clause_no="17",
+        title="合同生效",
+        original_text=original_clause.text,
+        compare_text=compare_clause.text,
+        original_snippet="",
+        compare_snippet="合同生效",
+        match_score_details={"alignment": {"body_similarity": 0.98}, "business_token_mismatch": 0.0},
+        review_flags=["READING_ORDER_RISK"],
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause],
+        original_document=original_document,
+    )
+
+    assert result.diffs == []
+    assert any(item.detail.get("reason") == "native_heading_title_only_covered" for item in result.decisions)
+
+
+def test_diff_quality_keeps_native_heading_add_when_clause_contains_new_body(tmp_path: Path) -> None:
+    path = tmp_path / "original.pdf"
+    _write_quality_heading_pdf(path, "8. 知识产权")
+    original_document = _quality_document(1, "8.\n8.1 甲方拥有工作成果。")
+    original_document.path = str(path)
+    original_child = _quality_clause("OC081", "8.1 甲方拥有工作成果。", order_index=2)
+    original_child.clause_no = "8.1"
+    compare_heading = _quality_clause("NC080", "8. 知识产权\n新增许可限制。", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"])
+    compare_heading.clause_no = "8"
+    compare_heading.title = "知识产权"
+    compare_child = _quality_clause("NC081", "8.1 甲方拥有工作成果。", side_prefix="N", order_index=2)
+    compare_child.clause_no = "8.1"
+    diff = DiffItem(
+        diff_id="D_NATIVE_BODY_ADD",
+        diff_type="ADD",
+        source_type="clause",
+        compare_clause_id="NC080",
+        clause_no="8",
+        title="知识产权",
+        compare_text=compare_heading.text,
+        compare_snippet=compare_heading.text,
+        structural_flags=["READING_ORDER_REPAIRED"],
+        review_flags=["READING_ORDER_RISK", "CRITICAL_VALUE_CHANGE"],
+        compare_evidence=compare_heading.bboxes,
+    )
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_child],
+        compare_clauses=[compare_heading, compare_child],
+        original_document=original_document,
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D_NATIVE_BODY_ADD"]
 
 
 def test_diff_quality_keeps_critical_heading_add_not_covered_by_larger_numbered_heading() -> None:
