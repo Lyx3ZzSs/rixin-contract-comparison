@@ -1,3 +1,5 @@
+import pytest
+
 from app.models import BBox, Document, Page, TextBlock
 from app.services.repeated_overlay_filter import RepeatedOverlayFilter
 
@@ -61,14 +63,26 @@ def test_keeps_single_page_contact_name() -> None:
     assert document.pages[0].blocks[-1].enter_clause_compare is None
 
 
-def test_keeps_stable_repeated_meaningful_heading_metadata() -> None:
+@pytest.mark.parametrize(
+    ("metadata_field", "metadata_value"),
+    [
+        ("block_type", "paragraph_title"),
+        ("block_role", "safety_section"),
+        ("semantic_role", "safety_agreement"),
+        ("flow_role", "heading"),
+        ("block_role", "cover_metadata"),
+        ("block_role", "table_note"),
+        ("block_role", "table_caption"),
+    ],
+)
+def test_keeps_stable_repeated_meaningful_metadata(
+    metadata_field: str, metadata_value: str
+) -> None:
     document = _document("条款标题")
     for page in document.pages:
         for block in page.blocks:
             if block.block_id.startswith("overlay-"):
-                block.block_type = "paragraph_title"
-                block.block_role = "safety_section"
-                block.semantic_role = "safety_agreement"
+                setattr(block, metadata_field, metadata_value)
 
     result = RepeatedOverlayFilter().apply(document)
 

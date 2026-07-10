@@ -30,6 +30,7 @@ MEANINGFUL_BLOCK_TYPES = frozenset(
 MEANINGFUL_ROLES = frozenset(
     {
         "heading",
+        "cover_metadata",
         "appendix",
         "appendix_section",
         "quote",
@@ -39,6 +40,8 @@ MEANINGFUL_ROLES = frozenset(
         "safety_section",
         "table",
         "table_body",
+        "table_note",
+        "table_caption",
         "table_title",
         "table_cell",
     }
