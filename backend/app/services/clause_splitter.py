@@ -1022,7 +1022,7 @@ class ClauseSplitter:
         )
 
     def _is_quantity_or_amount_marker(self, text: str, marker: tuple[str, str]) -> bool:
-        clause_no, _ = marker
+        clause_no, title = marker
         if self._is_formal_clause_marker(clause_no):
             return False
         parsed = self.number_parser.parse_line(text)
@@ -1037,6 +1037,13 @@ class ClauseSplitter:
         if re.fullmatch(r"\d{3,}(?:\.\d+)?", clause_no or ""):
             return True
         money_units = r"(万元|亿元|人民币|美元|usd|rmb|cny|元(?!器))"
+        compact_title = re.sub(r"\s+", "", title or "")
+        if re.fullmatch(
+            rf"[+-]?\d+(?:,\d{{3}})*(?:\.\d+)?(?:{money_units}|套|台|个|项|批|份|天|月|个月|年|%)",
+            compact_title,
+            re.IGNORECASE,
+        ):
+            return True
         if re.match(rf"^\s*\d+(?:\.\d+)?(?:[~～—-]\d+(?:\.\d+)?)?\s*{money_units}", first_line, re.IGNORECASE):
             return True
         if re.match(r"^\s*\d+\s*[~～—-]\s*\d+", first_line):

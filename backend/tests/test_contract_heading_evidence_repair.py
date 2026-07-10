@@ -27,14 +27,25 @@ def _write_native_pdf(path: Path) -> None:
         for index, (number, title) in enumerate(HEADINGS.get(page_no, [])):
             y = 96 + index * 140
             page.insert_textbox(
-                fitz.Rect(72, y - 14, 104, y + 16),
+                fitz.Rect(72, y - 17, 104, y + 19),
                 f"{number}.",
                 fontname="helv",
-                fontsize=12,
+                fontsize=15,
             )
             page.insert_textbox(
-                fitz.Rect(106, y - 14, 260, y + 16),
+                fitz.Rect(106, y - 17, 260, y + 19),
                 title,
+                fontname="china-s",
+                fontsize=15,
+            )
+            body_text = (
+                "本合同一式伍份。"
+                if number == "18"
+                else f"{number}.1 双方按本条约定履行义务。"
+            )
+            page.insert_textbox(
+                fitz.Rect(92, y + 22, 520, y + 52),
+                body_text,
                 fontname="china-s",
                 fontsize=12,
             )
@@ -101,6 +112,48 @@ def test_generated_heading_evidence_repair_removes_all_title_only_false_diffs(
     _write_native_pdf(compare_path)
     original = _ocr_document(original_path, complete_titles=False, overlay=False)
     compare = _ocr_document(compare_path, complete_titles=True, overlay=True)
+
+    native_pdf = fitz.open(original_path)
+    try:
+        for page_no, headings in HEADINGS.items():
+            raw = native_pdf[page_no - 1].get_text("rawdict")
+            line_spans = [
+                (
+                    "".join(
+                        str(char.get("c") or "")
+                        for span in line.get("spans", [])
+                        for char in span.get("chars", [])
+                    ).strip(),
+                    line.get("spans", []),
+                )
+                for block in raw.get("blocks", [])
+                if block.get("type") == 0
+                for line in block.get("lines", [])
+            ]
+            compact_lines = {text.replace(" ", "") for text, _ in line_spans}
+            for number, title in headings:
+                body_text = (
+                    "本合同一式伍份。"
+                    if number == "18"
+                    else f"{number}.1 双方按本条约定履行义务。"
+                )
+                assert f"{number}." in compact_lines
+                assert title in compact_lines
+                assert f"{number}.{title}" not in compact_lines
+                assert {
+                    round(float(span.get("size") or 0), 1)
+                    for text, spans in line_spans
+                    if text.replace(" ", "") in {f"{number}.", title}
+                    for span in spans
+                } == {15.0}
+                assert {
+                    round(float(span.get("size") or 0), 1)
+                    for text, spans in line_spans
+                    if text.replace(" ", "") == body_text.replace(" ", "")
+                    for span in spans
+                } == {12.0}
+    finally:
+        native_pdf.close()
 
     heading_result = NativeHeadingRepairService().repair(original)
     overlay_result = RepeatedOverlayFilter().apply(compare)

@@ -9,6 +9,7 @@ import pytest
 import app.services.diff.boundary_coverage as boundary_coverage_module
 from app.models import BBox, Clause, ClausePair, DiffItem, Document, EvidenceBox, Page, TextBlock, TextRange
 from app.services.clause_splitter import ClauseSplitter
+from app.services.clause_split_settings import ClauseSplitSettings
 from app.services.diff.boundary_coverage import BoundaryCoverageContext, ClauseBoundaryCoverageFilter, contact_field_coverage_sequences
 from app.services.diff_engine import DiffEngine
 from app.services.diff_quality import DiffQualityProcessor
@@ -391,6 +392,90 @@ def test_clause_splitter_uses_native_repair_semantics_for_ordinary_text_heading(
     assert clauses[1].title == "份数"
     assert "native_heading_repair" in clauses[1].segmentation_reason
     assert "WEAK_NUMERIC_MARKER" in clauses[1].split_flags
+
+
+@pytest.mark.parametrize(
+    ("text", "block_type", "semantic_reason"),
+    [
+        ("18. 100万元", "text", "native_heading_repair:18"),
+        ("2026/07", "text", "native_heading_repair:2026"),
+        ("18. 份数", "table", "native_heading_repair:18"),
+    ],
+)
+def test_clause_splitter_native_reason_does_not_bypass_guarded_shapes(
+    text: str,
+    block_type: str,
+    semantic_reason: str,
+) -> None:
+    document = Document(
+        filename="guarded-native-heading.pdf",
+        path="guarded-native-heading.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="h17",
+                        page_no=1,
+                        text="17. 合同生效",
+                        bbox=BBox(x0=70, y0=80, x1=180, y1=104),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="guarded",
+                        page_no=1,
+                        text=text,
+                        bbox=BBox(x0=70, y0=130, x1=300, y1=154),
+                        block_type=block_type,
+                        semantic_reasons=[semantic_reason],
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [item.clause_no for item in clauses] == ["17"]
+
+
+def test_clause_splitter_native_reason_does_not_bypass_global_acceptance_threshold() -> None:
+    document = Document(
+        filename="threshold-native-heading.pdf",
+        path="threshold-native-heading.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="h17",
+                        page_no=1,
+                        text="17. 合同生效",
+                        bbox=BBox(x0=70, y0=80, x1=180, y1=104),
+                        block_type="paragraph_title",
+                    ),
+                    TextBlock(
+                        block_id="h18",
+                        page_no=1,
+                        text="18. 份数",
+                        bbox=BBox(x0=70, y0=130, x1=150, y1=154),
+                        semantic_reasons=["native_heading_repair:18"],
+                    ),
+                ],
+            )
+        ],
+    )
+    splitter = ClauseSplitter(split_settings=ClauseSplitSettings(heading_accept_score=0.71))
+
+    clauses = splitter.split(document, "O")
+
+    assert [item.clause_no for item in clauses] == ["17"]
 
 
 def test_clause_splitter_keeps_short_numeric_values_outside_title_blocks() -> None:

@@ -18,15 +18,27 @@ def _write_pdf(path: Path, lines: list[tuple[float, str]]) -> None:
 
 
 def _write_split_line_pdf(path: Path, lines: list[tuple[float, float, str]]) -> None:
+    _write_styled_line_pdf(
+        path,
+        [
+            (x, baseline, text, 12, "helv" if text.isascii() else "china-s")
+            for x, baseline, text in lines
+        ],
+    )
+
+
+def _write_styled_line_pdf(
+    path: Path,
+    lines: list[tuple[float, float, str, float, str]],
+) -> None:
     pdf = fitz.open()
     page = pdf.new_page(width=595, height=842)
-    for x, baseline, text in lines:
-        fontname = "helv" if text.isascii() else "china-s"
+    for x, baseline, text, font_size, fontname in lines:
         page.insert_textbox(
-            fitz.Rect(x, baseline - 14, x + 100, baseline + 16),
+            fitz.Rect(x, baseline - font_size - 2, x + 400, baseline + font_size + 4),
             text,
             fontname=fontname,
-            fontsize=12,
+            fontsize=font_size,
         )
     pdf.save(path)
     pdf.close()
@@ -88,7 +100,14 @@ def test_repairs_bare_number_from_exact_native_heading(tmp_path: Path) -> None:
 
 def test_repairs_ordinary_text_block_from_split_native_heading_lines(tmp_path: Path) -> None:
     path = tmp_path / "split-native.pdf"
-    _write_split_line_pdf(path, [(72, 96, "18."), (106, 96, "份数")])
+    _write_styled_line_pdf(
+        path,
+        [
+            (72, 96, "18.", 15, "helv"),
+            (106, 96, "份数", 15, "china-s"),
+            (92, 132, "双方按本条约定履行义务。", 12, "china-s"),
+        ],
+    )
     document = _ocr_document(
         path,
         "18.",
@@ -125,6 +144,28 @@ def test_repairs_ordinary_text_block_from_split_native_heading_lines(tmp_path: P
 
     assert repeated.repaired_count == 0
     assert heading.semantic_reasons == ["native_heading_repair:18"]
+
+
+def test_does_not_stitch_same_baseline_short_body_as_native_title(tmp_path: Path) -> None:
+    path = tmp_path / "same-baseline-body.pdf"
+    _write_styled_line_pdf(
+        path,
+        [
+            (72, 96, "18.", 15, "helv"),
+            (106, 96, "双方应按合同约定履行", 12, "china-s"),
+        ],
+    )
+    document = _ocr_document(path, "18.", context_text="19. 特别约定")
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.pages[0].blocks[0].text == "18."
+    assert result.repaired_count == 0
+    assert not load_native_heading_index(path).contains_exact(
+        "18",
+        "双方应按合同约定履行",
+        {1},
+    )
 
 
 def test_does_not_stitch_vertically_separated_native_lines(tmp_path: Path) -> None:

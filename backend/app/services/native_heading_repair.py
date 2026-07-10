@@ -17,6 +17,8 @@ VALUE_RE = re.compile(r"(?:\d{4}\s*年|\d+(?:\.\d+)?\s*(?:元|万元|%|天|月|�
 TITLE_BLOCK_TYPES = {"paragraph_title", "doc_title", "title"}
 SPLIT_BASELINE_TOLERANCE = 0.4
 SPLIT_GAP_HEIGHT_RATIO = 2.0
+SPLIT_FONT_SIZE_TOLERANCE_RATIO = 0.08
+SPLIT_BODY_DISTANCE_HEIGHT_RATIO = 5.0
 
 
 def normalize_heading_text(text: str) -> str:
@@ -32,6 +34,22 @@ class NativeHeadingCandidate:
     text: str
     bbox: BBox
     char_boxes: tuple[CharBox, ...]
+
+
+@dataclass(frozen=True)
+class NativeSpanStyle:
+    size: float
+    font: str
+    flags: int
+    char_count: int
+
+
+@dataclass(frozen=True)
+class NativeLineRecord:
+    text: str
+    bbox: BBox
+    char_boxes: tuple[CharBox, ...]
+    span_styles: tuple[NativeSpanStyle, ...]
 
 
 @dataclass(frozen=True)
@@ -87,11 +105,19 @@ def _load_native_heading_index_cached(path: str, mtime_ns: int, size: int) -> Na
     candidates: list[NativeHeadingCandidate] = []
     try:
         for page_no, pdf_page in enumerate(pdf, start=1):
-            lines = _native_lines(pdf_page, page_no)
+            lines = _native_line_records(pdf_page, page_no)
             candidates.extend(
                 candidate
-                for text, bbox, char_boxes in lines
-                if (candidate := _candidate_from_line(page_no, text, bbox, char_boxes)) is not None
+                for line in lines
+                if (
+                    candidate := _candidate_from_line(
+                        page_no,
+                        line.text,
+                        line.bbox,
+                        line.char_boxes,
+                    )
+                )
+                is not None
             )
             candidates.extend(_split_line_candidates(page_no, lines))
     except Exception as exc:
@@ -139,25 +165,27 @@ def _is_valid_native_title(title: str) -> bool:
 
 def _split_line_candidates(
     page_no: int,
-    lines: list[tuple[str, BBox, list[CharBox]]],
+    lines: list[NativeLineRecord],
 ) -> list[NativeHeadingCandidate]:
     candidates: list[NativeHeadingCandidate] = []
-    for bare_text, bare_bbox, bare_char_boxes in lines:
-        if BARE_RE.fullmatch(unicodedata.normalize("NFKC", bare_text).strip()) is None:
+    for bare_line in lines:
+        if BARE_RE.fullmatch(unicodedata.normalize("NFKC", bare_line.text).strip()) is None:
             continue
         titles = [
-            (title_text, title_bbox, title_char_boxes)
-            for title_text, title_bbox, title_char_boxes in lines
-            if _is_valid_native_title(title_text)
-            and _is_same_heading_line(bare_bbox, title_bbox)
+            line
+            for line in lines
+            if _is_valid_native_title(line.text)
+            and _is_same_heading_line(bare_line.bbox, line.bbox)
         ]
         if len(titles) != 1:
             continue
-        title_text, title_bbox, title_char_boxes = titles[0]
-        combined_text = f"{bare_text} {title_text}"
-        title_offset = len(bare_text) + 1
+        title_line = titles[0]
+        if not _has_split_heading_style_evidence(bare_line, title_line, lines):
+            continue
+        combined_text = f"{bare_line.text} {title_line.text}"
+        title_offset = len(bare_line.text) + 1
         combined_boxes = [
-            *bare_char_boxes,
+            *bare_line.char_boxes,
             *[
                 char_box.model_copy(
                     update={
@@ -165,14 +193,14 @@ def _split_line_candidates(
                         + (char_box.text_index if char_box.text_index is not None else index)
                     }
                 )
-                for index, char_box in enumerate(title_char_boxes)
+                for index, char_box in enumerate(title_line.char_boxes)
             ],
         ]
         combined_bbox = BBox(
-            x0=min(bare_bbox.x0, title_bbox.x0),
-            y0=min(bare_bbox.y0, title_bbox.y0),
-            x1=max(bare_bbox.x1, title_bbox.x1),
-            y1=max(bare_bbox.y1, title_bbox.y1),
+            x0=min(bare_line.bbox.x0, title_line.bbox.x0),
+            y0=min(bare_line.bbox.y0, title_line.bbox.y0),
+            x1=max(bare_line.bbox.x1, title_line.bbox.x1),
+            y1=max(bare_line.bbox.y1, title_line.bbox.y1),
         )
         candidate = _candidate_from_line(
             page_no,
@@ -183,6 +211,78 @@ def _split_line_candidates(
         if candidate is not None:
             candidates.append(candidate)
     return candidates
+
+
+def _has_split_heading_style_evidence(
+    bare_line: NativeLineRecord,
+    title_line: NativeLineRecord,
+    lines: list[NativeLineRecord],
+) -> bool:
+    bare_style = _dominant_span_style(bare_line)
+    title_style = _dominant_span_style(title_line)
+    if bare_style is None or title_style is None:
+        return False
+    size_tolerance = max(
+        0.75,
+        max(bare_style.size, title_style.size) * SPLIT_FONT_SIZE_TOLERANCE_RATIO,
+    )
+    if abs(bare_style.size - title_style.size) > size_tolerance:
+        return False
+    body_line = _nearest_body_line(bare_line, title_line, lines)
+    if body_line is None:
+        return False
+    body_style = _dominant_span_style(body_line)
+    if body_style is None:
+        return False
+    size_advantage = title_style.size - body_style.size >= max(
+        1.0,
+        body_style.size * 0.12,
+    )
+    emphasis_advantage = _is_emphasized_style(title_style) and not _is_emphasized_style(
+        body_style
+    )
+    return size_advantage or emphasis_advantage
+
+
+def _nearest_body_line(
+    bare_line: NativeLineRecord,
+    title_line: NativeLineRecord,
+    lines: list[NativeLineRecord],
+) -> NativeLineRecord | None:
+    heading_bottom = max(bare_line.bbox.y1, title_line.bbox.y1)
+    heading_height = max(
+        bare_line.bbox.y1 - bare_line.bbox.y0,
+        title_line.bbox.y1 - title_line.bbox.y0,
+        1.0,
+    )
+    candidates = [
+        line
+        for line in lines
+        if line is not bare_line
+        and line is not title_line
+        and 0 <= line.bbox.y0 - heading_bottom
+        <= heading_height * SPLIT_BODY_DISTANCE_HEIGHT_RATIO
+        and line.bbox.x0 <= title_line.bbox.x0 + heading_height * 3.0
+        and line.bbox.x1 >= bare_line.bbox.x0
+        and len(re.sub(r"\s+", "", line.text or "")) >= 4
+        and BARE_RE.fullmatch(unicodedata.normalize("NFKC", line.text).strip()) is None
+        and HEADING_RE.fullmatch(unicodedata.normalize("NFKC", line.text).strip()) is None
+    ]
+    return min(candidates, key=lambda line: (line.bbox.y0, line.bbox.x0), default=None)
+
+
+def _dominant_span_style(line: NativeLineRecord) -> NativeSpanStyle | None:
+    usable = [style for style in line.span_styles if style.size > 0 and style.char_count > 0]
+    return max(usable, key=lambda style: (style.char_count, style.size), default=None)
+
+
+def _is_emphasized_style(style: NativeSpanStyle) -> bool:
+    compact_font = re.sub(r"[^a-z0-9]+", "", (style.font or "").lower())
+    emphasized_family = any(
+        token in compact_font
+        for token in ("bold", "black", "heavy", "semibold", "demi", "hei")
+    )
+    return bool(style.flags & 16) or emphasized_family
 
 
 def _is_same_heading_line(left: BBox, right: BBox) -> bool:
@@ -216,20 +316,33 @@ def _deduplicate_candidates(
     return list(unique.values())
 
 
-def _native_lines(pdf_page, page_no: int) -> list[tuple[str, BBox, list[CharBox]]]:
-    result: list[tuple[str, BBox, list[CharBox]]] = []
+def _native_line_records(pdf_page, page_no: int) -> list[NativeLineRecord]:
+    result: list[NativeLineRecord] = []
     raw = pdf_page.get_text("rawdict")
     for block in raw.get("blocks", []):
         if block.get("type") != 0:
             continue
         for line in block.get("lines", []):
             chars: list[tuple[str, tuple[float, float, float, float]]] = []
+            span_styles: list[NativeSpanStyle] = []
             for span in line.get("spans", []):
+                span_char_count = 0
                 for item in span.get("chars", []):
                     value = str(item.get("c") or "")
                     bbox = item.get("bbox")
                     if value and isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
                         chars.append((value, (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))))
+                        if not value.isspace():
+                            span_char_count += 1
+                if span_char_count:
+                    span_styles.append(
+                        NativeSpanStyle(
+                            size=float(span.get("size") or 0.0),
+                            font=str(span.get("font") or ""),
+                            flags=int(span.get("flags") or 0),
+                            char_count=span_char_count,
+                        )
+                    )
             text = "".join(value for value, _ in chars).strip()
             if not text:
                 continue
@@ -248,8 +361,22 @@ def _native_lines(pdf_page, page_no: int) -> list[tuple[str, BBox, list[CharBox]
             y0 = min(item.bbox.y0 for item in boxes)
             x1 = max(item.bbox.x1 for item in boxes)
             y1 = max(item.bbox.y1 for item in boxes)
-            result.append((text, BBox(x0=x0, y0=y0, x1=x1, y1=y1), boxes))
+            result.append(
+                NativeLineRecord(
+                    text=text,
+                    bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1),
+                    char_boxes=tuple(boxes),
+                    span_styles=tuple(span_styles),
+                )
+            )
     return result
+
+
+def _native_lines(pdf_page, page_no: int) -> list[tuple[str, BBox, list[CharBox]]]:
+    return [
+        (line.text, line.bbox, list(line.char_boxes))
+        for line in _native_line_records(pdf_page, page_no)
+    ]
 
 
 class NativeHeadingRepairService:
