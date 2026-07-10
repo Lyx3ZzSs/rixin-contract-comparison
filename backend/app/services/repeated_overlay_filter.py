@@ -14,6 +14,7 @@ PROTECTED_LABEL_RE = re.compile(
     r"^[\u4e00-\u9fff]{1,12}(?:方|人|名|号|码|话|真|箱|址|字|章|期|日)[:：]?$"
 )
 FIELD_VALUE_RE = re.compile(r"^[^:：\n]{1,24}[:：][^:：\n]{1,80}$")
+STANDALONE_LABEL_RE = re.compile(r"^[^:：\n]{1,24}[:：]$")
 VALUE_RE = re.compile(
     r"^(?:"
     r"[+-]?\d+(?:\.\d+)?(?:元|万元|亿元|%|天|月|年|份|项|台|套|号)?"
@@ -29,7 +30,6 @@ MEANINGFUL_BLOCK_TYPES = frozenset(
 MEANINGFUL_ROLES = frozenset(
     {
         "heading",
-        "main_clause",
         "appendix",
         "appendix_section",
         "quote",
@@ -146,6 +146,7 @@ class RepeatedOverlayFilter:
         if (
             PROTECTED_LABEL_RE.fullmatch(key)
             or FIELD_VALUE_RE.fullmatch(key)
+            or STANDALONE_LABEL_RE.fullmatch(key)
             or VALUE_RE.fullmatch(key)
         ):
             return "protected_field_or_value"

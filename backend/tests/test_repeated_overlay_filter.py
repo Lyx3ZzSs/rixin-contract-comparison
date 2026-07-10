@@ -100,3 +100,27 @@ def test_keeps_group_with_two_occurrences_on_a_page() -> None:
     overlays = [block for page in document.pages for block in page.blocks if block.block_id.startswith("overlay-")]
     assert result.filtered_block_count == 0
     assert all(block.enter_clause_compare is None for block in overlays)
+
+
+def test_keeps_repeated_generic_standalone_label() -> None:
+    document = _document("标签：")
+
+    result = RepeatedOverlayFilter().apply(document)
+
+    overlays = [block for page in document.pages for block in page.blocks if block.block_id.startswith("overlay-")]
+    assert result.filtered_block_count == 0
+    assert all(block.enter_clause_compare is None for block in overlays)
+
+
+def test_main_clause_role_alone_does_not_protect_plain_overlay() -> None:
+    document = _document("黄科")
+    for page in document.pages:
+        for block in page.blocks:
+            if block.block_id.startswith("overlay-"):
+                block.block_role = "main_clause"
+
+    result = RepeatedOverlayFilter().apply(document)
+
+    overlays = [block for page in document.pages for block in page.blocks if block.block_id.startswith("overlay-")]
+    assert result.filtered_block_count == 9
+    assert all(block.enter_clause_compare is False for block in overlays)
