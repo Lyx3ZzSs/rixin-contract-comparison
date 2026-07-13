@@ -17,6 +17,7 @@ def _block(
     source: str = "",
     layout_match_status: str = "not_applicable",
     layout_match_score: float | None = None,
+    confidence: float | None = None,
 ) -> TextBlock:
     return TextBlock(
         block_id=block_id,
@@ -27,6 +28,7 @@ def _block(
         source=source,
         layout_match_status=layout_match_status,
         layout_match_score=layout_match_score,
+        confidence=confidence,
     )
 
 
@@ -333,15 +335,17 @@ def test_header_footer_groups_repeated_lower_band_annotation_with_all_evidence()
 
 
 def test_header_footer_merges_single_page_ocr_variants_into_repeated_footer_annotation() -> None:
-    original = _document([[], [], [], [], [], []])
+    original = _document([[], [], [], [], [], [], [], []])
     compare = _document(
         [
             [_block("c1", "黄科", x0=420, y0=780, x1=500, y1=822, block_type="footer", page_no=1)],
             [_block("c2", "黄科", x0=420, y0=780, x1=500, y1=822, page_no=2)],
             [_block("c3", "黄科", x0=420, y0=780, x1=500, y1=822, page_no=3)],
-            [_block("c4", "黄科土科", x0=352, y0=786, x1=480, y1=821, page_no=4)],
-            [_block("c5", "奇科", x0=400, y0=785, x1=468, y1=827, page_no=5)],
-            [_block("c6", "李四", x0=400, y0=785, x1=468, y1=827, page_no=6)],
+            [_block("c4", "黄科", x0=420, y0=780, x1=500, y1=822, page_no=4)],
+            [_block("c5", "黄科", x0=420, y0=780, x1=500, y1=822, page_no=5)],
+            [_block("c6", "黄科土科", x0=352, y0=786, x1=480, y1=821, page_no=6)],
+            [_block("c7", "奇科", x0=400, y0=785, x1=468, y1=827, confidence=0.8, page_no=7)],
+            [_block("c8", "本科", x0=400, y0=785, x1=468, y1=827, confidence=0.99, page_no=8)],
         ]
     )
 
@@ -350,8 +354,10 @@ def test_header_footer_merges_single_page_ocr_variants_into_repeated_footer_anno
     assert len(diffs) == 1
     assert diffs[0].diff_type == "ADD"
     assert diffs[0].compare_text == "黄科"
-    assert [evidence.page_no for evidence in diffs[0].compare_evidence] == [1, 2, 3, 4, 5]
+    assert [evidence.page_no for evidence in diffs[0].compare_evidence] == [1, 2, 3, 4, 5, 6, 7]
     assert [evidence.text for evidence in diffs[0].compare_evidence[-2:]] == ["黄科土科", "奇科"]
+    assert diffs[0].compare_evidence[-2].bbox == BBox(x0=352, y0=786, x1=480, y1=821)
+    assert diffs[0].compare_evidence[-1].bbox == BBox(x0=400, y0=785, x1=468, y1=827)
 
 
 def test_header_footer_ignores_one_off_lower_body_text() -> None:

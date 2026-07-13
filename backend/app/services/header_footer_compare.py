@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 import re
+from statistics import median
 import unicodedata
 from dataclasses import dataclass
 
@@ -28,6 +29,7 @@ class HeaderFooterCandidate:
     is_page_number: bool = False
     explicit: bool = False
     is_lower_footer_annotation: bool = False
+    confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -72,8 +74,11 @@ class HeaderFooterComparator:
     page_number_with_total_pattern = re.compile(r"^共\s*(?P<total>\d+)\s*页\s*第\s*(?P<page>\d+)\s*页$")
     fuzzy_match_flag = "FUZZY_HEADER_FOOTER_MATCH"
     footer_annotation_band = 0.90
-    footer_variant_prototype_min_pages = 3
+    footer_variant_prototype_min_pages = 5
     footer_variant_max_characters = 8
+    footer_variant_substitution_max_confidence = 0.85
+    footer_annotation_cluster_max_x_delta = 72
+    footer_annotation_cluster_max_y_delta = 36
 
     def build_diffs(self, original: Document, compare: Document, start_index: int = 1) -> list[DiffItem]:
         original_entries = self._entries_by_slot(original)
@@ -163,6 +168,7 @@ class HeaderFooterComparator:
             is_page_number=is_page_number,
             explicit=explicit_header or explicit_footer,
             is_lower_footer_annotation=slot == "footer" and lower_footer_annotation,
+            confidence=block.confidence,
         )
 
     def _non_page_number_entries(
@@ -226,10 +232,11 @@ class HeaderFooterComparator:
             del grouped[variant_key]
 
     def _is_footer_annotation_prototype(self, group: list[HeaderFooterCandidate]) -> bool:
-        return (
-            len({candidate.page_no for candidate in group}) >= self.footer_variant_prototype_min_pages
-            and all(candidate.is_lower_footer_annotation for candidate in group)
-        )
+        if len({candidate.page_no for candidate in group}) < self.footer_variant_prototype_min_pages:
+            return False
+        if not all(candidate.is_lower_footer_annotation for candidate in group):
+            return False
+        return self._footer_annotation_cluster_is_consistent(group)
 
     @staticmethod
     def _is_single_page_footer_annotation_variant(candidate: HeaderFooterCandidate) -> bool:
@@ -249,12 +256,26 @@ class HeaderFooterComparator:
             return False
         if not self._footer_annotation_position_matches(variant, prototype_group):
             return False
-        if prototype_key in variant_key or variant_key in prototype_key:
+        if self._has_bounded_annotation_suffix(prototype_key, variant_key):
             return True
+        return self._is_low_confidence_single_character_substitution(prototype_key, variant_key, variant)
+
+    def _has_bounded_annotation_suffix(self, prototype_key: str, variant_key: str) -> bool:
+        suffix = variant_key.removeprefix(prototype_key)
+        return variant_key.startswith(prototype_key) and 1 <= len(suffix) <= 2
+
+    def _is_low_confidence_single_character_substitution(
+        self,
+        prototype_key: str,
+        variant_key: str,
+        variant: HeaderFooterCandidate,
+    ) -> bool:
         return (
             len(prototype_key) == len(variant_key)
             and len(prototype_key) >= 2
             and prototype_key[-1] == variant_key[-1]
+            and variant.confidence is not None
+            and variant.confidence <= self.footer_variant_substitution_max_confidence
             and sum(left != right for left, right in zip(prototype_key, variant_key, strict=True)) == 1
         )
 
@@ -268,13 +289,25 @@ class HeaderFooterComparator:
     ) -> bool:
         variant_center_x = (variant.bbox.x0 + variant.bbox.x1) / 2
         variant_center_y = (variant.bbox.y0 + variant.bbox.y1) / 2
-        prototype_centers = [
-            ((candidate.bbox.x0 + candidate.bbox.x1) / 2, (candidate.bbox.y0 + candidate.bbox.y1) / 2)
-            for candidate in prototype_group
-        ]
-        return any(
-            abs(variant_center_x - center_x) <= 120 and abs(variant_center_y - center_y) <= 48
-            for center_x, center_y in prototype_centers
+        center_x, center_y = self._footer_annotation_cluster_center(prototype_group)
+        return (
+            abs(variant_center_x - center_x) <= self.footer_annotation_cluster_max_x_delta
+            and abs(variant_center_y - center_y) <= self.footer_annotation_cluster_max_y_delta
+        )
+
+    def _footer_annotation_cluster_is_consistent(self, group: list[HeaderFooterCandidate]) -> bool:
+        center_x, center_y = self._footer_annotation_cluster_center(group)
+        return all(
+            abs((candidate.bbox.x0 + candidate.bbox.x1) / 2 - center_x) <= self.footer_annotation_cluster_max_x_delta
+            and abs((candidate.bbox.y0 + candidate.bbox.y1) / 2 - center_y) <= self.footer_annotation_cluster_max_y_delta
+            for candidate in group
+        )
+
+    @staticmethod
+    def _footer_annotation_cluster_center(group: list[HeaderFooterCandidate]) -> tuple[float, float]:
+        return (
+            median((candidate.bbox.x0 + candidate.bbox.x1) / 2 for candidate in group),
+            median((candidate.bbox.y0 + candidate.bbox.y1) / 2 for candidate in group),
         )
 
     def _page_number_entry(
