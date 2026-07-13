@@ -196,11 +196,12 @@ def _is_valid_native_title(title: str) -> bool:
 
 def _is_valid_conflict_title(title: str) -> bool:
     normalized = unicodedata.normalize("NFKC", title or "").strip()
+    terminal_text = re.sub(r'''[\s"'”’」』】）》〉〕］）)\]}]+$''', "", normalized)
     return bool(
         normalized
         and re.match(r"^[\u4e00-\u9fffA-Za-z]", normalized)
         and not VALUE_RE.search(normalized)
-        and not re.search(r"[。！？!?；;：:.．]$", normalized)
+        and not re.search(r"[。！？!?；;：:，,、….．]$", terminal_text)
     )
 
 
@@ -652,7 +653,10 @@ class NativeHeadingRepairService:
                 match is not None
                 and match.group("number") == number
                 and normalize_heading_text(match.group("title")) != expected_title
-                and _is_valid_conflict_title(match.group("title"))
+                and (
+                    (block.block_type or "").lower() in TITLE_BLOCK_TYPES
+                    or _is_valid_conflict_title(match.group("title"))
+                )
             ):
                 return True
         return False

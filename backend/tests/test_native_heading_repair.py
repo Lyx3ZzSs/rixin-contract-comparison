@@ -415,6 +415,67 @@ def test_does_not_replace_conflicting_ocr_title(tmp_path: Path) -> None:
     assert result.decisions[0]["reason"] == "conflicting_ocr_title"
 
 
+def test_keeps_explicit_same_level_title_with_value_and_colon(tmp_path: Path) -> None:
+    path = tmp_path / "explicit-value-title-conflict.pdf"
+    _write_pdf(path, [(96, "8. 知识产权"), (130, "8.1 甲方拥有工作成果。")])
+    document = _ocr_document(path)
+    document.pages[0].blocks.append(
+        TextBlock(
+            block_id="explicit-value-title",
+            page_no=1,
+            text="8. 服务期限12个月：",
+            bbox=BBox(x0=72, y0=106, x1=280, y1=128),
+            block_type="paragraph_title",
+        )
+    )
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.pages[0].blocks[0].text == "8."
+    assert result.repaired_count == 0
+    assert result.decisions[0]["reason"] == "conflicting_ocr_title"
+
+
+def test_ignores_same_level_text_ending_in_continuation_comma(tmp_path: Path) -> None:
+    path = tmp_path / "comma-body.pdf"
+    _write_pdf(path, [(96, "8. 知识产权"), (130, "8.1 甲方拥有工作成果。")])
+    document = _ocr_document(path)
+    document.pages[0].blocks.append(
+        TextBlock(
+            block_id="comma-body",
+            page_no=1,
+            text="8. 双方应按约履行，",
+            bbox=BBox(x0=72, y0=146, x1=260, y1=168),
+            block_type="text",
+        )
+    )
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.pages[0].blocks[0].text == "8. 知识产权"
+    assert result.repaired_count == 1
+
+
+def test_ignores_same_level_text_with_quoted_sentence_terminal(tmp_path: Path) -> None:
+    path = tmp_path / "quoted-body.pdf"
+    _write_pdf(path, [(96, "8. 知识产权"), (130, "8.1 甲方拥有工作成果。")])
+    document = _ocr_document(path)
+    document.pages[0].blocks.append(
+        TextBlock(
+            block_id="quoted-body",
+            page_no=1,
+            text="8. 双方应按约履行。”",
+            bbox=BBox(x0=72, y0=146, x1=260, y1=168),
+            block_type="text",
+        )
+    )
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.pages[0].blocks[0].text == "8. 知识产权"
+    assert result.repaired_count == 1
+
+
 def test_keeps_long_explicit_same_level_ocr_title(tmp_path: Path) -> None:
     path = tmp_path / "long-explicit-conflict.pdf"
     _write_pdf(path, [(96, "8. 知识产权"), (130, "8.1 甲方拥有工作成果。")])
