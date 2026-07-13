@@ -332,6 +332,28 @@ def test_header_footer_groups_repeated_lower_band_annotation_with_all_evidence()
     assert [evidence.page_no for evidence in diffs[0].compare_evidence] == [1, 2, 3]
 
 
+def test_header_footer_merges_single_page_ocr_variants_into_repeated_footer_annotation() -> None:
+    original = _document([[], [], [], [], [], []])
+    compare = _document(
+        [
+            [_block("c1", "黄科", x0=420, y0=780, x1=500, y1=822, block_type="footer", page_no=1)],
+            [_block("c2", "黄科", x0=420, y0=780, x1=500, y1=822, page_no=2)],
+            [_block("c3", "黄科", x0=420, y0=780, x1=500, y1=822, page_no=3)],
+            [_block("c4", "黄科土科", x0=352, y0=786, x1=480, y1=821, page_no=4)],
+            [_block("c5", "奇科", x0=400, y0=785, x1=468, y1=827, page_no=5)],
+            [_block("c6", "李四", x0=400, y0=785, x1=468, y1=827, page_no=6)],
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "ADD"
+    assert diffs[0].compare_text == "黄科"
+    assert [evidence.page_no for evidence in diffs[0].compare_evidence] == [1, 2, 3, 4, 5]
+    assert [evidence.text for evidence in diffs[0].compare_evidence[-2:]] == ["黄科土科", "奇科"]
+
+
 def test_header_footer_ignores_one_off_lower_body_text() -> None:
     original = _document([[]])
     compare = _document([[_block("c1", "本页备注", x0=440, y0=764, x1=532, y1=772)]])

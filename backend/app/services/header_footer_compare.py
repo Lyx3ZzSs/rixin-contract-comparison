@@ -27,6 +27,7 @@ class HeaderFooterCandidate:
     block_id: str
     is_page_number: bool = False
     explicit: bool = False
+    is_lower_footer_annotation: bool = False
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,8 @@ class HeaderFooterComparator:
     page_number_with_total_pattern = re.compile(r"^共\s*(?P<total>\d+)\s*页\s*第\s*(?P<page>\d+)\s*页$")
     fuzzy_match_flag = "FUZZY_HEADER_FOOTER_MATCH"
     footer_annotation_band = 0.90
+    footer_variant_prototype_min_pages = 3
+    footer_variant_max_characters = 8
 
     def build_diffs(self, original: Document, compare: Document, start_index: int = 1) -> list[DiffItem]:
         original_entries = self._entries_by_slot(original)
@@ -159,6 +162,7 @@ class HeaderFooterComparator:
             block_id=block.block_id,
             is_page_number=is_page_number,
             explicit=explicit_header or explicit_footer,
+            is_lower_footer_annotation=slot == "footer" and lower_footer_annotation,
         )
 
     def _non_page_number_entries(
@@ -173,6 +177,9 @@ class HeaderFooterComparator:
             key = self._compare_key(candidate.text)
             if key:
                 grouped.setdefault(key, []).append(candidate)
+
+        if slot == "footer":
+            self._merge_repeated_footer_annotation_variants(grouped)
 
         entries: list[HeaderFooterEntry] = []
         for key, group in sorted(grouped.items(), key=lambda item: self._entry_sort_key(item[1])):
@@ -191,6 +198,84 @@ class HeaderFooterComparator:
                 )
             )
         return entries
+
+    def _merge_repeated_footer_annotation_variants(
+        self,
+        grouped: dict[str, list[HeaderFooterCandidate]],
+    ) -> None:
+        prototypes = [
+            (key, group)
+            for key, group in grouped.items()
+            if self._is_footer_annotation_prototype(group)
+        ]
+        for variant_key, variant_group in list(grouped.items()):
+            if len(variant_group) != 1 or variant_key not in grouped:
+                continue
+            variant = variant_group[0]
+            if not self._is_single_page_footer_annotation_variant(variant):
+                continue
+            matches = [
+                (key, group)
+                for key, group in prototypes
+                if key != variant_key and self._matches_footer_annotation_prototype(variant, key, group)
+            ]
+            if len(matches) != 1:
+                continue
+            prototype_key, prototype_group = matches[0]
+            prototype_group.append(variant)
+            del grouped[variant_key]
+
+    def _is_footer_annotation_prototype(self, group: list[HeaderFooterCandidate]) -> bool:
+        return (
+            len({candidate.page_no for candidate in group}) >= self.footer_variant_prototype_min_pages
+            and all(candidate.is_lower_footer_annotation for candidate in group)
+        )
+
+    @staticmethod
+    def _is_single_page_footer_annotation_variant(candidate: HeaderFooterCandidate) -> bool:
+        return not candidate.explicit and candidate.is_lower_footer_annotation
+
+    def _matches_footer_annotation_prototype(
+        self,
+        variant: HeaderFooterCandidate,
+        prototype_key: str,
+        prototype_group: list[HeaderFooterCandidate],
+    ) -> bool:
+        variant_key = self._compare_key(variant.text)
+        if not self._is_short_cjk_annotation(prototype_key) or not self._is_short_cjk_annotation(variant_key):
+            return False
+        prototype_pages = {candidate.page_no for candidate in prototype_group}
+        if variant.page_no in prototype_pages:
+            return False
+        if not self._footer_annotation_position_matches(variant, prototype_group):
+            return False
+        if prototype_key in variant_key or variant_key in prototype_key:
+            return True
+        return (
+            len(prototype_key) == len(variant_key)
+            and len(prototype_key) >= 2
+            and prototype_key[-1] == variant_key[-1]
+            and sum(left != right for left, right in zip(prototype_key, variant_key, strict=True)) == 1
+        )
+
+    def _is_short_cjk_annotation(self, text: str) -> bool:
+        return 2 <= len(text) <= self.footer_variant_max_characters and all("\u4e00" <= char <= "\u9fff" for char in text)
+
+    def _footer_annotation_position_matches(
+        self,
+        variant: HeaderFooterCandidate,
+        prototype_group: list[HeaderFooterCandidate],
+    ) -> bool:
+        variant_center_x = (variant.bbox.x0 + variant.bbox.x1) / 2
+        variant_center_y = (variant.bbox.y0 + variant.bbox.y1) / 2
+        prototype_centers = [
+            ((candidate.bbox.x0 + candidate.bbox.x1) / 2, (candidate.bbox.y0 + candidate.bbox.y1) / 2)
+            for candidate in prototype_group
+        ]
+        return any(
+            abs(variant_center_x - center_x) <= 120 and abs(variant_center_y - center_y) <= 48
+            for center_x, center_y in prototype_centers
+        )
 
     def _page_number_entry(
         self,
