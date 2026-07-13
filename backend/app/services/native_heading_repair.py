@@ -22,6 +22,8 @@ SPLIT_FONT_SIZE_TOLERANCE_RATIO = 0.08
 SPLIT_BODY_WINDOW_HEIGHT_RATIO = 12.0
 SPLIT_BODY_MIN_LINES = 2
 SPLIT_BODY_MIN_CHARS = 16
+SPLIT_BOTTOM_REGION_RATIO = 0.8
+SPLIT_NEXT_PAGE_TOP_REGION_RATIO = 0.25
 
 
 def normalize_heading_text(text: str) -> str:
@@ -115,8 +117,11 @@ def _load_native_heading_index_cached(path: str, mtime_ns: int, size: int) -> Na
         return NativeHeadingIndex(warning=f"native PDF open failed: {exc}")
     candidates: list[NativeHeadingCandidate] = []
     try:
+        page_records: list[tuple[int, float, list[NativeLineRecord]]] = []
         for page_no, pdf_page in enumerate(pdf, start=1):
             lines = _native_line_records(pdf_page, page_no)
+            page_records.append((page_no, float(pdf_page.rect.height), lines))
+        for page_index, (page_no, page_height, lines) in enumerate(page_records):
             candidates.extend(
                 candidate
                 for line in lines
@@ -130,7 +135,16 @@ def _load_native_heading_index_cached(path: str, mtime_ns: int, size: int) -> Na
                 )
                 is not None
             )
-            candidates.extend(_split_line_candidates(page_no, lines))
+            next_page = page_records[page_index + 1] if page_index + 1 < len(page_records) else None
+            candidates.extend(
+                _split_line_candidates(
+                    page_no,
+                    lines,
+                    page_height=page_height,
+                    next_page_lines=next_page[2] if next_page is not None else None,
+                    next_page_height=next_page[1] if next_page is not None else None,
+                )
+            )
     except Exception as exc:
         return NativeHeadingIndex(warning=f"native PDF extraction failed: {exc}")
     finally:
@@ -177,6 +191,10 @@ def _is_valid_native_title(title: str) -> bool:
 def _split_line_candidates(
     page_no: int,
     lines: list[NativeLineRecord],
+    *,
+    page_height: float | None = None,
+    next_page_lines: list[NativeLineRecord] | None = None,
+    next_page_height: float | None = None,
 ) -> list[NativeHeadingCandidate]:
     candidates: list[NativeHeadingCandidate] = []
     for bare_line in lines:
@@ -191,7 +209,14 @@ def _split_line_candidates(
         if len(titles) != 1:
             continue
         title_line = titles[0]
-        if not _has_split_heading_style_evidence(bare_line, title_line, lines):
+        if not _has_split_heading_style_evidence(
+            bare_line,
+            title_line,
+            lines,
+            page_height=page_height,
+            next_page_lines=next_page_lines,
+            next_page_height=next_page_height,
+        ):
             continue
         combined_text = f"{bare_line.text} {title_line.text}"
         title_offset = len(bare_line.text) + 1
@@ -228,6 +253,10 @@ def _has_split_heading_style_evidence(
     bare_line: NativeLineRecord,
     title_line: NativeLineRecord,
     lines: list[NativeLineRecord],
+    *,
+    page_height: float | None = None,
+    next_page_lines: list[NativeLineRecord] | None = None,
+    next_page_height: float | None = None,
 ) -> bool:
     bare_style = _dominant_span_style(bare_line)
     title_style = _dominant_span_style(title_line)
@@ -241,7 +270,22 @@ def _has_split_heading_style_evidence(
         return False
     body_styles = _body_style_baselines(bare_line, title_line, lines)
     if not body_styles:
-        return False
+        heading_bottom = max(bare_line.bbox.y1, title_line.bbox.y1)
+        if (
+            page_height is None
+            or heading_bottom < page_height * SPLIT_BOTTOM_REGION_RATIO
+            or not next_page_lines
+            or next_page_height is None
+        ):
+            return False
+        body_styles = _next_page_body_style_baselines(
+            bare_line,
+            title_line,
+            next_page_lines,
+            next_page_height,
+        )
+        if not body_styles:
+            return False
     title_is_emphasized = _is_emphasized_style(title_style)
     return all(
         title_style.size - body_style.size
@@ -262,18 +306,52 @@ def _body_style_baselines(
         title_line.bbox.y1 - title_line.bbox.y0,
         1.0,
     )
-    weighted_chars: dict[float, int] = {}
-    emphasized_chars: dict[float, int] = {}
-    line_indexes: dict[float, set[int]] = {}
-    for line_index, line in enumerate(lines):
-        if not _is_body_style_evidence_line(
+    evidence_lines = [
+        line
+        for line in lines
+        if _is_body_style_evidence_line(
             line,
             bare_line=bare_line,
             title_line=title_line,
             heading_bottom=heading_bottom,
             heading_height=heading_height,
-        ):
-            continue
+        )
+    ]
+    return _style_baselines(evidence_lines)
+
+
+def _next_page_body_style_baselines(
+    bare_line: NativeLineRecord,
+    title_line: NativeLineRecord,
+    lines: list[NativeLineRecord],
+    page_height: float,
+) -> tuple[NativeBodyStyleBaseline, ...]:
+    heading_height = max(
+        bare_line.bbox.y1 - bare_line.bbox.y0,
+        title_line.bbox.y1 - title_line.bbox.y0,
+        1.0,
+    )
+    evidence_lines = [
+        line
+        for line in lines
+        if 0 <= line.bbox.y0 <= page_height * SPLIT_NEXT_PAGE_TOP_REGION_RATIO
+        and _is_body_style_evidence_candidate(
+            line,
+            bare_line=bare_line,
+            title_line=title_line,
+            heading_height=heading_height,
+        )
+    ]
+    return _style_baselines(evidence_lines)
+
+
+def _style_baselines(
+    lines: list[NativeLineRecord],
+) -> tuple[NativeBodyStyleBaseline, ...]:
+    weighted_chars: dict[float, int] = {}
+    emphasized_chars: dict[float, int] = {}
+    line_indexes: dict[float, set[int]] = {}
+    for line_index, line in enumerate(lines):
         for style in line.span_styles:
             if style.size <= 0 or style.char_count <= 0:
                 continue
@@ -313,6 +391,21 @@ def _is_body_style_evidence_line(
         return False
     if not 0 <= line.bbox.y0 - heading_bottom <= heading_height * SPLIT_BODY_WINDOW_HEIGHT_RATIO:
         return False
+    return _is_body_style_evidence_candidate(
+        line,
+        bare_line=bare_line,
+        title_line=title_line,
+        heading_height=heading_height,
+    )
+
+
+def _is_body_style_evidence_candidate(
+    line: NativeLineRecord,
+    *,
+    bare_line: NativeLineRecord,
+    title_line: NativeLineRecord,
+    heading_height: float,
+) -> bool:
     if line.bbox.x0 > title_line.bbox.x0 + heading_height * 3.0:
         return False
     if line.bbox.x1 < bare_line.bbox.x0:
@@ -485,12 +578,16 @@ class NativeHeadingRepairService:
 
     @staticmethod
     def _has_conflicting_title(page: Page, number: str, title: str, bare: TextBlock) -> bool:
-        expected = normalize_heading_text(f"{number}{title}")
+        expected_title = normalize_heading_text(title)
         for block in page.blocks:
             if block is bare:
                 continue
-            text_key = normalize_heading_text(block.text)
-            if text_key.startswith(number) and text_key != expected and not text_key.startswith(f"{number}1"):
+            match = HEADING_RE.fullmatch(unicodedata.normalize("NFKC", block.text).strip())
+            if (
+                match is not None
+                and match.group("number") == number
+                and normalize_heading_text(match.group("title")) != expected_title
+            ):
                 return True
         return False
 

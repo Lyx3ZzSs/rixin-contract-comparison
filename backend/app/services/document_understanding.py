@@ -234,7 +234,7 @@ class DocumentUnderstandingService:
             return
         page.semantic_role = role
         page.semantic_confidence = confidence
-        page.semantic_reasons = [reason]
+        page.semantic_reasons = list(dict.fromkeys([*page.semantic_reasons, reason]))
         result.semantic_decisions.append(SemanticDecision(
             target_type="page",
             target_id=str(page.page_no),
@@ -258,7 +258,7 @@ class DocumentUnderstandingService:
             return
         block.semantic_role = role
         block.semantic_confidence = confidence
-        block.semantic_reasons = [reason]
+        block.semantic_reasons = list(dict.fromkeys([*block.semantic_reasons, reason]))
         if enter_clause_compare is not None:
             block.enter_clause_compare = enter_clause_compare
         if role and not block.block_role:

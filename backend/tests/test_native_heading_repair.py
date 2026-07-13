@@ -31,15 +31,23 @@ def _write_styled_line_pdf(
     path: Path,
     lines: list[tuple[float, float, str, float, str]],
 ) -> None:
+    _write_styled_pages_pdf(path, [lines])
+
+
+def _write_styled_pages_pdf(
+    path: Path,
+    pages: list[list[tuple[float, float, str, float, str]]],
+) -> None:
     pdf = fitz.open()
-    page = pdf.new_page(width=595, height=842)
-    for x, baseline, text, font_size, fontname in lines:
-        page.insert_textbox(
-            fitz.Rect(x, baseline - font_size - 2, x + 400, baseline + font_size + 4),
-            text,
-            fontname=fontname,
-            fontsize=font_size,
-        )
+    for lines in pages:
+        page = pdf.new_page(width=595, height=842)
+        for x, baseline, text, font_size, fontname in lines:
+            page.insert_textbox(
+                fitz.Rect(x, baseline - font_size - 2, x + 400, baseline + font_size + 4),
+                text,
+                fontname=fontname,
+                fontsize=font_size,
+            )
     pdf.save(path)
     pdf.close()
 
@@ -147,6 +155,73 @@ def test_repairs_ordinary_text_block_from_split_native_heading_lines(tmp_path: P
     assert heading.semantic_reasons == ["native_heading_repair:18"]
 
 
+def test_repairs_page_bottom_split_heading_with_adjacent_page_body_style(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "cross-page-body-style.pdf"
+    _write_styled_pages_pdf(
+        path,
+        [
+            [
+                (72, 790, "2.", 15, "helv"),
+                (106, 790, "服务内容", 15, "china-s"),
+            ],
+            [
+                (92, 80, "乙方应按合同约定提供技术服务。", 12, "china-s"),
+                (92, 108, "双方应及时确认具体服务成果。", 12, "china-s"),
+            ],
+        ],
+    )
+    document = _ocr_document(path, "2.", context_text="2.1 乙方提供技术服务。")
+    document.pages[0].blocks[0].bbox = BBox(x0=70, y0=772, x1=92, y1=794)
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert load_native_heading_index(path).contains_exact("2", "服务内容", {1})
+    assert document.pages[0].blocks[0].text == "2. 服务内容"
+    assert result.repaired_count == 1
+
+
+def test_rejects_page_bottom_split_heading_without_next_page_body_style(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "missing-next-page-body-style.pdf"
+    _write_styled_pages_pdf(
+        path,
+        [
+            [
+                (72, 790, "2.", 15, "helv"),
+                (106, 790, "服务内容", 15, "china-s"),
+            ],
+            [],
+        ],
+    )
+
+    assert not load_native_heading_index(path).contains_exact("2", "服务内容", {1})
+
+
+def test_rejects_non_adjacent_page_body_style_for_bottom_split_heading(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "non-adjacent-body-style.pdf"
+    _write_styled_pages_pdf(
+        path,
+        [
+            [
+                (72, 790, "2.", 15, "helv"),
+                (106, 790, "服务内容", 15, "china-s"),
+            ],
+            [],
+            [
+                (92, 80, "乙方应按合同约定提供技术服务。", 12, "china-s"),
+                (92, 108, "双方应及时确认具体服务成果。", 12, "china-s"),
+            ],
+        ],
+    )
+
+    assert not load_native_heading_index(path).contains_exact("2", "服务内容", {1})
+
+
 def test_does_not_stitch_same_baseline_short_body_as_native_title(tmp_path: Path) -> None:
     path = tmp_path / "same-baseline-body.pdf"
     _write_styled_line_pdf(
@@ -228,15 +303,45 @@ def test_does_not_stitch_ambiguous_same_baseline_native_titles(tmp_path: Path) -
     assert not load_native_heading_index(path).contains_exact("18", "份数", {1})
 
 
-def test_does_not_replace_conflicting_ocr_title(tmp_path: Path) -> None:
-    path = tmp_path / "conflict.pdf"
+def test_repairs_parent_heading_when_ocr_contains_decimal_children(tmp_path: Path) -> None:
+    path = tmp_path / "decimal-children.pdf"
     _write_pdf(path, [(96, "8. 知识产权"), (130, "8.1 甲方拥有工作成果。")])
-    document = _ocr_document(path, "8. 保密")
+    document = _ocr_document(path, context_text="8.1 甲方拥有工作成果。")
+    document.pages[0].blocks.append(
+        TextBlock(
+            block_id="child-2",
+            page_no=1,
+            text="8.2 乙方保证交付成果不存在权利瑕疵。",
+            bbox=BBox(x0=72, y0=146, x1=420, y1=168),
+        )
+    )
 
     result = NativeHeadingRepairService().repair(document)
 
-    assert document.pages[0].blocks[0].text == "8. 保密"
+    assert document.pages[0].blocks[0].text == "8. 知识产权"
+    assert result.repaired_count == 1
+    assert result.decisions[0]["action"] == "repaired"
+
+
+def test_does_not_replace_conflicting_ocr_title(tmp_path: Path) -> None:
+    path = tmp_path / "conflict.pdf"
+    _write_pdf(path, [(96, "8. 知识产权"), (130, "8.1 甲方拥有工作成果。")])
+    document = _ocr_document(path)
+    document.pages[0].blocks.append(
+        TextBlock(
+            block_id="conflicting-title",
+            page_no=1,
+            text="8. 保密",
+            bbox=BBox(x0=72, y0=106, x1=180, y1=128),
+            block_type="paragraph_title",
+        )
+    )
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.pages[0].blocks[0].text == "8."
     assert result.repaired_count == 0
+    assert result.decisions[0]["reason"] == "conflicting_ocr_title"
 
 
 def test_rejects_wrong_number_and_amount_like_native_lines(tmp_path: Path) -> None:

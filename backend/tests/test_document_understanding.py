@@ -145,3 +145,26 @@ def test_rule_understanding_keeps_appendix_page_for_section_clause_split() -> No
     assert [clause.section_type for clause in clauses] == ["appendix"]
     assert clauses[0].source_block_ids == ["appendix-title", "appendix-body"]
     assert "SECTION_APPENDIX" in clauses[0].split_flags
+
+
+def test_rule_understanding_preserves_native_heading_reason_for_clause_split() -> None:
+    repaired_heading = _block("h18", "18. 份数", 180, 204)
+    repaired_heading.semantic_reasons = ["native_heading_repair:18"]
+    document = _document([
+        _block("h17", "17. 合同生效", 80, 104, block_type="paragraph_title"),
+        _block("b17", "双方签字盖章后生效。", 120, 144),
+        repaired_heading,
+        _block("b18", "本合同一式伍份。", 220, 244),
+    ])
+
+    DocumentUnderstandingService(DocumentUnderstandingSettings()).understand(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert repaired_heading.semantic_role == "main_clause"
+    assert repaired_heading.semantic_reasons == [
+        "native_heading_repair:18",
+        "text_body_candidate",
+    ]
+    assert [clause.clause_no for clause in clauses] == ["17", "18"]
+    assert clauses[1].title == "份数"
+    assert "native_heading_repair" in clauses[1].segmentation_reason
