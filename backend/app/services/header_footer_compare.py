@@ -70,6 +70,7 @@ class HeaderFooterComparator:
     page_number_pattern = re.compile(r"^(?:第?\s*\d+\s*页?|共\s*\d+\s*页\s*第\s*\d+\s*页)$")
     page_number_with_total_pattern = re.compile(r"^共\s*(?P<total>\d+)\s*页\s*第\s*(?P<page>\d+)\s*页$")
     fuzzy_match_flag = "FUZZY_HEADER_FOOTER_MATCH"
+    footer_annotation_band = 0.90
 
     def build_diffs(self, original: Document, compare: Document, start_index: int = 1) -> list[DiffItem]:
         original_entries = self._entries_by_slot(original)
@@ -114,9 +115,16 @@ class HeaderFooterComparator:
         block_type = (block.block_type or "").lower()
         if block_type in self.excluded_types:
             return None
-        if (block.layout_match_status or "") == "noise_unmatched":
-            return None
         is_page_number = self._is_page_number(text)
+        explicit_header = block_type in self.header_types
+        explicit_footer = block_type in self.footer_types
+        lower_footer_annotation = (
+            page_height > 0 and block.bbox.y0 >= page_height * self.footer_annotation_band
+        )
+        if (block.layout_match_status or "") == "noise_unmatched" and not (
+            explicit_footer and lower_footer_annotation
+        ):
+            return None
         if self._is_bare_field_label(text):
             return None
         if self._looks_like_short_edge_noise(text, block, page_height):
@@ -124,8 +132,6 @@ class HeaderFooterComparator:
         if is_page_number and block.bbox.y1 <= page_height * 0.12:
             return None
         slot = ""
-        explicit_header = block_type in self.header_types
-        explicit_footer = block_type in self.footer_types
         if explicit_header:
             slot = "header"
         elif explicit_footer and not self._looks_like_clause_start(text):
@@ -137,6 +143,10 @@ class HeaderFooterComparator:
             if near_top and not self._looks_like_clause_start(text):
                 slot = "header"
             elif near_bottom or near_page_number_bottom:
+                slot = "footer"
+            # A repeated exact-text group is required before this non-explicit
+            # annotation is emitted, keeping one-off lower body text excluded.
+            elif lower_footer_annotation and not self._looks_like_clause_start(text):
                 slot = "footer"
         if not slot:
             return None

@@ -274,6 +274,73 @@ def test_header_footer_ignores_noise_unmatched_header_fragment() -> None:
     assert diffs == []
 
 
+def test_header_footer_accepts_lower_explicit_footer_despite_noise_status() -> None:
+    original = _document([[]])
+    compare = _document(
+        [
+            [
+                _block(
+                    "c1",
+                    "李四",
+                    x0=64,
+                    y0=764,
+                    x1=108,
+                    y1=772,
+                    block_type="footer",
+                    source="ppocrv5_noise_unmatched",
+                    layout_match_status="noise_unmatched",
+                    layout_match_score=0.0,
+                )
+            ]
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "ADD"
+    assert diffs[0].title == "页脚"
+    assert diffs[0].compare_text == "李四"
+    assert [evidence.page_no for evidence in diffs[0].compare_evidence] == [1]
+
+
+def test_header_footer_groups_repeated_lower_band_annotation_with_all_evidence() -> None:
+    original = _document([[], [], []])
+    compare = _document(
+        [
+            [
+                _block(
+                    f"c{page_no}",
+                    "经办人：李四",
+                    x0=440,
+                    y0=764,
+                    x1=532,
+                    y1=772,
+                    page_no=page_no,
+                )
+            ]
+            for page_no in range(1, 4)
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "ADD"
+    assert diffs[0].title == "页脚"
+    assert diffs[0].compare_text == "经办人：李四"
+    assert [evidence.page_no for evidence in diffs[0].compare_evidence] == [1, 2, 3]
+
+
+def test_header_footer_ignores_one_off_lower_body_text() -> None:
+    original = _document([[]])
+    compare = _document([[_block("c1", "本页备注", x0=440, y0=764, x1=532, y1=772)]])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
 def test_header_footer_ignores_one_page_label_fragment_header() -> None:
     original = _document([[]])
     compare = _document([[_block("c1", "合同编号", x0=362, y0=53.5, x1=421, y1=61.5, block_type="header")]])
