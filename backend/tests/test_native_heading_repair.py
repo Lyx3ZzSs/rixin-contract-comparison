@@ -222,6 +222,28 @@ def test_rejects_non_adjacent_page_body_style_for_bottom_split_heading(
     assert not load_native_heading_index(path).contains_exact("2", "服务内容", {1})
 
 
+def test_rejects_next_page_body_style_after_new_heading_boundary(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "next-page-new-heading-boundary.pdf"
+    _write_styled_pages_pdf(
+        path,
+        [
+            [
+                (72, 790, "2.", 15, "helv"),
+                (106, 790, "服务内容", 15, "china-s"),
+            ],
+            [
+                (72, 80, "3. 费用结算", 15, "china-s"),
+                (92, 112, "结算项目数量单价金额以清单为准。", 12, "china-s"),
+                (92, 140, "双方应及时核对结算项目明细。", 12, "china-s"),
+            ],
+        ],
+    )
+
+    assert not load_native_heading_index(path).contains_exact("2", "服务内容", {1})
+
+
 def test_does_not_stitch_same_baseline_short_body_as_native_title(tmp_path: Path) -> None:
     path = tmp_path / "same-baseline-body.pdf"
     _write_styled_line_pdf(
@@ -323,6 +345,28 @@ def test_repairs_parent_heading_when_ocr_contains_decimal_children(tmp_path: Pat
     assert result.decisions[0]["action"] == "repaired"
 
 
+def test_repairs_parent_heading_when_same_marker_line_is_ordinary_body(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "same-marker-body.pdf"
+    _write_pdf(path, [(96, "8. 知识产权"), (130, "8.1 甲方拥有工作成果。")])
+    document = _ocr_document(path)
+    document.pages[0].blocks.append(
+        TextBlock(
+            block_id="same-marker-body",
+            page_no=1,
+            text="8. 双方应按约履行。",
+            bbox=BBox(x0=72, y0=146, x1=260, y1=168),
+            block_type="text",
+        )
+    )
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.pages[0].blocks[0].text == "8. 知识产权"
+    assert result.repaired_count == 1
+
+
 def test_does_not_replace_conflicting_ocr_title(tmp_path: Path) -> None:
     path = tmp_path / "conflict.pdf"
     _write_pdf(path, [(96, "8. 知识产权"), (130, "8.1 甲方拥有工作成果。")])
@@ -333,6 +377,27 @@ def test_does_not_replace_conflicting_ocr_title(tmp_path: Path) -> None:
             page_no=1,
             text="8. 保密",
             bbox=BBox(x0=72, y0=106, x1=180, y1=128),
+            block_type="paragraph_title",
+        )
+    )
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.pages[0].blocks[0].text == "8."
+    assert result.repaired_count == 0
+    assert result.decisions[0]["reason"] == "conflicting_ocr_title"
+
+
+def test_keeps_long_explicit_same_level_ocr_title(tmp_path: Path) -> None:
+    path = tmp_path / "long-explicit-conflict.pdf"
+    _write_pdf(path, [(96, "8. 知识产权"), (130, "8.1 甲方拥有工作成果。")])
+    document = _ocr_document(path)
+    document.pages[0].blocks.append(
+        TextBlock(
+            block_id="long-conflicting-title",
+            page_no=1,
+            text="8. 技术服务成果交付验收付款安排以及双方其他权利义务特别约定",
+            bbox=BBox(x0=72, y0=106, x1=520, y1=128),
             block_type="paragraph_title",
         )
     )

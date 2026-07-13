@@ -13,7 +13,13 @@ from app.models import BBox, CharBox, Document, Page, TextBlock
 
 
 HEADING_RE = re.compile(r"^\s*(?P<number>\d{1,2})\s*[.．、]\s*(?P<title>[\u4e00-\u9fffA-Za-z][^\n]{1,23})\s*$")
+TOP_LEVEL_LINE_RE = re.compile(
+    r"^\s*(?P<number>\d{1,2})\s*[.．、]\s*(?P<title>[\u4e00-\u9fffA-Za-z][^\n]*)\s*$"
+)
 BARE_RE = re.compile(r"^\s*(?P<number>\d{1,2})\s*[.．、]\s*$")
+NUMBERED_LINE_RE = re.compile(
+    r"^\s*\d{1,2}(?:\.\d+)*(?:\s*[.．、]\s*|\s+)[\u4e00-\u9fffA-Za-z]"
+)
 VALUE_RE = re.compile(r"(?:\d{4}\s*年|\d+(?:\.\d+)?\s*(?:元|万元|%|天|月|年|份|项|台|套))")
 TITLE_BLOCK_TYPES = {"paragraph_title", "doc_title", "title"}
 SPLIT_BASELINE_TOLERANCE = 0.4
@@ -331,18 +337,35 @@ def _next_page_body_style_baselines(
         title_line.bbox.y1 - title_line.bbox.y0,
         1.0,
     )
-    evidence_lines = [
-        line
-        for line in lines
-        if 0 <= line.bbox.y0 <= page_height * SPLIT_NEXT_PAGE_TOP_REGION_RATIO
-        and _is_body_style_evidence_candidate(
+    evidence_lines: list[NativeLineRecord] = []
+    top_lines = sorted(
+        (
+            line
+            for line in lines
+            if 0 <= line.bbox.y0 <= page_height * SPLIT_NEXT_PAGE_TOP_REGION_RATIO
+        ),
+        key=lambda line: (line.bbox.y0, line.bbox.x0),
+    )
+    for line in top_lines:
+        if _is_next_page_segment_boundary(line.text):
+            break
+        if _is_body_style_evidence_candidate(
             line,
             bare_line=bare_line,
             title_line=title_line,
             heading_height=heading_height,
-        )
-    ]
+        ):
+            evidence_lines.append(line)
     return _style_baselines(evidence_lines)
+
+
+def _is_next_page_segment_boundary(text: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", text or "").strip()
+    return bool(
+        BARE_RE.fullmatch(normalized)
+        or NUMBERED_LINE_RE.match(normalized)
+        or _is_valid_native_title(normalized)
+    )
 
 
 def _style_baselines(
@@ -582,11 +605,17 @@ class NativeHeadingRepairService:
         for block in page.blocks:
             if block is bare:
                 continue
-            match = HEADING_RE.fullmatch(unicodedata.normalize("NFKC", block.text).strip())
+            match = TOP_LEVEL_LINE_RE.fullmatch(
+                unicodedata.normalize("NFKC", block.text).strip()
+            )
             if (
                 match is not None
                 and match.group("number") == number
                 and normalize_heading_text(match.group("title")) != expected_title
+                and (
+                    (block.block_type or "").lower() in TITLE_BLOCK_TYPES
+                    or _is_valid_native_title(match.group("title"))
+                )
             ):
                 return True
         return False
