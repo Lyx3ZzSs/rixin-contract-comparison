@@ -186,11 +186,21 @@ class DiffQualityProcessor:
         for group in groups.values():
             if len(group) < 2:
                 continue
+            source_types = {item.source_type for item in group}
             multi_page_footer_diffs = [
                 item for item in group if item.source_type == "header_footer" and self._has_multi_page_evidence(item)
             ]
+            winner_candidates = (
+                multi_page_footer_diffs
+                if (
+                    multi_page_footer_diffs
+                    and {"metadata", "header_footer"}.issubset(source_types)
+                    and "table" not in source_types
+                )
+                else group
+            )
             winner = sorted(
-                multi_page_footer_diffs or group,
+                winner_candidates,
                 key=lambda item: (
                     self.source_priority.get(item.source_type, 99),
                     item.diff_id,
@@ -348,6 +358,8 @@ class DiffQualityProcessor:
     def _suppression_reason(self, diff: DiffItem) -> str:
         if self._looks_like_cover_annotation_noise(diff):
             return "cover_annotation_noise"
+        if self._is_cross_source_merged_multi_page_footer(diff):
+            return ""
         if self._looks_like_header_footer_noise(diff):
             return "header_footer_noise"
         if self._looks_like_edge_annotation_clause_noise(diff):
@@ -1026,6 +1038,13 @@ class DiffQualityProcessor:
         if self.header_footer_pattern.search(text):
             return True
         return len(self._compact(self._changed_text(diff))) <= 12
+
+    def _is_cross_source_merged_multi_page_footer(self, diff: DiffItem) -> bool:
+        return (
+            diff.source_type == "header_footer"
+            and "CROSS_SOURCE_MERGED" in diff.review_flags
+            and self._has_multi_page_evidence(diff)
+        )
 
     def _looks_like_page_number_edge_annotation_noise(self, diff: DiffItem) -> bool:
         if diff.source_type != "clause" or diff.diff_type != "MODIFY":
