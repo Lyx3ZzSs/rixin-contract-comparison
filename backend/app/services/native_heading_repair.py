@@ -194,6 +194,16 @@ def _is_valid_native_title(title: str) -> bool:
     )
 
 
+def _is_valid_conflict_title(title: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", title or "").strip()
+    return bool(
+        normalized
+        and re.match(r"^[\u4e00-\u9fffA-Za-z]", normalized)
+        and not VALUE_RE.search(normalized)
+        and not re.search(r"[。！？!?；;：:.．]$", normalized)
+    )
+
+
 def _split_line_candidates(
     page_no: int,
     lines: list[NativeLineRecord],
@@ -346,25 +356,54 @@ def _next_page_body_style_baselines(
         ),
         key=lambda line: (line.bbox.y0, line.bbox.x0),
     )
+    credible_body_styles = _style_baselines([
+        line
+        for line in top_lines
+        if not _is_explicit_next_page_boundary(line.text)
+        and _is_body_style_evidence_candidate(
+            line,
+            bare_line=bare_line,
+            title_line=title_line,
+            heading_height=heading_height,
+            allow_native_title_shape=True,
+        )
+    ])
     for line in top_lines:
-        if _is_next_page_segment_boundary(line.text):
+        if _is_next_page_segment_boundary(line, credible_body_styles):
             break
         if _is_body_style_evidence_candidate(
             line,
             bare_line=bare_line,
             title_line=title_line,
             heading_height=heading_height,
+            allow_native_title_shape=True,
         ):
             evidence_lines.append(line)
     return _style_baselines(evidence_lines)
 
 
-def _is_next_page_segment_boundary(text: str) -> bool:
+def _is_explicit_next_page_boundary(text: str) -> bool:
     normalized = unicodedata.normalize("NFKC", text or "").strip()
-    return bool(
-        BARE_RE.fullmatch(normalized)
-        or NUMBERED_LINE_RE.match(normalized)
-        or _is_valid_native_title(normalized)
+    return bool(BARE_RE.fullmatch(normalized) or NUMBERED_LINE_RE.match(normalized))
+
+
+def _is_next_page_segment_boundary(
+    line: NativeLineRecord,
+    body_styles: tuple[NativeBodyStyleBaseline, ...],
+) -> bool:
+    if _is_explicit_next_page_boundary(line.text):
+        return True
+    if not _is_valid_native_title(line.text) or not body_styles:
+        return False
+    line_style = _dominant_span_style(line)
+    if line_style is None:
+        return False
+    line_is_emphasized = _is_emphasized_style(line_style)
+    return all(
+        line_style.size - body_style.size
+        >= max(1.0, body_style.size * 0.12)
+        or (line_is_emphasized and not body_style.emphasized)
+        for body_style in body_styles
     )
 
 
@@ -428,6 +467,7 @@ def _is_body_style_evidence_candidate(
     bare_line: NativeLineRecord,
     title_line: NativeLineRecord,
     heading_height: float,
+    allow_native_title_shape: bool = False,
 ) -> bool:
     if line.bbox.x0 > title_line.bbox.x0 + heading_height * 3.0:
         return False
@@ -439,7 +479,7 @@ def _is_body_style_evidence_candidate(
         return False
     if BARE_RE.fullmatch(normalized) or HEADING_RE.fullmatch(normalized):
         return False
-    return not _is_valid_native_title(normalized)
+    return allow_native_title_shape or not _is_valid_native_title(normalized)
 
 
 def _dominant_span_style(line: NativeLineRecord) -> NativeSpanStyle | None:
@@ -612,10 +652,7 @@ class NativeHeadingRepairService:
                 match is not None
                 and match.group("number") == number
                 and normalize_heading_text(match.group("title")) != expected_title
-                and (
-                    (block.block_type or "").lower() in TITLE_BLOCK_TYPES
-                    or _is_valid_native_title(match.group("title"))
-                )
+                and _is_valid_conflict_title(match.group("title"))
             ):
                 return True
         return False

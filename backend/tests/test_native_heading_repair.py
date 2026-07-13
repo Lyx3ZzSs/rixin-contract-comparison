@@ -182,6 +182,33 @@ def test_repairs_page_bottom_split_heading_with_adjacent_page_body_style(
     assert result.repaired_count == 1
 
 
+def test_repairs_page_bottom_heading_with_unpunctuated_wrapped_body_style(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "cross-page-unpunctuated-body-style.pdf"
+    _write_styled_pages_pdf(
+        path,
+        [
+            [
+                (72, 790, "2.", 15, "helv"),
+                (106, 790, "服务内容", 15, "china-s"),
+            ],
+            [
+                (92, 80, "乙方应按合同约定提供技术服务", 12, "china-s"),
+                (92, 108, "双方应及时确认具体服务成果", 12, "china-s"),
+            ],
+        ],
+    )
+    document = _ocr_document(path, "2.", context_text="2.1 乙方提供技术服务。")
+    document.pages[0].blocks[0].bbox = BBox(x0=70, y0=772, x1=92, y1=794)
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert load_native_heading_index(path).contains_exact("2", "服务内容", {1})
+    assert document.pages[0].blocks[0].text == "2. 服务内容"
+    assert result.repaired_count == 1
+
+
 def test_rejects_page_bottom_split_heading_without_next_page_body_style(
     tmp_path: Path,
 ) -> None:
@@ -399,6 +426,27 @@ def test_keeps_long_explicit_same_level_ocr_title(tmp_path: Path) -> None:
             text="8. 技术服务成果交付验收付款安排以及双方其他权利义务特别约定",
             bbox=BBox(x0=72, y0=106, x1=520, y1=128),
             block_type="paragraph_title",
+        )
+    )
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert document.pages[0].blocks[0].text == "8."
+    assert result.repaired_count == 0
+    assert result.decisions[0]["reason"] == "conflicting_ocr_title"
+
+
+def test_keeps_long_unpunctuated_same_level_text_conflict(tmp_path: Path) -> None:
+    path = tmp_path / "long-text-conflict.pdf"
+    _write_pdf(path, [(96, "8. 知识产权"), (130, "8.1 甲方拥有工作成果。")])
+    document = _ocr_document(path)
+    document.pages[0].blocks.append(
+        TextBlock(
+            block_id="long-text-conflict",
+            page_no=1,
+            text="8. 技术服务成果交付验收付款安排以及双方其他权利义务特别约定",
+            bbox=BBox(x0=72, y0=106, x1=520, y1=128),
+            block_type="text",
         )
     )
 
