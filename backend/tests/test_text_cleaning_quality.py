@@ -5851,6 +5851,85 @@ def test_diff_quality_dedupes_exact_cross_source_duplicates() -> None:
     assert result.diffs[0].merged_sources == ["table"]
 
 
+def test_diff_quality_prefers_multi_page_footer_over_metadata_duplicate() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D001_METADATA",
+            diff_type="ADD",
+            source_type="metadata",
+            title="封面额外文本",
+            compare_text="经办人：李四",
+            compare_snippet="经办人：李四",
+            compare_evidence=[
+                EvidenceBox(page_no=1, bbox=BBox(x0=420, y0=780, x1=520, y1=810), text="经办人：李四")
+            ],
+        ),
+        DiffItem(
+            diff_id="D002_FOOTER",
+            diff_type="ADD",
+            source_type="header_footer",
+            title="页脚",
+            compare_text="经办人：李四",
+            compare_snippet="经办人：李四",
+            review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+            compare_evidence=[
+                EvidenceBox(page_no=5, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"),
+                EvidenceBox(page_no=6, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"),
+                EvidenceBox(page_no=7, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"),
+            ],
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+
+    assert len(result.diffs) == 1
+    processed = result.diffs[0]
+    assert processed.diff_id == "D002_FOOTER"
+    assert processed.source_type == "header_footer"
+    assert processed.title == "页脚"
+    assert {evidence.page_no for evidence in processed.compare_evidence} == {1, 5, 6, 7}
+    assert "metadata" in processed.merged_sources
+    assert "CROSS_SOURCE_MERGED" in processed.review_flags
+
+
+def test_diff_quality_keeps_metadata_for_single_page_footer_duplicate() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D001_METADATA",
+            diff_type="ADD",
+            source_type="metadata",
+            title="封面额外文本",
+            compare_text="经办人：李四",
+            compare_snippet="经办人：李四",
+            compare_evidence=[
+                EvidenceBox(page_no=1, bbox=BBox(x0=420, y0=780, x1=520, y1=810), text="经办人：李四")
+            ],
+        ),
+        DiffItem(
+            diff_id="D002_FOOTER",
+            diff_type="ADD",
+            source_type="header_footer",
+            title="页脚",
+            compare_text="经办人：李四",
+            compare_snippet="经办人：李四",
+            review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
+            compare_evidence=[
+                EvidenceBox(page_no=5, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四")
+            ],
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+
+    assert len(result.diffs) == 1
+    processed = result.diffs[0]
+    assert processed.diff_id == "D001_METADATA"
+    assert processed.source_type == "metadata"
+    assert processed.title == "封面额外文本"
+    assert "header_footer" in processed.merged_sources
+    assert "CROSS_SOURCE_MERGED" in processed.review_flags
+
+
 def test_diff_quality_flags_clause_add_matching_opposite_cross_source_text() -> None:
     diffs = [
         DiffItem(

@@ -186,8 +186,11 @@ class DiffQualityProcessor:
         for group in groups.values():
             if len(group) < 2:
                 continue
+            multi_page_footer_diffs = [
+                item for item in group if item.source_type == "header_footer" and self._has_multi_page_evidence(item)
+            ]
             winner = sorted(
-                group,
+                multi_page_footer_diffs or group,
                 key=lambda item: (
                     self.source_priority.get(item.source_type, 99),
                     item.diff_id,
@@ -219,6 +222,10 @@ class DiffQualityProcessor:
     @staticmethod
     def _merge_flags(winner_flags: list[str], duplicate_flags: list[str]) -> list[str]:
         return list(dict.fromkeys([*winner_flags, *duplicate_flags]))
+
+    @staticmethod
+    def _has_multi_page_evidence(diff: DiffItem) -> bool:
+        return len({evidence.page_no for evidence in [*diff.original_evidence, *diff.compare_evidence]}) > 1
 
     def _classify(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         for diff in diffs:
