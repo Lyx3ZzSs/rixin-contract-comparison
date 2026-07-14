@@ -12,3 +12,4 @@ python-dotenv
 pytest
 httpx
 psutil
+PyJWT[crypto]>=2.13,<3

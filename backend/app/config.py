@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.auth.models import AuthSettings
 from app.config_models import (
     DocumentUnderstandingSettings,
     HybridSettings,
@@ -168,6 +169,14 @@ class Settings(BaseSettings):
     task_runner_retry_delay_seconds: float = Field(default=2.0, ge=0)
     task_runner_poll_interval_seconds: float = Field(default=0.25, ge=0.01)
 
+    # -- OIDC resource server (flat env vars → nested model) ------------
+
+    oidc_discovery_url: str = ""
+    oidc_issuer: str = ""
+    oidc_audience: str = ""
+    oidc_resource_client_id: str = ""
+    oidc_allowed_algorithms: str = "RS256"
+
     # -- Model registry (flat env vars) ----------------------------------
 
     model_registry_preload: str = ""
@@ -184,6 +193,7 @@ class Settings(BaseSettings):
     ppstructure: PPStructureSettings = Field(default_factory=PPStructureSettings, exclude=True)
     ppocrv5: PPOCRV5Settings = Field(default_factory=PPOCRV5Settings, exclude=True)
     hybrid: HybridSettings = Field(default_factory=HybridSettings, exclude=True)
+    auth: AuthSettings = Field(default_factory=AuthSettings, exclude=True)
 
     # -- Validators (flat env var validation, unchanged) -----------------
 
@@ -258,6 +268,14 @@ class Settings(BaseSettings):
         if backend not in {"opencv", "remote", "local", "off"}:
             raise ValueError("SIGNING_VISUAL_BACKEND must be one of: opencv, remote, local, off")
         return backend
+
+    @field_validator("oidc_allowed_algorithms", mode="before")
+    @classmethod
+    def validate_oidc_algorithms(cls, value: Any) -> str:
+        algorithms = ",".join(part.strip() for part in str(value or "").split(",") if part.strip())
+        if algorithms != "RS256":
+            raise ValueError("OIDC_ALLOWED_ALGORITHMS must be exactly RS256")
+        return algorithms
 
     # -- Model validator: populate nested + storage subdirs --------------
 
@@ -344,6 +362,14 @@ class Settings(BaseSettings):
             layout_overlap_threshold=self.hybrid_layout_overlap_threshold,
             center_fallback=self.hybrid_layout_center_fallback,
             save_merged_raw=self.hybrid_save_merged_raw,
+        )
+
+        self.auth = AuthSettings(
+            discovery_url=self.oidc_discovery_url,
+            issuer=self.oidc_issuer,
+            audience=self.oidc_audience,
+            resource_client_id=self.oidc_resource_client_id,
+            allowed_algorithms=tuple(self.oidc_allowed_algorithms.split(",")),
         )
 
         # Resolve storage paths
