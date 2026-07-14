@@ -37,7 +37,9 @@ class DocumentPreparationResult:
 
 
 class DocumentPreparer:
-    page_number_pattern = re.compile(r"^(?:第?\s*\d+\s*页?|共\s*\d+\s*页\s*第\s*\d+\s*页)$")
+    page_number_pattern = re.compile(
+        r"^(?:第?\s*\d+\s*页?|共\s*\d+\s*页\s*第\s*\d+\s*页|[-—–_]*\s*\d+\s*[-—–_]*)$"
+    )
     clause_heading_pattern = re.compile(
         r"^\s*(?:第[一二三四五六七八九十百千万0-9]+[章节条]|[一二三四五六七八九十百千万0-9]+[、.．])"
     )
@@ -133,6 +135,9 @@ class DocumentPreparer:
             compact = re.sub(r"\s+", "", block.text or "")
             if not compact:
                 continue
+            if self._is_page_number_footer(block, page, compact):
+                self._mark_role(block, side, "page_footer", "page_number_footer", result)
+                continue
             section_role = self._section_role(block, compact)
             if section_role:
                 active_section_role = section_role
@@ -158,6 +163,13 @@ class DocumentPreparer:
                 near_bottom = page.height > 0 and block.bbox.y0 >= page.height * 0.90
                 role = "page_footer" if near_bottom or self.page_number_pattern.fullmatch(compact) else "body_footnote"
                 self._mark_role(block, side, role, "footnote_secondary_classification", result)
+
+    def _is_page_number_footer(self, block: TextBlock, page: Page, compact: str) -> bool:
+        return bool(
+            page.height > 0
+            and block.bbox.y0 >= page.height * 0.90
+            and self.page_number_pattern.fullmatch(compact)
+        )
 
     def _looks_like_real_clause_heading(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", text or "")

@@ -88,6 +88,76 @@ def test_diff_engine_detects_document_number_year_change() -> None:
     assert diffs[0].compare_snippet == "2007"
 
 
+def test_document_preparer_excludes_hyphenated_page_number_from_cross_page_clause() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="heading",
+                        page_no=1,
+                        text="5.4 担保范围：包括但不限于以下损失和费用：",
+                        bbox=BBox(x0=80, y0=620, x1=530, y1=640),
+                    ),
+                    TextBlock(
+                        block_id="loss",
+                        page_no=1,
+                        text="甲方因乙方安全事故遭受的直接及间接损失；",
+                        bbox=BBox(x0=80, y0=730, x1=530, y1=750),
+                    ),
+                    TextBlock(
+                        block_id="page-number",
+                        page_no=1,
+                        text="-24-",
+                        block_type="number",
+                        bbox=BBox(x0=280, y0=785, x1=320, y1=800),
+                    ),
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="continuation-one",
+                        page_no=2,
+                        text="乙方未按约定计提和使用安全生产专项费用导致的甲方额外支出；",
+                        bbox=BBox(x0=80, y0=80, x1=530, y1=100),
+                    ),
+                    TextBlock(
+                        block_id="continuation-two",
+                        page_no=2,
+                        text="乙方违反本协议约定应向甲方支付的违约金、赔偿金等。",
+                        bbox=BBox(x0=80, y0=120, x1=530, y1=140),
+                    ),
+                    TextBlock(
+                        block_id="next-heading",
+                        page_no=2,
+                        text="5.5 索赔条件：",
+                        bbox=BBox(x0=80, y0=170, x1=300, y1=190),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    DocumentPreparer().prepare(document, "compare")
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert document.pages[0].blocks[2].block_role == "page_footer"
+    assert [clause.clause_no for clause in clauses] == ["5.4", "5.5"]
+    assert "-24-" not in clauses[0].text
+    assert "乙方未按约定计提和使用安全生产专项费用导致的甲方额外支出;" in clauses[0].text
+    assert "乙方违反本协议约定应向甲方支付的违约金、赔偿金等。" in clauses[0].text
+
+
 def test_clause_splitter_sets_match_text_separately_from_diff_text() -> None:
     document = Document(
         filename="sample.pdf",
