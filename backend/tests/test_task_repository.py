@@ -193,3 +193,18 @@ def test_local_json_task_repository_loads_legacy_compare_task_paths(tmp_path: Pa
     assert loaded.ocr_raw_result_paths.compare.ppstructure == str(
         task_dir / "ocr" / "compare_contract_ppstructure_raw.json"
     )
+
+
+def test_local_json_task_repository_loads_legacy_task_without_owner_fields(tmp_path: Path) -> None:
+    repository = configure_task_storage(tmp_path)
+    task_dir = repository.task_dir("TLEGACY_OWNER")
+    task_dir.mkdir(parents=True)
+    repository.task_json_path("TLEGACY_OWNER").write_text(
+        json.dumps({"task_id": "TLEGACY_OWNER", "status": "COMPLETED", "diffs": []}),
+        encoding="utf-8",
+    )
+
+    loaded = repository.load_compare_task("TLEGACY_OWNER")
+
+    assert loaded.owner_sub == ""
+    assert loaded.owner_username == ""

@@ -416,6 +416,11 @@ class CompareTask(BaseModel):
     progress_percent: int = Field(default=0, ge=0, le=100)
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    owner_sub: str = Field(default="", frozen=True)
+    owner_username: str = ""
+    owner_display_name: str = ""
+    owner_department_code: str = ""
+    owner_department_name: str = ""
     original_filename: str = ""
     compare_filename: str = ""
     original_pdf_path: str = ""
