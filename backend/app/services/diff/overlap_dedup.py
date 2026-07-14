@@ -17,7 +17,7 @@ except Exception:
 def deduplicate_overlaps(diffs: list[DiffItem]) -> list[DiffItem]:
     add_diffs = [d for d in diffs if d.diff_type == "ADD" and d.source_type != "page"]
     delete_diffs = [d for d in diffs if d.diff_type == "DELETE" and d.source_type != "page"]
-    modify_diffs = [d for d in diffs if d.diff_type == "MODIFY"]
+    modify_diffs = [d for d in diffs if d.diff_type == "MODIFY" and d.source_type != "signing_region"]
 
     # --- Phase 1: ADD vs MODIFY overlap ---
     result: list[DiffItem] = diffs

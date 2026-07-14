@@ -192,3 +192,214 @@ def test_diff_quality_suppresses_add_delete_heading_already_present_on_opposite_
         if decision.action == "suppressed_by_neighbor_clause_coverage"
         and decision.detail["reason"] == "heading_text_present_on_opposite_page"
     } == {"D099", "D125"}
+
+
+def test_diff_quality_suppresses_compare_heading_add_when_original_has_bare_parent_and_children() -> None:
+    heading_add = DiffItem(
+        diff_id="D113",
+        diff_type="ADD",
+        source_type="clause",
+        title="服务期限与进度要求",
+        compare_text="3. 服务期限与进度要求",
+        compare_snippet="3. 服务期限与进度要求",
+        structural_flags=["PARAGRAPH_MERGED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        compare_clause_id="NC012",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=3,
+                bbox=BBox(x0=61, y0=83, x1=182, y1=102),
+                method="block",
+                text="3. 服务期限与进度要求",
+            )
+        ],
+    )
+    original = _doc(
+        3,
+        "2.\n"
+        "乙方应按合同约定向甲方提供以下技术服务:\n"
+        "3.\n"
+        "3.1 服务期限: 自2026年1月1日至2026年12月31日。",
+    )
+    compare = _doc(
+        3,
+        "2. 服务内容\n"
+        "乙方应按合同约定向甲方提供以下技术服务:\n"
+        "3. 服务期限与进度要求\n"
+        "3.1 服务期限: 自2026年1月1日至2026年12月31日。",
+    )
+
+    result = DiffQualityProcessor().process(
+        [heading_add],
+        original_document=original,
+        compare_document=compare,
+        original_clauses=[
+            Clause(
+                clause_id="OC011",
+                clause_no="2",
+                title="乙方应按合同约定向甲方提供以下技术服务:",
+                text="2.\n乙方应按合同约定向甲方提供以下技术服务:\n3.",
+                normalized_text="2乙方应按合同约定向甲方提供以下技术服务3",
+                page_numbers=[3],
+                split_flags=["PARAGRAPH_MERGED"],
+            ),
+            Clause(
+                clause_id="OC012",
+                clause_no="3.1",
+                title="服务期限",
+                text="3.1 服务期限: 自2026年1月1日至2026年12月31日。",
+                normalized_text="31服务期限自2026年1月1日至2026年12月31日",
+                page_numbers=[3],
+            ),
+        ],
+        compare_clauses=[
+            Clause(
+                clause_id="NC012",
+                clause_no="3",
+                title="服务期限与进度要求",
+                text="3. 服务期限与进度要求",
+                normalized_text="3服务期限与进度要求",
+                page_numbers=[3],
+                split_flags=["PARAGRAPH_MERGED"],
+            ),
+            Clause(
+                clause_id="NC013",
+                clause_no="3.1",
+                title="服务期限",
+                text="3.1 服务期限: 自2026年1月1日至2026年12月31日。",
+                normalized_text="31服务期限自2026年1月1日至2026年12月31日",
+                page_numbers=[3],
+            ),
+        ],
+    )
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D113"
+        and decision.detail["reason"] == "heading_add_covered_by_opposite_numbering"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_suppresses_material_parent_heading_add_when_children_exist_on_both_sides() -> None:
+    heading_add = DiffItem(
+        diff_id="D114",
+        diff_type="ADD",
+        source_type="clause",
+        title="合同价格及支付",
+        compare_text="4. 合同价格及支付",
+        compare_snippet="4. 合同价格及支付",
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        compare_clause_id="NC016",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=3,
+                bbox=BBox(x0=61, y0=330, x1=168, y1=349),
+                method="block",
+                text="4. 合同价格及支付",
+            )
+        ],
+    )
+    original = _doc(3, "4.\n4.1 合同价格为人民币柒万叁仟元整。")
+    compare = _doc(3, "4. 合同价格及支付\n4.1 合同价格为人民币柒万叁仟元整。")
+
+    result = DiffQualityProcessor().process(
+        [heading_add],
+        original_document=original,
+        compare_document=compare,
+        original_clauses=[
+            Clause(
+                clause_id="OC015",
+                clause_no="4.1",
+                title="合同价格",
+                text="4.1 合同价格为人民币柒万叁仟元整。",
+                normalized_text="41合同价格为人民币柒万叁仟元整",
+                page_numbers=[3],
+            ),
+        ],
+        compare_clauses=[
+            Clause(
+                clause_id="NC016",
+                clause_no="4",
+                title="合同价格及支付",
+                text="4. 合同价格及支付",
+                normalized_text="4合同价格及支付",
+                page_numbers=[3],
+            ),
+            Clause(
+                clause_id="NC017",
+                clause_no="4.1",
+                title="合同价格",
+                text="4.1 合同价格为人民币柒万叁仟元整。",
+                normalized_text="41合同价格为人民币柒万叁仟元整",
+                page_numbers=[3],
+            ),
+        ],
+    )
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_by_neighbor_clause_coverage"
+        and decision.diff_id == "D114"
+        and decision.detail["reason"] == "heading_add_covered_by_opposite_numbering"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_compare_heading_add_when_heading_clause_contains_body() -> None:
+    heading_with_body = DiffItem(
+        diff_id="D200",
+        diff_type="ADD",
+        source_type="clause",
+        title="服务期限与进度要求",
+        compare_text="3. 服务期限与进度要求\n新增要求: 乙方需提前10天提交进度计划。",
+        compare_snippet="3. 服务期限与进度要求\n新增要求: 乙方需提前10天提交进度计划。",
+        structural_flags=["PARAGRAPH_MERGED"],
+        review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED", "CRITICAL_VALUE_CHANGE"],
+        compare_clause_id="NC200",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=3,
+                bbox=BBox(x0=61, y0=83, x1=420, y1=126),
+                method="block",
+                text="3. 服务期限与进度要求\n新增要求: 乙方需提前10天提交进度计划。",
+            )
+        ],
+    )
+    original = _doc(3, "3.\n3.1 服务期限: 自2026年1月1日至2026年12月31日。")
+    compare = _doc(
+        3,
+        "3. 服务期限与进度要求\n"
+        "新增要求: 乙方需提前10天提交进度计划。\n"
+        "3.1 服务期限: 自2026年1月1日至2026年12月31日。",
+    )
+
+    result = DiffQualityProcessor().process(
+        [heading_with_body],
+        original_document=original,
+        compare_document=compare,
+        original_clauses=[
+            Clause(
+                clause_id="OC200",
+                clause_no="3.1",
+                title="服务期限",
+                text="3.1 服务期限: 自2026年1月1日至2026年12月31日。",
+                normalized_text="31服务期限自2026年1月1日至2026年12月31日",
+                page_numbers=[3],
+            ),
+        ],
+        compare_clauses=[
+            Clause(
+                clause_id="NC200",
+                clause_no="3",
+                title="服务期限与进度要求",
+                text="3. 服务期限与进度要求\n新增要求: 乙方需提前10天提交进度计划。",
+                normalized_text="3服务期限与进度要求新增要求乙方需提前10天提交进度计划",
+                page_numbers=[3],
+                split_flags=["PARAGRAPH_MERGED"],
+            ),
+        ],
+    )
+
+    assert [diff.diff_id for diff in result.diffs] == ["D200"]

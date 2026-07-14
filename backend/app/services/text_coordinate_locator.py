@@ -58,6 +58,7 @@ class TextCoordinateLocator:
             "char_exact",
             "table_cell",
             "cover_metadata",
+            "header_footer",
             "seal_region",
             "signing_region",
             "page_region",

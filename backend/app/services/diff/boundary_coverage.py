@@ -540,14 +540,23 @@ class ClauseBoundaryCoverageFilter:
         changed_key = normalize_for_coverage(changed)
         if not _safe_for_heading_number_coverage(changed, changed_key):
             return False
-        if _is_material_heading_fragment(diff, changed):
-            return False
         compare_clause = self._clause_by_id(context.compare_clauses, diff.compare_clause_id)
         if compare_clause is None:
             return False
         parent_no = self._heading_parent_number(compare_clause, context.compare_index)
         if not parent_no:
             return False
+        is_parent_heading_only = self._is_parent_heading_only_clause(compare_clause, changed, parent_no)
+        if not is_parent_heading_only:
+            return False
+        if _is_material_heading_fragment(diff, changed):
+            if _contains_high_risk_heading_term(changed):
+                return False
+            if "PARAGRAPH_MERGED" not in flags and not (
+                self._clauses_have_child_for_parent(context.original_clauses, parent_no)
+                and self._clauses_have_child_for_parent(context.compare_clauses, parent_no)
+            ):
+                return False
         pages = self._candidate_pages_for_diff(diff, context) or set(compare_clause.page_numbers)
         return self._opposite_pages_have_bare_parent_and_child(
             context.original_document,
@@ -657,6 +666,30 @@ class ClauseBoundaryCoverageFilter:
 
     @staticmethod
     def _native_heading_has_child_for_parent(clauses: list[Clause], parent_no: str) -> bool:
+        if not parent_no:
+            return False
+        child_pattern = re.compile(rf"{re.escape(parent_no)}\.\d+")
+        return any(child_pattern.fullmatch((clause.clause_no or "").strip()) for clause in clauses)
+
+    @staticmethod
+    def _is_parent_heading_only_clause(clause: Clause, changed: str, parent_no: str) -> bool:
+        clause_no = unicodedata.normalize("NFKC", clause.clause_no or "").strip()
+        title_key = normalize_for_coverage(clause.title or "")
+        if not title_key:
+            return False
+        allowed_keys = {title_key}
+        if re.fullmatch(r"\d{1,2}", clause_no):
+            allowed_keys.add(normalize_for_coverage(f"{clause_no}{clause.title or ''}"))
+        if parent_no:
+            allowed_keys.add(normalize_for_coverage(f"{parent_no}{clause.title or ''}"))
+        allowed_keys.discard(clause_no)
+        allowed_keys.discard(parent_no)
+        text_key = normalize_for_coverage(clause.text or changed)
+        changed_key = normalize_for_coverage(changed)
+        return text_key in allowed_keys or changed_key in allowed_keys
+
+    @staticmethod
+    def _clauses_have_child_for_parent(clauses: list[Clause], parent_no: str) -> bool:
         if not parent_no:
             return False
         child_pattern = re.compile(rf"{re.escape(parent_no)}\.\d+")
@@ -1044,6 +1077,17 @@ def _contains_critical_heading_term(text: str) -> bool:
             r"(违约|免责|终止|解除|付款|支付|金额|价款|费用|质保|保证金|赔偿|索赔|"
             r"不可抗力|争议|仲裁|诉讼|签署|签字|签章|盖章|授权代表|日期|期限|"
             r"保密|知识产权|验收|交付|管辖|法律适用|税费|发票|责任|义务)",
+            normalized,
+        )
+    )
+
+
+def _contains_high_risk_heading_term(text: str) -> bool:
+    normalized = normalize_for_coverage(text)
+    return bool(
+        re.search(
+            r"(违约|免责|终止|解除|不可抗力|争议|仲裁|诉讼|保密|知识产权|赔偿|索赔|"
+            r"管辖|法律适用|保证金|质保)",
             normalized,
         )
     )

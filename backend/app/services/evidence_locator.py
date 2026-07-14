@@ -181,7 +181,13 @@ class EvidenceLocator:
                     continue
                 if not self._evidence_conflicts(left, right):
                     continue
-                winner = self._preferred_evidence(left, right, side)
+                winner = self._preferred_evidence(
+                    left,
+                    right,
+                    side,
+                    left_source=diffs[left_diff].source_type,
+                    right_source=diffs[right_diff].source_type,
+                )
                 if winner is left:
                     discarded.add((right_diff, right_index))
                 else:
@@ -209,7 +215,24 @@ class EvidenceLocator:
         right_text = (right.text or "").strip()
         return not left_text or not right_text or left_text in right_text or right_text in left_text
 
-    def _preferred_evidence(self, left: EvidenceBox, right: EvidenceBox, side: str) -> EvidenceBox:
+    def _preferred_evidence(
+        self,
+        left: EvidenceBox,
+        right: EvidenceBox,
+        side: str,
+        *,
+        left_source: str = "",
+        right_source: str = "",
+    ) -> EvidenceBox:
+        left_is_header_footer = (left.method or "").lower() == "header_footer"
+        right_is_header_footer = (right.method or "").lower() == "header_footer"
+        if left_is_header_footer != right_is_header_footer:
+            return left if left_is_header_footer else right
+        if left_source != right_source and {left_source, right_source} == {"metadata", "clause"}:
+            if (left.method or "").lower() == "cover_extra" and left_source == "metadata":
+                return left
+            if (right.method or "").lower() == "cover_extra" and right_source == "metadata":
+                return right
         left_priority = self._highlight_priority(left.highlight_type, side)
         right_priority = self._highlight_priority(right.highlight_type, side)
         if left_priority != right_priority:

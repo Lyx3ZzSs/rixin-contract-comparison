@@ -5,6 +5,8 @@ from pathlib import Path
 import fitz
 
 from app.models import BBox, Document, Page, TextBlock
+from app.services.clause_splitter import ClauseSplitter
+from app.services.document_preparation import DocumentPreparer
 from app.services.native_heading_repair import NativeHeadingRepairService, load_native_heading_index
 
 
@@ -104,6 +106,305 @@ def test_repairs_bare_number_from_exact_native_heading(tmp_path: Path) -> None:
     assert "native_heading_repair:8" in heading.semantic_reasons
     assert result.repaired_count == 1
     assert result.decisions[0]["action"] == "repaired"
+
+
+def test_inserts_missing_native_appendix_titles_before_clause_splitting(tmp_path: Path) -> None:
+    path = tmp_path / "appendix-title-missed-by-ocr.pdf"
+    _write_styled_line_pdf(
+        path,
+        [
+            (72, 80, "附件一", 15, "china-s"),
+            (220, 108, "安全生产管理协议（模板）", 16, "china-s"),
+            (72, 148, "项目名称：新能源场站功率预测系统服务", 12, "china-s"),
+            (72, 180, "为贯彻安全第一、预防为主的方针，双方订立本协议。", 12, "china-s"),
+        ],
+    )
+    document = Document(
+        filename=path.name,
+        path=str(path),
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="ocr-body-1",
+                        page_no=1,
+                        text="项目名称：新能源场站功率预测系统服务",
+                        bbox=BBox(x0=72, y0=130, x1=330, y1=150),
+                        source="ppocrv5",
+                    ),
+                    TextBlock(
+                        block_id="ocr-body-2",
+                        page_no=1,
+                        text="为贯彻安全第一、预防为主的方针，双方订立本协议。",
+                        bbox=BBox(x0=72, y0=162, x1=420, y1=182),
+                        source="ppocrv5",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert [block.text for block in document.pages[0].blocks[:2]] == [
+        "附件一",
+        "安全生产管理协议(模板)",
+    ]
+    assert all(block.block_type == "paragraph_title" for block in document.pages[0].blocks[:2])
+    assert all("native_section_title_repair" in block.source for block in document.pages[0].blocks[:2])
+    assert result.repaired_count == 2
+
+    DocumentPreparer().prepare(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert all(clause.section_type == "appendix" for clause in clauses)
+
+
+def test_inserts_missing_multiline_native_document_title_without_title_keywords(tmp_path: Path) -> None:
+    path = tmp_path / "multiline-title-missed-by-ocr.pdf"
+    _write_styled_line_pdf(
+        path,
+        [
+            (80, 110, "附件五：技术协议", 16, "china-s"),
+            (118, 210, "某公司 2026 年新能源项目", 22, "china-s"),
+            (124, 262, "系统授权服务单一来源项目", 22, "china-s"),
+            (278, 314, "实施文件", 22, "china-s"),
+            (163, 560, "甲方：某公司", 14, "china-s"),
+            (163, 596, "乙方：服务商", 14, "china-s"),
+            (163, 638, "签订地点：某市", 14, "china-s"),
+        ],
+    )
+    document = Document(
+        filename=path.name,
+        path=str(path),
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="ocr-appendix",
+                        page_no=1,
+                        text="附件五：技术协议",
+                        bbox=BBox(x0=80, y0=92, x1=210, y1=114),
+                        source="ppocrv5",
+                    ),
+                    TextBlock(
+                        block_id="ocr-year-fragment",
+                        page_no=1,
+                        text="2026",
+                        bbox=BBox(x0=278, y0=190, x1=330, y1=212),
+                        source="ppocrv5",
+                    ),
+                    TextBlock(
+                        block_id="ocr-party-a",
+                        page_no=1,
+                        text="甲方：某公司",
+                        bbox=BBox(x0=163, y0=540, x1=300, y1=562),
+                        source="ppocrv5",
+                    ),
+                    TextBlock(
+                        block_id="ocr-party-b",
+                        page_no=1,
+                        text="乙方：服务商",
+                        bbox=BBox(x0=163, y0=576, x1=300, y1=598),
+                        source="ppocrv5",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    result = NativeHeadingRepairService().repair(document)
+
+    inserted_titles = [
+        block.text
+        for block in document.pages[0].blocks
+        if block.source == "native_section_title_repair"
+    ]
+    assert inserted_titles == [
+        "某公司 2026 年新能源项目",
+        "系统授权服务单一来源项目",
+        "实施文件",
+    ]
+    assert all(
+        block.block_type == "text"
+        for block in document.pages[0].blocks
+        if block.source == "native_section_title_repair"
+    )
+    assert result.repaired_count == 3
+
+
+def test_inserts_missing_cover_document_title_as_cover_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "cover-title-missed-by-ocr.pdf"
+    _write_styled_pages_pdf(
+        path,
+        [
+            [
+                (72, 86, "合同编号：CYSZ-001", 12, "china-s"),
+                (120, 220, "某公司 2026 年新能源场站", 22, "china-s"),
+                (124, 272, "功率预测系统授权服务", 22, "china-s"),
+                (238, 324, "合同", 22, "china-s"),
+                (72, 500, "合同主要内容以双方约定为准。", 12, "china-s"),
+            ],
+            [
+                (72, 96, "1. 定义", 14, "china-s"),
+                (72, 132, "本合同术语含义如下。", 12, "china-s"),
+            ],
+        ],
+    )
+    document = Document(
+        filename=path.name,
+        path=str(path),
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="ocr-contract-no",
+                        page_no=1,
+                        text="合同编号：CYSZ-001",
+                        bbox=BBox(x0=72, y0=64, x1=240, y1=88),
+                        source="ppocrv5",
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="ocr-heading",
+                        page_no=2,
+                        text="1. 定义",
+                        bbox=BBox(x0=72, y0=76, x1=160, y1=100),
+                        block_type="paragraph_title",
+                        source="ppocrv5",
+                    ),
+                    TextBlock(
+                        block_id="ocr-body",
+                        page_no=2,
+                        text="本合同术语含义如下。",
+                        bbox=BBox(x0=72, y0=112, x1=250, y1=136),
+                        source="ppocrv5",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    NativeHeadingRepairService().repair(document)
+
+    inserted_titles = [
+        block
+        for block in document.pages[0].blocks
+        if block.source == "native_section_title_repair"
+    ]
+    assert [block.text for block in inserted_titles] == [
+        "某公司 2026 年新能源场站",
+        "功率预测系统授权服务",
+        "合同",
+    ]
+    assert all(block.block_type == "doc_title" for block in inserted_titles)
+
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert [clause.title for clause in clauses] == ["定义"]
+
+
+def test_inserts_native_attachment_catalog_and_keeps_following_title_in_one_clause(tmp_path: Path) -> None:
+    path = tmp_path / "attachment-catalog-missed-by-ocr.pdf"
+    _write_styled_pages_pdf(
+        path,
+        [
+            [
+                (72, 86, "签署页", 14, "china-s"),
+                (72, 700, "附件一：安全生产管理协议", 12, "china-s"),
+                (72, 726, "附件二：廉洁协议书", 12, "china-s"),
+            ],
+            [
+                (72, 86, "附件一", 15, "china-s"),
+                (180, 116, "安全生产管理协议（模板）", 16, "china-s"),
+                (72, 164, "项目名称：新能源场站功率预测系统服务", 12, "china-s"),
+                (72, 196, "双方应当遵守安全生产管理要求。", 12, "china-s"),
+            ],
+        ],
+    )
+    document = Document(
+        filename=path.name,
+        path=str(path),
+        page_count=2,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="ocr-signing",
+                        page_no=1,
+                        text="签署页",
+                        bbox=BBox(x0=72, y0=68, x1=130, y1=90),
+                        source="ppocrv5",
+                    )
+                ],
+            ),
+            Page(
+                page_no=2,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="ocr-project",
+                        page_no=2,
+                        text="项目名称：新能源场站功率预测系统服务",
+                        bbox=BBox(x0=72, y0=146, x1=350, y1=168),
+                        source="ppocrv5",
+                    ),
+                    TextBlock(
+                        block_id="ocr-body",
+                        page_no=2,
+                        text="双方应当遵守安全生产管理要求。",
+                        bbox=BBox(x0=72, y0=178, x1=330, y1=200),
+                        source="ppocrv5",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    NativeHeadingRepairService().repair(document)
+
+    assert [block.text for block in document.pages[0].blocks] == [
+        "签署页",
+        "附件一:安全生产管理协议",
+        "附件二:廉洁协议书",
+    ]
+    inserted = [
+        block
+        for page in document.pages
+        for block in page.blocks
+        if block.source == "native_section_title_repair"
+    ]
+    assert all(block.block_type == "text" for block in inserted)
+
+    DocumentPreparer().prepare(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+    appendix_clauses = [clause for clause in clauses if clause.section_type == "appendix"]
+
+    assert len(appendix_clauses) == 1
+    assert "附件一:安全生产管理协议" in appendix_clauses[0].text
+    assert "附件一\n安全生产管理协议(模板)" in appendix_clauses[0].text
 
 
 def test_repairs_ordinary_text_block_from_split_native_heading_lines(tmp_path: Path) -> None:

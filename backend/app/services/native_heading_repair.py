@@ -20,6 +20,12 @@ BARE_RE = re.compile(r"^\s*(?P<number>\d{1,2})\s*[.．、]\s*$")
 NUMBERED_LINE_RE = re.compile(
     r"^\s*\d{1,2}(?:\.\d+)*(?:\s*[.．、]\s*|\s+)[\u4e00-\u9fffA-Za-z]"
 )
+APPENDIX_LABEL_RE = re.compile(r"^(?:附件|附录|附表)\s*[一二三四五六七八九十百千万0-9]+\s*$")
+ATTACHMENT_CATALOG_ENTRY_RE = re.compile(
+    r"^(?P<label>(?:附件|附录|附表)\s*[一二三四五六七八九十百千万0-9]+)\s*[:：]\s*(?P<title>[^\n]{2,48})$"
+)
+SAFETY_AGREEMENT_TITLE_RE = re.compile(r"^安全生产(?:管理)?协议(?:[（(][^()（）]{0,16}[）)])?$")
+TITLE_METADATA_RE = re.compile(r"^(?:项目名称|甲方|乙方|签订地点|签订日期|合同编号|协议有效期)\s*[:：]")
 VALUE_RE = re.compile(r"(?:\d{4}\s*年|\d+(?:\.\d+)?\s*(?:元|万元|%|天|月|年|份|项|台|套))")
 TITLE_BLOCK_TYPES = {"paragraph_title", "doc_title", "title"}
 SPLIT_BASELINE_TOLERANCE = 0.4
@@ -30,6 +36,10 @@ SPLIT_BODY_MIN_LINES = 2
 SPLIT_BODY_MIN_CHARS = 16
 SPLIT_BOTTOM_REGION_RATIO = 0.8
 SPLIT_NEXT_PAGE_TOP_REGION_RATIO = 0.25
+MULTILINE_TITLE_TOP_REGION_RATIO = 0.45
+MULTILINE_TITLE_MAX_LINES = 4
+MULTILINE_TITLE_MIN_LINES = 2
+MULTILINE_TITLE_MAX_GAP_HEIGHT_RATIO = 2.5
 
 
 def normalize_heading_text(text: str) -> str:
@@ -45,6 +55,15 @@ class NativeHeadingCandidate:
     text: str
     bbox: BBox
     char_boxes: tuple[CharBox, ...]
+
+
+@dataclass(frozen=True)
+class NativeSectionTitleCandidate:
+    page_no: int
+    text: str
+    bbox: BBox
+    char_boxes: tuple[CharBox, ...]
+    block_type: str = "paragraph_title"
 
 
 @dataclass(frozen=True)
@@ -95,7 +114,7 @@ class NativeHeadingRepairResult:
 
     @property
     def repaired_count(self) -> int:
-        return sum(1 for item in self.decisions if item.get("action") == "repaired")
+        return sum(1 for item in self.decisions if item.get("action") in {"repaired", "inserted"})
 
     def to_debug_payload(self) -> dict[str, object]:
         return {
@@ -112,6 +131,15 @@ def load_native_heading_index(path: str | Path) -> NativeHeadingIndex:
     except OSError as exc:
         return NativeHeadingIndex(warning=f"native PDF unavailable: {exc}")
     return _load_native_heading_index_cached(str(resolved.resolve()), stat.st_mtime_ns, stat.st_size)
+
+
+def load_native_section_title_candidates(path: str | Path) -> tuple[NativeSectionTitleCandidate, ...]:
+    resolved = Path(path)
+    try:
+        stat = resolved.stat()
+    except OSError:
+        return ()
+    return _load_native_section_title_candidates_cached(str(resolved.resolve()), stat.st_mtime_ns, stat.st_size)
 
 
 @lru_cache(maxsize=64)
@@ -159,6 +187,184 @@ def _load_native_heading_index_cached(path: str, mtime_ns: int, size: int) -> Na
         except Exception:
             pass
     return NativeHeadingIndex(candidates=tuple(_deduplicate_candidates(candidates)))
+
+
+@lru_cache(maxsize=64)
+def _load_native_section_title_candidates_cached(
+    path: str,
+    mtime_ns: int,
+    size: int,
+) -> tuple[NativeSectionTitleCandidate, ...]:
+    del mtime_ns, size
+    try:
+        pdf = fitz.open(path)
+    except Exception:
+        return ()
+    candidates: list[NativeSectionTitleCandidate] = []
+    try:
+        for page_no, pdf_page in enumerate(pdf, start=1):
+            page_width = float(pdf_page.rect.width)
+            page_height = float(pdf_page.rect.height)
+            lines = _native_line_records(pdf_page, page_no)
+            for line in lines:
+                text = unicodedata.normalize("NFKC", line.text).strip()
+                if not _is_missing_section_title_candidate(text, line.bbox, page_height):
+                    continue
+                candidates.append(
+                    NativeSectionTitleCandidate(
+                        page_no=page_no,
+                        text=text,
+                        bbox=line.bbox,
+                        char_boxes=line.char_boxes,
+                        block_type="text" if _is_attachment_catalog_entry(text) else "paragraph_title",
+                    )
+                )
+            candidates.extend(
+                _multiline_native_title_candidates(
+                    page_no,
+                    lines,
+                    page_width=page_width,
+                    page_height=page_height,
+                )
+            )
+    except Exception:
+        return ()
+    finally:
+        try:
+            pdf.close()
+        except Exception:
+            pass
+    return tuple(_deduplicate_section_title_candidates(candidates))
+
+
+def _is_missing_section_title_candidate(text: str, bbox: BBox, page_height: float) -> bool:
+    if not text:
+        return False
+    if _is_attachment_catalog_entry(text):
+        return True
+    if bbox.y0 > page_height * 0.20:
+        return False
+    return bool(APPENDIX_LABEL_RE.fullmatch(text) or SAFETY_AGREEMENT_TITLE_RE.fullmatch(text))
+
+
+def _is_attachment_catalog_entry(text: str) -> bool:
+    match = ATTACHMENT_CATALOG_ENTRY_RE.fullmatch(text)
+    if match is None:
+        return False
+    title = match.group("title").strip()
+    return bool(title and not title.endswith(("。", "；", ";", "，", ",")))
+
+
+def _multiline_native_title_candidates(
+    page_no: int,
+    lines: list[NativeLineRecord],
+    *,
+    page_width: float,
+    page_height: float,
+) -> list[NativeSectionTitleCandidate]:
+    ordered = sorted(lines, key=lambda line: (line.bbox.y0, line.bbox.x0))
+    candidates: list[NativeSectionTitleCandidate] = []
+    for start, first in enumerate(ordered):
+        if not _is_multiline_title_line(first, page_width, page_height):
+            continue
+        group = [first]
+        for following in ordered[start + 1:start + MULTILINE_TITLE_MAX_LINES]:
+            if not _is_multiline_title_line(following, page_width, page_height):
+                break
+            if not _same_multiline_title_style(group[-1], following):
+                break
+            if not _visually_contiguous_title_lines(group[-1], following):
+                break
+            group.append(following)
+        if len(group) < MULTILINE_TITLE_MIN_LINES:
+            continue
+        if not _has_multiline_title_style_evidence(group, ordered):
+            continue
+        block_type = (
+            "text"
+            if _has_preceding_attachment_context(group[0], ordered)
+            else "doc_title"
+        )
+        candidates.extend(
+            NativeSectionTitleCandidate(
+                page_no=page_no,
+                text=unicodedata.normalize("NFKC", line.text).strip(),
+                bbox=line.bbox,
+                char_boxes=line.char_boxes,
+                # Attachment titles stay in the surrounding attachment clause;
+                # other centered multi-line titles are cover metadata.
+                block_type=block_type,
+            )
+            for line in group
+        )
+    return candidates
+
+
+def _is_multiline_title_line(line: NativeLineRecord, page_width: float, page_height: float) -> bool:
+    text = unicodedata.normalize("NFKC", line.text).strip()
+    compact = re.sub(r"\s+", "", text)
+    style = _dominant_span_style(line)
+    if (
+        style is None
+        or not 2 <= len(compact) <= 40
+        or line.bbox.y0 > page_height * MULTILINE_TITLE_TOP_REGION_RATIO
+        or TITLE_METADATA_RE.match(text)
+        or text.endswith(("。", "；", ";", "：", ":", "，", ","))
+    ):
+        return False
+    center_x = (line.bbox.x0 + line.bbox.x1) / 2
+    return abs(center_x - page_width / 2) <= page_width * 0.28
+
+
+def _same_multiline_title_style(left: NativeLineRecord, right: NativeLineRecord) -> bool:
+    left_style = _dominant_span_style(left)
+    right_style = _dominant_span_style(right)
+    if left_style is None or right_style is None:
+        return False
+    tolerance = max(
+        0.75,
+        max(left_style.size, right_style.size) * SPLIT_FONT_SIZE_TOLERANCE_RATIO,
+    )
+    return abs(left_style.size - right_style.size) <= tolerance
+
+
+def _visually_contiguous_title_lines(left: NativeLineRecord, right: NativeLineRecord) -> bool:
+    gap = right.bbox.y0 - left.bbox.y1
+    height = max(left.bbox.y1 - left.bbox.y0, right.bbox.y1 - right.bbox.y0, 1.0)
+    return 0 <= gap <= height * MULTILINE_TITLE_MAX_GAP_HEIGHT_RATIO
+
+
+def _has_multiline_title_style_evidence(
+    title_lines: list[NativeLineRecord],
+    page_lines: list[NativeLineRecord],
+) -> bool:
+    title_style = _dominant_span_style(title_lines[0])
+    if title_style is None:
+        return False
+    title_ids = {id(line) for line in title_lines}
+    body_styles = _style_baselines([line for line in page_lines if id(line) not in title_ids])
+    if not body_styles:
+        return False
+    title_is_emphasized = _is_emphasized_style(title_style)
+    return any(
+        title_style.size - body_style.size >= max(1.0, body_style.size * 0.12)
+        or (title_is_emphasized and not body_style.emphasized)
+        for body_style in body_styles
+    )
+
+
+def _has_preceding_attachment_context(
+    title_line: NativeLineRecord,
+    page_lines: list[NativeLineRecord],
+) -> bool:
+    return any(
+        line.bbox.y1 <= title_line.bbox.y0
+        and (
+            APPENDIX_LABEL_RE.fullmatch(unicodedata.normalize("NFKC", line.text).strip())
+            or _is_attachment_catalog_entry(unicodedata.normalize("NFKC", line.text).strip())
+        )
+        for line in page_lines
+    )
 
 
 def _candidate_from_line(
@@ -528,6 +734,23 @@ def _deduplicate_candidates(
     return list(unique.values())
 
 
+def _deduplicate_section_title_candidates(
+    candidates: list[NativeSectionTitleCandidate],
+) -> list[NativeSectionTitleCandidate]:
+    unique: dict[tuple[object, ...], NativeSectionTitleCandidate] = {}
+    for candidate in candidates:
+        key = (
+            candidate.page_no,
+            normalize_heading_text(candidate.text),
+            round(candidate.bbox.x0, 2),
+            round(candidate.bbox.y0, 2),
+            round(candidate.bbox.x1, 2),
+            round(candidate.bbox.y1, 2),
+        )
+        unique.setdefault(key, candidate)
+    return list(unique.values())
+
+
 def _native_line_records(pdf_page, page_no: int) -> list[NativeLineRecord]:
     result: list[NativeLineRecord] = []
     raw = pdf_page.get_text("rawdict")
@@ -633,7 +856,83 @@ class NativeHeadingRepairService:
             bare.source = "+".join(part for part in [bare.source, "native_heading_repair"] if part)
             bare.semantic_reasons = [*bare.semantic_reasons, f"native_heading_repair:{number}"]
             result.decisions.append({"action": "repaired", "page_no": page_no, "number": number, "title": candidate.title, "block_id": bare.block_id, "reason": "exact_native_heading"})
+        self._insert_missing_section_titles(document, result)
         return result
+
+    def _insert_missing_section_titles(
+        self,
+        document: Document,
+        result: NativeHeadingRepairResult,
+    ) -> None:
+        pages = {page.page_no: page for page in document.pages}
+        candidates_by_page: dict[int, list[NativeSectionTitleCandidate]] = {}
+        for candidate in load_native_section_title_candidates(document.path):
+            candidates_by_page.setdefault(candidate.page_no, []).append(candidate)
+        catalog_continuation_pages = self._attachment_catalog_continuation_pages(candidates_by_page)
+
+        for page_no, candidates in candidates_by_page.items():
+            page = pages.get(page_no)
+            if page is None:
+                continue
+            inserted: list[TextBlock] = []
+            for candidate in candidates:
+                if self._has_equivalent_text(page, candidate.text):
+                    continue
+                block_id = f"p{page_no}_native_section_title_{len(inserted) + 1}"
+                block_type = candidate.block_type
+                if page_no in catalog_continuation_pages and block_type in TITLE_BLOCK_TYPES:
+                    block_type = "text"
+                inserted.append(
+                    TextBlock(
+                        block_id=block_id,
+                        page_no=page_no,
+                        text=candidate.text,
+                        bbox=candidate.bbox,
+                        char_boxes=list(candidate.char_boxes),
+                        block_type=block_type,
+                        source="native_section_title_repair",
+                        semantic_reasons=["native_section_title_repair"],
+                    )
+                )
+                result.decisions.append(
+                    {
+                        "action": "inserted",
+                        "page_no": page_no,
+                        "title": candidate.text,
+                        "block_id": block_id,
+                        "reason": "missing_ocr_section_title",
+                    }
+                )
+            if inserted:
+                page.blocks = sorted(
+                    [*page.blocks, *inserted],
+                    key=lambda block: (block.bbox.y0, block.bbox.x0, block.block_id),
+                )
+
+    @staticmethod
+    def _attachment_catalog_continuation_pages(
+        candidates_by_page: dict[int, list[NativeSectionTitleCandidate]],
+    ) -> set[int]:
+        catalog_pages = {
+            page_no
+            for page_no, candidates in candidates_by_page.items()
+            if any(_is_attachment_catalog_entry(candidate.text) for candidate in candidates)
+        }
+        return {
+            page_no
+            for page_no, candidates in candidates_by_page.items()
+            if page_no - 1 in catalog_pages
+            and any(APPENDIX_LABEL_RE.fullmatch(candidate.text) for candidate in candidates)
+        }
+
+    @staticmethod
+    def _has_equivalent_text(page: Page, text: str) -> bool:
+        expected = normalize_heading_text(text)
+        return any(
+            expected == normalize_heading_text(block.text)
+            for block in page.blocks
+            if block.text
+        )
 
     @staticmethod
     def _bare_block(page: Page, number: str) -> TextBlock | None:
