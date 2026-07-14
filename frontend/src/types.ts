@@ -253,7 +253,6 @@ export interface ExtractionFieldValue {
 export interface DiffReviewPayload {
   review_status: ReviewStatus;
   review_comment?: string;
-  reviewed_by?: string;
 }
 
 export interface AuditItemReview {

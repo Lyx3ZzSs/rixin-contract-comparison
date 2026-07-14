@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { ProgressRing } from "../components/ProgressRing";
 import { getCompareRecords, toApiUrl } from "../lib/api";
+import { downloadAuthenticatedFile } from "../lib/authFetch";
 import { useRecordProgressSSE } from "../lib/hooks";
 import type { CompareRecordListResponse, CompareRecordQuery, CompareRecordSummary, TaskStatus } from "../types";
 
@@ -190,9 +191,15 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
                 </div>
                 <div className="record-actions">
                   {record.report_url && (
-                    <a href={toApiUrl(record.report_url)} target="_blank" rel="noreferrer">
+                    <button
+                      type="button"
+                      onClick={() => void downloadAuthenticatedFile(
+                        toApiUrl(record.report_url),
+                        `合同差异分析报告-${record.task_id}.pdf`,
+                      ).catch((downloadError) => setError(downloadError instanceof Error ? downloadError.message : "报告下载失败。"))}
+                    >
                       报告
-                    </a>
+                    </button>
                   )}
                   {record.status === "PROCESSING" ? (
                     <RecordProgress record={record} />

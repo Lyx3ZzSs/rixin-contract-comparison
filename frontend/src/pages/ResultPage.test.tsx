@@ -6,6 +6,12 @@ import { getDiffs, getTask, updateAuditItemReview } from "../lib/api";
 import type { CompareTask, DiffItem } from "../types";
 import { ResultPage } from "./ResultPage";
 
+const { downloadAuthenticatedFile } = vi.hoisted(() => ({
+  downloadAuthenticatedFile: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../lib/authFetch", () => ({ downloadAuthenticatedFile }));
+
 vi.mock("../components/PdfDocumentViewer", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   return {
@@ -475,24 +481,15 @@ describe("ResultPage", () => {
 
   it("downloads the audit analysis report from the task report url", async () => {
     const user = userEvent.setup();
-    const fetchMock = vi.fn(async () => new Response(new Blob(["pdf"], { type: "application/pdf" }), { status: 200 }));
-    const createObjectUrl = vi.fn(() => "blob:report");
-    const revokeObjectUrl = vi.fn();
-    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
-      expect(this.download).toBe("销售合同差异分析报告.pdf");
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    Object.defineProperty(URL, "createObjectURL", { value: createObjectUrl, configurable: true });
-    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectUrl, configurable: true });
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByRole("button", { name: "导出报告" })).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "导出报告" }));
 
-    expect(fetchMock).toHaveBeenCalledWith("http://api.test/api/compare/task-1/report");
-    expect(createObjectUrl).toHaveBeenCalled();
-    expect(anchorClick).toHaveBeenCalled();
-    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:report");
+    expect(downloadAuthenticatedFile).toHaveBeenCalledWith(
+      "http://api.test/api/compare/task-1/report",
+      "销售合同差异分析报告.pdf",
+    );
   });
 
   it("orders comparison axis markers by audit item position and colors them by audit type", async () => {
@@ -755,7 +752,6 @@ describe("ResultPage", () => {
     expect(updateAuditItemReview).toHaveBeenCalledWith("task-1", "diff-1:ADD", {
       review_status: "IGNORED",
       review_comment: "",
-      reviewed_by: "local_reviewer",
     });
     await waitFor(() => expect(auditCard).toHaveClass("ignored"));
     expect(screen.getByRole("button", { name: "恢复 diff-1:ADD" })).toBeInTheDocument();
@@ -766,7 +762,6 @@ describe("ResultPage", () => {
       expect(updateAuditItemReview).toHaveBeenLastCalledWith("task-1", "diff-1:ADD", {
         review_status: "UNREVIEWED",
         review_comment: "",
-        reviewed_by: "local_reviewer",
       }),
     );
     await waitFor(() => expect(auditCard).not.toHaveClass("ignored"));

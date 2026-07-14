@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("./authFetch", () => ({
+  ApiError: class ApiError extends Error {
+    constructor(readonly status: number, message = `请求失败 (${status})`) { super(message); }
+  },
+  authorizedFetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+}));
+
 import { compareContracts, getApiBaseUrl, getCompareRecords, toApiUrl } from "./api";
 
 describe("api client URLs", () => {
@@ -160,6 +167,7 @@ describe("api client URLs", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       toApiUrl("/api/compare/records?page=2&page_size=10&start_date=2026-05-21&end_date=2026-05-22"),
+      undefined,
     );
     expect(payload.total).toBe(12);
     expect(payload.total_pages).toBe(2);

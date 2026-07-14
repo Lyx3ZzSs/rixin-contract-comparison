@@ -4,6 +4,7 @@ import { Ban, ChevronRight, Download, Eye, EyeOff, PanelRightOpen, RotateCcw, Zo
 import { PdfDocumentViewer, type PdfDocumentViewerHandle } from "../components/PdfDocumentViewer";
 import { ProgressRing } from "../components/ProgressRing";
 import { toApiUrl, updateAuditItemReview } from "../lib/api";
+import { downloadAuthenticatedFile } from "../lib/authFetch";
 import { useTaskProgress } from "../lib/hooks";
 import { navigateToComparisonRecords } from "../lib/routes";
 import type { CompareTask, DiffItem, DiffType, ReviewStatus, TaskOcrRemediationSummary } from "../types";
@@ -92,7 +93,6 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
       const payload = await updateAuditItemReview(taskId, item.id, {
         review_status: status,
         review_comment: item.reviewComment ?? "",
-        reviewed_by: "local_reviewer",
       });
       setTask((currentTask) =>
         currentTask
@@ -117,25 +117,6 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
     }
   }
 
-  async function downloadPdfFile(url: string, filename: string) {
-    if (!url) {
-      return;
-    }
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`文件下载失败 (${response.status})`);
-    }
-    const blob = await response.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = objectUrl;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(objectUrl);
-  }
-
   async function handleDownloadReport() {
     const reportUrl = task?.report_url;
     if (!reportUrl || isReportDownloading) {
@@ -144,7 +125,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
     setIsReportDownloading(true);
     setReportDownloadError("");
     try {
-      await downloadPdfFile(toApiUrl(reportUrl), task.report_filename || "合同差异分析报告.pdf");
+      await downloadAuthenticatedFile(toApiUrl(reportUrl), task.report_filename || "合同差异分析报告.pdf");
     } catch (err) {
       setReportDownloadError(err instanceof Error ? err.message : "报告下载失败。");
     } finally {
@@ -203,7 +184,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
               type="button"
               aria-label="下载原版文件"
               onClick={() =>
-                void downloadPdfFile(toApiUrl(task.original_pdf_url), task.original_filename || "原版文件.pdf").catch(console.error)
+                void downloadAuthenticatedFile(toApiUrl(task.original_pdf_url), task.original_filename || "原版文件.pdf").catch(console.error)
               }
             >
               <Download aria-hidden="true" />
@@ -233,7 +214,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
                 type="button"
                 aria-label="下载新版文件"
                 onClick={() =>
-                  void downloadPdfFile(toApiUrl(task.compare_pdf_url), task.compare_filename || "新版文件.pdf").catch(console.error)
+                  void downloadAuthenticatedFile(toApiUrl(task.compare_pdf_url), task.compare_filename || "新版文件.pdf").catch(console.error)
                 }
               >
                 <Download aria-hidden="true" />
