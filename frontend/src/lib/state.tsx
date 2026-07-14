@@ -1,19 +1,14 @@
-import { createContext, useContext, useReducer, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useReducer, type ReactNode } from "react";
 
 import { readRoute, navigateHome, type AppRoute } from "./routes";
 
-const AUTH_STORAGE_KEY = "rixin_contract_auth_user";
-
 export interface AppState {
-  currentUser: string | null;
   route: AppRoute;
   isSidebarExpanded: boolean;
   isComparisonMenuOpen: boolean;
 }
 
 export type Action =
-  | { type: "LOGIN"; username: string }
-  | { type: "LOGOUT" }
   | { type: "SET_ROUTE"; route: AppRoute }
   | { type: "TOGGLE_SIDEBAR" }
   | { type: "TOGGLE_COMPARISON_MENU" }
@@ -21,7 +16,6 @@ export type Action =
 
 function getInitialState(): AppState {
   return {
-    currentUser: window.localStorage.getItem(AUTH_STORAGE_KEY),
     route: readRoute(),
     isSidebarExpanded: false,
     isComparisonMenuOpen: true,
@@ -30,12 +24,6 @@ function getInitialState(): AppState {
 
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
-    case "LOGIN":
-      window.localStorage.setItem(AUTH_STORAGE_KEY, action.username);
-      return { ...state, currentUser: action.username };
-    case "LOGOUT":
-      window.localStorage.removeItem(AUTH_STORAGE_KEY);
-      return { ...state, currentUser: null, isSidebarExpanded: false };
     case "SET_ROUTE":
       return { ...state, route: action.route };
     case "TOGGLE_SIDEBAR":
