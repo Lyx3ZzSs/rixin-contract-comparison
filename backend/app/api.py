@@ -7,11 +7,14 @@ from math import ceil
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.api_errors import http_error
 from app.application.compare_tasks import default_compare_task_application
+from app.auth.dependencies import get_current_user, require_roles
+from app.auth.models import AGENT_ADMIN, AGENT_MANAGER, AGENT_USER, CurrentUser
+from app.auth.policies import TaskAccessPolicy
 from app.api_presenters import (
     audit_item_review_response,
     compare_diff_list_response,
@@ -43,6 +46,8 @@ from app.utils.file_utils import FileValidationError, assert_path_inside_storage
 from app.utils.id_utils import generate_task_id
 
 router = APIRouter(prefix="/api/compare", tags=["compare"])
+task_access_policy = TaskAccessPolicy()
+require_app_role = require_roles(AGENT_ADMIN, AGENT_MANAGER, AGENT_USER)
 
 
 @router.post("", response_model=CompareTaskResponse)
@@ -52,6 +57,7 @@ async def compare_contracts(
     ignore_stamps: bool = Form(False),
     ignore_headers_footers: bool = Form(False),
     signing_region_mode: Literal["full", "off"] = Form("full"),
+    user: CurrentUser = Depends(require_app_role),
 ) -> CompareTaskResponse:
     task_id = generate_task_id()
     compare_options = CompareOptions(
@@ -69,6 +75,7 @@ async def compare_contracts(
             original_filename=original_file.filename or original_path.name,
             compare_filename=compare_file.filename or compare_path.name,
             compare_options=compare_options,
+            owner=user,
         )
     except FileValidationError as exc:
         raise http_error(exc) from exc
@@ -92,11 +99,12 @@ def list_records(
     page_size: int = Query(default=10, ge=1, le=100),
     start_date: date | None = None,
     end_date: date | None = None,
+    user: CurrentUser = Depends(get_current_user),
 ) -> CompareRecordListResponse:
     if start_date and end_date and start_date > end_date:
         raise HTTPException(status_code=422, detail="开始日期不能晚于结束日期。")
 
-    tasks = default_compare_task_application.list_compare_tasks()
+    tasks = task_access_policy.filter_visible(default_compare_task_application.list_compare_tasks(), user)
     filtered_tasks = [
         task
         for task in tasks
@@ -117,17 +125,14 @@ def list_records(
 
 
 @router.get("/{task_id}", response_model=CompareTaskDetailResponse)
-def get_task(task_id: str) -> CompareTaskDetailResponse:
-    task = _load_or_404(task_id)
+def get_task(task_id: str, user: CurrentUser = Depends(get_current_user)) -> CompareTaskDetailResponse:
+    task = _load_accessible_or_404(task_id, user)
     return compare_task_detail_response(task)
 
 
 @router.get("/{task_id}/progress")
-async def stream_progress(task_id: str):
-    try:
-        current_task = default_compare_task_application.load_compare_task(task_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+async def stream_progress(task_id: str, user: CurrentUser = Depends(get_current_user)):
+    current_task = _load_accessible_or_404(task_id, user)
 
     from app.services.progress_bus import ProgressBus
 
@@ -178,21 +183,26 @@ async def stream_progress(task_id: str):
 
 
 @router.get("/{task_id}/diffs", response_model=CompareDiffListResponse)
-def get_diffs(task_id: str) -> CompareDiffListResponse:
-    task = _load_or_404(task_id)
+def get_diffs(task_id: str, user: CurrentUser = Depends(get_current_user)) -> CompareDiffListResponse:
+    task = _load_accessible_or_404(task_id, user)
     return compare_diff_list_response(task)
 
 
 @router.patch("/{task_id}/diffs/{diff_id}/review", response_model=DiffReviewResponse)
-def update_diff_review(task_id: str, diff_id: str, payload: DiffReviewRequest) -> DiffReviewResponse:
-    task = _load_or_404(task_id)
+def update_diff_review(
+    task_id: str,
+    diff_id: str,
+    payload: DiffReviewRequest,
+    user: CurrentUser = Depends(require_app_role),
+) -> DiffReviewResponse:
+    task = _load_accessible_or_404(task_id, user, mutate=True)
     try:
         task, diff = default_compare_task_application.update_diff_review(
             task,
             diff_id,
             payload.review_status,
             payload.review_comment,
-            payload.reviewed_by,
+            user.sub,
         )
     except (InvalidReviewStateError, DiffNotFoundError) as exc:
         raise http_error(exc) from exc
@@ -208,15 +218,16 @@ def update_audit_item_review(
     task_id: str,
     audit_item_id: str,
     payload: DiffReviewRequest,
+    user: CurrentUser = Depends(require_app_role),
 ) -> AuditItemReviewUpdateResponse:
-    task = _load_or_404(task_id)
+    task = _load_accessible_or_404(task_id, user, mutate=True)
     try:
         task, review = default_compare_task_application.update_audit_item_review(
             task,
             audit_item_id,
             payload.review_status,
             payload.review_comment,
-            payload.reviewed_by,
+            user.sub,
         )
     except (InvalidReviewStateError, AuditItemNotFoundError) as exc:
         raise http_error(exc) from exc
@@ -225,7 +236,8 @@ def update_audit_item_review(
 
 
 @router.get("/{task_id}/execution", response_model=TaskExecutionResponse)
-def get_task_execution(task_id: str) -> TaskExecutionResponse:
+def get_task_execution(task_id: str, user: CurrentUser = Depends(get_current_user)) -> TaskExecutionResponse:
+    _load_accessible_or_404(task_id, user)
     try:
         return task_execution_response(default_compare_task_application.load_execution(task_id))
     except Exception as exc:
@@ -233,7 +245,8 @@ def get_task_execution(task_id: str) -> TaskExecutionResponse:
 
 
 @router.post("/{task_id}/cancel", response_model=TaskExecutionResponse)
-def cancel_task(task_id: str) -> TaskExecutionResponse:
+def cancel_task(task_id: str, user: CurrentUser = Depends(require_app_role)) -> TaskExecutionResponse:
+    _load_accessible_or_404(task_id, user, mutate=True)
     try:
         return task_execution_response(default_compare_task_application.cancel_compare(task_id))
     except Exception as exc:
@@ -241,7 +254,8 @@ def cancel_task(task_id: str) -> TaskExecutionResponse:
 
 
 @router.post("/{task_id}/retry", response_model=TaskExecutionResponse)
-def retry_task(task_id: str) -> TaskExecutionResponse:
+def retry_task(task_id: str, user: CurrentUser = Depends(require_app_role)) -> TaskExecutionResponse:
+    _load_accessible_or_404(task_id, user, mutate=True)
     try:
         return task_execution_response(default_compare_task_application.retry_compare(task_id))
     except Exception as exc:
@@ -249,14 +263,14 @@ def retry_task(task_id: str) -> TaskExecutionResponse:
 
 
 @router.get("/{task_id}/quality")
-def get_quality_summary(task_id: str) -> dict:
-    task = _load_or_404(task_id)
+def get_quality_summary(task_id: str, user: CurrentUser = Depends(get_current_user)) -> dict:
+    task = _load_accessible_or_404(task_id, user)
     return CompareQualityService().build_summary(task)
 
 
 @router.get("/{task_id}/report")
-def download_report(task_id: str) -> FileResponse:
-    task = _load_or_404(task_id)
+def download_report(task_id: str, user: CurrentUser = Depends(get_current_user)) -> FileResponse:
+    task = _load_accessible_or_404(task_id, user)
     if task.status != "COMPLETED":
         raise HTTPException(status_code=409, detail="任务尚未完成，暂不能生成报告。")
     try:
@@ -267,14 +281,14 @@ def download_report(task_id: str) -> FileResponse:
 
 
 @router.get("/{task_id}/original")
-def preview_original_pdf(task_id: str) -> FileResponse:
-    task = _load_or_404(task_id)
+def preview_original_pdf(task_id: str, user: CurrentUser = Depends(get_current_user)) -> FileResponse:
+    task = _load_accessible_or_404(task_id, user)
     return _file_response(task.original_pdf_path, task.original_filename or "original.pdf", "application/pdf", "inline")
 
 
 @router.get("/{task_id}/compare")
-def preview_compare_pdf(task_id: str) -> FileResponse:
-    task = _load_or_404(task_id)
+def preview_compare_pdf(task_id: str, user: CurrentUser = Depends(get_current_user)) -> FileResponse:
+    task = _load_accessible_or_404(task_id, user)
     return _file_response(task.compare_pdf_path, task.compare_filename or "compare.pdf", "application/pdf", "inline")
 
 
@@ -283,6 +297,14 @@ def _load_or_404(task_id: str) -> CompareTask:
         return default_compare_task_application.load_compare_task(task_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _load_accessible_or_404(task_id: str, user: CurrentUser, *, mutate: bool = False) -> CompareTask:
+    task = _load_or_404(task_id)
+    allowed = task_access_policy.can_mutate(task, user) if mutate else task_access_policy.can_read(task, user)
+    if not allowed:
+        raise HTTPException(status_code=404, detail="任务不存在或无权访问。")
+    return task
 
 
 def _is_task_in_created_date_range(

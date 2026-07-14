@@ -26,7 +26,25 @@ from app.models import (
 )
 from app.models_extraction import ExtractionTask
 from app.services.review_service import CompareQualityService
-from app.utils.json_utils import load_task, save_extraction_task, save_task, task_json_path, to_jsonable
+from app.utils.json_utils import load_task, save_extraction_task, save_task as persist_task, task_json_path, to_jsonable
+
+from auth_helpers import ADMIN
+
+
+def _owned_task(task: CompareTask) -> CompareTask:
+    if task.owner_sub:
+        return task
+    return task.model_copy(
+        update={
+            "owner_sub": ADMIN.sub,
+            "owner_username": ADMIN.preferred_username,
+            "owner_display_name": ADMIN.display_name,
+        }
+    )
+
+
+def save_task(task: CompareTask):
+    return persist_task(_owned_task(task))
 
 
 def make_pdf(path: Path, lines: list[str]) -> None:
@@ -550,7 +568,7 @@ def test_compare_records_list_supports_pagination_and_created_time_filter(tmp_pa
 
 
 def save_compare_task_fixture(**kwargs) -> None:
-    task = CompareTask(**kwargs)
+    task = _owned_task(CompareTask(**kwargs))
     save_task(task)
     task_json_path(task.task_id).write_text(json.dumps(to_jsonable(task), ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -602,7 +620,7 @@ def test_api_updates_diff_review_and_quality_summary(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["diff"]["review_status"] == "CONFIRMED"
     assert payload["diff"]["review_comment"] == "业务确认属实"
-    assert payload["diff"]["reviewed_by"] == "legal"
+    assert payload["diff"]["reviewed_by"] == ADMIN.sub
     assert payload["review_stats"]["reviewed_count"] == 1
     assert payload["review_stats"]["confirmed_count"] == 1
 
@@ -742,7 +760,7 @@ def test_quality_summary_includes_ocr_quality_counts(tmp_path: Path) -> None:
     assert payload["ocr_affected_diff_count"] == 2
 
 
-def test_api_defaults_ocr_quality_for_legacy_task(tmp_path: Path) -> None:
+def test_api_hides_legacy_task_without_owner(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     task_dir = settings.tasks_dir / "TOCRLEGACYAPI"
     task_dir.mkdir(parents=True)
@@ -759,22 +777,11 @@ def test_api_defaults_ocr_quality_for_legacy_task(tmp_path: Path) -> None:
     client = TestClient(app)
     task_response = client.get("/api/compare/TOCRLEGACYAPI")
 
-    assert task_response.status_code == 200, task_response.text
-    task_payload = task_response.json()
-    assert task_payload["ocr_quality_summary"] is None
-    assert task_payload["ocr_remediation_summary"] is None
+    assert task_response.status_code == 404, task_response.text
 
     quality_response = client.get("/api/compare/TOCRLEGACYAPI/quality")
 
-    assert quality_response.status_code == 200, quality_response.text
-    quality_payload = quality_response.json()
-    assert quality_payload["ocr_quality_summary"] is None
-    assert quality_payload["ocr_risk_page_count"] == 0
-    assert quality_payload["ocr_affected_diff_count"] == 0
-    assert quality_payload["ocr_remediation_summary"] is None
-    assert quality_payload["ocr_remediation_action_count"] == 0
-    assert quality_payload["ocr_remediation_unresolved_count"] == 0
-    assert quality_payload["manual_review_required_count"] == 0
+    assert quality_response.status_code == 404, quality_response.text
 
 
 def test_compare_quality_summary_includes_ocr_remediation_counts() -> None:

@@ -15,6 +15,8 @@ from app.api_quality_schemas import (
     QualityRunResponse,
     QualityTaskReviewResponse,
 )
+from app.auth.dependencies import require_roles
+from app.auth.models import AGENT_ADMIN
 from app.config import settings
 from app.services.quality_workbench import (
     InvalidQualityWorkbenchIdError,
@@ -25,7 +27,11 @@ from app.services.quality_workbench import (
 )
 
 
-router = APIRouter(prefix="/api/quality", tags=["quality"])
+router = APIRouter(
+    prefix="/api/quality",
+    tags=["quality"],
+    dependencies=[Depends(require_roles(AGENT_ADMIN))],
+)
 
 
 def get_quality_workbench_service() -> QualityWorkbenchService:

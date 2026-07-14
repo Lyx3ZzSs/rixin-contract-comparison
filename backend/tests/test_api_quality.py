@@ -69,7 +69,7 @@ def quality_service(tmp_path: Path) -> Iterator[QualityWorkbenchService]:
     try:
         yield service
     finally:
-        app.dependency_overrides.clear()
+        app.dependency_overrides.pop(get_quality_workbench_service, None)
 
 
 def test_list_quality_cases(quality_service: QualityWorkbenchService) -> None:

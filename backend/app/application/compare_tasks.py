@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping
 
+from app.auth.models import CurrentUser
 from app.errors import ConflictError, NotFoundError
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.infrastructure.task_runner import QueuedTaskRunner, TaskJob, default_task_runner
@@ -33,11 +34,17 @@ class CompareTaskApplication:
         original_filename: str,
         compare_filename: str,
         compare_options: CompareOptions | None = None,
+        owner: CurrentUser,
     ) -> CompareTask:
         task = CompareTask(
             task_id=task_id,
             stage="排队中",
             progress_percent=3,
+            owner_sub=owner.sub,
+            owner_username=owner.preferred_username,
+            owner_display_name=owner.display_name,
+            owner_department_code=owner.department_code,
+            owner_department_name=owner.department_name,
             original_filename=original_filename or original_path.name,
             compare_filename=compare_filename or compare_path.name,
             original_pdf_path=str(original_path),
