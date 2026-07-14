@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import sys
+import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as compare_router
 from app.api_quality import router as quality_router
+from app.auth.errors import IdentityProviderUnavailable
+from app.auth.runtime import AuthRuntime
 from app.clients import close_clients
 from app.config import settings
 from app.infrastructure.task_repository import default_task_repository
@@ -22,6 +25,8 @@ from app.logging_config import setup_logging
 from app.services.models.setup import register_default_models, teardown_models
 
 setup_logging()
+logger = logging.getLogger(__name__)
+auth_runtime = AuthRuntime(settings.auth)
 
 
 @asynccontextmanager
@@ -30,6 +35,11 @@ async def lifespan(app: FastAPI):
     default_task_repository.resolve()
     default_task_runner.start()
     register_default_models()
+
+    try:
+        auth_runtime.prewarm()
+    except IdentityProviderUnavailable:
+        logger.warning("OIDC signing keys are unavailable; authenticated requests will return 503 until recovery")
 
     from app.services.progress_bus import ProgressBus
     ProgressBus.get_instance().bind_loop(asyncio.get_running_loop())
@@ -40,9 +50,11 @@ async def lifespan(app: FastAPI):
         teardown_models()
         default_task_runner.stop(wait=True)
         close_clients()
+        auth_runtime.close()
 
 
 app = FastAPI(title="国能日新 · 合同智能审查平台", version="0.1.0", lifespan=lifespan)
+app.state.auth_runtime = auth_runtime
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
