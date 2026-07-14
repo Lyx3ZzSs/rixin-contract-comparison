@@ -272,14 +272,20 @@ class ClauseSplitter:
     ) -> bool:
         if len(compact) > 5:
             return False
-        if self._looks_like_meaningful_short_text(compact):
-            return False
         bbox = block.bbox
         width = bbox.x1 - bbox.x0
         height = bbox.y1 - bbox.y0
         block_type = (block.block_type or "").lower()
         confidence = block.confidence
         low_confidence = confidence is not None and confidence < self.short_noise_confidence
+        if self._looks_like_meaningful_short_text(compact):
+            return self._is_low_confidence_bottom_edge_chinese_numeral_noise(
+                compact,
+                bbox,
+                low_confidence,
+                page_width,
+                page_height,
+            )
         tiny_block = width <= max(page_width * 0.035, 16.0) and height <= max(page_height * 0.02, 16.0)
         vertical_edge_ocr_line = block_type == "ocr_line" and self._near_vertical_edge(bbox, page_height)
         edge_ocr_line = block_type == "ocr_line" and (
@@ -297,6 +303,23 @@ class ClauseSplitter:
                 (tiny_block or edge_ocr_line)
                 and (latin_noise or punctuation_number_noise or symbol_noise)
             )
+        )
+
+    @staticmethod
+    def _is_low_confidence_bottom_edge_chinese_numeral_noise(
+        compact: str,
+        bbox: BBox,
+        low_confidence: bool,
+        page_width: float,
+        page_height: float,
+    ) -> bool:
+        return bool(
+            low_confidence
+            and page_width > 0
+            and page_height > 0
+            and bbox.x0 <= page_width * 0.03
+            and bbox.y0 >= page_height * 0.92
+            and re.fullmatch(r"[一二三四五六七八九十百千万]+", compact)
         )
 
     def _is_right_edge_ocr_fragment(self, block: TextBlock, compact: str, page_width: float) -> bool:
