@@ -72,6 +72,6 @@ describe("App", () => {
     const user = userEvent.setup();
     renderAuthenticatedApp("/");
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
-    expect(window.localStorage.getItem("rixin_contract_auth_user")).toBeNull();
+    expect(window.localStorage.length).toBe(0);
   });
 });

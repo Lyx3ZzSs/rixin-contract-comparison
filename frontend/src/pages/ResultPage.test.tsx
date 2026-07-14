@@ -57,7 +57,7 @@ vi.mock("../lib/api", () => ({
       audit_item_id: auditItemId,
       review_status: payload.review_status,
       review_comment: payload.review_comment ?? "",
-      reviewed_by: "local_reviewer",
+      reviewed_by: "keycloak-user",
       reviewed_at: "2026-05-12T00:00:20Z",
     },
     review_stats: {

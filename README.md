@@ -58,6 +58,19 @@ npm run dev
 - 后端健康检查：`http://127.0.0.1:8000/health`
 - 后端 API 文档：`http://127.0.0.1:8000/docs`
 
+## 统一身份认证（Keycloak）
+
+前端本地开发必须使用 `http://127.0.0.1:5173/`，当前认证注册未授权 `localhost:5173`。未登录访问任意页面会自动跳转 Keycloak，并经 `/callback` 回到同一应用内的安全路径。
+
+前端使用公有客户端 `rixin-contract-comparison-web` 的授权码 + PKCE 流程，所有 OIDC 协议状态只保存在浏览器 `sessionStorage`；不要在前端添加 Client Secret。后端通过 discovery 文档获取签名密钥，验证 RS256 签名、issuer、过期时间和 API audience，并只从 `resource_access.rixin-contract-comparison-api.roles` 读取角色。
+
+- `agent_admin`：管理后台、质量工作台及全部新建任务。
+- `agent_manager`、`agent_user`：仅能查看和操作本人创建的任务。
+
+任务所有权以 Keycloak 的 `sub` 固化；无 `owner_sub` 的历史任务不会迁移，并会从列表隐藏且直接访问返回 404（管理员亦然）。测试账号请向认证管理员申请。此前通过非安全渠道暴露的后端凭据应立即轮换；本 Resource Server 的 JWT 校验不需要该凭据。
+
+Docker 部署前，必须由认证管理员为容器的实际地址注册精确的回调地址、登出回调地址和 Web Origin。不要将 `127.0.0.1:5173` 的开发回调地址直接复用于 `/contract` 容器部署。
+
 如果 `8000` 端口已被占用，可换一个端口：
 
 ```bash

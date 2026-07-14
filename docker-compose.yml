@@ -33,6 +33,11 @@ services:
         VITE_BASE_PATH: ${VITE_BASE_PATH:-/contract}
         VITE_API_BASE_PATH: ${VITE_API_BASE_PATH:-}
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_OIDC_AUTHORITY: ${VITE_OIDC_AUTHORITY:-}
+        VITE_OIDC_CLIENT_ID: ${VITE_OIDC_CLIENT_ID:-}
+        VITE_OIDC_REDIRECT_URI: ${VITE_OIDC_REDIRECT_URI:-}
+        VITE_OIDC_POST_LOGOUT_REDIRECT_URI: ${VITE_OIDC_POST_LOGOUT_REDIRECT_URI:-}
+        VITE_OIDC_SCOPE: ${VITE_OIDC_SCOPE:-}
     container_name: rixin-frontend
     restart: unless-stopped
     ports:
