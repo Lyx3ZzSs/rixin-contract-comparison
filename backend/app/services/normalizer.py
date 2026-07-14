@@ -21,6 +21,9 @@ class TextNormalizer:
     _LIGATURE_RE = re.compile("|".join(re.escape(k) for k in _LIGATURES))
     _MATCH_PUNCT_RE = re.compile(r"[，。；：、”“‘’（）()\[\]【】《》,.!?:;\"']")
     _DIFF_STYLE_PUNCT_RE = re.compile(r"[，。；：、”“‘’（）()\[\]【】《》!?:;\"']")
+    _DOCUMENT_NUMBER_YEAR_BRACKET_RE = re.compile(
+        r"(?:\(\s*(?P<ascii>\d{4})\s*\)|（\s*(?P<fullwidth>\d{4})\s*）|〔\s*(?P<tortoise>\d{4})\s*〕)(?=\s*\d{1,4}\s*号)"
+    )
 
     def normalize(self, text: str) -> str:
         text = unicodedata.normalize("NFKC", text or "")
@@ -35,16 +38,25 @@ class TextNormalizer:
 
     def normalize_for_match(self, text: str) -> str:
         text = self.normalize(text)
+        text = self._normalize_document_number_year_brackets(text)
         text = re.sub(r"\s+", "", text)
         text = self._MATCH_PUNCT_RE.sub("", text)
         return text.lower()
 
     def normalize_for_diff(self, text: str) -> str:
         text = self.normalize(text)
+        text = self._normalize_document_number_year_brackets(text)
         text = re.sub(r"\s+", "", text)
         text = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", text)
         text = self._DIFF_STYLE_PUNCT_RE.sub("", text)
         return text.lower()
+
+    @classmethod
+    def _normalize_document_number_year_brackets(cls, text: str) -> str:
+        return cls._DOCUMENT_NUMBER_YEAR_BRACKET_RE.sub(
+            lambda match: f"({next(value for value in match.groups() if value is not None)})",
+            text,
+        )
 
     def _clean_line(self, line: str) -> str:
         line = unicodedata.normalize("NFKC", line)

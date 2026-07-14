@@ -27,6 +27,67 @@ def test_normalize_for_diff_preserves_decimal_and_version_tokens() -> None:
     assert normalizer.normalize_for_diff("日期") == normalizer.normalize_for_diff("日期：")
 
 
+def test_normalize_for_diff_equates_document_number_year_bracket_styles() -> None:
+    normalizer = TextNormalizer()
+
+    canonical = normalizer.normalize_for_diff("电监安全〔2006〕34号")
+
+    assert normalizer.normalize_for_diff("电监安全（2006）34号") == canonical
+    assert normalizer.normalize_for_diff("电监安全(2006)34号") == canonical
+
+
+def test_diff_engine_ignores_document_number_year_bracket_style_change() -> None:
+    normalizer = TextNormalizer()
+    original_text = "（7）《电力二次系统安全防护总体方案》电监安全（2006）34号。"
+    compare_text = "（7）《电力二次系统安全防护总体方案》电监安全〔2006〕34号。"
+
+    diffs = DiffEngine().build_diffs(
+        [
+            ClausePair(
+                original=Clause(
+                    clause_id="O001",
+                    text=original_text,
+                    normalized_text=normalizer.normalize_for_diff(original_text),
+                ),
+                compare=Clause(
+                    clause_id="N001",
+                    text=compare_text,
+                    normalized_text=normalizer.normalize_for_diff(compare_text),
+                ),
+            )
+        ]
+    )
+
+    assert diffs == []
+
+
+def test_diff_engine_detects_document_number_year_change() -> None:
+    normalizer = TextNormalizer()
+    original_text = "电监安全〔2006〕34号"
+    compare_text = "电监安全〔2007〕34号"
+
+    diffs = DiffEngine().build_diffs(
+        [
+            ClausePair(
+                original=Clause(
+                    clause_id="O001",
+                    text=original_text,
+                    normalized_text=normalizer.normalize_for_diff(original_text),
+                ),
+                compare=Clause(
+                    clause_id="N001",
+                    text=compare_text,
+                    normalized_text=normalizer.normalize_for_diff(compare_text),
+                ),
+            )
+        ]
+    )
+
+    assert len(diffs) == 1
+    assert diffs[0].original_snippet == "2006"
+    assert diffs[0].compare_snippet == "2007"
+
+
 def test_clause_splitter_sets_match_text_separately_from_diff_text() -> None:
     document = Document(
         filename="sample.pdf",
