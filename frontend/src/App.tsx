@@ -32,13 +32,13 @@ export function App() {
   }
 
   const content = useMemo(() => {
-    if (route.name === "task") return <ResultPage taskId={route.taskId} onBack={navigateHome} />;
+    if (route.name === "task") return <ResultPage taskId={route.taskId} onBack={navigateHome} accessToken={auth.user?.access_token ?? ""} />;
     if (route.name === "records") return <ComparisonRecordsPage onOpenTask={navigateToTask} onCreateComparison={navigateHome} />;
     if (route.name === "quality") {
       return isAdmin ? <QualityWorkbenchPage /> : <section>当前用户没有访问质量工作台的权限。</section>;
     }
     return <UploadPage onTaskCreated={handleTaskCreated} onOpenRecords={navigateToComparisonRecords} />;
-  }, [isAdmin, route]);
+  }, [auth.user?.access_token, isAdmin, route]);
 
   return (
     <div className={isSidebarExpanded ? "oa-frame sidebar-expanded" : "oa-frame"}>

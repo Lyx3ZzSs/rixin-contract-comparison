@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { getDiffs, getTask } from "./api";
-import { createProgressEventSource, type ProgressEvent } from "./api_sse";
+import { createProgressEventSource, type ProgressEvent, type ProgressEventStream } from "./api_sse";
 import type { CompareRecordSummary, CompareTask, DiffItem, TaskStatus } from "../types";
 
 const POLL_INTERVAL_MS = 1200;
@@ -157,7 +157,7 @@ export function useRecordProgressSSE(
   onUpdate: (taskId: string, progress: number, stage: string, status: TaskStatus) => void,
   onCompleted: () => void,
 ): void {
-  const connectionsRef = useRef<Map<string, EventSource>>(new Map());
+  const connectionsRef = useRef<Map<string, ProgressEventStream>>(new Map());
   const fallbackRef = useRef<Map<string, number>>(new Map());
   const completionRef = useRef<Map<string, number>>(new Map());
   const onUpdateRef = useRef(onUpdate);

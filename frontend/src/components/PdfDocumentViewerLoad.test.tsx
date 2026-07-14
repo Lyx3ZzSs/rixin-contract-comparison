@@ -19,6 +19,7 @@ function renderViewer() {
     <PdfDocumentViewer
       side="original"
       src="http://api.test/file.pdf"
+      accessToken="test-token"
       title="原版"
       diffs={[]}
       zoom={1}
@@ -31,6 +32,15 @@ function renderViewer() {
 }
 
 describe("PdfDocumentViewer load errors", () => {
+  it("loads the PDF with the supplied Bearer token", () => {
+    getDocument.mockReturnValueOnce({ promise: new Promise(() => undefined), destroy: vi.fn() });
+    renderViewer();
+    expect(getDocument).toHaveBeenCalledWith({
+      url: "http://api.test/file.pdf",
+      httpHeaders: { Authorization: "Bearer test-token" },
+    });
+  });
+
   it.each([
     ["PasswordException", "PDF 已加密，请上传未加密版本。"],
     ["InvalidPDFException", "PDF 已损坏或格式无效。"],

@@ -12,9 +12,10 @@ import type { CompareTask, DiffItem, DiffType, ReviewStatus, TaskOcrRemediationS
 interface ResultPageProps {
   taskId: string;
   onBack: () => void;
+  accessToken?: string;
 }
 
-export function ResultPage({ taskId, onBack }: ResultPageProps) {
+export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps) {
   const { task, diffs, isLoading, error, setTask } = useTaskProgress(taskId);
   const [isOriginalVisible, setIsOriginalVisible] = useState(true);
   const [isSyncScroll, setIsSyncScroll] = useState(true);
@@ -237,6 +238,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
             side="original"
             title="原版"
             src={toApiUrl(task.original_pdf_url)}
+            accessToken={accessToken}
             diffs={diffs}
             zoom={zoom}
             activeDiffId={activeDiffId}
@@ -268,6 +270,7 @@ export function ResultPage({ taskId, onBack }: ResultPageProps) {
             side="compare"
             title="新版"
             src={toApiUrl(task.compare_pdf_url)}
+            accessToken={accessToken}
             diffs={diffs}
             zoom={zoom}
             activeDiffId={activeDiffId}

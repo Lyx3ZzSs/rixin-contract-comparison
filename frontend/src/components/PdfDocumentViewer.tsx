@@ -34,6 +34,7 @@ export interface PdfDocumentViewerHandle {
 interface PdfDocumentViewerProps {
   side: "original" | "compare";
   src: string;
+  accessToken: string;
   title: string;
   diffs: DiffItem[];
   zoom: number;
@@ -49,6 +50,7 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
     {
       side,
       src,
+      accessToken,
       title,
       diffs,
       zoom,
@@ -69,16 +71,19 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
     const isSyncingRef = useRef(false);
 
     useEffect(() => {
-      if (!src || hidden) {
+      if (!src || !accessToken || hidden) {
         setPdf(null);
-        setLoadState(src ? "idle" : "error");
-        setLoadError(src ? "" : "PDF 文件地址不可用。");
+        setLoadState(src && accessToken ? "idle" : "error");
+        setLoadError(src ? "统一身份认证凭证不可用。" : "PDF 文件地址不可用。");
         setCurrentPage(1);
         return;
       }
 
       let isMounted = true;
-      const loadingTask = pdfjsLib.getDocument(src);
+      const loadingTask = pdfjsLib.getDocument({
+        url: src,
+        httpHeaders: { Authorization: `Bearer ${accessToken}` },
+      });
       setLoadState("loading");
       setLoadError("");
       setCurrentPage(1);
@@ -106,7 +111,7 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
         isMounted = false;
         loadingTask.destroy();
       };
-    }, [hidden, src]);
+    }, [accessToken, hidden, src]);
 
     const updateCurrentPageFromScroll = useCallback(() => {
       const scrollNode = scrollRef.current;

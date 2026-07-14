@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("./authFetch", () => ({
+  ApiError: class ApiError extends Error {
+    constructor(readonly status: number, message = `请求失败 (${status})`) { super(message); }
+  },
+  authorizedFetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+}));
+
 import {
   createQualityExpectedDiff,
   deleteQualityExpectedDiff,
@@ -28,7 +35,7 @@ describe("quality api client", () => {
 
     await expect(listQualityCases()).resolves.toEqual({ cases: [] });
 
-    expect(fetchMock).toHaveBeenCalledWith(toApiUrl("/api/quality/cases"));
+    expect(fetchMock).toHaveBeenCalledWith(toApiUrl("/api/quality/cases"), undefined);
   });
 
   it("updates an expected diff with encoded case id, patch method, and JSON body", async () => {
@@ -131,7 +138,7 @@ describe("quality api client", () => {
 
     await getQualityCase("case/with space");
 
-    expect(fetchMock).toHaveBeenCalledWith(toApiUrl("/api/quality/cases/case%2Fwith%20space"));
+    expect(fetchMock).toHaveBeenCalledWith(toApiUrl("/api/quality/cases/case%2Fwith%20space"), undefined);
   });
 
   it("loads a task review with an encoded task id", async () => {
@@ -160,7 +167,7 @@ describe("quality api client", () => {
 
     await getQualityTaskReview("task/with space");
 
-    expect(fetchMock).toHaveBeenCalledWith(toApiUrl("/api/quality/tasks/task%2Fwith%20space/review"));
+    expect(fetchMock).toHaveBeenCalledWith(toApiUrl("/api/quality/tasks/task%2Fwith%20space/review"), undefined);
   });
 
   it("deletes expected diffs from the encoded quality case endpoint", async () => {
