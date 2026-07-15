@@ -26,7 +26,9 @@ def extract(normalizer, document: Document) -> dict[str, CoverField]:
 
 def _extract_cover(normalizer, document: Document) -> CoverExtraction:
     blocks = _cover_blocks(document)
+    first_page_no = min((block.page_no for block in blocks), default=1)
     fields: dict[str, CoverField] = {}
+    preamble_fields: dict[int, dict[str, CoverField]] = {}
     consumed: set[str] = set()
     for index, block in enumerate(blocks):
         table_fields = _extract_cover_table_fields(block)
@@ -58,11 +60,19 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
                 consumed_ids.update(extra_ids)
                 vparts.extend(extra_parts)
             if value and _valid_field_value(key, value):
-                set_field(fields, key, value, evidences, vparts)
+                if block.page_no > first_page_no and key in {"buyer", "seller"}:
+                    set_field(
+                        preamble_fields.setdefault(block.page_no, {}),
+                        key,
+                        value,
+                        evidences,
+                        vparts,
+                    )
+                else:
+                    set_field(fields, key, value, evidences, vparts)
                 consumed.update(consumed_ids)
                 consumed.add(block.block_id)
 
-    first_page_no = min((block.page_no for block in blocks), default=1)
     title_blocks = [
         block
         for block in blocks
@@ -107,6 +117,7 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
         fields=fields,
         consumed_block_ids=consumed,
         preamble_titles=preamble_titles,
+        preamble_fields=preamble_fields,
     )
 
 

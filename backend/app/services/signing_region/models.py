@@ -12,6 +12,7 @@ class SigningElementType(str, Enum):
     SEAL = "seal"
     SIGNATURE = "signature"
     LABEL = "label"
+    PARTY_FIELD = "party_field"
     DATE_FIELD = "date_field"
     SIGNING_TABLE = "signing_table"
     VISUAL_AREA = "visual_area"
@@ -135,6 +136,7 @@ class SigningRegionComparison(BaseModel):
     signature_changes: list[dict[str, Any]] = Field(default_factory=list)
     date_changes: list[dict[str, Any]] = Field(default_factory=list)
     label_changes: list[dict[str, Any]] = Field(default_factory=list)
+    party_changes: list[dict[str, Any]] = Field(default_factory=list)
     table_changes: list[dict[str, Any]] = Field(default_factory=list)
     visual_changes: list[dict[str, Any]] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)

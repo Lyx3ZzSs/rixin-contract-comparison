@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.services.signing_region.models import (
     SigningElementType,
     SigningRegion,
@@ -52,6 +54,7 @@ class SigningRegionComparator:
             return comparison
         if original is None or compare is None:
             return comparison
+        self._compare_party_fields(original, compare, comparison)
         self._compare_elements(original, compare, comparison)
         if self._has_changes(comparison):
             comparison.diff_type = "MODIFY"
@@ -76,6 +79,52 @@ class SigningRegionComparator:
                 }
             )
             self._add_review_flag(comparison, review_flag)
+
+    def _compare_party_fields(
+        self,
+        original: SigningRegion,
+        compare: SigningRegion,
+        comparison: SigningRegionComparison,
+    ) -> None:
+        original_fields = self._party_fields(original)
+        compare_fields = self._party_fields(compare)
+        for role in sorted(set(original_fields) | set(compare_fields)):
+            original_text = original_fields.get(role, "")
+            compare_text = compare_fields.get(role, "")
+            if self._normalized_party_text(original_text) == self._normalized_party_text(compare_text):
+                continue
+            if original_text and compare_text:
+                change_type = "MODIFY"
+            elif original_text:
+                change_type = "DELETE"
+            else:
+                change_type = "ADD"
+            comparison.party_changes.append(
+                {
+                    "type": change_type,
+                    "element_type": SigningElementType.PARTY_FIELD.value,
+                    "party_role": role,
+                    "original_text": original_text,
+                    "compare_text": compare_text,
+                }
+            )
+            self._add_review_flag(comparison, "SIGNING_PARTY_CHANGE")
+            self._add_review_flag(comparison, "CRITICAL_VALUE_CHANGE")
+
+    @staticmethod
+    def _party_fields(region: SigningRegion) -> dict[str, str]:
+        fields: dict[str, str] = {}
+        for element in region.elements:
+            if element.element_type != SigningElementType.PARTY_FIELD:
+                continue
+            role = str(element.raw_ref.get("party_role") or "").strip()
+            if role and element.text.strip():
+                fields.setdefault(role, element.text.strip())
+        return fields
+
+    @staticmethod
+    def _normalized_party_text(text: str) -> str:
+        return re.sub(r"\s+", "", text or "").replace(":", "：")
 
     @staticmethod
     def _element_text(region: SigningRegion, element_type: SigningElementType) -> str:
@@ -114,6 +163,7 @@ class SigningRegionComparator:
             or comparison.signature_changes
             or comparison.date_changes
             or comparison.label_changes
+            or comparison.party_changes
             or comparison.table_changes
             or comparison.visual_changes
         )

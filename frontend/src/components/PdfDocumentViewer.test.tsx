@@ -122,6 +122,42 @@ const signingRegionDiff: DiffItem = {
   original_evidence: [],
 };
 
+const signingPartyDiff: DiffItem = {
+  ...signingRegionDiff,
+  diff_id: "diff-signing-party",
+  original_evidence: [
+    {
+      page_no: 53,
+      bbox: { x0: 71, y0: 86, x1: 287, y1: 137 },
+      method: "signing_region",
+      text: "甲方：国能长源随州发电有限公司随县分公司",
+      highlight_type: "MODIFY",
+    },
+    {
+      page_no: 53,
+      bbox: { x0: 50, y0: 78, x1: 542, y1: 537 },
+      method: "signing_region",
+      text: "签署区整区变化",
+    },
+  ],
+  compare_evidence: [],
+};
+
+const signingPartyAndVisualDiff: DiffItem = {
+  ...signingPartyDiff,
+  diff_id: "diff-signing-party-and-visual",
+  original_evidence: [
+    ...(signingPartyDiff.original_evidence ?? []),
+    {
+      page_no: 53,
+      bbox: { x0: 50, y0: 78, x1: 542, y1: 537 },
+      method: "signing_region_visual",
+      text: "签署区盖章、签字和日期变化",
+      highlight_type: "MODIFY",
+    },
+  ],
+};
+
 describe("PDF diff highlights", () => {
   it("filters evidence by side and page", () => {
     const originalHighlights = getPageHighlights([diff], "original", 1);
@@ -279,4 +315,22 @@ describe("PDF diff highlights", () => {
       );
     },
   );
+
+  it("uses typed signing party evidence instead of the untyped whole-region context", () => {
+    const highlights = getPageHighlights([signingPartyDiff], "original", 53);
+
+    expect(highlights).toHaveLength(1);
+    expect(highlights[0].type).toBe("MODIFY");
+    expect(highlights[0].evidence.text).toBe("甲方：国能长源随州发电有限公司随县分公司");
+    expect(highlights[0].evidence.bbox).toEqual({ x0: 71, y0: 86, x1: 287, y1: 137 });
+  });
+
+  it("uses the full signing region without a nested party box when visual changes accompany a party change", () => {
+    const highlights = getPageHighlights([signingPartyAndVisualDiff], "original", 53);
+
+    expect(highlights).toHaveLength(1);
+    expect(highlights[0].type).toBe("MODIFY");
+    expect(highlights[0].evidence.method).toBe("signing_region_visual");
+    expect(highlights[0].evidence.bbox).toEqual({ x0: 50, y0: 78, x1: 542, y1: 537 });
+  });
 });

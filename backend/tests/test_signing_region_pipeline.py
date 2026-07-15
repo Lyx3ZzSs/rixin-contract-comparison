@@ -545,8 +545,9 @@ def test_signing_stage_does_not_fallback_when_detector_has_rejected_candidates(t
             )
 
     class _Extractor:
-        def extract_from_blocks(self, blocks) -> list:
+        def extract_from_blocks(self, blocks, document=None) -> list:
             assert blocks == []
+            assert document is not None
             return []
 
         def extract(self, _document: Document) -> list:
@@ -649,7 +650,7 @@ def test_signing_region_stage_records_visual_only_candidates_without_final_diff(
         "_NoFallbackExtractor",
         (),
         {
-            "extract_from_blocks": lambda self, blocks: [],
+            "extract_from_blocks": lambda self, blocks, document=None: [],
             "extract": lambda self, document: [],
         },
     )()

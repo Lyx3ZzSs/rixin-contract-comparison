@@ -773,7 +773,7 @@ class SigningRegionStage:
         document: Document,
         structure: SigningBlockDetectionResult,
     ) -> tuple[list[SigningRegion], bool]:
-        regions = self.extractor.extract_from_blocks(structure.blocks)
+        regions = self.extractor.extract_from_blocks(structure.blocks, document=document)
         if regions or structure.blocks:
             return regions, False
         if structure.excluded_candidates or structure.low_confidence_candidates:

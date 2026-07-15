@@ -319,6 +319,56 @@ def test_reports_changed_preamble_title_on_second_page_before_first_clause() -> 
     assert audit_items[0].compare_evidence == diff.compare_evidence
 
 
+def test_reports_changed_preamble_buyer_even_when_cover_buyer_is_unchanged() -> None:
+    original = _multi_page_document(
+        [
+            [
+                _block("o_cover_buyer", "甲方：国能长源随州发电有限公司随县分公司", 100, 580, 430, 602),
+                _block("o_cover_title", "新能源场站功率预测系统授权服务合同", 120, 220, 480, 250, "doc_title"),
+            ],
+            [
+                _block("o_title", "2026年新能源场站功率预测系统授权服务合同", 130, 80, 470, 102, "doc_title"),
+                _block("o_buyer", "甲方：国能长源随州发电有限公司随县分公司", 70, 147, 310, 162),
+                _block("o_seller", "乙方：国能日新科技股份有限公司", 70, 171, 250, 186),
+                _block("o_clause", "1. 定义", 72, 240, 145, 260, "paragraph_title"),
+            ],
+        ]
+    )
+    compare = _multi_page_document(
+        [
+            [
+                _block("c_cover_buyer", "甲方：国能长源随州发电有限公司随县分公司", 100, 580, 430, 602),
+                _block("c_cover_title", "新能源场站功率预测系统授权服务合同", 120, 220, 480, 250, "doc_title"),
+            ],
+            [
+                _block("c_title", "2026年新能源场站功率预测系统授权服务合同", 130, 80, 470, 102, "doc_title"),
+                _block("c_buyer", "甲方：国能长源随州发电有限公司", 55, 147, 216, 162),
+                _block("c_seller", "乙方：国能日新科技股份有限公司", 56, 171, 216, 186),
+                _block("c_clause", "1. 定义", 72, 240, 145, 260, "paragraph_title"),
+            ],
+        ]
+    )
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    party_diffs = [diff for diff in diffs if diff.title == "前置字段（第2页）：甲方"]
+    assert len(party_diffs) == 1
+    diff = party_diffs[0]
+    assert diff.diff_type == "MODIFY"
+    assert diff.original_text == "甲方：国能长源随州发电有限公司随县分公司"
+    assert diff.compare_text == "甲方：国能长源随州发电有限公司"
+    assert diff.original_snippet == diff.original_text
+    assert diff.compare_snippet == diff.compare_text
+    assert [evidence.text for evidence in diff.original_evidence] == [diff.original_text]
+    assert [evidence.text for evidence in diff.compare_evidence] == [diff.compare_text]
+    assert diff.original_evidence[0].bbox == BBox(x0=70, y0=147, x1=310, y1=162)
+    assert diff.compare_evidence[0].bbox == BBox(x0=55, y0=147, x1=216, y1=162)
+    assert {evidence.highlight_type for evidence in diff.original_evidence} == {"MODIFY"}
+    assert {evidence.highlight_type for evidence in diff.compare_evidence} == {"MODIFY"}
+    assert "CRITICAL_VALUE_CHANGE" in diff.review_flags
+    assert all(diff.title != "封面字段：甲方" for diff in diffs)
+
+
 def test_cover_extra_pairs_blank_year_month_placeholder_with_filled_cover_date() -> None:
     original = _document(
         [

@@ -312,8 +312,27 @@ export function getPageHighlights(
 ): PageHighlight[] {
   const highlights: PageHighlight[] = [];
   for (const diff of diffs) {
-    const evidences = getEvidence(diff, side)
-      .filter((evidence) => evidence.page_no === pageNumber)
+    const pageEvidences = getEvidence(diff, side).filter((evidence) => evidence.page_no === pageNumber);
+    const typedSigningVisualEvidences = pageEvidences.filter(
+      (evidence) => evidence.method.startsWith("signing_region_visual") && Boolean(evidence.highlight_type),
+    );
+    const hasTypedSigningEvidence = pageEvidences.some(
+      (evidence) => evidence.method.startsWith("signing_region") && Boolean(evidence.highlight_type),
+    );
+    const evidences = pageEvidences
+      .filter(
+        (evidence) => {
+          const isUntypedSigningContext =
+            hasTypedSigningEvidence
+            && evidence.method.startsWith("signing_region")
+            && !evidence.highlight_type;
+          const isNestedSigningPartyEvidence =
+            evidence.method === "signing_region"
+            && Boolean(evidence.highlight_type)
+            && typedSigningVisualEvidences.some((visual) => bboxContains(visual.bbox, evidence.bbox));
+          return !isUntypedSigningContext && !isNestedSigningPartyEvidence;
+        },
+      )
       .sort((left, right) => left.bbox.y0 - right.bbox.y0 || left.bbox.x0 - right.bbox.x0);
 
     for (const evidence of evidences) {
@@ -329,6 +348,16 @@ export function getPageHighlights(
     }
   }
   return highlights;
+}
+
+function bboxContains(outer: EvidenceBox["bbox"], inner: EvidenceBox["bbox"]): boolean {
+  const tolerance = 2;
+  return (
+    inner.x0 >= outer.x0 - tolerance
+    && inner.y0 >= outer.y0 - tolerance
+    && inner.x1 <= outer.x1 + tolerance
+    && inner.y1 <= outer.y1 + tolerance
+  );
 }
 
 function highlightMarkKind(evidence: EvidenceBox, fallback: boolean): PageHighlight["markKind"] {

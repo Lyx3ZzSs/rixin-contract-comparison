@@ -273,6 +273,62 @@ def test_extractor_builds_region_from_detected_signing_block() -> None:
     assert "盖章" in regions[0].elements[0].text or "签字" in regions[0].elements[0].text
 
 
+def test_extractor_reconstructs_wrapped_party_name_by_signing_column() -> None:
+    page = Page(
+        page_no=53,
+        width=595,
+        height=842,
+        blocks=[
+            _block(
+                "party_a",
+                "甲方：国能长源随州发电有限公司",
+                _bbox(71, 86, 287, 101),
+                page_no=53,
+                layout_bbox=_bbox(69, 86, 522, 100),
+            ),
+            _block(
+                "party_b",
+                "乙方：国能日新科技股份有限公司",
+                _bbox(313, 86, 523, 101),
+                page_no=53,
+                layout_bbox=_bbox(69, 86, 522, 100),
+            ),
+            _block("party_a_cont", "随县分公司", _bbox(125, 120, 197, 137), page_no=53),
+            _block("seal_a", "（盖章）：", _bbox(75, 154, 134, 172), page_no=53),
+            _block("seal_b", "（盖章）：", _bbox(313, 154, 372, 172), page_no=53),
+        ],
+    )
+    signing_block = SigningBlock(
+        block_id="SB-53-1",
+        page_no=53,
+        bbox=_bbox(50, 78, 542, 537),
+        block_role=SigningBlockRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        source_block_ids=["party_a", "party_b", "party_a_cont", "seal_a", "seal_b"],
+        text=(
+            "甲方：国能长源随州发电有限公司\n"
+            "乙方：国能日新科技股份有限公司\n"
+            "随县分公司\n（盖章）：\n（盖章）："
+        ),
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks(
+        [signing_block],
+        document=_document(page),
+    )[0]
+
+    party_fields = {
+        element.raw_ref.get("party_role"): element
+        for element in region.elements
+        if element.element_type.value == "party_field"
+    }
+    assert party_fields["甲方"].text == "甲方：国能长源随州发电有限公司随县分公司"
+    assert party_fields["甲方"].raw_ref["source_block_ids"] == ["party_a", "party_a_cont"]
+    assert party_fields["甲方"].bbox == _bbox(71, 86, 287, 137)
+    assert party_fields["乙方"].text == "乙方：国能日新科技股份有限公司"
+
+
 def test_detector_keeps_body_effective_clause_out_of_signing_block() -> None:
     page = Page(
         page_no=13,

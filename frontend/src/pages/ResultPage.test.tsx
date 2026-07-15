@@ -328,6 +328,51 @@ const signingRegionDiff: DiffItem = {
   ],
 };
 
+const signingPartyModifyDiff: DiffItem = {
+  diff_id: "diff-signing-party",
+  diff_type: "MODIFY",
+  clause_no: "",
+  title: "签署区（第53页）",
+  original_text: "甲方：国能长源随州发电有限公司\n乙方：国能日新科技股份有限公司\n随县分公司",
+  compare_text: "甲方：国能长源随州发电有限公司\n乙方：国能日新科技股份有限公司",
+  original_snippet: "甲方：国能长源随州发电有限公司随县分公司",
+  compare_snippet: "甲方：国能长源随州发电有限公司",
+  readable_change: "签署主体变化：甲方：国能长源随州发电有限公司随县分公司 → 甲方：国能长源随州发电有限公司",
+  source_type: "signing_region",
+  review_flags: ["SIGNING_PARTY_CHANGE", "CRITICAL_VALUE_CHANGE"],
+  review_status: "UNREVIEWED",
+  original_evidence: [
+    {
+      page_no: 53,
+      bbox: { x0: 71, y0: 86, x1: 287, y1: 137 },
+      method: "signing_region",
+      text: "甲方：国能长源随州发电有限公司随县分公司",
+      highlight_type: "MODIFY",
+    },
+    {
+      page_no: 53,
+      bbox: { x0: 50, y0: 78, x1: 542, y1: 537 },
+      method: "signing_region",
+      text: "签署区整区变化",
+    },
+  ],
+  compare_evidence: [
+    {
+      page_no: 53,
+      bbox: { x0: 89, y0: 101, x1: 287, y1: 128 },
+      method: "signing_region",
+      text: "甲方：国能长源随州发电有限公司",
+      highlight_type: "MODIFY",
+    },
+    {
+      page_no: 53,
+      bbox: { x0: 72, y0: 66, x1: 514, y1: 542 },
+      method: "signing_region",
+      text: "签署区整区变化",
+    },
+  ],
+};
+
 const signingFlagOnlyDiff: DiffItem = {
   ...signingRegionDiff,
   diff_id: "diff-signing-flag",
@@ -668,6 +713,23 @@ describe("ResultPage", () => {
       "签章区差异",
       "结构与质量提示",
     ]);
+  });
+
+  it("shows a wrapped signing party replacement as one complete modify item", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getDiffs).mockResolvedValueOnce([signingPartyModifyDiff]);
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("0");
+    expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("0");
+    expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
+    const modifyCard = screen.getByRole("button", { name: "审计定位改动 diff-signing-party:MODIFY" });
+    expect(modifyCard).toHaveTextContent("原文：甲方：国能长源随州发电有限公司随县分公司");
+    expect(modifyCard).toHaveTextContent("修改后：甲方：国能长源随州发电有限公司");
+    expect(modifyCard).toHaveTextContent("关键差异");
   });
 
   it("groups signing review flags as signing region differences", async () => {

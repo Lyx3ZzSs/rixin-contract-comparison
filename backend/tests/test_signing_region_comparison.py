@@ -203,6 +203,136 @@ def test_comparator_no_change_does_not_build_diff() -> None:
     assert diffs == []
 
 
+def test_party_name_change_is_exposed_as_focused_signing_modify() -> None:
+    original = _region(
+        "O1",
+        "甲方：国能长源随州发电有限公司\n乙方：国能日新科技股份有限公司\n随县分公司",
+        page_no=53,
+        element_type=SigningElementType.SIGNING_TABLE,
+    )
+    compare = _region(
+        "C1",
+        "甲方：国能长源随州发电有限公司\n乙方：国能日新科技股份有限公司",
+        page_no=53,
+        element_type=SigningElementType.SIGNING_TABLE,
+    )
+    original.elements.append(
+        SigningElement(
+            element_id="O1-party-a",
+            element_type=SigningElementType.PARTY_FIELD,
+            page_no=53,
+            bbox=BBox(x0=71, y0=86, x1=287, y1=137),
+            text="甲方：国能长源随州发电有限公司随县分公司",
+            confidence=0.9,
+            source="inferred",
+            raw_ref={"party_role": "甲方", "source_block_ids": ["party_a", "party_a_cont"]},
+        )
+    )
+    compare.elements.append(
+        SigningElement(
+            element_id="C1-party-a",
+            element_type=SigningElementType.PARTY_FIELD,
+            page_no=53,
+            bbox=BBox(x0=89, y0=101, x1=287, y1=128),
+            text="甲方：国能长源随州发电有限公司",
+            confidence=0.9,
+            source="inferred",
+            raw_ref={"party_role": "甲方", "source_block_ids": ["party_a"]},
+        )
+    )
+
+    comparison = SigningRegionComparator().compare(original, compare, match_confidence=0.98)
+    diff = SigningRegionDiffBuilder().build_diffs([comparison])[0]
+
+    assert comparison.party_changes == [
+        {
+            "type": "MODIFY",
+            "element_type": "party_field",
+            "party_role": "甲方",
+            "original_text": "甲方：国能长源随州发电有限公司随县分公司",
+            "compare_text": "甲方：国能长源随州发电有限公司",
+        }
+    ]
+    assert diff.diff_type == "MODIFY"
+    assert diff.original_snippet == "甲方：国能长源随州发电有限公司随县分公司"
+    assert diff.compare_snippet == "甲方：国能长源随州发电有限公司"
+    assert diff.original_evidence[0].text == diff.original_snippet
+    assert diff.original_evidence[0].bbox == BBox(x0=71, y0=86, x1=287, y1=137)
+    assert diff.compare_evidence[0].text == diff.compare_snippet
+    assert diff.original_evidence[1].method == "signing_region_visual"
+    assert diff.original_evidence[1].highlight_type == "MODIFY"
+    assert diff.compare_evidence[1].method == "signing_region_visual"
+    assert diff.compare_evidence[1].highlight_type == "MODIFY"
+    assert "签署主体变化：甲方：国能长源随州发电有限公司随县分公司 → 甲方：国能长源随州发电有限公司" in diff.readable_change
+    assert "SIGNING_PARTY_CHANGE" in diff.review_flags
+    assert "CRITICAL_VALUE_CHANGE" in diff.review_flags
+
+
+def test_party_and_visual_changes_keep_focused_field_and_full_signing_region_evidence() -> None:
+    original = _region(
+        "O1",
+        "甲方：国能长源随州发电有限公司\n乙方：国能日新科技股份有限公司\n随县分公司",
+        page_no=53,
+        element_type=SigningElementType.SIGNING_TABLE,
+    )
+    compare = _region(
+        "C1",
+        "甲方：国能长源随州发电有限公司\n乙方：国能日新科技股份有限公司",
+        page_no=53,
+        element_type=SigningElementType.SIGNING_TABLE,
+    )
+    original.elements.append(
+        SigningElement(
+            element_id="O1-party-a",
+            element_type=SigningElementType.PARTY_FIELD,
+            page_no=53,
+            bbox=BBox(x0=71, y0=86, x1=287, y1=137),
+            text="甲方：国能长源随州发电有限公司随县分公司",
+            confidence=0.9,
+            source="inferred",
+            raw_ref={"party_role": "甲方"},
+        )
+    )
+    compare.elements.extend(
+        [
+            SigningElement(
+                element_id="C1-party-a",
+                element_type=SigningElementType.PARTY_FIELD,
+                page_no=53,
+                bbox=BBox(x0=89, y0=101, x1=287, y1=128),
+                text="甲方：国能长源随州发电有限公司",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={"party_role": "甲方"},
+            ),
+            SigningElement(
+                element_id="C1-seal",
+                element_type=SigningElementType.SEAL,
+                page_no=53,
+                bbox=BBox(x0=120, y0=120, x1=230, y1=230),
+                text="合同专用章",
+                confidence=0.9,
+                source="visual_model",
+            ),
+        ]
+    )
+
+    comparison = SigningRegionComparator().compare(original, compare, match_confidence=0.98)
+    diff = SigningRegionDiffBuilder().build_diffs([comparison])[0]
+
+    assert "SIGNING_PARTY_CHANGE" in diff.review_flags
+    assert "SIGNING_SEAL_CHANGE" in diff.review_flags
+    assert diff.original_evidence[0].text == "甲方：国能长源随州发电有限公司随县分公司"
+    assert diff.original_evidence[0].bbox == BBox(x0=71, y0=86, x1=287, y1=137)
+    assert diff.original_evidence[1].method == "signing_region_visual"
+    assert diff.original_evidence[1].highlight_type == "MODIFY"
+    assert diff.original_evidence[1].bbox == original.bbox
+    assert diff.compare_evidence[0].text == "甲方：国能长源随州发电有限公司"
+    assert diff.compare_evidence[1].method == "signing_region_visual"
+    assert diff.compare_evidence[1].highlight_type == "MODIFY"
+    assert diff.compare_evidence[1].bbox == compare.bbox
+
+
 def test_diff_builder_add_uses_compare_side_only() -> None:
     comparison = SigningRegionComparator().compare(None, _region("C1", "B公司"), match_confidence=0.0)
 

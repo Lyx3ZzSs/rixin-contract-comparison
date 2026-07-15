@@ -45,9 +45,114 @@ def build_diffs(normalizer, original: Document, compare: Document, start_index: 
     )
     diffs.extend(preamble_diffs)
     next_index += len(preamble_diffs)
+    preamble_field_diffs = _build_preamble_field_diffs(
+        normalizer,
+        original_extraction,
+        compare_extraction,
+        next_index,
+    )
+    diffs.extend(preamble_field_diffs)
+    next_index += len(preamble_field_diffs)
     extra_diffs = _build_extra_text_diffs(original, compare, original_extraction, compare_extraction, next_index)
     diffs.extend(extra_diffs)
     return diffs
+
+
+def _build_preamble_field_diffs(
+    normalizer,
+    original_extraction: CoverExtraction,
+    compare_extraction: CoverExtraction,
+    start_index: int,
+) -> list[DiffItem]:
+    diffs: list[DiffItem] = []
+    page_numbers = sorted(
+        set(original_extraction.preamble_fields) | set(compare_extraction.preamble_fields)
+    )
+    for page_no in page_numbers:
+        original_fields = original_extraction.preamble_fields.get(page_no, {})
+        compare_fields = compare_extraction.preamble_fields.get(page_no, {})
+        for key in ("buyer", "seller"):
+            left = original_fields.get(key)
+            right = compare_fields.get(key)
+            if left is None and right is None:
+                continue
+            if normalize_value(
+                normalizer,
+                key,
+                left.value if left else "",
+            ) == normalize_value(normalizer, key, right.value if right else ""):
+                continue
+            diffs.append(
+                _build_preamble_field_diff(
+                    page_no,
+                    key,
+                    left,
+                    right,
+                    start_index + len(diffs),
+                )
+            )
+    return diffs
+
+
+def _build_preamble_field_diff(
+    page_no: int,
+    key: str,
+    left: CoverField | None,
+    right: CoverField | None,
+    index: int,
+) -> DiffItem:
+    label = FIELD_LABELS[key]
+    title = f"前置字段（第{page_no}页）：{label}"
+    original_text = f"{label}：{left.value}" if left else ""
+    compare_text = f"{label}：{right.value}" if right else ""
+    if left is not None and right is not None:
+        diff_type = "MODIFY"
+    elif right is not None:
+        diff_type = "ADD"
+    else:
+        diff_type = "DELETE"
+    original_ranges = (
+        [TextRange(start=0, end=len(original_text), highlight_type=diff_type)]
+        if original_text
+        else []
+    )
+    compare_ranges = (
+        [TextRange(start=0, end=len(compare_text), highlight_type=diff_type)]
+        if compare_text
+        else []
+    )
+    return DiffItem(
+        diff_id=generate_diff_id(index),
+        diff_type=diff_type,
+        title=title,
+        original_text=original_text,
+        compare_text=compare_text,
+        original_snippet=original_text,
+        compare_snippet=compare_text,
+        readable_change=f"{title}变更：{original_text} -> {compare_text}",
+        source_type="metadata",
+        review_flags=["CRITICAL_VALUE_CHANGE"],
+        original_evidence=_preamble_field_evidence(left, original_text, diff_type),
+        compare_evidence=_preamble_field_evidence(right, compare_text, diff_type),
+        original_change_ranges=original_ranges,
+        compare_change_ranges=compare_ranges,
+    )
+
+
+def _preamble_field_evidence(
+    field: CoverField | None,
+    text: str,
+    highlight_type: str,
+):
+    if field is None:
+        return []
+    evidences = [
+        evidence.model_copy(update={"highlight_type": highlight_type, "method": "cover_metadata"})
+        for evidence in field.evidences
+    ]
+    if evidences:
+        evidences[0] = evidences[0].model_copy(update={"text": text})
+    return evidences
 
 
 def _build_preamble_title_diffs(

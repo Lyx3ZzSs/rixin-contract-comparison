@@ -20,6 +20,17 @@ DATE_RE = re.compile(
     r"|年\s*(?:\d{1,2}|[_＿]{1,4})?\s*月\s*(?:\d{1,2}|[_＿]{1,4})?\s*日"
     r"|[_＿]{2,4}\s*年"
 )
+PARTY_FIELD_RE = re.compile(
+    r"(?P<role>甲方|乙方|丙方|丁方)\s*[:：]\s*(?P<value>.*?)"
+    r"(?=(?:甲方|乙方|丙方|丁方)\s*[:：]|$)"
+)
+PARTY_CONTINUATION_SUFFIX_RE = re.compile(
+    r"(?:有限(?:责任)?公司|股份有限公司|集团(?:有限公司)?|分公司|公司|厂|中心|分部|事业部|委员会|"
+    r"管理局|研究院|设计院|事务所|合作社)$"
+)
+PARTY_CONTINUATION_STOP_RE = re.compile(
+    r"盖章|签章|签字|签名|代表|日期|时间|地址|电话|邮箱|邮编|联系人|开户|账号|统一社会信用代码"
+)
 VISUAL_TYPES = {"seal", "stamp", "image", "figure", "table"}
 
 
@@ -34,7 +45,15 @@ class SigningRegionExtractor:
             regions.extend(self._extract_page(page))
         return regions
 
-    def extract_from_blocks(self, blocks: list[SigningBlock]) -> list[SigningRegion]:
+    def extract_from_blocks(
+        self,
+        blocks: list[SigningBlock],
+        document: Document | None = None,
+    ) -> list[SigningRegion]:
+        page_blocks = {
+            page.page_no: {block.block_id: block for block in page.blocks}
+            for page in (document.pages if document is not None else [])
+        }
         regions: list[SigningRegion] = []
         for index, block in enumerate(blocks, start=1):
             elements = block.elements or [
@@ -49,6 +68,10 @@ class SigningRegionExtractor:
                     raw_ref={"source_block_ids": block.source_block_ids},
                 )
             ]
+            elements = [
+                *elements,
+                *self._party_field_elements(block, page_blocks.get(block.page_no, {})),
+            ]
             regions.append(
                 SigningRegion(
                     region_id=f"SR-{block.page_no}-{index}",
@@ -62,6 +85,113 @@ class SigningRegionExtractor:
                 )
             )
         return regions
+
+    def _party_field_elements(
+        self,
+        signing_block: SigningBlock,
+        blocks_by_id: dict[str, TextBlock],
+    ) -> list[SigningElement]:
+        if not blocks_by_id:
+            return []
+
+        source_blocks = [
+            blocks_by_id[block_id]
+            for block_id in signing_block.source_block_ids
+            if block_id in blocks_by_id and (blocks_by_id[block_id].text or "").strip()
+        ]
+        elements: list[SigningElement] = []
+        for anchor in sorted(source_blocks, key=lambda item: (item.bbox.y0, item.bbox.x0)):
+            matches = list(PARTY_FIELD_RE.finditer(anchor.text or ""))
+            for match_index, match in enumerate(matches, start=1):
+                role = match.group("role")
+                value = (match.group("value") or "").strip()
+                if not value:
+                    continue
+                continuation_blocks = []
+                if len(matches) == 1:
+                    continuation_blocks = self._party_continuation_blocks(anchor, value, source_blocks)
+                full_value = "".join([value, *(item.text.strip() for item in continuation_blocks)])
+                bbox = self._bbox_union([
+                    anchor.bbox,
+                    *(item.bbox for item in continuation_blocks),
+                ])
+                confidence_values = [
+                    item.confidence
+                    for item in [anchor, *continuation_blocks]
+                    if item.confidence is not None
+                ]
+                elements.append(
+                    SigningElement(
+                        element_id=f"{signing_block.block_id}-party-{role}-{match_index}",
+                        element_type=SigningElementType.PARTY_FIELD,
+                        page_no=signing_block.page_no,
+                        bbox=bbox,
+                        text=f"{role}：{full_value}",
+                        confidence=min(confidence_values) if confidence_values else signing_block.confidence,
+                        source="inferred",
+                        raw_ref={
+                            "party_role": role,
+                            "source_block_ids": [anchor.block_id, *(item.block_id for item in continuation_blocks)],
+                        },
+                    )
+                )
+        return elements
+
+    def _party_continuation_blocks(
+        self,
+        anchor: TextBlock,
+        anchor_value: str,
+        source_blocks: list[TextBlock],
+    ) -> list[TextBlock]:
+        # Party fields must use OCR text geometry. Layout regions may merge both
+        # columns into the same bbox, which destroys left/right association.
+        anchor_bbox = anchor.bbox
+        anchor_center_x = (anchor_bbox.x0 + anchor_bbox.x1) / 2
+        signing_midpoint = (
+            min(item.bbox.x0 for item in source_blocks)
+            + max(item.bbox.x1 for item in source_blocks)
+        ) / 2
+        continuation: list[TextBlock] = []
+        for candidate in sorted(source_blocks, key=lambda item: (item.bbox.y0, item.bbox.x0)):
+            if candidate.block_id == anchor.block_id:
+                continue
+            bbox = candidate.bbox
+            if bbox.y0 < anchor_bbox.y1 - 2.0:
+                continue
+            if bbox.y0 - anchor_bbox.y1 > 64.0:
+                break
+            candidate_center_x = (bbox.x0 + bbox.x1) / 2
+            same_column = (anchor_center_x < signing_midpoint) == (candidate_center_x < signing_midpoint)
+            if not same_column:
+                continue
+            text = (candidate.text or "").strip()
+            compact = self._compact(text)
+            if not compact or PARTY_FIELD_RE.search(text) or PARTY_CONTINUATION_STOP_RE.search(compact):
+                continue
+            if not self._looks_like_party_continuation(anchor_value, compact):
+                continue
+            continuation.append(candidate)
+            anchor_value += compact
+            anchor_bbox = self._bbox_union([anchor_bbox, bbox])
+        return continuation
+
+    @staticmethod
+    def _looks_like_party_continuation(anchor_value: str, candidate: str) -> bool:
+        compact_anchor = re.sub(r"\s+", "", anchor_value or "")
+        if not candidate or len(candidate) > 32 or any(char.isdigit() for char in candidate):
+            return False
+        if compact_anchor.endswith(candidate):
+            return False
+        return PARTY_CONTINUATION_SUFFIX_RE.search(candidate) is not None
+
+    @staticmethod
+    def _bbox_union(bboxes: list[BBox]) -> BBox:
+        return BBox(
+            x0=min(bbox.x0 for bbox in bboxes),
+            y0=min(bbox.y0 for bbox in bboxes),
+            x1=max(bbox.x1 for bbox in bboxes),
+            y1=max(bbox.y1 for bbox in bboxes),
+        )
 
     def _extract_page(self, page: Page) -> list[SigningRegion]:
         candidates = [block for block in page.blocks if self._is_candidate(block, page)]
