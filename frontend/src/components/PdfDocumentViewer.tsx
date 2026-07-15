@@ -69,11 +69,15 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const pageRefs = useRef(new Map<number, HTMLDivElement>());
     const isSyncingRef = useRef(false);
+    // OIDC token rotation must not destroy an in-flight PDF.js loading task.
+    const accessTokenRef = useRef(accessToken);
+    accessTokenRef.current = accessToken;
+    const hasAccessToken = Boolean(accessToken);
 
     useEffect(() => {
-      if (!src || !accessToken || hidden) {
+      if (!src || !hasAccessToken || hidden) {
         setPdf(null);
-        setLoadState(src && accessToken ? "idle" : "error");
+        setLoadState(src && hasAccessToken ? "idle" : "error");
         setLoadError(src ? "统一身份认证凭证不可用。" : "PDF 文件地址不可用。");
         setCurrentPage(1);
         return;
@@ -82,7 +86,7 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
       let isMounted = true;
       const loadingTask = pdfjsLib.getDocument({
         url: src,
-        httpHeaders: { Authorization: `Bearer ${accessToken}` },
+        httpHeaders: { Authorization: `Bearer ${accessTokenRef.current}` },
       });
       setLoadState("loading");
       setLoadError("");
@@ -111,7 +115,7 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
         isMounted = false;
         loadingTask.destroy();
       };
-    }, [accessToken, hidden, src]);
+    }, [hasAccessToken, hidden, src]);
 
     const updateCurrentPageFromScroll = useCallback(() => {
       const scrollNode = scrollRef.current;

@@ -41,6 +41,31 @@ describe("PdfDocumentViewer load errors", () => {
     });
   });
 
+  it("does not reload the PDF when silent renewal replaces the access token", () => {
+    const destroy = vi.fn();
+    getDocument.mockReturnValue({ promise: new Promise(() => undefined), destroy });
+    const { rerender } = renderViewer();
+    const callsAfterInitialLoad = getDocument.mock.calls.length;
+
+    rerender(
+      <PdfDocumentViewer
+        side="original"
+        src="http://api.test/file.pdf"
+        accessToken="renewed-token"
+        title="原版"
+        diffs={[]}
+        zoom={1}
+        activeDiffId=""
+        syncEnabled={false}
+        onScrollRatio={vi.fn()}
+        onActivateDiff={vi.fn()}
+      />,
+    );
+
+    expect(getDocument).toHaveBeenCalledTimes(callsAfterInitialLoad);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["PasswordException", "PDF 已加密，请上传未加密版本。"],
     ["InvalidPDFException", "PDF 已损坏或格式无效。"],
