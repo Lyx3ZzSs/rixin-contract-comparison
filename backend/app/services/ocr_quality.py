@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from app.models import (
+    Clause,
     DiffItem,
     Document,
     DocumentProfile,
@@ -144,15 +145,21 @@ class OcrQualityProfiler:
         self,
         diffs: Iterable[DiffItem],
         profiles: Iterable[PageOcrQualityProfile],
+        original_clauses: Iterable[Clause] | None = None,
+        compare_clauses: Iterable[Clause] | None = None,
     ) -> TaskOcrQualitySummary:
         profile_list = list(profiles)
         risk_profiles_by_key = {
             (profile.side, profile.page_no): profile for profile in profile_list if profile.status != "OK"
         }
         risk_keys = sorted(risk_profiles_by_key, key=lambda key: (_SIDE_ORDER.get(key[0], 99), key[1]))
+        clause_pages_by_side = {
+            "original": self._clause_pages_by_id(original_clauses),
+            "compare": self._clause_pages_by_id(compare_clauses),
+        }
 
         for diff in diffs:
-            matched_profiles = self._matched_profiles(diff, risk_profiles_by_key)
+            matched_profiles = self._matched_profiles(diff, risk_profiles_by_key, clause_pages_by_side)
             if matched_profiles:
                 for profile in matched_profiles:
                     flags, needs_review = self._diff_flags_for_profile(diff, profile)
@@ -328,6 +335,7 @@ class OcrQualityProfiler:
         self,
         diff: DiffItem,
         risk_profiles_by_key: dict[tuple[OcrQualitySide, int], PageOcrQualityProfile],
+        clause_pages_by_side: dict[OcrQualitySide, dict[str, list[int]]],
     ) -> list[PageOcrQualityProfile]:
         matched_by_key: dict[tuple[OcrQualitySide, int], PageOcrQualityProfile] = {}
         for evidence in diff.original_evidence:
@@ -338,10 +346,54 @@ class OcrQualityProfiler:
             key = ("compare", evidence.page_no)
             if key in risk_profiles_by_key:
                 matched_by_key[key] = risk_profiles_by_key[key]
+
+        if diff.source_type == "clause":
+            self._add_missing_side_clause_page_profiles(
+                matched_by_key=matched_by_key,
+                side="original",
+                has_evidence=bool(diff.original_evidence),
+                clause_id=diff.original_clause_id,
+                clause_pages_by_side=clause_pages_by_side,
+                risk_profiles_by_key=risk_profiles_by_key,
+            )
+            self._add_missing_side_clause_page_profiles(
+                matched_by_key=matched_by_key,
+                side="compare",
+                has_evidence=bool(diff.compare_evidence),
+                clause_id=diff.compare_clause_id,
+                clause_pages_by_side=clause_pages_by_side,
+                risk_profiles_by_key=risk_profiles_by_key,
+            )
+
         return [
             matched_by_key[key]
             for key in sorted(matched_by_key, key=lambda item: (_SIDE_ORDER.get(item[0], 99), item[1]))
         ]
+
+    @staticmethod
+    def _clause_pages_by_id(clauses: Iterable[Clause] | None) -> dict[str, list[int]]:
+        return {
+            clause.clause_id: list(dict.fromkeys(clause.page_numbers))
+            for clause in clauses or []
+            if clause.clause_id and clause.page_numbers
+        }
+
+    @staticmethod
+    def _add_missing_side_clause_page_profiles(
+        *,
+        matched_by_key: dict[tuple[OcrQualitySide, int], PageOcrQualityProfile],
+        side: OcrQualitySide,
+        has_evidence: bool,
+        clause_id: str | None,
+        clause_pages_by_side: dict[OcrQualitySide, dict[str, list[int]]],
+        risk_profiles_by_key: dict[tuple[OcrQualitySide, int], PageOcrQualityProfile],
+    ) -> None:
+        if has_evidence or not clause_id:
+            return
+        for page_no in clause_pages_by_side[side].get(clause_id, []):
+            key = (side, page_no)
+            if key in risk_profiles_by_key:
+                matched_by_key[key] = risk_profiles_by_key[key]
 
     def _diff_flags_for_profile(self, diff: DiffItem, profile: PageOcrQualityProfile) -> tuple[list[str], bool]:
         flags: list[str] = []

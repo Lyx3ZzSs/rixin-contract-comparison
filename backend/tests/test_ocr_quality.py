@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from app.models import (
     BBox,
+    Clause,
     CompareTask,
     DiffItem,
     Document,
@@ -492,6 +493,47 @@ def test_propagates_unreliable_page_to_diff_review_status() -> None:
     assert "TABLE_STRUCTURE_UNRELIABLE" not in diff.review_flags
     assert "SEAL_OR_SIGNATURE_RISK" not in diff.review_flags
     assert profiles[0].affected_diff_ids == ["D001"]
+    assert summary.affected_diff_count == 1
+
+
+def test_missing_modify_evidence_inherits_matched_clause_page_risk() -> None:
+    diff = DiffItem(
+        diff_id="D051",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id="OC172",
+        compare_clause_id="NC177",
+        title="事故责任",
+        original_text="乙方承担全部法律责任",
+        compare_text="乙方承甲方的直接损失",
+        original_evidence=[_evidence(25)],
+    )
+    compare_clause = Clause(
+        clause_id="NC177",
+        clause_no="4.4",
+        text="乙方承甲方的直接损失",
+        normalized_text="乙方承甲方的直接损失",
+        page_numbers=[24, 25],
+    )
+    profiles = [
+        PageOcrQualityProfile(
+            side="compare",
+            page_no=25,
+            status="UNRELIABLE",
+            reasons=["MEANINGFUL_UNMATCHED_OCR", "READING_ORDER_CONFLICT"],
+        )
+    ]
+
+    summary = OcrQualityProfiler().apply_to_diffs(
+        diffs=[diff],
+        profiles=profiles,
+        compare_clauses=[compare_clause],
+    )
+
+    assert diff.quality_status == "NEEDS_REVIEW"
+    assert "PAGE_UNRELIABLE" in diff.review_flags
+    assert "READING_ORDER_RISK" in diff.review_flags
+    assert profiles[0].affected_diff_ids == ["D051"]
     assert summary.affected_diff_count == 1
 
 

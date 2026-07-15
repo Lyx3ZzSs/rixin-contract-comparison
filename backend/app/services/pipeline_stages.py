@@ -41,7 +41,9 @@ from app.services.model_routing import ModelRoutingAnalyzer
 from app.services.native_heading_repair import NativeHeadingRepairService
 from app.services.ocr_quality import OcrQualityProfiler
 from app.services.ocr_remediation import OcrRemediationPlanner
+from app.services.counterpart_text_recovery import CounterpartTextRecovery
 from app.services.evidence_relocator import EvidenceRelocationResult, EvidenceRelocator
+from app.services.footer_annotation_visual import FooterAnnotationVisualComparator
 from app.services.page_diff import PageDiffConsolidator
 from app.services.pipeline import PipelineContext
 from app.services.repeated_overlay_filter import RepeatedOverlayFilter
@@ -84,6 +86,7 @@ from app.services.signing_region.visual import (
 )
 from app.services.table_compare import TableComparator
 from app.services.text_coordinate_locator import TextCoordinateLocator
+from app.utils.id_utils import generate_diff_id
 
 logger = logging.getLogger(__name__)
 
@@ -437,6 +440,7 @@ class PreClauseDiffStage:
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.header_footer = HeaderFooterComparator()
+        self.footer_visual = FooterAnnotationVisualComparator()
         self.cover_metadata = CoverMetadataComparator()
         self.table_comparator = TableComparator()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
@@ -458,7 +462,19 @@ class PreClauseDiffStage:
             header_footer_diffs = []
             _emit_progress(ctx, 38, self.name, "header_footer_diff_skipped")
         else:
-            header_footer_diffs = self.header_footer.build_diffs(original_doc, compare_doc)
+            ocr_header_footer_diffs = self.header_footer.build_diffs(original_doc, compare_doc)
+            visual_footer_diffs = self.footer_visual.build_diffs(
+                original_doc,
+                compare_doc,
+                start_index=len(ocr_header_footer_diffs) + 1,
+            )
+            ocr_header_footer_diffs = self.footer_visual.remove_overlapping_ocr_diffs(
+                ocr_header_footer_diffs,
+                visual_footer_diffs,
+            )
+            header_footer_diffs = [*ocr_header_footer_diffs, *visual_footer_diffs]
+            for index, diff in enumerate(header_footer_diffs, start=1):
+                diff.diff_id = generate_diff_id(index)
             _emit_progress(ctx, 38, self.name, "header_footer_diff_done")
         metadata_diffs = self.cover_metadata.build_diffs(
             original_doc,
@@ -1705,6 +1721,7 @@ class EvidenceStage:
         self.evidence_locator = EvidenceLocator()
         self.text_coordinate_locator = TextCoordinateLocator()
         self.page_consolidator = PageDiffConsolidator()
+        self.footer_visual = FooterAnnotationVisualComparator()
 
     def execute(self, ctx: PipelineContext) -> None:
         clauses = ctx.require_clauses()
@@ -1732,6 +1749,7 @@ class EvidenceStage:
                 ctx.diffs,
             )
             self.evidence_locator.assign_evidence_confidence(ctx.diffs)
+        ctx.diffs = self.footer_visual.remove_overlapping_diffs(ctx.diffs)
         _emit_progress(ctx, 82, self.name, "evidence_confidence_done")
 
 
@@ -1763,7 +1781,12 @@ class OcrQualityStage:
             warnings=self._quality_warnings(compare_extraction),
         )
         profiles = [*original_profiles, *compare_profiles]
-        summary = self.profiler.apply_to_diffs(diffs=ctx.diffs, profiles=profiles)
+        summary = self.profiler.apply_to_diffs(
+            diffs=ctx.diffs,
+            profiles=profiles,
+            original_clauses=ctx.original_clauses,
+            compare_clauses=ctx.compare_clauses,
+        )
         ctx.task.ocr_quality_summary = summary
         _append_warning_details(
             ctx.task,
@@ -1801,15 +1824,21 @@ class OcrRemediationStage:
     start_progress = 84
     progress = 85
 
-    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+    def __init__(
+        self,
+        artifact_store: ArtifactStore = default_artifact_store,
+        text_recovery: CounterpartTextRecovery | None = None,
+    ) -> None:
         self.planner = OcrRemediationPlanner()
         self.relocator = EvidenceRelocator()
+        self.text_recovery = text_recovery or CounterpartTextRecovery()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
         summary = self.planner.plan(ctx.task.ocr_quality_summary, ctx.diffs)
         ctx.task.ocr_remediation_summary = summary
         self._execute_relocation_actions(ctx, summary.actions)
+        self._execute_counterpart_text_retries(ctx, summary.actions)
         self._refresh_summary_counts(summary)
         self._apply_planning_flags(ctx.diffs, summary.actions)
         _write_debug_artifact(
@@ -1844,6 +1873,37 @@ class OcrRemediationStage:
                 compare_pdf=ctx.compare_pdf,
             )
             self._apply_relocation_result(diff, action, result)
+
+    def _execute_counterpart_text_retries(self, ctx: PipelineContext, actions: list[OcrRemediationAction]) -> None:
+        diffs_by_id = {diff.diff_id: diff for diff in ctx.diffs}
+        resolved_ids: set[str] = set()
+        for action in actions:
+            if action.action_type != "RETRY_OCR_PAGE" or action.status != "PLANNED":
+                continue
+            diff = diffs_by_id.get(action.diff_id or "")
+            if diff is None:
+                action.status = "SKIPPED"
+                action.notes.append("DIFF_NOT_FOUND")
+                continue
+            recovered = self.text_recovery.recover(
+                diff=diff,
+                side=action.side,
+                page_no=action.page_no,
+                original_pdf=ctx.original_pdf,
+                compare_pdf=ctx.compare_pdf,
+            )
+            if not recovered:
+                action.status = "FAILED"
+                action.notes.append("COUNTERPART_TEXT_NOT_RECOVERED")
+                continue
+            action.status = "SUCCEEDED"
+            action.changed_diff_text = True
+            action.after_quality = {"recovered_text_length": len(recovered)}
+            action.review_flags_added = ["OCR_COUNTERPART_TEXT_RECOVERED"]
+            action.notes.append("FALSE_POSITIVE_SUPPRESSED")
+            resolved_ids.add(diff.diff_id)
+        if resolved_ids:
+            ctx.diffs[:] = [diff for diff in ctx.diffs if diff.diff_id not in resolved_ids]
 
     @staticmethod
     def _mark_relocation_skipped(action: OcrRemediationAction, reason: str) -> None:

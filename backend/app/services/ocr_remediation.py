@@ -45,6 +45,8 @@ class OcrRemediationPlanner:
                 continue
             if action_type == "ESCALATE_MANUAL_REVIEW":
                 profiles = profiles[:1] or [None]
+            elif action_type == "RETRY_OCR_PAGE":
+                profiles = self._retry_profiles(diff, profiles) or [None]
             elif not profiles:
                 profiles = [None]
 
@@ -70,14 +72,41 @@ class OcrRemediationPlanner:
         return result
 
     @staticmethod
+    def _retry_profiles(
+        diff: DiffItem,
+        profiles: list[PageOcrQualityProfile],
+    ) -> list[PageOcrQualityProfile]:
+        if diff.original_evidence and not diff.compare_snippet:
+            source_pages = {item.page_no for item in diff.original_evidence}
+            target_side = "compare"
+        elif diff.compare_evidence and not diff.original_snippet:
+            source_pages = {item.page_no for item in diff.compare_evidence}
+            target_side = "original"
+        else:
+            return []
+        return [profile for profile in profiles if profile.side == target_side and profile.page_no in source_pages]
+
+    @staticmethod
     def _action_for_diff(diff: DiffItem) -> tuple[OcrRemediationActionType | None, str]:
         flags = set(diff.review_flags)
+        if OcrRemediationPlanner._can_retry_missing_counterpart_text(diff, flags):
+            return "RETRY_OCR_PAGE", "MISSING_COUNTERPART_CLAUSE_TEXT"
         for flag, action_type, reason in _FLAG_ACTION_PRIORITY:
             if flag in flags:
                 return action_type, reason
         if diff.quality_status == "NEEDS_REVIEW" and any(flag.startswith("OCR_") for flag in flags):
             return "MARK_REVIEW", "OCR_NEEDS_REVIEW"
         return None, ""
+
+    @staticmethod
+    def _can_retry_missing_counterpart_text(diff: DiffItem, flags: set[str]) -> bool:
+        return (
+            diff.source_type == "clause"
+            and diff.diff_type == "MODIFY"
+            and "PAGE_UNRELIABLE" in flags
+            and ((bool(diff.original_snippet or diff.original_text) and not diff.compare_snippet and bool(diff.original_evidence))
+                 or (bool(diff.compare_snippet or diff.compare_text) and not diff.original_snippet and bool(diff.compare_evidence)))
+        )
 
     @staticmethod
     def _build_action(

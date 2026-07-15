@@ -180,6 +180,22 @@ class _StubRepeatedOverlayFilter:
         return self.results.pop(0)
 
 
+class _StubFooterVisualComparator:
+    def __init__(self, diffs: list[DiffItem]) -> None:
+        self.diffs = diffs
+
+    def build_diffs(self, _original: Document, _compare: Document, *, start_index: int) -> list[DiffItem]:
+        assert start_index == 1
+        return self.diffs
+
+    def remove_overlapping_ocr_diffs(
+        self,
+        ocr_diffs: list[DiffItem],
+        _visual_diffs: list[DiffItem],
+    ) -> list[DiffItem]:
+        return ocr_diffs
+
+
 def test_extraction_stage_repairs_native_heading_refreshes_preattached_profiles_and_writes_normalizer_debug(
     tmp_path: Path,
 ) -> None:
@@ -560,6 +576,26 @@ class TestPreClauseDiffStage:
         assert [diff.diff_id for diff in ctx.header_footer_diffs] == ["D001"]
         assert ctx.header_footer_diffs[0].source_type == "header_footer"
         assert all(diff.diff_id != "D001" for diff in [*ctx.metadata_diffs, *ctx.table_diffs])
+
+    def test_includes_registered_visual_footer_diffs(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.original_extraction = ExtractionResult(document=make_document("正文一致。"), extractor_used="test")
+        ctx.compare_extraction = ExtractionResult(document=make_document("正文一致。"), extractor_used="test")
+        visual_diff = DiffItem(
+            diff_id="D001",
+            diff_type="ADD",
+            title="第1页左下角手写签注",
+            compare_text="检测到左下角手写签注",
+            compare_snippet="检测到左下角手写签注",
+            source_type="header_footer",
+            review_flags=["VISUAL_FOOTER_ANNOTATION"],
+        )
+        stage = PreClauseDiffStage()
+        stage.footer_visual = _StubFooterVisualComparator([visual_diff])
+
+        stage.execute(ctx)
+
+        assert ctx.header_footer_diffs == [visual_diff]
 
     def test_keeps_header_footer_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
@@ -1319,6 +1355,50 @@ def test_ocr_remediation_stage_plans_actions_and_marks_diffs(tmp_path: Path) -> 
     assert payload["attempted_action_count"] == 1
     assert payload["actions"][0]["diff_id"] == "diff-1"
     assert "OCR_REMEDIATION_PLANNED" in ctx.diffs[0].review_flags
+
+
+def test_ocr_remediation_removes_false_delete_after_crop_text_recovery(tmp_path: Path) -> None:
+    class RecoveringText:
+        def recover(self, **_kwargs) -> str:
+            return "担全部法律责任（包括行政处罚、刑事责任）和经济赔偿责任（包括"
+
+    artifact_store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    task = CompareTask(
+        task_id="task-crop-recovery",
+        ocr_quality_summary=TaskOcrQualitySummary(
+            status="UNRELIABLE",
+            requires_review=True,
+            profiles=[
+                PageOcrQualityProfile(
+                    side="compare",
+                    page_no=25,
+                    status="UNRELIABLE",
+                    reasons=["MEANINGFUL_UNMATCHED_OCR"],
+                    affected_diff_ids=["D051"],
+                )
+            ],
+        ),
+    )
+    diff = DiffItem(
+        diff_id="D051",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_snippet="担全部法律责任(包括行政处罚、刑事责任)和经济赔偿责任(包括",
+        compare_snippet="",
+        original_evidence=[EvidenceBox(page_no=25, bbox=BBox(x0=65, y0=75, x1=542, y1=92))],
+        review_flags=["PAGE_UNRELIABLE"],
+        quality_status="NEEDS_REVIEW",
+    )
+    ctx = PipelineContext(task=task, original_pdf=tmp_path / "o.pdf", compare_pdf=tmp_path / "c.pdf")
+    ctx.diffs = [diff]
+
+    OcrRemediationStage(artifact_store=artifact_store, text_recovery=RecoveringText()).execute(ctx)
+
+    assert ctx.diffs == []
+    action = task.ocr_remediation_summary.actions[0]
+    assert action.action_type == "RETRY_OCR_PAGE"
+    assert action.status == "SUCCEEDED"
+    assert action.changed_diff_text is True
 
 
 def test_model_routing_stage_writes_debug_artifact_without_mutating_diffs(tmp_path: Path) -> None:

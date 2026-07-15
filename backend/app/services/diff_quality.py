@@ -172,6 +172,8 @@ class DiffQualityProcessor:
         for diff in diffs:
             if diff.source_type not in self.mergeable_sources:
                 continue
+            if "VISUAL_FOOTER_ANNOTATION" in diff.review_flags:
+                continue
             key = (
                 diff.diff_type,
                 self._dedupe_key(diff.original_text or diff.original_snippet),
@@ -358,6 +360,8 @@ class DiffQualityProcessor:
     def _suppression_reason(self, diff: DiffItem) -> str:
         if self._looks_like_cover_annotation_noise(diff):
             return "cover_annotation_noise"
+        if "VISUAL_FOOTER_ANNOTATION" in diff.review_flags:
+            return ""
         if self._is_cross_source_merged_multi_page_footer(diff):
             return ""
         if self._looks_like_header_footer_noise(diff):
