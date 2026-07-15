@@ -159,14 +159,16 @@ class DocumentUnderstandingService:
             reasons = [f"table_area_ratio={table_area_ratio:.3f}"]
 
         self._apply_page_decision(page, role, confidence, ";".join(reasons), "rule", result)
+        cover_body_start_y = self._cover_body_start_y(blocks) if role == "cover" else None
         for block in blocks:
-            self._apply_rule_block(page, block, role, result)
+            self._apply_rule_block(page, block, role, cover_body_start_y, result)
 
     def _apply_rule_block(
         self,
         page: Page,
         block: TextBlock,
         page_role: str,
+        cover_body_start_y: float | None,
         result: DocumentUnderstandingResult,
     ) -> None:
         text = self._compact(block.text)
@@ -207,6 +209,11 @@ class DocumentUnderstandingService:
             enter = False
             confidence = 0.86
             reason = "cover_metadata_label"
+        elif page_role == "cover" and (cover_body_start_y is None or block.bbox.y0 < cover_body_start_y):
+            role = "cover_content"
+            enter = False
+            confidence = 0.86
+            reason = "cover_content_before_contract_body"
         elif page_role in {"appendix", "quote", "safety_agreement"}:
             role = page_role
             enter = True
@@ -311,6 +318,28 @@ class DocumentUnderstandingService:
             return 0.0
         clause_like = sum(1 for text in compact_texts if re.match(r"^(?:第[一二三四五六七八九十百千万0-9]+[章节条]|[一二三四五六七八九十0-9]+[、.．]|\d+(?:\.\d+)+)", text))
         return clause_like / len(compact_texts)
+
+    def _cover_body_start_y(self, blocks: list[TextBlock]) -> float | None:
+        candidates = [
+            block.bbox.y0
+            for block in blocks
+            if self._is_contract_body_start(self._compact(block.text))
+        ]
+        return min(candidates) if candidates else None
+
+    def _is_contract_body_start(self, text: str) -> bool:
+        if not text:
+            return False
+        if text == "正文" or "达成合同如下" in text:
+            return True
+        return bool(
+            re.match(
+                r"^(?:第[一二三四五六七八九十百千万0-9]+[章节条]|"
+                r"[一二三四五六七八九十百千万]+[、.．]|"
+                r"\d+(?:\.\d+)*[、.．])\S+",
+                text,
+            )
+        )
 
     def _is_cover_metadata_text(self, text: str) -> bool:
         return any(parse_labeled_line(line.strip()) for line in text.splitlines()) or bool(

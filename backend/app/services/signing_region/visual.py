@@ -132,7 +132,8 @@ class OpenCvVisualSignatureDetector:
             reasons.append("red_seal_pixels")
 
         dark_pixel_ratio = metrics["dark_pixel_ratio"]
-        if self.detect_handwriting and dark_pixel_ratio >= 0.015:
+        long_stroke_ratio = metrics["long_stroke_ratio"]
+        if self.detect_handwriting and dark_pixel_ratio >= 0.015 and long_stroke_ratio >= 0.12:
             handwriting_confidence = min(0.9, 0.5 + dark_pixel_ratio * 5.0)
             if handwriting_confidence > confidence:
                 label = "signature"
@@ -159,14 +160,14 @@ class OpenCvVisualSignatureDetector:
     def _visual_metrics(image: Any) -> dict[str, float]:
         deps = OpenCvVisualSignatureDetector._dependencies()
         if deps is None or image is None or getattr(image, "size", 0) == 0:
-            return {"red_pixel_ratio": 0.0, "dark_pixel_ratio": 0.0}
+            return {"red_pixel_ratio": 0.0, "dark_pixel_ratio": 0.0, "long_stroke_ratio": 0.0}
 
         cv2, np = deps
         try:
             height, width = image.shape[:2]
             total_pixels = float(height * width)
             if total_pixels <= 0:
-                return {"red_pixel_ratio": 0.0, "dark_pixel_ratio": 0.0}
+                return {"red_pixel_ratio": 0.0, "dark_pixel_ratio": 0.0, "long_stroke_ratio": 0.0}
 
             hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
             red_mask_low = cv2.inRange(hsv, np.array([0, 70, 50]), np.array([12, 255, 255]))
@@ -175,14 +176,45 @@ class OpenCvVisualSignatureDetector:
             red_pixel_ratio = float(np.count_nonzero(red_mask)) / total_pixels
 
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            dark_pixel_ratio = float(np.count_nonzero(gray < 80)) / total_pixels
+            dark_mask = gray < 80
+            dark_pixel_ratio = float(np.count_nonzero(dark_mask)) / total_pixels
+            long_stroke_ratio = OpenCvVisualSignatureDetector._longest_dark_stroke_ratio(dark_mask)
         except Exception:
-            return {"red_pixel_ratio": 0.0, "dark_pixel_ratio": 0.0}
+            return {"red_pixel_ratio": 0.0, "dark_pixel_ratio": 0.0, "long_stroke_ratio": 0.0}
 
         return {
             "red_pixel_ratio": red_pixel_ratio,
             "dark_pixel_ratio": dark_pixel_ratio,
+            "long_stroke_ratio": long_stroke_ratio,
         }
+
+    @staticmethod
+    def _longest_dark_stroke_ratio(mask: Any) -> float:
+        height, width = mask.shape[:2]
+        if height <= 0 or width <= 0:
+            return 0.0
+
+        def longest_run(values: Any) -> int:
+            current = 0
+            longest = 0
+            for value in values:
+                current = current + 1 if bool(value) else 0
+                longest = max(longest, current)
+            return longest
+
+        horizontal_runs = [longest_run(row) for row in mask]
+        vertical_runs = [longest_run(column) for column in mask.T]
+        horizontal = (
+            max(horizontal_runs, default=0) / width
+            if sum(run >= width * 0.12 for run in horizontal_runs) >= 3
+            else 0.0
+        )
+        vertical = (
+            max(vertical_runs, default=0) / height
+            if sum(run >= height * 0.30 for run in vertical_runs) >= 3
+            else 0.0
+        )
+        return float(max(horizontal, vertical))
 
     @staticmethod
     def _render_region(pdf_path: Path, region: SigningRegion) -> Any | None:

@@ -221,6 +221,31 @@ def test_opencv_visual_detector_detects_handwriting_density(
     assert result.detections[0].raw_data["dark_pixel_ratio"] > 0
 
 
+def test_opencv_visual_detector_does_not_treat_dense_printed_glyphs_as_signature(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import numpy as np
+
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    image = np.full((240, 240, 3), 255, dtype=np.uint8)
+    for y in range(70, 170, 20):
+        for x in range(30, 220, 16):
+            image[y : y + 9, x : x + 7] = [20, 20, 20]
+    image[190:191, 20:220] = [20, 20, 20]
+
+    _patch_opencv_dependencies(monkeypatch, OpenCvVisualSignatureDetector)
+    detector = OpenCvVisualSignatureDetector()
+    monkeypatch.setattr(detector, "_render_region", lambda *_args: image)
+
+    result = detector.detect(pdf_path, [_region()], task_id="task-1")
+
+    assert result.available is True
+    assert result.detections == []
+
+
 def test_opencv_visual_detector_keeps_blank_region_as_no_detection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

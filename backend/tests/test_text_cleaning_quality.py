@@ -2939,6 +2939,82 @@ def test_diff_quality_suppresses_title_only_modify_with_native_evidence(tmp_path
     assert any(item.detail.get("reason") == "native_heading_title_only_covered" for item in result.decisions)
 
 
+def test_diff_quality_suppresses_visually_present_top_level_marker_ocr_dropout(tmp_path: Path) -> None:
+    compare_path = tmp_path / "compare-marker.pdf"
+    _write_heading_marker_pdf(compare_path, visible=True)
+    diff, original_clause, compare_clause, compare_document = _top_level_marker_dropout_case(compare_path)
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause],
+        compare_document=compare_document,
+    )
+
+    assert result.diffs == []
+    assert any(item.detail.get("reason") == "visual_heading_marker_ocr_dropout" for item in result.decisions)
+
+
+def test_diff_quality_keeps_top_level_marker_removal_without_visual_ink(tmp_path: Path) -> None:
+    compare_path = tmp_path / "compare-no-marker.pdf"
+    _write_heading_marker_pdf(compare_path, visible=False)
+    diff, original_clause, compare_clause, compare_document = _top_level_marker_dropout_case(compare_path)
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_clauses=[original_clause],
+        compare_clauses=[compare_clause],
+        compare_document=compare_document,
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D_MARKER_DROPOUT"]
+
+
+def _top_level_marker_dropout_case(path: Path) -> tuple[DiffItem, Clause, Clause, Document]:
+    title = "系统开放性与可配置性要求"
+    original_clause = _quality_clause("OC062", f"一、{title}", section_type="appendix")
+    original_clause.clause_no = "一"
+    original_clause.title = title
+    original_clause.bboxes[0].bbox = BBox(x0=80, y0=80, x1=226, y1=105)
+    compare_clause = _quality_clause("NC062", title, side_prefix="N", section_type="appendix")
+    compare_clause.title = title
+    compare_clause.bboxes[0].bbox = BBox(x0=105, y0=80, x1=231, y1=105)
+    compare_document = _quality_document(1, title)
+    compare_document.path = str(path)
+    compare_document.pages[0].blocks[0].bbox = compare_clause.bboxes[0].bbox
+    diff = DiffItem(
+        diff_id="D_MARKER_DROPOUT",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_clause_id=original_clause.clause_id,
+        compare_clause_id=compare_clause.clause_id,
+        section_type="appendix",
+        title=title,
+        original_text=original_clause.text,
+        compare_text=compare_clause.text,
+        original_snippet="一、",
+        compare_snippet="",
+        match_score=100,
+        match_score_details={
+            "title_score": 100.0,
+            "business_token_mismatch": 0.0,
+            "short_clause_pair": 1.0,
+            "alignment": {"title_match": True, "body_similarity": 0.96, "risk_flags": []},
+        },
+        review_flags=["READING_ORDER_RISK", "SHORT_CLAUSE_MATCH_REVIEW", "POSSIBLE_OCR_NOISE"],
+    )
+    return diff, original_clause, compare_clause, compare_document
+
+
+def _write_heading_marker_pdf(path: Path, *, visible: bool) -> None:
+    pdf = fitz.open()
+    page = pdf.new_page(width=595, height=842)
+    if visible:
+        page.insert_text((82, 100), "一、", fontname="china-s", fontsize=12)
+    pdf.save(path)
+    pdf.close()
+
+
 def test_diff_quality_keeps_native_heading_add_when_clause_contains_new_body(tmp_path: Path) -> None:
     path = tmp_path / "original.pdf"
     _write_quality_heading_pdf(path, "8. 知识产权")

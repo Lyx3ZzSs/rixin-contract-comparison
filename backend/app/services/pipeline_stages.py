@@ -690,8 +690,16 @@ class SigningRegionStage:
             )
         self._apply_visual_enrichment_when_comparable(visual_status)
         matches = self.matcher.match(original_regions, compare_regions)
+        original_party_references = self.comparator.party_references(extractions.original.document)
+        compare_party_references = self.comparator.party_references(extractions.compare.document)
         comparisons = [
-            self.comparator.compare(original, compare, match_confidence=match_confidence)
+            self.comparator.compare(
+                original,
+                compare,
+                match_confidence=match_confidence,
+                original_party_references=original_party_references,
+                compare_party_references=compare_party_references,
+            )
             for original, compare, match_confidence in matches
         ]
         legacy_diffs = self._legacy_diffs(ctx)

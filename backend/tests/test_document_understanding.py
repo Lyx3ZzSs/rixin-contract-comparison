@@ -168,3 +168,40 @@ def test_rule_understanding_preserves_native_heading_reason_for_clause_split() -
     assert [clause.clause_no for clause in clauses] == ["17", "18"]
     assert clauses[1].title == "份数"
     assert "native_heading_repair" in clauses[1].segmentation_reason
+
+
+def test_rule_understanding_excludes_unlabeled_cover_content_after_leading_annotation() -> None:
+    document = _document([
+        _block("annotation", "GNXMXN-22604A-00044", 5, 35),
+        _block("contract-no", "合同编号：XX-C-260520", 65, 81),
+        _block("project", "江苏中广核", 168, 192, block_type="doc_title", flow_role="heading"),
+        _block("quantity", "4 套风电功率预测系统 V1.0", 199, 223, block_type="doc_title", flow_role="heading"),
+        _block("title", "采购合同", 289, 316, block_type="doc_title", flow_role="heading"),
+    ])
+
+    DocumentUnderstandingService(DocumentUnderstandingSettings()).understand(document, "compare")
+    clauses = ClauseSplitter().split(document, "N")
+
+    assert document.pages[0].semantic_role == "cover"
+    assert all(block.enter_clause_compare is False for block in document.pages[0].blocks)
+    assert clauses == []
+
+
+def test_rule_understanding_keeps_body_that_starts_on_cover_page() -> None:
+    document = _document([
+        _block("contract-no", "合同编号：XX-C-260520", 40, 60),
+        _block("title", "采购合同", 80, 110, block_type="doc_title", flow_role="heading"),
+        _block("intro", "甲乙双方经协商，达成合同如下：", 140, 165),
+        _block("article", "第一条 服务范围", 180, 205),
+        _block("body", "乙方提供风功率预测服务。", 220, 250),
+    ])
+
+    DocumentUnderstandingService(DocumentUnderstandingSettings()).understand(document, "compare")
+    clauses = ClauseSplitter().split(document, "N")
+
+    by_id = {block.block_id: block for block in document.pages[0].blocks}
+    assert by_id["contract-no"].enter_clause_compare is False
+    assert by_id["title"].enter_clause_compare is False
+    assert by_id["intro"].enter_clause_compare is True
+    assert by_id["article"].enter_clause_compare is True
+    assert [clause.clause_no for clause in clauses] == ["", "第一条"]

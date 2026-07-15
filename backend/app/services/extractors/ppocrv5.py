@@ -4,6 +4,7 @@ import base64
 import logging
 import re
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,8 @@ class PPOCRV5Extractor:
         r"^(?:共\s*\d+\s*页\s*)?(?:第\s*)?\d+\s*页$|^第\s*\d+\s*/\s*共\s*\d+\s*页$|^[-—]?\s*\d+\s*[-—]?$",
         re.IGNORECASE,
     )
-    per_mille_ocr_pattern = re.compile(r"(?P<number>\d+(?:[.,]\d+)?)%0(?=\D|$)")
+    per_mille_ocr_pattern = re.compile(r"(?P<number>\d+(?:[.,]\d+)?)%[0oO](?=\D|$)")
+    bare_percent_pattern = re.compile(r"(?P<number>\d+(?:[.,]\d+)?)%(?![0oO])(?=\D|$)")
     per_mille_contract_context_pattern = re.compile(
         r"违约金|逾期|赔偿|罚金|滞纳金|费率|利率|违约责任"
     )
@@ -175,28 +177,49 @@ class PPOCRV5Extractor:
             return 0
 
         corrected_count = 0
-        for page in pages:
-            native_text = page_texts[page.page_no - 1] if 0 <= page.page_no - 1 < len(page_texts) else ""
-            native_compact = self._compact_text(native_text)
-            allow_contextual_repair = not native_compact
-            if "‰" not in native_compact and not allow_contextual_repair:
-                continue
-            for block in page.blocks:
-                corrected_text = self._correct_line_per_mille_text(
-                    block.text,
-                    native_compact,
-                    allow_contextual_repair=allow_contextual_repair,
-                )
-                if corrected_text == block.text:
+        visual_pdf: fitz.Document | None = None
+        visual_page_cache: dict[int, tuple[bytes, int, int, float]] = {}
+        try:
+            for page in pages:
+                native_text = page_texts[page.page_no - 1] if 0 <= page.page_no - 1 < len(page_texts) else ""
+                native_compact = self._compact_text(native_text)
+                allow_contextual_repair = not native_compact
+                if "‰" not in native_compact and not allow_contextual_repair:
                     continue
-                replacements = self._per_mille_replacements(
-                    block.text,
-                    native_compact,
-                    allow_contextual_repair=allow_contextual_repair,
-                )
-                block.text = corrected_text
-                block.char_boxes = self._correct_per_mille_char_boxes(block.text, block.char_boxes, replacements)
-                corrected_count += len(replacements)
+                for block in page.blocks:
+                    replacements = self._per_mille_replacements(
+                        block.text,
+                        native_compact,
+                        allow_contextual_repair=allow_contextual_repair,
+                    )
+                    if replacements:
+                        block.text = self._apply_per_mille_replacements(block.text, replacements)
+                        block.char_boxes = self._correct_per_mille_char_boxes(block.text, block.char_boxes, replacements)
+                        corrected_count += len(replacements)
+
+                    if not allow_contextual_repair or "%" not in block.text:
+                        continue
+                    if visual_pdf is None:
+                        try:
+                            visual_pdf = fitz.open(source_path)
+                        except Exception:
+                            visual_pdf = None
+                    if visual_pdf is None:
+                        continue
+                    visual_indices = self._visual_per_mille_indices(visual_pdf, block, visual_page_cache)
+                    if not visual_indices:
+                        continue
+                    block.text = self._apply_visual_per_mille_replacements(block.text, visual_indices)
+                    block.char_boxes = [
+                        char_box.model_copy(update={"char": "‰"})
+                        if char_box.text_index in visual_indices
+                        else char_box
+                        for char_box in block.char_boxes
+                    ]
+                    corrected_count += len(visual_indices)
+        finally:
+            if visual_pdf is not None:
+                visual_pdf.close()
         return corrected_count
 
     def _pdf_page_texts(self, path: Path) -> list[str]:
@@ -223,6 +246,10 @@ class PPOCRV5Extractor:
         )
         if not replacements:
             return text
+        return self._apply_per_mille_replacements(text, replacements)
+
+    @staticmethod
+    def _apply_per_mille_replacements(text: str, replacements: list[tuple[int, int]]) -> str:
         corrected = text
         for percent_index, _ in reversed(replacements):
             corrected = f"{corrected[:percent_index]}‰{corrected[percent_index + 2:]}"
@@ -275,6 +302,162 @@ class PPOCRV5Extractor:
         context_end = min(len(text), match.end() + 24)
         context = text[context_start:context_end]
         return bool(self.per_mille_contract_context_pattern.search(context))
+
+    def _visual_per_mille_indices(
+        self,
+        pdf: fitz.Document,
+        block: TextBlock,
+        page_cache: dict[int, tuple[bytes, int, int, float]] | None = None,
+    ) -> set[int]:
+        indices: set[int] = set()
+        for match in self.bare_percent_pattern.finditer(block.text or ""):
+            if not self._contextual_per_mille_ocr_match(block.text, match):
+                continue
+            percent_index = match.end("number")
+            if self._visual_glyph_is_per_mille(pdf, block, percent_index, page_cache):
+                indices.add(percent_index)
+        return indices
+
+    def _visual_glyph_is_per_mille(
+        self,
+        pdf: fitz.Document,
+        block: TextBlock,
+        percent_index: int,
+        page_cache: dict[int, tuple[bytes, int, int, float]] | None = None,
+    ) -> bool:
+        if not 1 <= block.page_no <= len(pdf):
+            return False
+        by_index = {char_box.text_index: char_box for char_box in block.char_boxes if char_box.text_index is not None}
+        previous = by_index.get(percent_index - 1)
+        current = by_index.get(percent_index)
+        following = by_index.get(percent_index + 1)
+        if previous is None or current is None or following is None:
+            return False
+
+        left = previous.bbox.x1 + 0.5
+        right = following.bbox.x0 - 0.5
+        top = block.bbox.y0 - 2.0
+        bottom = block.bbox.y1 + 2.0
+        if right - left < 4.0 or bottom - top < 4.0 or right - left > 32.0 or bottom - top > 48.0:
+            return False
+
+        clip = fitz.Rect(left, top, right, bottom) & pdf[block.page_no - 1].rect
+        if clip.is_empty:
+            return False
+        raster = self._grayscale_page_raster(pdf, block.page_no, page_cache)
+        if raster is None:
+            return False
+        samples, page_width, page_height, scale = raster
+        page_rect = pdf[block.page_no - 1].rect
+        x0 = max(0, min(page_width, int((clip.x0 - page_rect.x0) * scale)))
+        y0 = max(0, min(page_height, int((clip.y0 - page_rect.y0) * scale)))
+        x1 = max(x0, min(page_width, int((clip.x1 - page_rect.x0) * scale)))
+        y1 = max(y0, min(page_height, int((clip.y1 - page_rect.y0) * scale)))
+        if x1 - x0 < 3 or y1 - y0 < 3:
+            return False
+        glyph_samples = b"".join(
+            samples[y * page_width + x0 : y * page_width + x1]
+            for y in range(y0, y1)
+        )
+        return all(
+            self._enclosed_white_region_count(glyph_samples, x1 - x0, y1 - y0, threshold) >= 3
+            for threshold in (180, 200)
+        )
+
+    @staticmethod
+    def _grayscale_page_raster(
+        pdf: fitz.Document,
+        page_no: int,
+        page_cache: dict[int, tuple[bytes, int, int, float]] | None,
+    ) -> tuple[bytes, int, int, float] | None:
+        if page_cache is not None and page_no in page_cache:
+            return page_cache[page_no]
+        scale = 4.0
+        try:
+            pixmap = pdf[page_no - 1].get_pixmap(
+                matrix=fitz.Matrix(scale, scale),
+                colorspace=fitz.csGRAY,
+                alpha=False,
+            )
+        except Exception:
+            return None
+        raster = (bytes(pixmap.samples), pixmap.width, pixmap.height, scale)
+        if page_cache is not None:
+            page_cache[page_no] = raster
+        return raster
+
+    @staticmethod
+    def _apply_visual_per_mille_replacements(text: str, indices: set[int]) -> str:
+        characters = list(text)
+        for index in indices:
+            if 0 <= index < len(characters) and characters[index] == "%":
+                characters[index] = "‰"
+        return "".join(characters)
+
+    @staticmethod
+    def _enclosed_white_region_count(
+        grayscale: bytes,
+        width: int,
+        height: int,
+        threshold: int,
+    ) -> int:
+        if width <= 2 or height <= 2 or len(grayscale) < width * height:
+            return 0
+        white = bytearray(value >= threshold for value in grayscale[: width * height])
+        exterior = bytearray(width * height)
+        queue: deque[int] = deque()
+
+        def enqueue_exterior(index: int) -> None:
+            if white[index] and not exterior[index]:
+                exterior[index] = 1
+                queue.append(index)
+
+        for x in range(width):
+            enqueue_exterior(x)
+            enqueue_exterior((height - 1) * width + x)
+        for y in range(height):
+            enqueue_exterior(y * width)
+            enqueue_exterior(y * width + width - 1)
+        PPOCRV5Extractor._flood_regions(white, exterior, queue, width, height)
+
+        seen = bytearray(width * height)
+        min_region_area = max(4, int(width * height * 0.001))
+        region_count = 0
+        for index, is_white in enumerate(white):
+            if not is_white or exterior[index] or seen[index]:
+                continue
+            seen[index] = 1
+            queue.append(index)
+            region_area = PPOCRV5Extractor._flood_regions(white, seen, queue, width, height, exterior)
+            if region_area >= min_region_area:
+                region_count += 1
+        return region_count
+
+    @staticmethod
+    def _flood_regions(
+        mask: bytearray,
+        seen: bytearray,
+        queue: deque[int],
+        width: int,
+        height: int,
+        excluded: bytearray | None = None,
+    ) -> int:
+        area = 0
+        size = width * height
+        while queue:
+            index = queue.popleft()
+            area += 1
+            y, x = divmod(index, width)
+            for neighbor in (index - 1, index + 1, index - width, index + width):
+                if neighbor < 0 or neighbor >= size:
+                    continue
+                neighbor_y, neighbor_x = divmod(neighbor, width)
+                if abs(neighbor_y - y) + abs(neighbor_x - x) != 1:
+                    continue
+                if mask[neighbor] and not seen[neighbor] and not (excluded and excluded[neighbor]):
+                    seen[neighbor] = 1
+                    queue.append(neighbor)
+        return area
 
     def _correct_per_mille_char_boxes(
         self,

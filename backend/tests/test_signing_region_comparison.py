@@ -268,6 +268,82 @@ def test_party_name_change_is_exposed_as_focused_signing_modify() -> None:
     assert "CRITICAL_VALUE_CHANGE" in diff.review_flags
 
 
+def test_party_ocr_conflict_under_seal_is_reconciled_by_document_references() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    for region, text in [
+        (original, "甲方：江苏东大金智信息系统有限公司"),
+        (compare, "甲方：江苏东达金智信息系统有限公司"),
+    ]:
+        region.elements.append(
+            SigningElement(
+                element_id=f"{region.region_id}-party",
+                element_type=SigningElementType.PARTY_FIELD,
+                page_no=region.page_no,
+                bbox=region.bbox,
+                text=text,
+                confidence=0.95,
+                source="inferred",
+                raw_ref={"party_role": "甲方"},
+            )
+        )
+    compare.elements.append(
+        SigningElement(
+            element_id="C1-seal",
+            element_type=SigningElementType.SEAL,
+            page_no=compare.page_no,
+            bbox=compare.bbox,
+            text="seal",
+            confidence=0.8,
+            source="visual_model",
+        )
+    )
+
+    comparison = SigningRegionComparator().compare(
+        original,
+        compare,
+        match_confidence=0.9,
+        original_party_references={"甲方": "江苏东大金智信息系统有限公司"},
+        compare_party_references={"甲方": "江苏东大金智信息系统有限公司"},
+    )
+
+    assert comparison.party_changes == []
+    assert "SIGNING_PARTY_CHANGE" not in comparison.review_flags
+    assert "SIGNING_SEAL_CHANGE" in comparison.review_flags
+
+
+def test_party_single_character_change_without_seal_remains_critical() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    for region, text in [
+        (original, "甲方：江苏东大金智信息系统有限公司"),
+        (compare, "甲方：江苏东达金智信息系统有限公司"),
+    ]:
+        region.elements.append(
+            SigningElement(
+                element_id=f"{region.region_id}-party",
+                element_type=SigningElementType.PARTY_FIELD,
+                page_no=region.page_no,
+                bbox=region.bbox,
+                text=text,
+                confidence=0.95,
+                source="inferred",
+                raw_ref={"party_role": "甲方"},
+            )
+        )
+
+    comparison = SigningRegionComparator().compare(
+        original,
+        compare,
+        match_confidence=0.9,
+        original_party_references={"甲方": "江苏东大金智信息系统有限公司"},
+        compare_party_references={"甲方": "江苏东大金智信息系统有限公司"},
+    )
+
+    assert len(comparison.party_changes) == 1
+    assert "SIGNING_PARTY_CHANGE" in comparison.review_flags
+
+
 def test_party_and_visual_changes_keep_focused_field_and_full_signing_region_evidence() -> None:
     original = _region(
         "O1",

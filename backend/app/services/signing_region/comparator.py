@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 
+from app.models import Document
 from app.services.signing_region.models import (
     SigningElementType,
     SigningRegion,
@@ -35,6 +37,8 @@ class SigningRegionComparator:
         compare: SigningRegion | None,
         *,
         match_confidence: float = 0.0,
+        original_party_references: dict[str, str] | None = None,
+        compare_party_references: dict[str, str] | None = None,
     ) -> SigningRegionComparison:
         comparison = SigningRegionComparison(
             comparison_id=self._comparison_id(original, compare),
@@ -54,7 +58,13 @@ class SigningRegionComparator:
             return comparison
         if original is None or compare is None:
             return comparison
-        self._compare_party_fields(original, compare, comparison)
+        self._compare_party_fields(
+            original,
+            compare,
+            comparison,
+            original_party_references or {},
+            compare_party_references or {},
+        )
         self._compare_elements(original, compare, comparison)
         if self._has_changes(comparison):
             comparison.diff_type = "MODIFY"
@@ -85,6 +95,8 @@ class SigningRegionComparator:
         original: SigningRegion,
         compare: SigningRegion,
         comparison: SigningRegionComparison,
+        original_party_references: dict[str, str],
+        compare_party_references: dict[str, str],
     ) -> None:
         original_fields = self._party_fields(original)
         compare_fields = self._party_fields(compare)
@@ -92,6 +104,16 @@ class SigningRegionComparator:
             original_text = original_fields.get(role, "")
             compare_text = compare_fields.get(role, "")
             if self._normalized_party_text(original_text) == self._normalized_party_text(compare_text):
+                continue
+            if self._is_seal_occluded_party_ocr_conflict(
+                role,
+                original_text,
+                compare_text,
+                original,
+                compare,
+                original_party_references,
+                compare_party_references,
+            ):
                 continue
             if original_text and compare_text:
                 change_type = "MODIFY"
@@ -125,6 +147,72 @@ class SigningRegionComparator:
     @staticmethod
     def _normalized_party_text(text: str) -> str:
         return re.sub(r"\s+", "", text or "").replace(":", "：")
+
+    @classmethod
+    def _is_seal_occluded_party_ocr_conflict(
+        cls,
+        role: str,
+        original_text: str,
+        compare_text: str,
+        original_region: SigningRegion,
+        compare_region: SigningRegion,
+        original_references: dict[str, str],
+        compare_references: dict[str, str],
+    ) -> bool:
+        original_reference = cls._normalized_party_name(original_references.get(role, ""))
+        compare_reference = cls._normalized_party_name(compare_references.get(role, ""))
+        if not original_reference or original_reference != compare_reference:
+            return False
+        original_name = cls._normalized_party_name(original_text)
+        compare_name = cls._normalized_party_name(compare_text)
+        if cls._region_has_visual_seal(compare_region):
+            return original_name == original_reference and cls._single_character_substitution(
+                compare_name,
+                compare_reference,
+            )
+        if cls._region_has_visual_seal(original_region):
+            return compare_name == compare_reference and cls._single_character_substitution(
+                original_name,
+                original_reference,
+            )
+        return False
+
+    @staticmethod
+    def _normalized_party_name(text: str) -> str:
+        normalized = re.sub(r"\s+", "", text or "").replace(":", "：")
+        return re.sub(r"^(?:甲方|乙方|买方|卖方|采购方|供应商)[:：]?", "", normalized)
+
+    @staticmethod
+    def _single_character_substitution(left: str, right: str) -> bool:
+        return bool(left and len(left) == len(right) and sum(a != b for a, b in zip(left, right)) == 1)
+
+    @staticmethod
+    def _region_has_visual_seal(region: SigningRegion) -> bool:
+        return any(
+            element.element_type == SigningElementType.SEAL
+            and (element.source == "visual_model" or "seal" in element.text.lower())
+            for element in region.elements
+        )
+
+    @classmethod
+    def party_references(cls, document: Document) -> dict[str, str]:
+        candidates: dict[str, Counter[str]] = {}
+        pattern = re.compile(
+            r"(?P<role>甲方|乙方|买方|卖方|采购方|供应商)(?:\s*[:：]\s*|\s*\n\s*)"
+            r"(?P<name>[\u4e00-\u9fffA-Za-z0-9（）()·\-]{2,80}?(?:分公司|有限公司|股份有限公司|公司))"
+        )
+        for page in document.pages:
+            for block in page.blocks:
+                for match in pattern.finditer(block.text or ""):
+                    role = match.group("role")
+                    name = cls._normalized_party_name(match.group("name"))
+                    if name:
+                        candidates.setdefault(role, Counter())[name] += 1
+        return {
+            role: counts.most_common(1)[0][0]
+            for role, counts in candidates.items()
+            if counts
+        }
 
     @staticmethod
     def _element_text(region: SigningRegion, element_type: SigningElementType) -> str:

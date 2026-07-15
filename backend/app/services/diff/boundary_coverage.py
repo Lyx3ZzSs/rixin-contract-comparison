@@ -5,6 +5,8 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
+import fitz
+
 from app.models import Clause, DiffItem, Document, EvidenceBox, TextRange
 from app.services.diff.text_utils import shorten
 from app.services.native_heading_repair import NativeHeadingIndex, load_native_heading_index, normalize_heading_text
@@ -162,6 +164,8 @@ class ClauseBoundaryCoverageFilter:
             return "heading_add_covered_by_native_heading"
         if self._native_heading_title_only_modify_covered(diff, context):
             return "native_heading_title_only_covered"
+        if self._visual_heading_marker_ocr_dropout(diff, context):
+            return "visual_heading_marker_ocr_dropout"
         if self._heading_add_covered_by_opposite_numbering(diff, context):
             return "heading_add_covered_by_opposite_numbering"
         if self._heading_layer_mismatch_covered_by_both_pages(diff, context):
@@ -644,6 +648,95 @@ class ClauseBoundaryCoverageFilter:
             return False
         pages = self._candidate_pages_for_modify_side(diff, "original") or set(original_clause.page_numbers)
         return self._native_heading_confirms(context.original_document, pages, compare_clause.clause_no, title, context)
+
+    def _visual_heading_marker_ocr_dropout(self, diff: DiffItem, context: BoundaryCoverageContext) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY" or diff.section_type != "appendix":
+            return False
+        original_changed = unicodedata.normalize("NFKC", diff.original_snippet or "").strip()
+        compare_changed = unicodedata.normalize("NFKC", diff.compare_snippet or "").strip()
+        marker_pattern = re.compile(r"^[一二三四五六七八九十百千万]+[、.．]$")
+        if bool(original_changed) == bool(compare_changed):
+            return False
+        if original_changed:
+            if not marker_pattern.fullmatch(original_changed):
+                return False
+            present_clause = self._clause_by_id(context.original_clauses, diff.original_clause_id)
+            missing_clause = self._clause_by_id(context.compare_clauses, diff.compare_clause_id)
+            missing_document = context.compare_document
+        else:
+            if not marker_pattern.fullmatch(compare_changed):
+                return False
+            present_clause = self._clause_by_id(context.compare_clauses, diff.compare_clause_id)
+            missing_clause = self._clause_by_id(context.original_clauses, diff.original_clause_id)
+            missing_document = context.original_document
+        if present_clause is None or missing_clause is None or missing_document is None:
+            return False
+        if not present_clause.clause_no or missing_clause.clause_no:
+            return False
+        if present_clause.section_type != "appendix" or missing_clause.section_type != "appendix":
+            return False
+        if normalize_heading_text(present_clause.title) != normalize_heading_text(missing_clause.title):
+            return False
+
+        details = diff.match_score_details or {}
+        alignment = details.get("alignment") if isinstance(details.get("alignment"), dict) else {}
+        title_score = float(details.get("title_score", 0.0) or 0.0)
+        body_similarity = float(alignment.get("body_similarity", details.get("body_similarity", 0.0)) or 0.0)
+        if title_score < 99.0 or body_similarity < 0.94:
+            return False
+        if float(details.get("business_token_mismatch", 0.0) or 0.0) > 0.0:
+            return False
+        if float(details.get("short_clause_pair", 0.0) or 0.0) < 1.0:
+            return False
+        return self._missing_marker_has_visual_ink(present_clause, missing_clause, missing_document)
+
+    @staticmethod
+    def _missing_marker_has_visual_ink(
+        present_clause: Clause,
+        missing_clause: Clause,
+        missing_document: Document,
+    ) -> bool:
+        if not present_clause.bboxes or not missing_clause.bboxes or not missing_document.path:
+            return False
+        present_box = present_clause.bboxes[0].bbox
+        missing_evidence = missing_clause.bboxes[0]
+        missing_box = missing_evidence.bbox
+        x_shift = missing_box.x0 - present_box.x0
+        width_delta = (present_box.x1 - present_box.x0) - (missing_box.x1 - missing_box.x0)
+        if not 8.0 <= x_shift <= 45.0 or width_delta < 8.0 or abs(x_shift - width_delta) > 16.0:
+            return False
+
+        crop_width = max(16.0, min(40.0, max(width_delta + 6.0, x_shift + 3.0)))
+        try:
+            pdf = fitz.open(missing_document.path)
+        except Exception:
+            return False
+        try:
+            if not 1 <= missing_evidence.page_no <= len(pdf):
+                return False
+            page = pdf[missing_evidence.page_no - 1]
+            clip = fitz.Rect(
+                missing_box.x0 - crop_width,
+                missing_box.y0 - 2.0,
+                missing_box.x0 - 0.5,
+                missing_box.y1 + 2.0,
+            ) & page.rect
+            if clip.is_empty:
+                return False
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(4, 4), clip=clip, colorspace=fitz.csRGB, alpha=False)
+        except Exception:
+            return False
+        finally:
+            pdf.close()
+
+        neutral_dark = 0
+        samples = pixmap.samples
+        for index in range(0, len(samples) - 2, 3):
+            red, green, blue = samples[index : index + 3]
+            if max(red, green, blue) < 190 and max(red, green, blue) - min(red, green, blue) <= 45:
+                neutral_dark += 1
+        pixel_count = max(1, pixmap.width * pixmap.height)
+        return neutral_dark >= 12 and neutral_dark / pixel_count >= 0.006
 
     @staticmethod
     def _native_heading_parent_only_clause(clause: Clause, changed: str, parent_no: str) -> bool:
