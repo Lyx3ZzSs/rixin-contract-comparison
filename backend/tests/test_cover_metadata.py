@@ -5,6 +5,7 @@ from pathlib import Path
 import fitz
 
 from app.models import BBox, Document, Page, TextBlock
+from app.services.audit_summary import build_audit_items
 from app.services.cover.facade import CoverMetadataComparator
 
 
@@ -237,6 +238,85 @@ def test_cover_title_missing_from_ocr_is_not_reported_when_present_in_opposite_n
     diffs = CoverMetadataComparator().build_diffs(original, compare)
 
     assert [diff.title for diff in diffs] == ["封面字段：合同编号（甲方）"]
+
+
+def test_reports_changed_preamble_title_on_second_page_before_first_clause() -> None:
+    original = _multi_page_document(
+        [
+            [_block("o_cover_title", "新能源场站功率预测系统授权服务合同", 120, 220, 480, 250, "doc_title")],
+            [
+                _block("o_title_1", "国能长源随州发电有限公司随县分公司", 130, 80, 470, 102, "doc_title"),
+                _block("o_title_2", "2026年新能源场站功率预测系统授权服务合同", 115, 112, 485, 136, "doc_title"),
+                _block(
+                    "o_preamble",
+                    "鉴于甲方拟委托乙方提供新能源场站功率预测系统授权服务项目，且乙方同意接受",
+                    72,
+                    190,
+                    520,
+                    212,
+                ),
+                _block("o_clause", "1. 定义", 72, 240, 145, 260, "paragraph_title"),
+            ],
+        ]
+    )
+    compare = _multi_page_document(
+        [
+            [_block("c_cover_title", "新能源场站功率预测系统授权服务合同", 120, 220, 480, 250, "doc_title")],
+            [
+                _block("c_title_1", "长源电力随州公司2026年新能源场站", 138, 82, 375, 103, "doc_title"),
+                _block("c_title_2", "功率预测系统授权服务单一来源项目合同", 127, 115, 386, 136, "doc_title"),
+                _block(
+                    "c_preamble",
+                    "鉴于甲方拟委托乙方提供新能源场站功率预测系统授权服务项目，且乙方同意接受",
+                    72,
+                    190,
+                    520,
+                    212,
+                ),
+                _block("c_clause", "1. 定义", 72, 240, 145, 260, "paragraph_title"),
+            ],
+        ]
+    )
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+
+    preamble_diffs = [diff for diff in diffs if diff.title == "前置标题（第2页）"]
+    assert len(preamble_diffs) == 1
+    diff = preamble_diffs[0]
+    assert diff.diff_type == "MODIFY"
+    assert diff.original_text == (
+        "国能长源随州发电有限公司随县分公司\n2026年新能源场站功率预测系统授权服务合同"
+    )
+    assert diff.compare_text == (
+        "长源电力随州公司2026年新能源场站\n功率预测系统授权服务单一来源项目合同"
+    )
+    assert diff.original_snippet == diff.original_text
+    assert diff.compare_snippet == diff.compare_text
+    assert [
+        (text_range.start, text_range.end, text_range.highlight_type)
+        for text_range in diff.original_change_ranges
+    ] == [(0, len(diff.original_text), "MODIFY")]
+    assert [
+        (text_range.start, text_range.end, text_range.highlight_type)
+        for text_range in diff.compare_change_ranges
+    ] == [(0, len(diff.compare_text), "MODIFY")]
+    assert [evidence.text for evidence in diff.original_evidence] == [
+        "国能长源随州发电有限公司随县分公司",
+        "2026年新能源场站功率预测系统授权服务合同",
+    ]
+    assert [evidence.text for evidence in diff.compare_evidence] == [
+        "长源电力随州公司2026年新能源场站",
+        "功率预测系统授权服务单一来源项目合同",
+    ]
+    assert {evidence.page_no for evidence in diff.original_evidence} == {2}
+    assert {evidence.page_no for evidence in diff.compare_evidence} == {2}
+    assert {evidence.highlight_type for evidence in diff.original_evidence} == {"MODIFY"}
+    assert {evidence.highlight_type for evidence in diff.compare_evidence} == {"MODIFY"}
+
+    audit_items = build_audit_items([diff])
+    assert [item.item_id for item in audit_items] == [f"{diff.diff_id}:MODIFY"]
+    assert audit_items[0].original_evidence == diff.original_evidence
+    assert audit_items[0].compare_evidence == diff.compare_evidence
 
 
 def test_cover_extra_pairs_blank_year_month_placeholder_with_filled_cover_date() -> None:

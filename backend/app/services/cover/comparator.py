@@ -38,9 +38,62 @@ def build_diffs(normalizer, original: Document, compare: Document, start_index: 
             continue
         diffs.append(_build_diff(key, left, right, next_index))
         next_index += 1
+    preamble_diffs = _build_preamble_title_diffs(
+        original_extraction,
+        compare_extraction,
+        next_index,
+    )
+    diffs.extend(preamble_diffs)
+    next_index += len(preamble_diffs)
     extra_diffs = _build_extra_text_diffs(original, compare, original_extraction, compare_extraction, next_index)
     diffs.extend(extra_diffs)
     return diffs
+
+
+def _build_preamble_title_diffs(
+    original_extraction: CoverExtraction,
+    compare_extraction: CoverExtraction,
+    start_index: int,
+) -> list[DiffItem]:
+    diffs: list[DiffItem] = []
+    page_numbers = sorted(
+        set(original_extraction.preamble_titles) | set(compare_extraction.preamble_titles)
+    )
+    for page_no in page_numbers:
+        left = original_extraction.preamble_titles.get(page_no)
+        right = compare_extraction.preamble_titles.get(page_no)
+        if left is None or right is None:
+            continue
+        if normalize_extra(left.value) == normalize_extra(right.value):
+            continue
+        diffs.append(_build_preamble_title_diff(page_no, left, right, start_index + len(diffs)))
+    return diffs
+
+
+def _build_preamble_title_diff(
+    page_no: int,
+    left: CoverField,
+    right: CoverField,
+    index: int,
+) -> DiffItem:
+    title = f"前置标题（第{page_no}页）"
+    original_ranges = [TextRange(start=0, end=len(left.value), highlight_type="MODIFY")]
+    compare_ranges = [TextRange(start=0, end=len(right.value), highlight_type="MODIFY")]
+    return DiffItem(
+        diff_id=generate_diff_id(index),
+        diff_type="MODIFY",
+        title=title,
+        original_text=left.value,
+        compare_text=right.value,
+        original_snippet=left.value,
+        compare_snippet=right.value,
+        readable_change=f"{title}变更：{left.value} -> {right.value}",
+        source_type="metadata",
+        original_evidence=field_evidence(left, original_ranges),
+        compare_evidence=field_evidence(right, compare_ranges),
+        original_change_ranges=original_ranges,
+        compare_change_ranges=compare_ranges,
+    )
 
 
 def _build_diff(key: str, left: CoverField | None, right: CoverField | None, index: int) -> DiffItem:

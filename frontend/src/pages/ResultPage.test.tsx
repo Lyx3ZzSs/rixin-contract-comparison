@@ -257,6 +257,52 @@ const mockDiffs: DiffItem[] = [
   },
 ];
 
+const preambleReplacementDiff: DiffItem = {
+  diff_id: "diff-preamble-title",
+  diff_type: "MODIFY",
+  clause_no: "",
+  title: "前置标题（第2页）",
+  original_text: "国能长源随州发电有限公司随县分公司\n2026年新能源场站功率预测系统授权服务合同",
+  compare_text: "长源电力随州公司2026年新能源场站\n功率预测系统授权服务单一来源项目合同",
+  original_snippet: "国能长源随州发电有限公司随县分公司\n2026年新能源场站功率预测系统授权服务合同",
+  compare_snippet: "长源电力随州公司2026年新能源场站\n功率预测系统授权服务单一来源项目合同",
+  readable_change: "前置标题（第2页）完整变更",
+  source_type: "metadata",
+  review_status: "UNREVIEWED",
+  original_evidence: [
+    {
+      page_no: 2,
+      bbox: { x0: 130, y0: 80, x1: 470, y1: 102 },
+      method: "cover_metadata",
+      text: "国能长源随州发电有限公司随县分公司",
+      highlight_type: "MODIFY",
+    },
+    {
+      page_no: 2,
+      bbox: { x0: 115, y0: 112, x1: 300, y1: 136 },
+      method: "cover_metadata",
+      text: "2026年新能源场站功率预测系统授权服务合同",
+      highlight_type: "MODIFY",
+    },
+  ],
+  compare_evidence: [
+    {
+      page_no: 2,
+      bbox: { x0: 138, y0: 82, x1: 375, y1: 103 },
+      method: "cover_metadata",
+      text: "长源电力随州公司2026年新能源场站",
+      highlight_type: "MODIFY",
+    },
+    {
+      page_no: 2,
+      bbox: { x0: 272, y0: 115, x1: 358, y1: 136 },
+      method: "cover_metadata",
+      text: "功率预测系统授权服务单一来源项目合同",
+      highlight_type: "MODIFY",
+    },
+  ],
+};
+
 const signingRegionDiff: DiffItem = {
   diff_id: "diff-signing",
   diff_type: "ADD",
@@ -579,6 +625,29 @@ describe("ResultPage", () => {
 
     expect(screen.getByRole("button", { name: "审计定位改动 diff-3:DELETE" })).toHaveTextContent("删除");
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
+  });
+
+  it("shows a whole metadata replacement as one modify audit item", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getDiffs).mockResolvedValueOnce([preambleReplacementDiff]);
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    expect(screen.getByRole("button", { name: "筛选全部差异" })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("0");
+    expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("0");
+    expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
+    const modifyCard = screen.getByRole("button", { name: "审计定位改动 diff-preamble-title:MODIFY" });
+    expect(modifyCard).toHaveTextContent(
+      "原文：国能长源随州发电有限公司随县分公司 2026年新能源场站功率预测系统授权服务合同",
+    );
+    expect(modifyCard).toHaveTextContent(
+      "修改后：长源电力随州公司2026年新能源场站 功率预测系统授权服务单一来源项目合同",
+    );
+    expect(screen.queryByRole("button", { name: "审计定位改动 diff-preamble-title:ADD" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "审计定位改动 diff-preamble-title:DELETE" })).not.toBeInTheDocument();
   });
 
   it("groups signing region differences between main and structural audit groups", async () => {

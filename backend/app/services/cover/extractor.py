@@ -88,7 +88,63 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
                 value=value,
                 evidences=evidences,
             )
-    return CoverExtraction(fields=fields, consumed_block_ids=consumed)
+    preamble_titles: dict[int, CoverField] = {}
+    later_title_blocks: dict[int, list[TextBlock]] = {}
+    for block in blocks:
+        if block.page_no == first_page_no or block.block_id in consumed:
+            continue
+        block_type = (block.block_type or "").lower()
+        if block_type not in {"doc_title", "title"}:
+            continue
+        later_title_blocks.setdefault(block.page_no, []).append(block)
+    for page_no, page_blocks in sorted(later_title_blocks.items()):
+        field = _preamble_title_field(page_no, page_blocks)
+        if field is None:
+            continue
+        preamble_titles[page_no] = field
+        consumed.update(block.block_id for block in page_blocks)
+    return CoverExtraction(
+        fields=fields,
+        consumed_block_ids=consumed,
+        preamble_titles=preamble_titles,
+    )
+
+
+def _preamble_title_field(page_no: int, blocks: list[TextBlock]) -> CoverField | None:
+    ordered = sorted(blocks, key=lambda block: (block.bbox.y0, block.bbox.x0, block.block_id))
+    title_lines: list[str] = []
+    evidences: list[EvidenceBox] = []
+    value_parts: list[CoverValuePart] = []
+    cursor = 0
+    for block in ordered:
+        block_lines = [line for line in lines(block.text) if not parse_labeled_line(line)]
+        block_text = "\n".join(block_lines).strip()
+        if not block_text:
+            continue
+        if title_lines:
+            cursor += 1
+        title_lines.append(block_text)
+        evidences.append(build_evidence(block, block_text))
+        value_parts.append(
+            CoverValuePart(
+                block=block,
+                text=block_text,
+                start=cursor,
+                end=cursor + len(block_text),
+                block_start=find_text_index(block.text, block_text),
+            )
+        )
+        cursor += len(block_text)
+    value = "\n".join(title_lines).strip()
+    if not value:
+        return None
+    return CoverField(
+        key=f"preamble_title_{page_no}",
+        label=f"前置标题（第{page_no}页）",
+        value=value,
+        evidences=evidences,
+        value_parts=value_parts,
+    )
 
 
 def _valid_field_value(key: str, value: str) -> bool:
