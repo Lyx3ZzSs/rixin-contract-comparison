@@ -692,6 +692,13 @@ class SigningRegionStage:
         matches = self.matcher.match(original_regions, compare_regions)
         original_party_references = self.comparator.party_references(extractions.original.document)
         compare_party_references = self.comparator.party_references(extractions.compare.document)
+        for original, compare, _ in matches:
+            self.comparator.reconcile_occluded_party_ocr(
+                original,
+                compare,
+                original_party_references=original_party_references,
+                compare_party_references=compare_party_references,
+            )
         comparisons = [
             self.comparator.compare(
                 original,

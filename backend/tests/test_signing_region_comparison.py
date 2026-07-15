@@ -269,8 +269,16 @@ def test_party_name_change_is_exposed_as_focused_signing_modify() -> None:
 
 
 def test_party_ocr_conflict_under_seal_is_reconciled_by_document_references() -> None:
-    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
-    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original = _region(
+        "O1",
+        "甲方：江苏东大金智信息系统有限公司",
+        element_type=SigningElementType.SIGNING_TABLE,
+    )
+    compare = _region(
+        "C1",
+        "甲方：江苏东达金智信息系统有限公司",
+        element_type=SigningElementType.SIGNING_TABLE,
+    )
     for region, text in [
         (original, "甲方：江苏东大金智信息系统有限公司"),
         (compare, "甲方：江苏东达金智信息系统有限公司"),
@@ -299,7 +307,14 @@ def test_party_ocr_conflict_under_seal_is_reconciled_by_document_references() ->
         )
     )
 
-    comparison = SigningRegionComparator().compare(
+    comparator = SigningRegionComparator()
+    comparator.reconcile_occluded_party_ocr(
+        original,
+        compare,
+        original_party_references={"甲方": "江苏东大金智信息系统有限公司"},
+        compare_party_references={"甲方": "江苏东大金智信息系统有限公司"},
+    )
+    comparison = comparator.compare(
         original,
         compare,
         match_confidence=0.9,
@@ -308,6 +323,9 @@ def test_party_ocr_conflict_under_seal_is_reconciled_by_document_references() ->
     )
 
     assert comparison.party_changes == []
+    assert comparison.table_changes == []
+    assert "东达" not in compare.elements[0].text
+    assert "东大" in compare.elements[0].text
     assert "SIGNING_PARTY_CHANGE" not in comparison.review_flags
     assert "SIGNING_SEAL_CHANGE" in comparison.review_flags
 

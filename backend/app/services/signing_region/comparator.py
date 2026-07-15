@@ -133,6 +133,52 @@ class SigningRegionComparator:
             self._add_review_flag(comparison, "SIGNING_PARTY_CHANGE")
             self._add_review_flag(comparison, "CRITICAL_VALUE_CHANGE")
 
+    def reconcile_occluded_party_ocr(
+        self,
+        original: SigningRegion | None,
+        compare: SigningRegion | None,
+        *,
+        original_party_references: dict[str, str],
+        compare_party_references: dict[str, str],
+    ) -> None:
+        if original is None or compare is None:
+            return
+        original_fields = self._party_fields(original)
+        compare_fields = self._party_fields(compare)
+        for role in sorted(set(original_fields) & set(compare_fields)):
+            original_text = original_fields[role]
+            compare_text = compare_fields[role]
+            if not self._is_seal_occluded_party_ocr_conflict(
+                role,
+                original_text,
+                compare_text,
+                original,
+                compare,
+                original_party_references,
+                compare_party_references,
+            ):
+                continue
+            if self._region_has_visual_seal(compare):
+                self._replace_region_party_name(
+                    compare,
+                    self._normalized_party_name(compare_text),
+                    self._normalized_party_name(compare_party_references.get(role, "")),
+                )
+            elif self._region_has_visual_seal(original):
+                self._replace_region_party_name(
+                    original,
+                    self._normalized_party_name(original_text),
+                    self._normalized_party_name(original_party_references.get(role, "")),
+                )
+
+    @staticmethod
+    def _replace_region_party_name(region: SigningRegion, observed_name: str, reference_name: str) -> None:
+        if not observed_name or not reference_name or observed_name == reference_name:
+            return
+        for element in region.elements:
+            if observed_name in element.text:
+                element.text = element.text.replace(observed_name, reference_name)
+
     @staticmethod
     def _party_fields(region: SigningRegion) -> dict[str, str]:
         fields: dict[str, str] = {}
