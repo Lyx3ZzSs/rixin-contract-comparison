@@ -200,10 +200,13 @@ def test_reading_order_handles_spanning_title_and_two_columns() -> None:
 
     assign_page_reading_order(page)
 
-    assert [
-        block.block_id
-        for block in sorted(page.blocks, key=lambda block: block.reading_order or 0)
-    ] == ["title", "left-1", "left-2", "right-1", "right-2"]
+    assert [block.block_id for block in sorted(page.blocks, key=lambda block: block.reading_order or 0)] == [
+        "title",
+        "left-1",
+        "left-2",
+        "right-1",
+        "right-2",
+    ]
 
 
 def test_v3_reading_order_groups_margin_columns_and_aside() -> None:
@@ -223,10 +226,14 @@ def test_v3_reading_order_groups_margin_columns_and_aside() -> None:
 
     assign_page_reading_order(page)
 
-    assert [
-        block.block_id
-        for block in sorted(page.blocks, key=lambda block: block.reading_order or 0)
-    ] == ["header", "left-1", "left-2", "aside", "right", "footer"]
+    assert [block.block_id for block in sorted(page.blocks, key=lambda block: block.reading_order or 0)] == [
+        "header",
+        "left-1",
+        "left-2",
+        "aside",
+        "right",
+        "footer",
+    ]
 
 
 def test_v3_reading_order_keeps_figure_with_caption() -> None:
@@ -243,10 +250,11 @@ def test_v3_reading_order_keeps_figure_with_caption() -> None:
 
     assign_page_reading_order(page)
 
-    assert [
-        block.block_id
-        for block in sorted(page.blocks, key=lambda block: block.reading_order or 0)
-    ] == ["caption", "figure", "body"]
+    assert [block.block_id for block in sorted(page.blocks, key=lambda block: block.reading_order or 0)] == [
+        "caption",
+        "figure",
+        "body",
+    ]
 
 
 def test_hybrid_keeps_structure_only_seal_and_assigns_reading_order() -> None:
@@ -275,7 +283,9 @@ def test_hybrid_keeps_structure_only_seal_and_assigns_reading_order() -> None:
             filename="scan.pdf",
             path="scan.pdf",
             page_count=1,
-            pages=[Page(page_no=1, width=600, height=800, blocks=[_block("ocr", 60, 110, 300, 140, "ocr_line", "正文")])],
+            pages=[
+                Page(page_no=1, width=600, height=800, blocks=[_block("ocr", 60, 110, 300, 140, "ocr_line", "正文")])
+            ],
         ),
         extractor_used="ppocrv5",
     )
@@ -486,8 +496,63 @@ def test_hybrid_trusts_merged_structure_clause_block_when_ocr_reads_ten_as_tu() 
     )
 
     assert len(result) == 1
-    assert result[0].text == "十一、其它约定事项:其它未尽事宜,双方协商解决。技术协议与本合同具法律效力。十二、本合同自双方签字盖章之日起生效。本合同1式4份"
+    assert (
+        result[0].text
+        == "十一、其它约定事项:其它未尽事宜,双方协商解决。技术协议与本合同具法律效力。十二、本合同自双方签字盖章之日起生效。本合同1式4份"
+    )
     assert result[0].source == "ppstructure_text"
+
+
+def test_hybrid_repairs_low_confidence_short_header_annotation_from_structure_text() -> None:
+    extractor = PPStructureOCRHybridExtractor(overlap_threshold=0.5)
+    structure_block = _block(
+        "p1_ppstructure_b2",
+        356.5,
+        58.5,
+        525.5,
+        109.0,
+        block_type="header",
+        text="(NN-20260522-0004永南京国电南自电网自动化有限公司",
+    )
+    children = [
+        _block(
+            "p1_ppocrv5_b2",
+            354.5,
+            55.0,
+            519.0,
+            87.0,
+            block_type="header",
+            text="(NM/N-20260522-00041",
+        ).model_copy(update={"layout_block_id": structure_block.block_id, "confidence": 0.90}),
+        _block(
+            "p1_ppocrv5_b4",
+            462.5,
+            79.0,
+            487.5,
+            100.5,
+            block_type="header",
+            text="3",
+        ).model_copy(update={"layout_block_id": structure_block.block_id, "confidence": 0.263}),
+        _block(
+            "p1_ppocrv5_b5",
+            361.0,
+            97.5,
+            526.5,
+            109.5,
+            block_type="header",
+            text="南京国电南自电网自动化有限公司",
+        ).model_copy(update={"layout_block_id": structure_block.block_id, "confidence": 0.99}),
+    ]
+
+    result = extractor._repair_short_structure_annotations(
+        children,
+        {structure_block.block_id: structure_block},
+    )
+
+    repaired = next(block for block in result if block.block_id == "p1_ppocrv5_b4")
+    assert repaired.text == "永"
+    assert "ppstructure_short_annotation_repair" in repaired.source
+    assert next(block for block in result if block.block_id == "p1_ppocrv5_b2").text == "(NM/N-20260522-00041"
 
 
 class _StaticExtractor:

@@ -66,7 +66,9 @@ def _signing_label_residual(text: str) -> str:
     residual_columns: list[str] = []
     for column in columns:
         column = column.strip()
-        column = re.sub(r"^(甲方|乙方)\s*(?:\(\s*(?:盖章|章|公章)\s*\)|（\s*(?:盖章|章|公章)\s*）)?\s*[:：]?", "", column)
+        column = re.sub(
+            r"^(甲方|乙方)\s*(?:\(\s*(?:盖章|章|公章)\s*\)|（\s*(?:盖章|章|公章)\s*）)?\s*[:：]?", "", column
+        )
         column = re.sub(r"^(?:盖章|公章|单位名称)\s*[:：]?", "", column)
         column = re.sub(r"^(?:\(\s*章\s*\)|（\s*章\s*）)\s*[:：]?", "", column)
         residual_columns.append(re.sub(r"[\s:：，,。；;、（）()]+", "", column))
@@ -86,10 +88,7 @@ class DiffQualityResult:
     decisions: list[DiffQualityDecision] = field(default_factory=list)
 
     def to_debug_payload(self) -> list[dict[str, Any]]:
-        return [
-            {"action": item.action, "diff_id": item.diff_id, "detail": item.detail}
-            for item in self.decisions
-        ]
+        return [{"action": item.action, "diff_id": item.diff_id, "detail": item.detail} for item in self.decisions]
 
 
 class DiffQualityProcessor:
@@ -105,9 +104,7 @@ class DiffQualityProcessor:
         "EVIDENCE_UNRELIABLE",
     }
     critical_field_flag = "CRITICAL_FIELD_CHANGE"
-    critical_pattern = re.compile(
-        r"(\d|%|‰|元|万元|v\d|V\d|公司|甲方|乙方|不得|不承担|违约|免责|终止|不可抗力)"
-    )
+    critical_pattern = re.compile(r"(\d|%|‰|元|万元|v\d|V\d|公司|甲方|乙方|不得|不承担|违约|免责|终止|不可抗力)")
     business_token_pattern = re.compile(
         r"(%|‰|元|万元|亿元|v\d|V\d|公司|甲方|乙方|不得|不承担|违约|免责|终止|不可抗力|"
         r"\d+(?:\.\d+)?\s*(?:%|‰|元|万元|亿元|天|日|月|年|个月)|"
@@ -371,7 +368,11 @@ class DiffQualityProcessor:
                 ):
                     kept.append(diff)
                     continue
-                decisions.append(DiffQualityDecision(action="suppressed_low_value_noise", diff_id=diff.diff_id, detail={"reason": reason}))
+                decisions.append(
+                    DiffQualityDecision(
+                        action="suppressed_low_value_noise", diff_id=diff.diff_id, detail={"reason": reason}
+                    )
+                )
                 continue
             kept.append(diff)
         return kept
@@ -385,6 +386,8 @@ class DiffQualityProcessor:
     ) -> str:
         if self._looks_like_cover_annotation_noise(diff):
             return "cover_annotation_noise"
+        if "HANDWRITTEN_ANNOTATION_REVIEW" in diff.review_flags:
+            return ""
         if "VISUAL_FOOTER_ANNOTATION" in diff.review_flags:
             return ""
         if self._is_cross_source_merged_multi_page_footer(diff):
@@ -427,7 +430,11 @@ class DiffQualityProcessor:
             return "empty_change"
         if self._looks_like_single_latin_layout_glyph_noise(diff):
             return "single_latin_layout_glyph_noise"
-        if diff.source_type == "clause" and "POSSIBLE_OCR_NOISE" in diff.review_flags and self._looks_like_short_symbol_noise(diff):
+        if (
+            diff.source_type == "clause"
+            and "POSSIBLE_OCR_NOISE" in diff.review_flags
+            and self._looks_like_short_symbol_noise(diff)
+        ):
             return "clause_ocr_noise"
         if diff.source_type in {"header_footer", "metadata"} and len(compact) <= 4:
             return "short_non_body_fragment"
@@ -458,10 +465,7 @@ class DiffQualityProcessor:
             return False
         if diff.match_score_details.get("business_token_mismatch", 0.0) >= 1:
             return False
-        if not (
-            self._has_range_connector(diff.original_text)
-            or self._has_range_connector(diff.compare_text)
-        ):
+        if not (self._has_range_connector(diff.original_text) or self._has_range_connector(diff.compare_text)):
             return False
         normalized_original = self._normalize_range_connectors(diff.original_text)
         normalized_compare = self._normalize_range_connectors(diff.compare_text)
@@ -524,9 +528,7 @@ class DiffQualityProcessor:
         original_party_companies = _party_company_map(diff.original_text)
         compare_party_companies = _party_company_map(diff.compare_text, original_party_companies)
         if not (
-            original_party_companies
-            and compare_party_companies
-            and original_party_companies == compare_party_companies
+            original_party_companies and compare_party_companies and original_party_companies == compare_party_companies
         ):
             return False
         return _signing_label_residual(diff.original_text) == _signing_label_residual(diff.compare_text)
@@ -605,8 +607,16 @@ class DiffQualityProcessor:
 
     def _flag_boundary_drift(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         clause_diffs = [diff for diff in diffs if diff.source_type == "clause"]
-        deletes = [diff for diff in clause_diffs if self._compact(diff.original_snippet) and not self._compact(diff.compare_snippet)]
-        adds = [diff for diff in clause_diffs if self._compact(diff.compare_snippet) and not self._compact(diff.original_snippet)]
+        deletes = [
+            diff
+            for diff in clause_diffs
+            if self._compact(diff.original_snippet) and not self._compact(diff.compare_snippet)
+        ]
+        adds = [
+            diff
+            for diff in clause_diffs
+            if self._compact(diff.compare_snippet) and not self._compact(diff.original_snippet)
+        ]
         for delete in deletes:
             delete_text = self._compact(delete.original_snippet)
             if not 2 <= len(delete_text) <= 40:
@@ -737,7 +747,9 @@ class DiffQualityProcessor:
 
     @staticmethod
     def _changed_evidence_is_near_page_edge(diff: DiffItem) -> bool:
-        changed = {unicodedata.normalize("NFKC", item) for item in [diff.original_snippet, diff.compare_snippet] if item}
+        changed = {
+            unicodedata.normalize("NFKC", item) for item in [diff.original_snippet, diff.compare_snippet] if item
+        }
         for evidence in [*diff.original_evidence, *diff.compare_evidence]:
             text = unicodedata.normalize("NFKC", evidence.text or "")
             if changed and text not in changed and not any(text and text in item for item in changed):
@@ -785,11 +797,7 @@ class DiffQualityProcessor:
             return False
         return any(
             evidence.method in {"header_footer", "cover_extra"}
-            and (
-                evidence.confidence < 0.7
-                or evidence.evidence_quality == "LOW"
-                or evidence.bbox.y0 <= 72.0
-            )
+            and (evidence.confidence < 0.7 or evidence.evidence_quality == "LOW" or evidence.bbox.y0 <= 72.0)
             for evidence in evidences
         )
 
@@ -800,7 +808,9 @@ class DiffQualityProcessor:
         if not flags.intersection(self.ocr_quality_review_flags | {"POSSIBLE_COVER_OCR_FRAGMENT"}):
             return False
         evidences = [*diff.original_evidence, *diff.compare_evidence]
-        return any(evidence.method in {"header_footer", "cover_extra"} and evidence.bbox.y0 <= 96.0 for evidence in evidences)
+        return any(
+            evidence.method in {"header_footer", "cover_extra"} and evidence.bbox.y0 <= 96.0 for evidence in evidences
+        )
 
     @staticmethod
     def _looks_like_single_cjk_cover_stamp_fragment(
@@ -1220,6 +1230,8 @@ class DiffQualityProcessor:
 
     def _looks_like_header_footer_noise(self, diff: DiffItem) -> bool:
         if diff.source_type != "header_footer":
+            return False
+        if "HANDWRITTEN_ANNOTATION_REVIEW" in diff.review_flags:
             return False
         text = f"{diff.title} {self._changed_text(diff)}"
         if self.header_footer_pattern.search(text):

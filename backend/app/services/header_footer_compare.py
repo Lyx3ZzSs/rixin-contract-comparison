@@ -29,6 +29,7 @@ class HeaderFooterCandidate:
     is_page_number: bool = False
     explicit: bool = False
     is_lower_footer_annotation: bool = False
+    is_handwritten_annotation: bool = False
     confidence: float | None = None
 
 
@@ -39,6 +40,7 @@ class HeaderFooterEntry:
     key: str
     evidences: list[EvidenceBox]
     is_page_number: bool = False
+    is_handwritten_annotation: bool = False
 
 
 @dataclass(frozen=True)
@@ -124,7 +126,8 @@ class HeaderFooterComparator:
         block_type = (block.block_type or "").lower()
         if block_type in self.excluded_types:
             return None
-        is_page_number = self._is_page_number(text)
+        is_handwritten_annotation = "ppstructure_short_annotation_repair" in (block.source or "")
+        is_page_number = self._is_page_number(text) and not is_handwritten_annotation
         explicit_header = block_type in self.header_types
         explicit_footer = block_type in self.footer_types
         lower_footer_annotation = page_height > 0 and block.bbox.y0 >= page_height * self.footer_annotation_band
@@ -132,7 +135,7 @@ class HeaderFooterComparator:
             return None
         if self._is_bare_field_label(text):
             return None
-        if self._looks_like_short_edge_noise(text, block, page_height):
+        if not is_handwritten_annotation and self._looks_like_short_edge_noise(text, block, page_height):
             return None
         if is_page_number:
             if page_height <= 0 or block.bbox.y0 < page_height * self.page_number_footer_band:
@@ -168,6 +171,7 @@ class HeaderFooterComparator:
             is_page_number=is_page_number,
             explicit=explicit_header or explicit_footer,
             is_lower_footer_annotation=slot == "footer" and lower_footer_annotation,
+            is_handwritten_annotation=is_handwritten_annotation,
             confidence=block.confidence,
         )
 
@@ -201,6 +205,7 @@ class HeaderFooterComparator:
                     text=sample.text,
                     key=key,
                     evidences=self._evidences(group),
+                    is_handwritten_annotation=any(candidate.is_handwritten_annotation for candidate in group),
                 )
             )
         return entries
@@ -648,6 +653,7 @@ class HeaderFooterComparator:
             key=entry.key,
             evidences=evidences,
             is_page_number=entry.is_page_number,
+            is_handwritten_annotation=entry.is_handwritten_annotation,
         )
 
     def _modify_diff(
@@ -669,6 +675,11 @@ class HeaderFooterComparator:
             original_ranges = [TextRange(start=0, end=len(left.text), highlight_type="MODIFY")]
         if not compare_ranges:
             compare_ranges = [TextRange(start=0, end=len(right.text), highlight_type="MODIFY")]
+        annotation_flags = (
+            ["HANDWRITTEN_ANNOTATION_REVIEW"]
+            if (left.is_handwritten_annotation or right.is_handwritten_annotation)
+            else []
+        )
         return DiffItem(
             diff_id=generate_diff_id(index),
             diff_type="MODIFY",
@@ -682,7 +693,7 @@ class HeaderFooterComparator:
             match_score=match_score,
             match_method=match_method,
             match_score_details=match_score_details or {},
-            review_flags=review_flags or [],
+            review_flags=list(dict.fromkeys([*(review_flags or []), *annotation_flags])),
             original_evidence=self._mark_evidences(left.evidences, "MODIFY"),
             compare_evidence=self._mark_evidences(right.evidences, "MODIFY"),
             original_change_ranges=original_ranges,
@@ -702,6 +713,7 @@ class HeaderFooterComparator:
             compare_snippet=entry.text if is_add else "",
             readable_change=f"{'新增' if is_add else '删除'}{self._slot_label(entry.slot)}：{entry.text}",
             source_type="header_footer",
+            review_flags=["HANDWRITTEN_ANNOTATION_REVIEW"] if entry.is_handwritten_annotation else [],
             original_evidence=[] if is_add else self._mark_evidences(entry.evidences, diff_type),
             compare_evidence=self._mark_evidences(entry.evidences, diff_type) if is_add else [],
             original_change_ranges=[] if is_add else [text_range],

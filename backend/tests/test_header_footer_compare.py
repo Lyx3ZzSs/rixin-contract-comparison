@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.models import BBox, Document, Page, TextBlock
+from app.services.diff_quality import DiffQualityProcessor
 from app.services.header_footer_compare import HeaderFooterComparator
 
 
@@ -432,6 +433,42 @@ def test_header_footer_ignores_cover_handwriting_digit_outside_footer_band() -> 
     diffs = HeaderFooterComparator().build_diffs(_document([[]]), compare)
 
     assert diffs == []
+
+
+def test_header_footer_keeps_structure_repaired_short_handwritten_annotation() -> None:
+    compare = Document(
+        filename="compare.pdf",
+        path="compare.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=597,
+                height=818,
+                blocks=[
+                    _block(
+                        "c1",
+                        "永",
+                        x0=462.5,
+                        y0=79,
+                        x1=487.5,
+                        y1=100.5,
+                        block_type="header",
+                        source="ppocrv5_layout_matched+ppstructure_short_annotation_repair",
+                        confidence=0.263,
+                    )
+                ],
+            )
+        ],
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(_document([[]]), compare)
+    result = DiffQualityProcessor().process(diffs)
+
+    assert len(result.diffs) == 1
+    assert result.diffs[0].compare_snippet == "永"
+    assert result.diffs[0].quality_status == "NEEDS_REVIEW"
+    assert "HANDWRITTEN_ANNOTATION_REVIEW" in result.diffs[0].review_flags
 
 
 def test_header_footer_requires_cross_page_sequence_for_bare_page_number() -> None:

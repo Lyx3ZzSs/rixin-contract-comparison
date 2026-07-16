@@ -67,7 +67,9 @@ class PPStructureOCRHybridExtractor:
             client_provider=client_provider,
             artifact_store=artifact_store,
         )
-        self.overlap_threshold = self.settings.hybrid_layout_overlap_threshold if overlap_threshold is None else overlap_threshold
+        self.overlap_threshold = (
+            self.settings.hybrid_layout_overlap_threshold if overlap_threshold is None else overlap_threshold
+        )
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         ocr_result = self.ocr_extractor.extract(path, task_id=task_id)
@@ -130,21 +132,87 @@ class PPStructureOCRHybridExtractor:
         if structure_page is None:
             return [self._unmatched_block(block, page_width, page_height) for block in ocr_blocks]
         structure_blocks = [
-            block
-            for block in structure_page.blocks
-            if block.bbox.x1 > block.bbox.x0 and block.bbox.y1 > block.bbox.y0
+            block for block in structure_page.blocks if block.bbox.x1 > block.bbox.x0 and block.bbox.y1 > block.bbox.y0
         ]
         if not structure_blocks:
             return ocr_blocks
         html_tables = self._collect_html_tables(structure_blocks)
         structure_by_id = {block.block_id: block for block in structure_blocks}
-        merged = [
-            self._attach_structure(block, structure_blocks, page_width, page_height)
-            for block in ocr_blocks
-        ]
+        merged = [self._attach_structure(block, structure_blocks, page_width, page_height) for block in ocr_blocks]
         merged = self._consolidate_table_blocks(merged, html_tables)
+        merged = self._repair_short_structure_annotations(merged, structure_by_id)
         merged = self._consolidate_structure_text_blocks(merged, structure_by_id, set(html_tables))
         return self._append_structure_only_regions(merged, structure_blocks)
+
+    def _repair_short_structure_annotations(
+        self,
+        blocks: list[TextBlock],
+        structure_blocks: dict[str, TextBlock],
+    ) -> list[TextBlock]:
+        """Recover short handwritten header text when OCR and structure OCR disagree.
+
+        PP-Structure often groups an entire header into one region while PP-OCR
+        provides the individual line boxes.  A low-confidence one-character OCR
+        child can therefore be repaired only when the surrounding high-confidence
+        children strongly anchor a short CJK replacement in the structure text.
+        """
+        grouped: dict[str, list[tuple[int, TextBlock]]] = {}
+        for index, block in enumerate(blocks):
+            if block.layout_block_id:
+                grouped.setdefault(block.layout_block_id, []).append((index, block))
+
+        repaired = list(blocks)
+        for layout_id, indexed_children in grouped.items():
+            structure_block = structure_blocks.get(layout_id)
+            if structure_block is None or self._normalize_block_type(structure_block.block_type) != "header":
+                continue
+            ordered = sorted(indexed_children, key=lambda item: (item[1].bbox.y0, item[1].bbox.x0, item[1].block_id))
+            child_texts = [self._compact_annotation_text(block.text) for _, block in ordered]
+            structure_text = self._compact_annotation_text(structure_block.text)
+            combined_text = "".join(child_texts)
+            if not structure_text or not combined_text:
+                continue
+
+            matcher = SequenceMatcher(None, combined_text, structure_text)
+            if matcher.ratio() < 0.72 or sum(size for _, _, size in matcher.get_matching_blocks()) < 8:
+                continue
+            opcodes = matcher.get_opcodes()
+            offset = 0
+            for (result_index, child), child_text in zip(ordered, child_texts, strict=True):
+                start = offset
+                end = start + len(child_text)
+                offset = end
+                if not self._is_low_confidence_short_annotation(child, child_text):
+                    continue
+                replacements = {
+                    structure_text[j1:j2]
+                    for tag, i1, i2, j1, j2 in opcodes
+                    if tag == "replace" and max(start, i1) < min(end, i2) and structure_text[j1:j2]
+                }
+                if len(replacements) != 1:
+                    continue
+                replacement = replacements.pop()
+                if not re.fullmatch(r"[\u4e00-\u9fff]{1,2}", replacement):
+                    continue
+                repaired[result_index] = child.model_copy(
+                    update={
+                        "text": replacement,
+                        "source": f"{child.source or 'ppocrv5_layout_matched'}+ppstructure_short_annotation_repair",
+                        "char_boxes": self._estimate_structure_char_boxes(replacement, child.bbox, child.page_no),
+                    }
+                )
+        return repaired
+
+    @staticmethod
+    def _compact_annotation_text(text: str) -> str:
+        normalized = unicodedata.normalize("NFKC", text or "")
+        normalized = re.sub(r"^\s*[#>*-]+\s*", "", normalized)
+        return re.sub(r"\s+", "", normalized)
+
+    @staticmethod
+    def _is_low_confidence_short_annotation(block: TextBlock, text: str) -> bool:
+        confidence = block.confidence if block.confidence is not None else 1.0
+        return 1 <= len(text) <= 2 and confidence <= 0.6 and re.fullmatch(r"[A-Za-z0-9|]+", text) is not None
 
     def _attach_structure(
         self,
@@ -165,7 +233,9 @@ class PPStructureOCRHybridExtractor:
                 "layout_order": matched.layout_order or self._layout_order(matched.block_id),
                 "layout_bbox": matched.bbox,
                 "block_role": matched.block_role or matched.block_type,
-                "flow_role": flow_role_for_region(matched.block_type) if self.settings.layout_analysis_mode == "v3" else "",
+                "flow_role": flow_role_for_region(matched.block_type)
+                if self.settings.layout_analysis_mode == "v3"
+                else "",
                 "layout_match_score": decision.score,
                 "layout_match_status": decision.status,
                 "layout_match_reason": decision.reason,
@@ -248,7 +318,9 @@ class PPStructureOCRHybridExtractor:
                 "flow_role": flow_role if self.settings.layout_analysis_mode == "v3" else "",
                 "layout_match_score": 0.0,
                 "layout_match_status": status,
-                "layout_match_reason": "short edge/low-confidence OCR fragment" if is_noise else "no layout region matched",
+                "layout_match_reason": "short edge/low-confidence OCR fragment"
+                if is_noise
+                else "no layout region matched",
             }
         )
 
@@ -319,9 +391,7 @@ class PPStructureOCRHybridExtractor:
                         "layout_bbox": structure_block.bbox,
                         "source": "ppstructure_layout_only",
                         "flow_role": (
-                            flow_role_for_region(structure_block.block_type)
-                            if structure_block.flow_role
-                            else ""
+                            flow_role_for_region(structure_block.block_type) if structure_block.flow_role else ""
                         ),
                         "layout_match_status": "structure_only",
                         "layout_match_reason": "PP-Structure region has no OCR child",
@@ -339,7 +409,9 @@ class PPStructureOCRHybridExtractor:
         }
 
     @staticmethod
-    def _consolidate_table_blocks(blocks: list[TextBlock], html_tables: dict[str, tuple[str, list[list[float]], BBox]]) -> list[TextBlock]:
+    def _consolidate_table_blocks(
+        blocks: list[TextBlock], html_tables: dict[str, tuple[str, list[list[float]], BBox]]
+    ) -> list[TextBlock]:
         if not html_tables:
             return blocks
         table_children: dict[str, list[TextBlock]] = {}
@@ -450,11 +522,15 @@ class PPStructureOCRHybridExtractor:
                 "layout_bbox": structure_block.bbox,
                 "confidence": structure_block.confidence,
                 "source": "ppstructure_text",
-                "char_boxes": self._estimate_structure_char_boxes(structure_text, structure_block.bbox, structure_block.page_no),
+                "char_boxes": self._estimate_structure_char_boxes(
+                    structure_text, structure_block.bbox, structure_block.page_no
+                ),
             }
         )
 
-    def _ordered_text_children_for_structure(self, structure_block: TextBlock, children: list[TextBlock]) -> list[TextBlock]:
+    def _ordered_text_children_for_structure(
+        self, structure_block: TextBlock, children: list[TextBlock]
+    ) -> list[TextBlock]:
         if self._is_single_line_structure_block(structure_block, children):
             return sorted(children, key=lambda block: (block.bbox.x0, block.bbox.y0, block.block_id))
         return children
@@ -568,9 +644,7 @@ class PPStructureOCRHybridExtractor:
             block.layout_match_status == "meaningful_unmatched" for block in ocr_blocks
         )
         quality.noise_unmatched_count = sum(block.layout_match_status == "noise_unmatched" for block in ocr_blocks)
-        quality.structure_only_count = sum(
-            block.layout_match_status == "structure_only" for block in blocks
-        )
+        quality.structure_only_count = sum(block.layout_match_status == "structure_only" for block in blocks)
         quality.reading_order_count = sum(block.reading_order is not None for block in blocks)
         quality.reading_order_conflict_count = sum(reading_order_conflict_count(page) for page in document.pages)
         quality.page_quality = [self._page_layout_quality(page) for page in document.pages]
