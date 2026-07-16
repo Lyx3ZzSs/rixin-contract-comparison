@@ -32,6 +32,18 @@ def test_visual_per_mille_detection_counts_third_closed_loop(tmp_path: Path) -> 
         assert not extractor._visual_glyph_is_per_mille(pdf, block, percent_index)
 
 
+def test_visual_per_mille_detection_tolerates_tight_following_char_box(tmp_path: Path) -> None:
+    extractor = PPOCRV5Extractor()
+    per_mille_pdf = _glyph_pdf(tmp_path / "tight-per-mille.pdf", loop_count=3)
+    block = _visual_test_block()
+    block.char_boxes[2] = block.char_boxes[2].model_copy(
+        update={"bbox": BBox(x0=87.5, y0=28, x1=101, y1=54)}
+    )
+
+    with fitz.open(per_mille_pdf) as pdf:
+        assert extractor._visual_glyph_is_per_mille(pdf, block, block.text.index("%"))
+
+
 def _glyph_pdf(path: Path, *, loop_count: int) -> Path:
     document = fitz.open()
     page = document.new_page(width=180, height=90)

@@ -335,7 +335,10 @@ class PPOCRV5Extractor:
             return False
 
         left = previous.bbox.x1 + 0.5
-        right = following.bbox.x0 - 0.5
+        # OCR word boxes on scans can end inside the final loop of a per-mille
+        # glyph. Keep a sub-character amount of the following box so the loop
+        # remains closed in the raster without admitting the following glyph.
+        right = following.bbox.x0 + 0.5
         top = block.bbox.y0 - 2.0
         bottom = block.bbox.y1 + 2.0
         if right - left < 4.0 or bottom - top < 4.0 or right - left > 32.0 or bottom - top > 48.0:
