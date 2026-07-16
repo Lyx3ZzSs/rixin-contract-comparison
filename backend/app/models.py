@@ -506,10 +506,8 @@ class CompareTask(BaseModel):
                 return False
             if target_status == "FAILED" and terminal_reason == "NONE":
                 return False
-            if job_id and job_id != self.active_job_id:
+            if job_id != self.active_job_id:
                 return False
-            if self.active_job_id and terminal_reason != "SUBMISSION_FAILED":
-                return job_id == self.active_job_id
             return True
 
         if self.status != "FAILED" or target_status != "PROCESSING" or terminal_reason != "NONE":

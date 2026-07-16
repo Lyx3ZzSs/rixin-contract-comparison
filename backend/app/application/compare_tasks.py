@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from app.auth.models import CurrentUser
-from app.errors import ConflictError, NotFoundError
+from app.errors import NotFoundError
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.infrastructure.task_runner import QueuedTaskRunner, TaskJob, default_task_runner
 from app.models import AuditItemReview, CompareOptions, CompareTask, DiffItem, ReviewStatus
@@ -102,8 +102,10 @@ class CompareTaskApplication:
 
     def retry_compare(self, task_id: str) -> TaskJob:
         task = self.load_compare_task(task_id)
-        if task.status != "FAILED":
-            raise ConflictError("只有失败的对比任务可以重试。")
+        task.ensure_transition_allowed(
+            "PROCESSING",
+            validated_inputs_exist=(Path(task.original_pdf_path).is_file() and Path(task.compare_pdf_path).is_file()),
+        )
         job = self.runner.retry(task_id, task_type="compare")
         self._mark_retry_queued(task)
         return job

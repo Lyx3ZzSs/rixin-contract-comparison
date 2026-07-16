@@ -289,6 +289,30 @@ def test_compare_task_allows_only_legal_state_transitions() -> None:
     submission_failed.ensure_transition_allowed("PROCESSING", validated_inputs_exist=True)
 
 
+@pytest.mark.parametrize("job_id", ["", "compare:TACTIVE_SUBMISSION:1"])
+def test_compare_task_rejects_submission_failure_from_non_active_job(job_id: str) -> None:
+    task = CompareTask(
+        task_id="TACTIVE_SUBMISSION",
+        active_job_id="compare:TACTIVE_SUBMISSION:2",
+    )
+
+    with pytest.raises(TaskTransitionConflict):
+        task.ensure_transition_allowed(
+            "FAILED",
+            terminal_reason="SUBMISSION_FAILED",
+            job_id=job_id,
+        )
+
+
+def test_compare_task_allows_submission_failure_without_job_when_no_job_is_active() -> None:
+    task = CompareTask(task_id="TNO_ACTIVE_SUBMISSION")
+
+    task.ensure_transition_allowed(
+        "FAILED",
+        terminal_reason="SUBMISSION_FAILED",
+    )
+
+
 @pytest.mark.parametrize(
     ("task", "target_status", "terminal_reason", "job_id", "validated_inputs_exist"),
     [

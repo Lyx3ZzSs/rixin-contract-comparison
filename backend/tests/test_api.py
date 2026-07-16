@@ -14,9 +14,16 @@ from reportlab.pdfgen import canvas
 from app import api_schemas
 from app.api_errors import http_error
 from app.api_presenters import compare_task_response, task_execution_response
+from app.application.compare_tasks import CompareTaskApplication
 from app.config import settings
 from app.errors import TaskStaleLeaseError, TaskTransitionConflict
-from app.infrastructure.task_runner import TaskJob, default_task_runner
+from app.infrastructure.task_repository import LocalJsonTaskRepository
+from app.infrastructure.task_runner import (
+    LocalJsonTaskJobRepository,
+    QueuedTaskRunner,
+    TaskJob,
+    default_task_runner,
+)
 from app.main import app
 from app.models import (
     BBox,
@@ -71,6 +78,25 @@ def configure_storage(tmp_path: Path) -> None:
     settings.compare_document_extractor = "auto"
     settings.compare_require_structured_ocr = False
     settings.ensure_storage()
+
+
+def failed_compare_job(runner: QueuedTaskRunner, task_id: str) -> TaskJob:
+    job = runner.job_repository.enqueue(
+        TaskJob(
+            job_id=f"compare:{task_id}",
+            task_id=task_id,
+            task_type="compare",
+            payload={"task_id": task_id},
+            attempt=1,
+            max_attempts=1,
+        )
+    )
+    return runner.job_repository.mark_failed(
+        job.job_id,
+        worker_id="",
+        error="failed",
+        retry_delay_seconds=0,
+    )
 
 
 def wait_for_compare_task(client: TestClient, task_id: str) -> dict:
@@ -486,6 +512,168 @@ def test_compare_execution_api_retries_failed_job(tmp_path: Path) -> None:
     assert retried_task.status == "PROCESSING"
     assert retried_task.stage == "排队中"
     assert retried_task.errors == []
+
+
+@pytest.mark.parametrize(
+    ("terminal_reason", "create_original", "create_compare"),
+    [
+        ("CANCELLED", True, True),
+        ("SUBMISSION_FAILED", False, True),
+    ],
+)
+def test_compare_task_application_rejects_ineligible_retry_transition(
+    tmp_path: Path,
+    terminal_reason: str,
+    create_original: bool,
+    create_compare: bool,
+) -> None:
+    configure_storage(tmp_path)
+    original = tmp_path / "original.pdf"
+    compare = tmp_path / "compare.pdf"
+    if create_original:
+        original.write_bytes(b"original")
+    if create_compare:
+        compare.write_bytes(b"compare")
+    repository = LocalJsonTaskRepository(settings)
+    runner = QueuedTaskRunner(
+        job_repository=LocalJsonTaskJobRepository(settings),
+        app_settings=settings,
+        autostart=False,
+    )
+    application = CompareTaskApplication(repository=repository, runner=runner)
+    task_id = f"TAPP_RETRY_{terminal_reason}"
+    repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            status="FAILED",
+            terminal_reason=terminal_reason,
+            original_pdf_path=str(original),
+            compare_pdf_path=str(compare),
+        )
+    )
+    failed_compare_job(runner, task_id)
+
+    with pytest.raises(TaskTransitionConflict):
+        application.retry_compare(task_id)
+
+    assert repository.load_compare_task(task_id).status == "FAILED"
+    assert runner.latest_job(task_id, task_type="compare").status == "FAILED"
+
+
+@pytest.mark.parametrize(
+    ("terminal_reason", "create_inputs"),
+    [("EXECUTION_FAILED", False), ("SUBMISSION_FAILED", True)],
+)
+def test_compare_task_application_allows_eligible_retry_transition(
+    tmp_path: Path,
+    terminal_reason: str,
+    create_inputs: bool,
+) -> None:
+    configure_storage(tmp_path)
+    original = tmp_path / "original.pdf"
+    compare = tmp_path / "compare.pdf"
+    if create_inputs:
+        original.write_bytes(b"original")
+        compare.write_bytes(b"compare")
+    repository = LocalJsonTaskRepository(settings)
+    runner = QueuedTaskRunner(
+        job_repository=LocalJsonTaskJobRepository(settings),
+        app_settings=settings,
+        autostart=False,
+    )
+    application = CompareTaskApplication(repository=repository, runner=runner)
+    task_id = f"TAPP_RETRY_{terminal_reason}"
+    repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            status="FAILED",
+            terminal_reason=terminal_reason,
+            original_pdf_path=str(original),
+            compare_pdf_path=str(compare),
+        )
+    )
+    failed_compare_job(runner, task_id)
+
+    job = application.retry_compare(task_id)
+
+    assert job.status == "QUEUED"
+    assert repository.load_compare_task(task_id).status == "PROCESSING"
+
+
+@pytest.mark.parametrize(
+    ("terminal_reason", "create_original", "create_compare"),
+    [
+        ("CANCELLED", True, True),
+        ("SUBMISSION_FAILED", True, False),
+    ],
+)
+def test_compare_execution_api_rejects_ineligible_retry_transition(
+    tmp_path: Path,
+    terminal_reason: str,
+    create_original: bool,
+    create_compare: bool,
+) -> None:
+    configure_storage(tmp_path)
+    default_task_runner.stop(wait=True)
+    original_autostart = default_task_runner.autostart
+    default_task_runner.autostart = False
+    original = tmp_path / "original.pdf"
+    compare = tmp_path / "compare.pdf"
+    if create_original:
+        original.write_bytes(b"original")
+    if create_compare:
+        compare.write_bytes(b"compare")
+    task_id = f"TAPI_RETRY_{terminal_reason}"
+    save_task(
+        CompareTask(
+            task_id=task_id,
+            status="FAILED",
+            terminal_reason=terminal_reason,
+            original_pdf_path=str(original),
+            compare_pdf_path=str(compare),
+        )
+    )
+    failed_compare_job(default_task_runner, task_id)
+
+    try:
+        response = TestClient(app).post(f"/api/compare/{task_id}/retry")
+    finally:
+        default_task_runner.autostart = original_autostart
+
+    assert response.status_code == 409
+    assert load_task(task_id).status == "FAILED"
+    assert default_task_runner.latest_job(task_id, task_type="compare").status == "FAILED"
+
+
+def test_compare_execution_api_retries_eligible_submission_failure(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    default_task_runner.stop(wait=True)
+    original_autostart = default_task_runner.autostart
+    default_task_runner.autostart = False
+    original = tmp_path / "original.pdf"
+    compare = tmp_path / "compare.pdf"
+    original.write_bytes(b"original")
+    compare.write_bytes(b"compare")
+    task_id = "TAPI_RETRY_ELIGIBLE_SUBMISSION"
+    save_task(
+        CompareTask(
+            task_id=task_id,
+            status="FAILED",
+            terminal_reason="SUBMISSION_FAILED",
+            original_pdf_path=str(original),
+            compare_pdf_path=str(compare),
+        )
+    )
+    failed_compare_job(default_task_runner, task_id)
+
+    try:
+        response = TestClient(app).post(f"/api/compare/{task_id}/retry")
+    finally:
+        default_task_runner.autostart = original_autostart
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "QUEUED"
+    assert load_task(task_id).status == "PROCESSING"
 
 
 def test_compare_execution_api_rejects_retry_for_processing_task(tmp_path: Path) -> None:
