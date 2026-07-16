@@ -8,7 +8,6 @@ import pytest
 from app.config import settings
 from app.utils.file_utils import (
     FileValidationError,
-    validate_extraction_upload_bytes,
     validate_pdf_bytes,
     validate_pdf_structure,
 )
@@ -88,8 +87,3 @@ def test_validate_pdf_bytes_checks_size_before_structure(monkeypatch: pytest.Mon
 
     with pytest.raises(FileValidationError, match="超过 1MB"):
         validate_pdf_bytes(b"%PDF" + b"x" * (1024 * 1024), "large.pdf")
-
-
-def test_extraction_pdf_uses_same_structure_validation() -> None:
-    with pytest.raises(FileValidationError, match="已损坏或格式无效"):
-        validate_extraction_upload_bytes(b"%PDF-not-a-real-document", "contract.pdf")

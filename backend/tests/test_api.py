@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
+from app import api_schemas
 from app.api_presenters import compare_task_response
 from app.config import settings
 from app.infrastructure.task_runner import TaskJob, default_task_runner
@@ -24,9 +25,8 @@ from app.models import (
     TaskOcrRemediationSummary,
     TaskOcrQualitySummary,
 )
-from app.models_extraction import ExtractionTask
 from app.services.review_service import CompareQualityService
-from app.utils.json_utils import load_task, save_extraction_task, save_task as persist_task, task_json_path, to_jsonable
+from app.utils.json_utils import load_task, save_task as persist_task, task_json_path, to_jsonable
 
 from auth_helpers import ADMIN
 
@@ -404,6 +404,18 @@ def test_root_is_not_a_backend_page() -> None:
     assert response.status_code == 404
 
 
+def test_openapi_exposes_compare_but_not_extract_routes() -> None:
+    paths = TestClient(app).get("/openapi.json").json()["paths"]
+
+    assert any(path.startswith("/api/compare") for path in paths)
+    assert all("/api/extract" not in path for path in paths)
+
+
+def test_api_schema_has_no_field_extraction_product_types() -> None:
+    assert not hasattr(api_schemas, "ExtractionTaskResponse")
+    assert not hasattr(api_schemas, "ExtractionFieldRequest")
+
+
 def test_compare_execution_api_gets_and_cancels_queued_job(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     default_task_runner.stop(wait=True)
@@ -510,7 +522,12 @@ def test_compare_records_list_uses_compare_tasks_only(tmp_path: Path) -> None:
             diff_count=3,
         )
     )
-    save_extraction_task(ExtractionTask(task_id="TEXT001", filename="extract.pdf"))
+    extraction_dir = settings.tasks_dir / "TEXT001"
+    extraction_dir.mkdir(parents=True)
+    (extraction_dir / "task.json").write_text(
+        json.dumps({"task_id": "TEXT001", "task_type": "extraction", "status": "COMPLETED"}),
+        encoding="utf-8",
+    )
 
     client = TestClient(app)
     response = client.get("/api/compare/records")

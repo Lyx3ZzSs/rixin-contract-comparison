@@ -90,9 +90,9 @@ def test_queued_task_runner_cancels_queued_job(tmp_path: Path) -> None:
         nonlocal executed
         executed = True
 
-    runner.register_handler("extraction", handler)
-    job = runner.submit(task_type="extraction", task_id="TCANCEL", payload={"task_id": "TCANCEL"})
-    cancelled = runner.cancel("TCANCEL", task_type="extraction")
+    runner.register_handler("compare", handler)
+    job = runner.submit(task_type="compare", task_id="TCANCEL", payload={"task_id": "TCANCEL"})
+    cancelled = runner.cancel("TCANCEL", task_type="compare")
     runner.start()
     time.sleep(0.05)
     stored = runner.job_repository.load(job.job_id)

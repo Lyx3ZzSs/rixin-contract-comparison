@@ -28,7 +28,7 @@ from app.models import (
     TaskOcrRemediationSummary,
     TextBlock,
 )
-from app.services.extractors.base import ExtractionResult
+from app.services.extractors.base import DocumentExtractor, ExtractionResult
 from app.services.compare_service import CompareService
 from app.services.diff_quality import DiffQualityResult
 from app.services.document_profiler import DocumentProfiler
@@ -47,6 +47,12 @@ from app.services.pipeline_stages import (
     SummaryStage,
 )
 from app.services.repeated_overlay_filter import RepeatedOverlayFilterResult
+
+
+def test_document_extraction_result_and_compare_pipeline_remain_importable() -> None:
+    assert ExtractionResult is not None
+    assert DocumentExtractor is not None
+    assert ComparePipeline is not None
 
 
 def make_document(text: str = "test clause text") -> Document:

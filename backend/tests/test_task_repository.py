@@ -7,7 +7,6 @@ from app.config import settings
 from app.config import Settings
 from app.infrastructure.task_repository import LocalJsonTaskRepository, build_task_repository
 from app.models import CompareTask, DiffItem
-from app.models_extraction import ExtractionTask
 
 
 def configure_task_storage(tmp_path: Path) -> LocalJsonTaskRepository:
@@ -16,14 +15,17 @@ def configure_task_storage(tmp_path: Path) -> LocalJsonTaskRepository:
     return LocalJsonTaskRepository(settings)
 
 
-def test_local_json_task_repository_separates_task_types(tmp_path: Path) -> None:
+def test_compare_listing_skips_legacy_extraction_payload(tmp_path: Path) -> None:
     repository = configure_task_storage(tmp_path)
 
     repository.save_compare_task(CompareTask(task_id="TCOMPARE", updated_at="2026-05-21T09:00:00+00:00"))
-    repository.save_extraction_task(ExtractionTask(task_id="TEXTRACT", updated_at="2026-05-21T10:00:00+00:00"))
+    (settings.tasks_dir / "TEXTRACT").mkdir(parents=True)
+    (settings.tasks_dir / "TEXTRACT" / "task.json").write_text(
+        json.dumps({"task_id": "TEXTRACT", "task_type": "extraction", "status": "COMPLETED"}),
+        encoding="utf-8",
+    )
 
     assert [task.task_id for task in repository.list_compare_tasks()] == ["TCOMPARE"]
-    assert [task.task_id for task in repository.list_extraction_tasks()] == ["TEXTRACT"]
 
 
 def test_local_json_task_repository_orders_compare_tasks_by_created_at_desc(tmp_path: Path) -> None:
@@ -101,7 +103,6 @@ def test_local_json_task_repository_contract_in_task_directory(tmp_path: Path) -
 
     repository.save_compare_task(CompareTask(task_id="TCOMPARE", stage="first"))
     repository.save_compare_task(CompareTask(task_id="TCOMPARE", stage="second"))
-    repository.save_extraction_task(ExtractionTask(task_id="TEXTRACT"))
     repository.update_compare_task("TCOMPARE", lambda task: task.diffs.append(DiffItem(diff_id="D001", diff_type="ADD")))
 
     assert repository.task_json_path("TCOMPARE") == settings.tasks_dir / "TCOMPARE" / "task.json"
@@ -109,7 +110,6 @@ def test_local_json_task_repository_contract_in_task_directory(tmp_path: Path) -
     assert repository.load_compare_task("TCOMPARE").stage == "second"
     assert repository.load_compare_task("TCOMPARE").diffs[0].diff_id == "D001"
     assert [task.task_id for task in repository.list_compare_tasks()] == ["TCOMPARE"]
-    assert [task.task_id for task in repository.list_extraction_tasks()] == ["TEXTRACT"]
 
 
 def test_local_json_task_repository_writes_compare_task_v2_structured_paths(tmp_path: Path) -> None:
