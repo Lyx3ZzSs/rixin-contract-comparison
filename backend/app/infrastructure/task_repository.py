@@ -9,7 +9,6 @@ from typing import Any, Protocol
 
 from app.config import Settings, settings
 from app.models import CompareTask, OcrRawResultPaths
-from app.models_extraction import ExtractionTask
 
 
 class TaskRepository(Protocol):
@@ -24,19 +23,6 @@ class TaskRepository(Protocol):
 
     def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
         raise NotImplementedError
-
-    def save_extraction_task(self, task: ExtractionTask) -> Path | None:
-        raise NotImplementedError
-
-    def load_extraction_task(self, task_id: str) -> ExtractionTask:
-        raise NotImplementedError
-
-    def list_extraction_tasks(self) -> list[ExtractionTask]:
-        raise NotImplementedError
-
-    def update_extraction_task(self, task_id: str, mutate: Callable[[ExtractionTask], None]) -> ExtractionTask:
-        raise NotImplementedError
-
 
 def to_jsonable(model: Any) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
@@ -87,33 +73,6 @@ class LocalJsonTaskRepository:
             data = self._normalize_compare_payload_for_storage(task.task_id, to_jsonable(task))
             self._write_task(task.task_id, self._stamped_payload(task.task_id, data))
             return self.load_compare_task(task_id)
-
-    def save_extraction_task(self, task: ExtractionTask) -> Path:
-        return self._write_task(task.task_id, self._stamped_payload(task.task_id, to_jsonable(task)))
-
-    def load_extraction_task(self, task_id: str) -> ExtractionTask:
-        data = self._read_task_data(task_id)
-        if data.get("task_type") != "extraction":
-            raise FileNotFoundError(f"任务 {task_id} 不是提取任务。")
-        return ExtractionTask(**data)
-
-    def list_extraction_tasks(self) -> list[ExtractionTask]:
-        tasks: list[ExtractionTask] = []
-        for data in self._iter_task_data():
-            if data.get("task_type") != "extraction":
-                continue
-            try:
-                tasks.append(ExtractionTask(**data))
-            except (ValueError, TypeError):
-                continue
-        return sorted(tasks, key=lambda task: task.updated_at or task.created_at, reverse=True)
-
-    def update_extraction_task(self, task_id: str, mutate: Callable[[ExtractionTask], None]) -> ExtractionTask:
-        with self._lock:
-            task = self.load_extraction_task(task_id)
-            mutate(task)
-            self._write_task(task.task_id, self._stamped_payload(task.task_id, to_jsonable(task)))
-            return self.load_extraction_task(task_id)
 
     def task_json_path(self, task_id: str) -> Path:
         return self.task_dir(task_id) / "task.json"
@@ -339,18 +298,5 @@ class LazyDefaultTaskRepository:
 
     def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
         return self.resolve().update_compare_task(task_id, mutate)
-
-    def save_extraction_task(self, task: ExtractionTask) -> Path | None:
-        return self.resolve().save_extraction_task(task)
-
-    def load_extraction_task(self, task_id: str) -> ExtractionTask:
-        return self.resolve().load_extraction_task(task_id)
-
-    def list_extraction_tasks(self) -> list[ExtractionTask]:
-        return self.resolve().list_extraction_tasks()
-
-    def update_extraction_task(self, task_id: str, mutate: Callable[[ExtractionTask], None]) -> ExtractionTask:
-        return self.resolve().update_extraction_task(task_id, mutate)
-
 
 default_task_repository = LazyDefaultTaskRepository()

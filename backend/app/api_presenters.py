@@ -12,15 +12,11 @@ from app.api_schemas import (
     CompareTaskDetailResponse,
     CompareTaskResponse,
     DiffReviewResponse,
-    ExtractionRecordListResponse,
-    ExtractionRecordResponse,
-    ExtractionTaskResponse,
     ReviewStatsResponse,
     TaskExecutionResponse,
 )
 from app.infrastructure.task_runner import TaskJob
 from app.models import AuditItemReview, CompareTask
-from app.models_extraction import ExtractionTask
 from app.services.report_generator import build_report_filename
 from app.utils.json_utils import to_jsonable
 
@@ -166,47 +162,6 @@ def audit_item_review_response(
         ),
         review_stats=review_stats(task),
     )
-
-
-def extraction_task_response(task: ExtractionTask) -> ExtractionTaskResponse:
-    return ExtractionTaskResponse(
-        task_id=task.task_id,
-        task_type=task.task_type,
-        status=task.status,
-        stage=task.stage,
-        created_at=task.created_at,
-        updated_at=task.updated_at,
-        filename=task.filename,
-        file_url=f"/api/extract/{task.task_id}/file" if task.file_path else "",
-        extractor_used=task.extractor_used,
-        fields=[to_jsonable(field) for field in task.fields],
-        results=[to_jsonable(result) for result in task.results],
-        errors=task.errors,
-    )
-
-
-def extraction_record_summary(task: ExtractionTask) -> ExtractionRecordResponse:
-    found_count = sum(1 for result in task.results if result.status == "found")
-    not_found_count = sum(1 for result in task.results if result.status == "not_found")
-    error_count = sum(1 for result in task.results if result.status == "error")
-    return ExtractionRecordResponse(
-        task_id=task.task_id,
-        task_type=task.task_type,
-        status=task.status,
-        created_at=task.created_at,
-        updated_at=task.updated_at,
-        filename=task.filename,
-        file_url=f"/api/extract/{task.task_id}/file" if task.file_path else "",
-        extractor_used=task.extractor_used,
-        field_count=len(task.fields),
-        found_count=found_count,
-        not_found_count=not_found_count,
-        error_count=error_count,
-    )
-
-
-def extraction_record_list_response(tasks: list[ExtractionTask]) -> ExtractionRecordListResponse:
-    return ExtractionRecordListResponse(records=[extraction_record_summary(task) for task in tasks])
 
 
 def task_execution_response(job: TaskJob) -> TaskExecutionResponse:

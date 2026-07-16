@@ -16,7 +16,7 @@ from app.errors import ConflictError, NotFoundError
 
 logger = logging.getLogger(__name__)
 
-TaskJobType = Literal["compare", "extraction"]
+TaskJobType = Literal["compare"]
 TaskJobStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED"]
 TERMINAL_JOB_STATUSES: set[TaskJobStatus] = {"SUCCEEDED", "FAILED", "CANCELLED"}
 

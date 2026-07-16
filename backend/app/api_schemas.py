@@ -6,13 +6,11 @@ from pydantic import BaseModel, Field
 
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 TaskExecutionStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED"]
-TaskExecutionType = Literal["compare", "extraction"]
+TaskExecutionType = Literal["compare"]
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
-ExtractionFieldStatus = Literal["found", "not_found", "error"]
-ExtractionMethod = Literal["explicit", "semantic"]
 OcrQualityStatus = Literal[
     "OK",
     "LOW_TEXT_CONFIDENCE",
@@ -255,59 +253,3 @@ class AuditItemReviewUpdateResponse(BaseModel):
     audit_item_id: str
     audit_item_review: AuditItemReviewResponse
     review_stats: ReviewStatsResponse
-
-
-class ExtractionFieldRequest(BaseModel):
-    id: str
-    name: str
-    type: str = "文本"
-    description: str = ""
-    semantic_extraction: bool = True
-
-
-class ExtractionFieldResponse(ExtractionFieldRequest):
-    pass
-
-
-class ExtractionFieldValueResponse(BaseModel):
-    field_id: str
-    field_name: str
-    value: str = ""
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source_snippet: str = ""
-    status: ExtractionFieldStatus = "not_found"
-    extraction_method: ExtractionMethod | None = None
-
-
-class ExtractionTaskResponse(BaseModel):
-    task_id: str
-    task_type: str = "extraction"
-    status: TaskStatus
-    stage: str = ""
-    created_at: str
-    updated_at: str
-    filename: str = ""
-    file_url: str = ""
-    extractor_used: str = ""
-    fields: list[ExtractionFieldResponse] = Field(default_factory=list)
-    results: list[ExtractionFieldValueResponse] = Field(default_factory=list)
-    errors: list[str] = Field(default_factory=list)
-
-
-class ExtractionRecordResponse(BaseModel):
-    task_id: str
-    task_type: str
-    status: TaskStatus
-    created_at: str
-    updated_at: str
-    filename: str
-    file_url: str
-    extractor_used: str
-    field_count: int
-    found_count: int
-    not_found_count: int
-    error_count: int
-
-
-class ExtractionRecordListResponse(BaseModel):
-    records: list[ExtractionRecordResponse]

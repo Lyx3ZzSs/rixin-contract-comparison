@@ -10,7 +10,6 @@ from app.infrastructure.task_repository import (
     to_jsonable as _to_jsonable,
 )
 from app.models import CompareTask
-from app.models_extraction import ExtractionTask
 
 
 def task_json_path(task_id: str) -> Path:
@@ -34,15 +33,3 @@ def load_task(task_id: str) -> CompareTask:
 
 def list_compare_tasks() -> list[CompareTask]:
     return default_task_repository.list_compare_tasks()
-
-
-def save_extraction_task(task: ExtractionTask) -> Path | None:
-    return default_task_repository.save_extraction_task(task)
-
-
-def load_extraction_task(task_id: str) -> ExtractionTask:
-    return default_task_repository.load_extraction_task(task_id)
-
-
-def list_extraction_tasks() -> list[ExtractionTask]:
-    return default_task_repository.list_extraction_tasks()
