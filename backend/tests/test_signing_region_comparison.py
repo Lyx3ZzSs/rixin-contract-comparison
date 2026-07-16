@@ -518,6 +518,39 @@ def test_coverage_hides_overlapping_seal_diff() -> None:
     assert result.entries[0].signing_region_diff_id == "D010"
 
 
+def test_coverage_hides_overlapping_signing_contact_delete_described_only_by_snippet() -> None:
+    region_diff = SigningRegionDiffBuilder().build_diffs(
+        [
+            SigningRegionComparator().compare(
+                _region("O1", "签署表原文", element_type=SigningElementType.SIGNING_TABLE),
+                _region("C1", "签署表被遮挡", element_type=SigningElementType.SIGNING_TABLE),
+                match_confidence=0.9,
+            )
+        ],
+        start_index=12,
+    )[0]
+    legacy = DiffItem(
+        diff_id="D006",
+        diff_type="DELETE",
+        source_type="table",
+        title="表格字段：联系人",
+        original_snippet="27号1幢2层227号 | 创业孵化基地1号楼0814室",
+        original_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=90, y0=680, x1=180, y1=710),
+                method="table_cell",
+                text="创业孵化基地1号楼0814室",
+            )
+        ],
+    )
+
+    result = SigningRegionCoverageBuilder().build([region_diff], [legacy])
+
+    assert result.covered_diff_ids == {"D006"}
+    assert result.entries[0].reasons["D006"] == "overlaps_confirmed_signing_region"
+
+
 def test_coverage_does_not_hide_same_bbox_seal_diff_on_different_page() -> None:
     region_diff = SigningRegionDiffBuilder().build_diffs(
         [

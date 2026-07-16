@@ -6107,6 +6107,31 @@ def test_diff_quality_keeps_real_seal_or_signature_region_addition() -> None:
     assert [item.diff_id for item in result.diffs] == ["D026"]
 
 
+def test_diff_quality_downgrades_unreliable_signing_table_visual_change() -> None:
+    diff = DiffItem(
+        diff_id="D012",
+        diff_type="MODIFY",
+        source_type="signing_region",
+        section_type="signature",
+        title="签署区（第2页）",
+        original_text="单位地址：北京市海淀区；法人代表：雍正",
+        compare_text="",
+        review_flags=[
+            "PAGE_UNRELIABLE",
+            "SIGNING_TABLE_CHANGE",
+            "SIGNING_VISUAL_CHANGE",
+            "CRITICAL_VALUE_CHANGE",
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+    processed = result.diffs[0]
+
+    assert processed.quality_status == "NEEDS_REVIEW"
+    assert "SIGNING_REGION_REVIEW" in processed.review_flags
+    assert "CRITICAL_VALUE_CHANGE" not in processed.review_flags
+
+
 def test_diff_quality_keeps_short_meaningful_seal_region_text() -> None:
     diffs = [
         DiffItem(

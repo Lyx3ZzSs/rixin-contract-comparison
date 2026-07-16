@@ -246,6 +246,32 @@ def test_opencv_visual_detector_does_not_treat_dense_printed_glyphs_as_signature
     assert result.detections == []
 
 
+def test_opencv_visual_detector_removes_printed_table_rules_before_handwriting_detection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import numpy as np
+
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    pdf_path = tmp_path / "printed-table.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    image = np.full((240, 240, 3), 255, dtype=np.uint8)
+    for y in (30, 80, 130, 190):
+        image[y : y + 4, 20:220] = [20, 20, 20]
+    for y in range(45, 180, 24):
+        for x in range(35, 210, 22):
+            image[y : y + 8, x : x + 6] = [20, 20, 20]
+
+    _patch_opencv_dependencies(monkeypatch, OpenCvVisualSignatureDetector)
+    detector = OpenCvVisualSignatureDetector()
+    monkeypatch.setattr(detector, "_render_region", lambda *_args: image)
+
+    result = detector.detect(pdf_path, [_region()], task_id="task-1")
+
+    assert result.available is True
+    assert result.detections == []
+
+
 def test_opencv_visual_detector_keeps_blank_region_as_no_detection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -1190,6 +1190,23 @@ class DiffQualityProcessor:
             return True
         if diff.source_type == "seal":
             return True
+        if diff.source_type == "signing_region":
+            flags = set(diff.review_flags)
+            has_unreliable_table_visual_change = bool(
+                flags.intersection({"SIGNING_TABLE_CHANGE", "SIGNING_VISUAL_CHANGE"})
+                and flags.intersection(self.ocr_quality_review_flags)
+            )
+            has_direct_signing_change = bool(
+                flags.intersection(
+                    {
+                        "SIGNING_PARTY_CHANGE",
+                        "SIGNING_DATE_CHANGE",
+                        "SIGNING_SIGNATURE_CHANGE",
+                        "SIGNING_SEAL_CHANGE",
+                    }
+                )
+            )
+            return has_unreliable_table_visual_change and not has_direct_signing_change
         return False
 
     def _non_body_review_flag(self, diff: DiffItem) -> str:
@@ -1197,6 +1214,8 @@ class DiffQualityProcessor:
             return "HEADER_FOOTER_REVIEW"
         if diff.source_type == "seal":
             return "SEAL_REVIEW"
+        if diff.source_type == "signing_region":
+            return "SIGNING_REGION_REVIEW"
         return "NON_BODY_SECTION_REVIEW"
 
     def _looks_like_header_footer_noise(self, diff: DiffItem) -> bool:

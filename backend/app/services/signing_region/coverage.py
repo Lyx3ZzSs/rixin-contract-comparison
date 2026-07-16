@@ -7,7 +7,23 @@ from app.services.signing_region.models import SigningCoverageEntry
 
 
 LEGACY_SOURCES = {"seal", "table", "metadata", "header_footer"}
-SIGNING_TEXT_MARKERS = ("签", "章", "甲方", "乙方", "法定代表", "授权代表", "日期")
+SIGNING_TEXT_MARKERS = (
+    "签",
+    "章",
+    "甲方",
+    "乙方",
+    "法定代表",
+    "授权代表",
+    "日期",
+    "联系人",
+    "单位地址",
+    "电话",
+    "传真",
+    "开户银行",
+    "账号",
+    "税号",
+    "邮政编码",
+)
 
 
 @dataclass
@@ -25,6 +41,8 @@ class SigningRegionCoverageBuilder:
             signing_evidence = [*signing_diff.original_evidence, *signing_diff.compare_evidence]
             for legacy in legacy_diffs:
                 if legacy.source_type not in LEGACY_SOURCES:
+                    continue
+                if legacy.source_type == "table" and "SIGNING_TABLE_CHANGE" not in signing_diff.review_flags:
                     continue
                 if not self._looks_signing_related(legacy):
                     continue
@@ -47,7 +65,13 @@ class SigningRegionCoverageBuilder:
     def _looks_signing_related(diff: DiffItem) -> bool:
         if diff.source_type == "seal":
             return True
-        text = f"{diff.title} {diff.original_text} {diff.compare_text} {' '.join(diff.review_flags)}"
+        evidence_text = " ".join(
+            evidence.text for evidence in [*diff.original_evidence, *diff.compare_evidence] if evidence.text
+        )
+        text = (
+            f"{diff.title} {diff.original_text} {diff.compare_text} "
+            f"{diff.original_snippet} {diff.compare_snippet} {evidence_text} {' '.join(diff.review_flags)}"
+        )
         return any(marker in text for marker in SIGNING_TEXT_MARKERS)
 
     @staticmethod

@@ -131,8 +131,8 @@ class OpenCvVisualSignatureDetector:
             confidence = min(0.95, 0.55 + red_pixel_ratio * 8.0)
             reasons.append("red_seal_pixels")
 
-        dark_pixel_ratio = metrics["dark_pixel_ratio"]
-        long_stroke_ratio = metrics["long_stroke_ratio"]
+        dark_pixel_ratio = metrics["handwriting_dark_pixel_ratio"]
+        long_stroke_ratio = metrics["handwriting_long_stroke_ratio"]
         if self.detect_handwriting and dark_pixel_ratio >= 0.015 and long_stroke_ratio >= 0.12:
             handwriting_confidence = min(0.9, 0.5 + dark_pixel_ratio * 5.0)
             if handwriting_confidence > confidence:
@@ -160,14 +160,14 @@ class OpenCvVisualSignatureDetector:
     def _visual_metrics(image: Any) -> dict[str, float]:
         deps = OpenCvVisualSignatureDetector._dependencies()
         if deps is None or image is None or getattr(image, "size", 0) == 0:
-            return {"red_pixel_ratio": 0.0, "dark_pixel_ratio": 0.0, "long_stroke_ratio": 0.0}
+            return OpenCvVisualSignatureDetector._empty_visual_metrics()
 
         cv2, np = deps
         try:
             height, width = image.shape[:2]
             total_pixels = float(height * width)
             if total_pixels <= 0:
-                return {"red_pixel_ratio": 0.0, "dark_pixel_ratio": 0.0, "long_stroke_ratio": 0.0}
+                return OpenCvVisualSignatureDetector._empty_visual_metrics()
 
             hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
             red_mask_low = cv2.inRange(hsv, np.array([0, 70, 50]), np.array([12, 255, 255]))
@@ -179,13 +179,36 @@ class OpenCvVisualSignatureDetector:
             dark_mask = gray < 80
             dark_pixel_ratio = float(np.count_nonzero(dark_mask)) / total_pixels
             long_stroke_ratio = OpenCvVisualSignatureDetector._longest_dark_stroke_ratio(dark_mask)
+            horizontal_rules = np.count_nonzero(dark_mask, axis=1) >= width * 0.75
+            vertical_rules = np.count_nonzero(dark_mask, axis=0) >= height * 0.75
+            rule_mask = np.logical_or(horizontal_rules[:, None], vertical_rules[None, :])
+            handwriting_mask = np.logical_and(dark_mask, np.logical_not(rule_mask))
+            handwriting_dark_pixel_ratio = float(np.count_nonzero(handwriting_mask)) / total_pixels
+            handwriting_long_stroke_ratio = OpenCvVisualSignatureDetector._longest_dark_stroke_ratio(
+                handwriting_mask
+            )
+            axis_rule_pixel_ratio = float(np.count_nonzero(np.logical_and(dark_mask, rule_mask))) / total_pixels
         except Exception:
-            return {"red_pixel_ratio": 0.0, "dark_pixel_ratio": 0.0, "long_stroke_ratio": 0.0}
+            return OpenCvVisualSignatureDetector._empty_visual_metrics()
 
         return {
             "red_pixel_ratio": red_pixel_ratio,
             "dark_pixel_ratio": dark_pixel_ratio,
             "long_stroke_ratio": long_stroke_ratio,
+            "handwriting_dark_pixel_ratio": handwriting_dark_pixel_ratio,
+            "handwriting_long_stroke_ratio": handwriting_long_stroke_ratio,
+            "axis_rule_pixel_ratio": axis_rule_pixel_ratio,
+        }
+
+    @staticmethod
+    def _empty_visual_metrics() -> dict[str, float]:
+        return {
+            "red_pixel_ratio": 0.0,
+            "dark_pixel_ratio": 0.0,
+            "long_stroke_ratio": 0.0,
+            "handwriting_dark_pixel_ratio": 0.0,
+            "handwriting_long_stroke_ratio": 0.0,
+            "axis_rule_pixel_ratio": 0.0,
         }
 
     @staticmethod
