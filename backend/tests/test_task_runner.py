@@ -118,6 +118,30 @@ def test_new_submission_creates_first_execution_in_jobs_directory(tmp_path: Path
     assert not (runner.settings.tasks_dir / "TFIRST" / "job.json").exists()
 
 
+def test_submit_rejects_legacy_raw_job_id_collision_with_different_identity(tmp_path: Path) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    runner.register_handler("compare", lambda payload: None)
+    legacy_path = runner.settings.tasks_dir / "tenant_1" / "job.json"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        TaskJob(
+            job_id="compare:tenant:1",
+            task_id="tenant:1",
+            task_type="compare",
+            execution_no=1,
+            payload={"task_id": "tenant:1"},
+        ).model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    original_legacy_job = legacy_path.read_text(encoding="utf-8")
+
+    with pytest.raises(TaskTransitionConflict):
+        runner.submit(task_type="compare", task_id="tenant", payload={"task_id": "tenant"})
+
+    assert legacy_path.read_text(encoding="utf-8") == original_legacy_job
+    assert not (runner.settings.tasks_dir / "tenant" / "jobs" / "1.json").exists()
+
+
 def test_queued_task_runner_retries_failed_jobs(tmp_path: Path) -> None:
     runner = build_runner(tmp_path)
     attempts = 0
@@ -164,7 +188,9 @@ def test_queued_task_runner_cancels_queued_job(tmp_path: Path) -> None:
     runner.stop()
 
     assert [item.status for item in cancelled] == ["CANCELLED"]
+    assert [item.attempt for item in cancelled] == [0]
     assert stored.status == "CANCELLED"
+    assert stored.attempt == 0
     assert executed is False
 
 
@@ -289,6 +315,39 @@ def test_enqueue_cannot_overwrite_terminal_execution_path(tmp_path: Path) -> Non
         )
 
     assert repository.load(job.job_id).status == "FAILED"
+
+
+def test_enqueue_rejects_execution_identity_already_stored_in_legacy_path(tmp_path: Path) -> None:
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    repository = LocalJsonTaskJobRepository(app_settings)
+    legacy_path = app_settings.tasks_dir / "TLEGACY_TERMINAL" / "job.json"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        TaskJob(
+            job_id="compare:TLEGACY_TERMINAL",
+            task_id="TLEGACY_TERMINAL",
+            task_type="compare",
+            status="FAILED",
+            execution_no=1,
+            attempt=1,
+            max_attempts=1,
+            last_error="legacy failure",
+        ).model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TaskTransitionConflict):
+        repository.enqueue(
+            TaskJob(
+                job_id="compare:TLEGACY_TERMINAL:1",
+                task_id="TLEGACY_TERMINAL",
+                task_type="compare",
+                execution_no=1,
+            )
+        )
+
+    assert not (legacy_path.parent / "jobs" / "1.json").exists()
+    assert json.loads(legacy_path.read_text(encoding="utf-8"))["status"] == "FAILED"
 
 
 def test_lease_takeover_increments_attempt(tmp_path: Path) -> None:

@@ -89,22 +89,30 @@ class LocalJsonTaskJobRepository:
 
     def enqueue(self, job: TaskJob) -> TaskJob:
         with self._lock:
-            try:
-                existing = self.load(job.job_id)
-            except FileNotFoundError:
-                existing = None
-            if existing:
+            existing_jobs = self.list_jobs()
+            job_id_matches = [existing for existing in existing_jobs if existing.job_id == job.job_id]
+            if job_id_matches:
+                if len(job_id_matches) != 1 or not self._has_same_identity(job_id_matches[0], job):
+                    raise TaskTransitionConflict(f"执行记录 ID {job.job_id} 与已有执行身份冲突。")
+                existing = job_id_matches[0]
                 if existing.status in TERMINAL_JOB_STATUSES:
                     raise TaskTransitionConflict(
                         f"执行记录 {existing.job_id} 已为终态 {existing.status}，不能重新入队。"
                     )
                 return existing
+            execution_matches = [
+                existing for existing in existing_jobs if self._has_same_execution_identity(existing, job)
+            ]
+            if execution_matches:
+                raise TaskTransitionConflict(
+                    f"任务 {job.task_id} 的第 {job.execution_no} 次 {job.task_type} 执行记录已存在，不能重复创建。"
+                )
             target_path = self._new_job_path(job)
             if target_path.exists():
                 raise TaskTransitionConflict(f"任务 {job.task_id} 的第 {job.execution_no} 次执行记录已存在，不能覆盖。")
             active_jobs = [
                 existing_job
-                for existing_job in self.list_jobs()
+                for existing_job in existing_jobs
                 if existing_job.task_id == job.task_id
                 and existing_job.task_type == job.task_type
                 and existing_job.status not in TERMINAL_JOB_STATUSES
@@ -305,6 +313,16 @@ class LocalJsonTaskJobRepository:
 
     def _new_job_path(self, job: TaskJob) -> Path:
         return self._task_dir(job.task_id) / "jobs" / f"{job.execution_no}.json"
+
+    def _has_same_identity(self, existing: TaskJob, candidate: TaskJob) -> bool:
+        return bool(existing.job_id == candidate.job_id and self._has_same_execution_identity(existing, candidate))
+
+    def _has_same_execution_identity(self, existing: TaskJob, candidate: TaskJob) -> bool:
+        return bool(
+            existing.task_id == candidate.task_id
+            and existing.task_type == candidate.task_type
+            and existing.execution_no == candidate.execution_no
+        )
 
     def _job_identity_parts(self, job_id: str) -> tuple[str, int]:
         identity = job_id.split(":", 1)[1] if ":" in job_id else job_id
