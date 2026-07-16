@@ -10,7 +10,11 @@ import app.services.diff.boundary_coverage as boundary_coverage_module
 from app.models import BBox, Clause, ClausePair, DiffItem, Document, EvidenceBox, Page, TextBlock, TextRange
 from app.services.clause_splitter import ClauseSplitter
 from app.services.clause_split_settings import ClauseSplitSettings
-from app.services.diff.boundary_coverage import BoundaryCoverageContext, ClauseBoundaryCoverageFilter, contact_field_coverage_sequences
+from app.services.diff.boundary_coverage import (
+    BoundaryCoverageContext,
+    ClauseBoundaryCoverageFilter,
+    contact_field_coverage_sequences,
+)
 from app.services.diff_engine import DiffEngine
 from app.services.diff_quality import DiffQualityProcessor
 from app.services.document_preparation import DocumentPreparer
@@ -302,8 +306,15 @@ def test_document_preparation_keeps_signing_text_as_regular_clause_text() -> Non
                 width=595,
                 height=842,
                 blocks=[
-                    TextBlock(block_id="sig1", page_no=2, text="签字页 此页无正文", bbox=BBox(x0=50, y0=80, x1=500, y1=110)),
-                    TextBlock(block_id="sig2", page_no=2, text="甲方（盖章） 乙方（盖章） 日期", bbox=BBox(x0=50, y0=130, x1=500, y1=180)),
+                    TextBlock(
+                        block_id="sig1", page_no=2, text="签字页 此页无正文", bbox=BBox(x0=50, y0=80, x1=500, y1=110)
+                    ),
+                    TextBlock(
+                        block_id="sig2",
+                        page_no=2,
+                        text="甲方（盖章） 乙方（盖章） 日期",
+                        bbox=BBox(x0=50, y0=130, x1=500, y1=180),
+                    ),
                 ],
             ),
         ],
@@ -898,11 +909,9 @@ def test_clause_splitter_does_not_promote_article_reference_as_clause_number() -
                     TextBlock(
                         block_id="quality-32",
                         page_no=1,
-                        text=(
-                            "3.2 本合同项下产品应符合其产品说明书或包装上注明采用的产品质量标准。"
-                        ),
+                        text=("3.2 本合同项下产品应符合其产品说明书或包装上注明采用的产品质量标准。"),
                         bbox=BBox(x0=50, y0=150, x1=500, y1=180),
-                    )
+                    ),
                 ],
             )
         ],
@@ -979,10 +988,19 @@ def test_clause_splitter_merges_ocr_split_paragraph_with_evidence() -> None:
                 height=842,
                 blocks=[
                     TextBlock(block_id="h1", page_no=1, text="1. 服务范围", bbox=BBox(x0=50, y0=80, x1=500, y1=110)),
-                    TextBlock(block_id="p1", page_no=1, text="甲方提供风功率预测服务", bbox=BBox(x0=70, y0=116, x1=500, y1=146)),
-                    TextBlock(block_id="p2", page_no=1, text="并负责系统日常维护。", bbox=BBox(x0=70, y0=152, x1=500, y1=182)),
+                    TextBlock(
+                        block_id="p1",
+                        page_no=1,
+                        text="甲方提供风功率预测服务",
+                        bbox=BBox(x0=70, y0=116, x1=500, y1=146),
+                    ),
+                    TextBlock(
+                        block_id="p2", page_no=1, text="并负责系统日常维护。", bbox=BBox(x0=70, y0=152, x1=500, y1=182)
+                    ),
                     TextBlock(block_id="h2", page_no=1, text="2. 付款", bbox=BBox(x0=50, y0=220, x1=500, y1=250)),
-                    TextBlock(block_id="p3", page_no=1, text="乙方按月付款。", bbox=BBox(x0=70, y0=256, x1=500, y1=286)),
+                    TextBlock(
+                        block_id="p3", page_no=1, text="乙方按月付款。", bbox=BBox(x0=70, y0=256, x1=500, y1=286)
+                    ),
                 ],
             )
         ],
@@ -1012,7 +1030,9 @@ def test_clause_splitter_merges_bare_number_with_following_heading() -> None:
                 blocks=[
                     TextBlock(block_id="number", page_no=1, text="1.", bbox=BBox(x0=50, y0=80, x1=72, y1=110)),
                     TextBlock(block_id="title", page_no=1, text="服务范围", bbox=BBox(x0=80, y0=80, x1=180, y1=110)),
-                    TextBlock(block_id="body", page_no=1, text="甲方提供服务。", bbox=BBox(x0=70, y0=120, x1=500, y1=150)),
+                    TextBlock(
+                        block_id="body", page_no=1, text="甲方提供服务。", bbox=BBox(x0=70, y0=120, x1=500, y1=150)
+                    ),
                 ],
             )
         ],
@@ -1045,7 +1065,9 @@ def test_clause_splitter_merges_bare_number_with_following_paragraph_title() -> 
                         bbox=BBox(x0=80, y0=80, x1=180, y1=110),
                         block_type="paragraph_title",
                     ),
-                    TextBlock(block_id="body", page_no=1, text="甲方提供服务。", bbox=BBox(x0=70, y0=120, x1=500, y1=150)),
+                    TextBlock(
+                        block_id="body", page_no=1, text="甲方提供服务。", bbox=BBox(x0=70, y0=120, x1=500, y1=150)
+                    ),
                 ],
             )
         ],
@@ -1071,8 +1093,18 @@ def test_clause_splitter_filters_toc_dot_leaders_from_body_clauses() -> None:
                 height=842,
                 blocks=[
                     TextBlock(block_id="t0", page_no=1, text="目录", bbox=BBox(x0=50, y0=60, x1=200, y1=80)),
-                    TextBlock(block_id="t1", page_no=1, text="1. 技术服务项目概要......3", bbox=BBox(x0=50, y0=90, x1=500, y1=110)),
-                    TextBlock(block_id="t2", page_no=1, text="2. 技术服务具体要求..3", bbox=BBox(x0=50, y0=120, x1=500, y1=140)),
+                    TextBlock(
+                        block_id="t1",
+                        page_no=1,
+                        text="1. 技术服务项目概要......3",
+                        bbox=BBox(x0=50, y0=90, x1=500, y1=110),
+                    ),
+                    TextBlock(
+                        block_id="t2",
+                        page_no=1,
+                        text="2. 技术服务具体要求..3",
+                        bbox=BBox(x0=50, y0=120, x1=500, y1=140),
+                    ),
                     TextBlock(block_id="t3", page_no=1, text="12.1/。", bbox=BBox(x0=50, y0=150, x1=500, y1=170)),
                 ],
             )
@@ -1770,11 +1802,24 @@ def test_clause_splitter_builds_hierarchy_path_from_heading_levels() -> None:
                 width=595,
                 height=842,
                 blocks=[
-                    TextBlock(block_id="chapter", page_no=1, text="第一章 总则", bbox=BBox(x0=50, y0=60, x1=500, y1=90)),
-                    TextBlock(block_id="article", page_no=1, text="第一条 服务范围", bbox=BBox(x0=50, y0=100, x1=500, y1=130)),
-                    TextBlock(block_id="sub", page_no=1, text="1.1 平台维护服务", bbox=BBox(x0=50, y0=140, x1=500, y1=170)),
-                    TextBlock(block_id="body", page_no=1, text="乙方负责平台日常维护。", bbox=BBox(x0=70, y0=180, x1=500, y1=210)),
-                    TextBlock(block_id="next", page_no=1, text="第二条 付款方式", bbox=BBox(x0=50, y0=220, x1=500, y1=250)),
+                    TextBlock(
+                        block_id="chapter", page_no=1, text="第一章 总则", bbox=BBox(x0=50, y0=60, x1=500, y1=90)
+                    ),
+                    TextBlock(
+                        block_id="article", page_no=1, text="第一条 服务范围", bbox=BBox(x0=50, y0=100, x1=500, y1=130)
+                    ),
+                    TextBlock(
+                        block_id="sub", page_no=1, text="1.1 平台维护服务", bbox=BBox(x0=50, y0=140, x1=500, y1=170)
+                    ),
+                    TextBlock(
+                        block_id="body",
+                        page_no=1,
+                        text="乙方负责平台日常维护。",
+                        bbox=BBox(x0=70, y0=180, x1=500, y1=210),
+                    ),
+                    TextBlock(
+                        block_id="next", page_no=1, text="第二条 付款方式", bbox=BBox(x0=50, y0=220, x1=500, y1=250)
+                    ),
                 ],
             )
         ],
@@ -1802,7 +1847,9 @@ def test_clause_splitter_keeps_chapter_context_in_duplicate_article_keys() -> No
                     TextBlock(block_id="c1", page_no=1, text="第一章 总则", bbox=BBox(x0=50, y0=60, x1=500, y1=90)),
                     TextBlock(block_id="a1", page_no=1, text="第一条 定义", bbox=BBox(x0=50, y0=100, x1=500, y1=130)),
                     TextBlock(block_id="s1", page_no=1, text="1.1 服务内容", bbox=BBox(x0=50, y0=140, x1=500, y1=170)),
-                    TextBlock(block_id="c2", page_no=1, text="第二章 商务条款", bbox=BBox(x0=50, y0=220, x1=500, y1=250)),
+                    TextBlock(
+                        block_id="c2", page_no=1, text="第二章 商务条款", bbox=BBox(x0=50, y0=220, x1=500, y1=250)
+                    ),
                     TextBlock(block_id="a2", page_no=1, text="第一条 定义", bbox=BBox(x0=50, y0=260, x1=500, y1=290)),
                     TextBlock(block_id="s2", page_no=1, text="1.1 服务内容", bbox=BBox(x0=50, y0=300, x1=500, y1=330)),
                 ],
@@ -2305,7 +2352,9 @@ def test_diff_quality_suppresses_short_symbol_noise_without_business_tokens() ->
     result = DiffQualityProcessor().process(diffs)
 
     assert [diff.diff_id for diff in result.diffs] == ["D002"]
-    assert any(decision.action == "suppressed_low_value_noise" and decision.diff_id == "D001" for decision in result.decisions)
+    assert any(
+        decision.action == "suppressed_low_value_noise" and decision.diff_id == "D001" for decision in result.decisions
+    )
 
 
 def test_diff_quality_suppresses_short_symbol_noise_even_when_clause_context_has_numbers() -> None:
@@ -2373,15 +2422,8 @@ def test_diff_quality_suppresses_single_sided_payment_blank_tail_symbol_noise() 
         source_type="clause",
         clause_no="35",
         title=",质保金5",
-        original_text=(
-            "35,质保金5\n"
-            "A. 滚动付款方式。付款条件为乙方将产品送至我方指定地点。"
-        ),
-        compare_text=(
-            "35,质保金5\n"
-            "_】\n"
-            "A. 滚动付款方式。付款条件为乙方将产品送至我方指定地点。"
-        ),
+        original_text=("35,质保金5\nA. 滚动付款方式。付款条件为乙方将产品送至我方指定地点。"),
+        compare_text=("35,质保金5\n_】\nA. 滚动付款方式。付款条件为乙方将产品送至我方指定地点。"),
         original_snippet="",
         compare_snippet="_】",
         match_score=100,
@@ -2745,9 +2787,7 @@ def test_diff_quality_keeps_critical_heading_add_with_bare_number_and_child_clau
     compare_child.clause_no = "2.1"
     original_document = _quality_document(
         3,
-        "1.9 条款正文。\n"
-        "2.\n"
-        "2.1 任何一方均应按合同约定履行义务。",
+        "1.9 条款正文。\n2.\n2.1 任何一方均应按合同约定履行义务。",
     )
     diff = DiffItem(
         diff_id="D111_CRITICAL_HEADING_ADD",
@@ -2797,9 +2837,7 @@ def test_diff_quality_keeps_critical_flagged_material_heading_add_with_bare_numb
     compare_child.clause_no = "2.1"
     original_document = _quality_document(
         3,
-        "1.9 条款正文。\n"
-        "2.\n"
-        "2.1 任何一方均应按合同约定履行义务。",
+        "1.9 条款正文。\n2.\n2.1 任何一方均应按合同约定履行义务。",
     )
     diff = DiffItem(
         diff_id="D111_MATERIAL_HEADING_ADD",
@@ -2836,7 +2874,9 @@ def test_diff_quality_suppresses_high_risk_heading_add_with_exact_native_evidenc
     original_document.path = str(path)
     original_child = _quality_clause("OC081", "8.1 甲方拥有工作成果。", order_index=2)
     original_child.clause_no = "8.1"
-    compare_heading = _quality_clause("NC080", "8. 知识产权", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"])
+    compare_heading = _quality_clause(
+        "NC080", "8. 知识产权", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"]
+    )
     compare_heading.clause_no = "8"
     compare_heading.title = "知识产权"
     compare_child = _quality_clause("NC081", "8.1 甲方拥有工作成果。", side_prefix="N", order_index=2)
@@ -2873,7 +2913,9 @@ def test_diff_quality_keeps_high_risk_heading_add_without_exact_native_evidence(
     original_document.path = str(path)
     original_child = _quality_clause("OC081", "8.1 甲方拥有工作成果。", order_index=2)
     original_child.clause_no = "8.1"
-    compare_heading = _quality_clause("NC080", "8. 知识产权", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"])
+    compare_heading = _quality_clause(
+        "NC080", "8. 知识产权", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"]
+    )
     compare_heading.clause_no = "8"
     compare_heading.title = "知识产权"
     compare_child = _quality_clause("NC081", "8.1 甲方拥有工作成果。", side_prefix="N", order_index=2)
@@ -3022,7 +3064,9 @@ def test_diff_quality_keeps_native_heading_add_when_clause_contains_new_body(tmp
     original_document.path = str(path)
     original_child = _quality_clause("OC081", "8.1 甲方拥有工作成果。", order_index=2)
     original_child.clause_no = "8.1"
-    compare_heading = _quality_clause("NC080", "8. 知识产权\n新增许可限制。", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"])
+    compare_heading = _quality_clause(
+        "NC080", "8. 知识产权\n新增许可限制。", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"]
+    )
     compare_heading.clause_no = "8"
     compare_heading.title = "知识产权"
     compare_child = _quality_clause("NC081", "8.1 甲方拥有工作成果。", side_prefix="N", order_index=2)
@@ -3060,7 +3104,9 @@ def test_diff_quality_keeps_high_risk_heading_add_when_diff_payload_is_heading_o
     original_document.path = str(path)
     original_child = _quality_clause("OC081", "8.1 甲方拥有工作成果。", order_index=2)
     original_child.clause_no = "8.1"
-    compare_heading = _quality_clause("NC080", "8. 知识产权\n新增许可限制。", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"])
+    compare_heading = _quality_clause(
+        "NC080", "8. 知识产权\n新增许可限制。", side_prefix="N", order_index=1, split_flags=["READING_ORDER_REPAIRED"]
+    )
     compare_heading.clause_no = "8"
     compare_heading.title = "知识产权"
     compare_child = _quality_clause("NC081", "8.1 甲方拥有工作成果。", side_prefix="N", order_index=2)
@@ -3302,7 +3348,9 @@ def test_diff_quality_keeps_long_material_heading_add_not_covered_by_larger_numb
         compare_snippet="2. 合同价格及支付方式",
         structural_flags=["READING_ORDER_REPAIRED"],
         review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
-        compare_evidence=[EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="2. 合同价格及支付方式")],
+        compare_evidence=[
+            EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="2. 合同价格及支付方式")
+        ],
     )
 
     result = DiffQualityProcessor().process([diff], original_document=original_document)
@@ -3329,7 +3377,9 @@ def test_diff_quality_keeps_mixed_material_heading_add_not_covered_by_larger_num
         structural_flags=["READING_ORDER_REPAIRED"],
         review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
         compare_evidence=[
-            EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="合同价格及支付方式\n甲方按合同约定支付价款。")
+            EvidenceBox(
+                page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="合同价格及支付方式\n甲方按合同约定支付价款。"
+            )
         ],
     )
 
@@ -3357,7 +3407,9 @@ def test_diff_quality_keeps_mixed_material_heading_delete_not_covered_by_larger_
         structural_flags=["READING_ORDER_REPAIRED"],
         review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
         original_evidence=[
-            EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="合同价格及支付方式\n甲方按合同约定支付价款。")
+            EvidenceBox(
+                page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="合同价格及支付方式\n甲方按合同约定支付价款。"
+            )
         ],
     )
 
@@ -3384,7 +3436,9 @@ def test_diff_quality_keeps_single_line_material_heading_delete_not_covered_by_l
         original_snippet="2. 合同价格及支付方式",
         structural_flags=["READING_ORDER_REPAIRED"],
         review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
-        original_evidence=[EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="2. 合同价格及支付方式")],
+        original_evidence=[
+            EvidenceBox(page_no=3, bbox=BBox(x0=65, y0=729, x1=151, y1=752), text="2. 合同价格及支付方式")
+        ],
     )
 
     result = DiffQualityProcessor().process([diff], compare_document=compare_document)
@@ -3424,7 +3478,11 @@ def test_diff_quality_suppresses_one_sided_modify_fragment_covered_by_opposite_p
             "READING_ORDER_RISK",
         ],
         compare_evidence=[
-            EvidenceBox(page_no=3, bbox=BBox(x0=104, y0=177, x1=442, y1=196), text="值要求所必须的,均应由乙方按要求补上,发生的费用由乙方承担。"),
+            EvidenceBox(
+                page_no=3,
+                bbox=BBox(x0=104, y0=177, x1=442, y1=196),
+                text="值要求所必须的,均应由乙方按要求补上,发生的费用由乙方承担。",
+            ),
         ],
         quality_status="NEEDS_REVIEW",
     )
@@ -3537,9 +3595,15 @@ def test_diff_quality_suppresses_non_contiguous_split_original_fragments_covered
         structural_flags=["PARAGRAPH_MERGED"],
         compare_evidence=[
             EvidenceBox(page_no=2, bbox=BBox(x0=62, y0=626, x1=82, y1=639), text="1.9."),
-            EvidenceBox(page_no=2, bbox=BBox(x0=80, y0=626, x1=350, y1=639), text="除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,"),
+            EvidenceBox(
+                page_no=2,
+                bbox=BBox(x0=80, y0=626, x1=350, y1=639),
+                text="除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,",
+            ),
             EvidenceBox(page_no=2, bbox=BBox(x0=95, y0=672, x1=122, y1=686), text="间的,"),
-            EvidenceBox(page_no=2, bbox=BBox(x0=96, y0=695, x1=300, y1=711), text="以法定休假日结束的次日为期间的最后一日。"),
+            EvidenceBox(
+                page_no=2, bbox=BBox(x0=96, y0=695, x1=300, y1=711), text="以法定休假日结束的次日为期间的最后一日。"
+            ),
         ],
         match_score_details={"body_length_coverage": 0.2746, "split_original_clause": 1.0},
     )
@@ -3579,7 +3643,11 @@ def test_diff_quality_keeps_split_fragment_when_snippet_material_is_not_covered(
         ],
         structural_flags=["PARAGRAPH_MERGED"],
         compare_evidence=[
-            EvidenceBox(page_no=2, bbox=BBox(x0=80, y0=626, x1=350, y1=639), text="除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,"),
+            EvidenceBox(
+                page_no=2,
+                bbox=BBox(x0=80, y0=626, x1=350, y1=639),
+                text="除本合同另有约定外,“以上”“以下”“以内”“×日内”“届满”,",
+            ),
         ],
         match_score_details={"body_length_coverage": 0.25, "split_original_clause": 1.0},
     )
@@ -3598,8 +3666,7 @@ def test_diff_quality_keeps_split_fragment_when_snippet_material_is_not_covered(
 def test_diff_quality_suppresses_existing_clause_add_cut_by_reading_order() -> None:
     original_document = _quality_document(
         4,
-        "4.2.1 双方同意采用以下第（一）、（三）种方式进行付款【注:可多选】:\n"
-        "（一）转账/电汇;\n（二）信用证;",
+        "4.2.1 双方同意采用以下第（一）、（三）种方式进行付款【注:可多选】:\n（一）转账/电汇;\n（二）信用证;",
     )
     diff = DiffItem(
         diff_id="D113",
@@ -3647,8 +3714,7 @@ def test_diff_quality_keeps_add_when_only_full_clause_text_is_covered() -> None:
 
     assert [item.diff_id for item in result.diffs] == ["D113_REAL_ADD"]
     assert not any(
-        decision.action == "suppressed_by_neighbor_clause_coverage"
-        and decision.diff_id == "D113_REAL_ADD"
+        decision.action == "suppressed_by_neighbor_clause_coverage" and decision.diff_id == "D113_REAL_ADD"
         for decision in result.decisions
     )
 
@@ -3869,7 +3935,8 @@ def test_diff_quality_suppresses_false_delete_when_text_exists_on_compare_page()
     assert result.diffs == []
     assert any(
         decision.action == "suppressed_by_neighbor_clause_coverage"
-        and decision.detail["reason"] in {"changed_text_covered_by_opposite_page_text", "short_heading_text_covered_by_opposite_page"}
+        and decision.detail["reason"]
+        in {"changed_text_covered_by_opposite_page_text", "short_heading_text_covered_by_opposite_page"}
         for decision in result.decisions
     )
 
@@ -3951,7 +4018,9 @@ def test_diff_quality_suppresses_large_false_delete_when_compare_page_contains_f
             EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=210, x1=450, y1=230), text="年新能源场站功率预测系统授"),
             EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=230, x1=450, y1=250), text="甲"),
             EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=250, x1=450, y1=270), text="方:"),
-            EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=270, x1=450, y1=290), text="国能长源随州发电有限公司随县分公司"),
+            EvidenceBox(
+                page_no=14, bbox=BBox(x0=100, y0=270, x1=450, y1=290), text="国能长源随州发电有限公司随县分公司"
+            ),
             EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=290, x1=450, y1=310), text="乙"),
             EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=310, x1=450, y1=330), text="方:"),
             EvidenceBox(page_no=14, bbox=BBox(x0=100, y0=330, x1=450, y1=350), text="国能日新科技股份有限公司"),
@@ -4011,8 +4080,7 @@ def test_diff_quality_keeps_material_heading_when_only_evidence_preserves_headin
 
     assert [item.diff_id for item in result.diffs] == ["D091_MATERIAL_EVIDENCE"]
     assert not any(
-        decision.action == "suppressed_by_neighbor_clause_coverage"
-        and decision.diff_id == "D091_MATERIAL_EVIDENCE"
+        decision.action == "suppressed_by_neighbor_clause_coverage" and decision.diff_id == "D091_MATERIAL_EVIDENCE"
         for decision in result.decisions
     )
 
@@ -4056,8 +4124,7 @@ def test_diff_quality_keeps_multi_field_change_when_only_labels_are_covered() ->
 
     assert [item.diff_id for item in result.diffs] == ["D091_INCOMPLETE_EVIDENCE"]
     assert not any(
-        decision.action == "suppressed_by_neighbor_clause_coverage"
-        and decision.diff_id == "D091_INCOMPLETE_EVIDENCE"
+        decision.action == "suppressed_by_neighbor_clause_coverage" and decision.diff_id == "D091_INCOMPLETE_EVIDENCE"
         for decision in result.decisions
     )
 
@@ -4501,12 +4568,34 @@ def test_diff_quality_trims_covered_contact_fields_from_mixed_signing_page_diff(
     original_text = original_clause.text
     compare_text = compare_clause.text
     original_ranges = [
-        TextRange(start=original_text.index("1。"), end=original_text.index("1。") + len("1。"), highlight_type="DELETE"),
-        TextRange(start=original_text.index("签署页"), end=original_text.index("签署页") + len("签署页"), highlight_type="DELETE"),
-        TextRange(start=original_text.index("甲方:"), end=original_text.index("签订日期:") + len("签订日期:"), highlight_type="DELETE"),
-        TextRange(start=original_text.index("联系人:"), end=original_text.index("联系人:") + len("联系人:环加飞"), highlight_type="DELETE"),
-        TextRange(start=original_text.index("电话:"), end=original_text.index("电话:") + len("电话:010-83582793"), highlight_type="DELETE"),
-        TextRange(start=original_text.index("传真:"), end=original_text.index("传真:") + len("传真:010-83582600"), highlight_type="DELETE"),
+        TextRange(
+            start=original_text.index("1。"), end=original_text.index("1。") + len("1。"), highlight_type="DELETE"
+        ),
+        TextRange(
+            start=original_text.index("签署页"),
+            end=original_text.index("签署页") + len("签署页"),
+            highlight_type="DELETE",
+        ),
+        TextRange(
+            start=original_text.index("甲方:"),
+            end=original_text.index("签订日期:") + len("签订日期:"),
+            highlight_type="DELETE",
+        ),
+        TextRange(
+            start=original_text.index("联系人:"),
+            end=original_text.index("联系人:") + len("联系人:环加飞"),
+            highlight_type="DELETE",
+        ),
+        TextRange(
+            start=original_text.index("电话:"),
+            end=original_text.index("电话:") + len("电话:010-83582793"),
+            highlight_type="DELETE",
+        ),
+        TextRange(
+            start=original_text.index("传真:"),
+            end=original_text.index("传真:") + len("传真:010-83582600"),
+            highlight_type="DELETE",
+        ),
     ]
     diff = DiffItem(
         diff_id="D014",
@@ -4529,9 +4618,13 @@ def test_diff_quality_trims_covered_contact_fields_from_mixed_signing_page_diff(
             EvidenceBox(page_no=25, bbox=BBox(x0=10, y0=40, x1=80, y1=60), text="联系人:", highlight_type="DELETE"),
             EvidenceBox(page_no=25, bbox=BBox(x0=85, y0=40, x1=140, y1=60), text="环加飞", highlight_type="DELETE"),
             EvidenceBox(page_no=25, bbox=BBox(x0=10, y0=70, x1=80, y1=90), text="电话:", highlight_type="DELETE"),
-            EvidenceBox(page_no=25, bbox=BBox(x0=85, y0=70, x1=180, y1=90), text="010-83582793", highlight_type="DELETE"),
+            EvidenceBox(
+                page_no=25, bbox=BBox(x0=85, y0=70, x1=180, y1=90), text="010-83582793", highlight_type="DELETE"
+            ),
             EvidenceBox(page_no=25, bbox=BBox(x0=10, y0=100, x1=80, y1=120), text="传真:", highlight_type="DELETE"),
-            EvidenceBox(page_no=25, bbox=BBox(x0=85, y0=100, x1=180, y1=120), text="010-83582600", highlight_type="DELETE"),
+            EvidenceBox(
+                page_no=25, bbox=BBox(x0=85, y0=100, x1=180, y1=120), text="010-83582600", highlight_type="DELETE"
+            ),
         ],
         structural_flags=["PARAGRAPH_MERGED"],
         review_flags=["READING_ORDER_RISK", "LOW_CONFIDENCE_MATCH", "CRITICAL_VALUE_CHANGE"],
@@ -4551,7 +4644,9 @@ def test_diff_quality_trims_covered_contact_fields_from_mixed_signing_page_diff(
     assert "010-83582600" not in trimmed.original_snippet
     assert {evidence.text for evidence in trimmed.original_evidence} == {"签署页"}
     assert all("联系人" not in trimmed.original_text[item.start : item.end] for item in trimmed.original_change_ranges)
-    assert all("010-83582793" not in trimmed.original_text[item.start : item.end] for item in trimmed.original_change_ranges)
+    assert all(
+        "010-83582793" not in trimmed.original_text[item.start : item.end] for item in trimmed.original_change_ranges
+    )
     assert any(
         decision.action == "trimmed_by_neighbor_clause_coverage"
         and decision.diff_id == "D014"
@@ -4594,11 +4689,29 @@ def test_diff_quality_trims_covered_signing_form_labels_from_mixed_signature_dif
     )
     compare_text = compare_clause.text
     compare_ranges = [
-        TextRange(start=compare_text.index("司】(盖章"), end=compare_text.index("司】(盖章") + len("司】(盖章"), highlight_type="ADD"),
-        TextRange(start=compare_text.index("授权代表签"), end=compare_text.index("授权代表签") + len("授权代表签"), highlight_type="ADD"),
-        TextRange(start=compare_text.index("纳税人识别"), end=compare_text.index("纳税人识别") + len("纳税人识别"), highlight_type="ADD"),
-        TextRange(start=compare_text.index("日期:2026.4.17"), end=compare_text.index("日期:2026.4.17") + len("日期:2026.4.17"), highlight_type="ADD"),
-        TextRange(start=compare_text.index("刘万程"), end=compare_text.index("刘万程") + len("刘万程"), highlight_type="ADD"),
+        TextRange(
+            start=compare_text.index("司】(盖章"),
+            end=compare_text.index("司】(盖章") + len("司】(盖章"),
+            highlight_type="ADD",
+        ),
+        TextRange(
+            start=compare_text.index("授权代表签"),
+            end=compare_text.index("授权代表签") + len("授权代表签"),
+            highlight_type="ADD",
+        ),
+        TextRange(
+            start=compare_text.index("纳税人识别"),
+            end=compare_text.index("纳税人识别") + len("纳税人识别"),
+            highlight_type="ADD",
+        ),
+        TextRange(
+            start=compare_text.index("日期:2026.4.17"),
+            end=compare_text.index("日期:2026.4.17") + len("日期:2026.4.17"),
+            highlight_type="ADD",
+        ),
+        TextRange(
+            start=compare_text.index("刘万程"), end=compare_text.index("刘万程") + len("刘万程"), highlight_type="ADD"
+        ),
     ]
     diff = DiffItem(
         diff_id="D005",
@@ -4612,11 +4725,21 @@ def test_diff_quality_trims_covered_signing_form_labels_from_mixed_signature_dif
         compare_snippet="司】(盖章授权代表签纳税人识别日期:2026.4.17刘万程",
         compare_change_ranges=compare_ranges,
         compare_evidence=[
-            EvidenceBox(page_no=7, bbox=BBox(x0=68.2, y0=345.7, x1=126.3, y1=361.3), text="司】(盖章", highlight_type="ADD"),
-            EvidenceBox(page_no=7, bbox=BBox(x0=68.7, y0=362.7, x1=126.3, y1=378.3), text="授权代表签", highlight_type="ADD"),
-            EvidenceBox(page_no=7, bbox=BBox(x0=68.7, y0=380.2, x1=125.8, y1=393.8), text="纳税人识别", highlight_type="ADD"),
-            EvidenceBox(page_no=7, bbox=BBox(x0=337.2, y0=486.2, x1=408.8, y1=522.8), text="2026.4.17", highlight_type="ADD"),
-            EvidenceBox(page_no=7, bbox=BBox(x0=501.2, y0=349.2, x1=565.8, y1=383.3), text="刘万程", highlight_type="ADD"),
+            EvidenceBox(
+                page_no=7, bbox=BBox(x0=68.2, y0=345.7, x1=126.3, y1=361.3), text="司】(盖章", highlight_type="ADD"
+            ),
+            EvidenceBox(
+                page_no=7, bbox=BBox(x0=68.7, y0=362.7, x1=126.3, y1=378.3), text="授权代表签", highlight_type="ADD"
+            ),
+            EvidenceBox(
+                page_no=7, bbox=BBox(x0=68.7, y0=380.2, x1=125.8, y1=393.8), text="纳税人识别", highlight_type="ADD"
+            ),
+            EvidenceBox(
+                page_no=7, bbox=BBox(x0=337.2, y0=486.2, x1=408.8, y1=522.8), text="2026.4.17", highlight_type="ADD"
+            ),
+            EvidenceBox(
+                page_no=7, bbox=BBox(x0=501.2, y0=349.2, x1=565.8, y1=383.3), text="刘万程", highlight_type="ADD"
+            ),
         ],
         structural_flags=["PUNCTUATED_HEADING", "PARAGRAPH_MERGED", "READING_ORDER_REPAIRED"],
         review_flags=["READING_ORDER_RISK", "SEAL_OR_SIGNATURE_RISK", "CRITICAL_VALUE_CHANGE"],
@@ -4644,7 +4767,9 @@ def test_diff_quality_trims_covered_signing_form_labels_from_mixed_signature_dif
     )
 
 
-def test_diff_quality_keeps_missing_signature_label_when_compare_only_has_authorized_representative_clause_text() -> None:
+def test_diff_quality_keeps_missing_signature_label_when_compare_only_has_authorized_representative_clause_text() -> (
+    None
+):
     original_clause = _quality_clause(
         "OC146",
         "15.特别约定\n"
@@ -4661,9 +4786,7 @@ def test_diff_quality_keeps_missing_signature_label_when_compare_only_has_author
     )
     compare_clause = _quality_clause(
         "NC146",
-        "15. 特别约定\n"
-        "本合同经双方法定代表人(负责人)或其授权代表签署并加盖双方公章后生效。\n"
-        "(以下无正文)",
+        "15. 特别约定\n本合同经双方法定代表人(负责人)或其授权代表签署并加盖双方公章后生效。\n(以下无正文)",
         side_prefix="N",
         order_index=146,
         page_no=23,
@@ -5244,8 +5367,7 @@ def test_diff_quality_keeps_visible_cover_annotation_fragments_for_review() -> N
     assert [diff.diff_id for diff in result.diffs] == ["D005", "D007"]
     assert all(diff.quality_status == "NEEDS_REVIEW" for diff in result.diffs)
     assert not any(
-        decision.action == "suppressed_low_value_noise"
-        and decision.diff_id in {"D005", "D007"}
+        decision.action == "suppressed_low_value_noise" and decision.diff_id in {"D005", "D007"}
         for decision in result.decisions
     )
 
@@ -5386,9 +5508,7 @@ def test_diff_quality_reclassifies_cleared_signing_date_as_delete() -> None:
             "2026年05月22日\n年月日"
         ),
         compare_text=(
-            "第六条协议的效力和变更\n"
-            "甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司\n"
-            "年月日\n年月日"
+            "第六条协议的效力和变更\n甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司\n年月日\n年月日"
         ),
         original_snippet="20260522",
         compare_snippet="月",
@@ -5786,8 +5906,7 @@ def test_diff_quality_suppresses_form_separator_only_change() -> None:
 
     assert result.diffs == []
     assert any(
-        decision.action == "suppressed_low_value_noise"
-        and decision.detail["reason"] == "form_separator_equivalent"
+        decision.action == "suppressed_low_value_noise" and decision.detail["reason"] == "form_separator_equivalent"
         for decision in result.decisions
     )
 
@@ -6347,9 +6466,7 @@ def test_diff_quality_prefers_multi_page_footer_over_metadata_duplicate() -> Non
             title="封面额外文本",
             compare_text="经办人：李四",
             compare_snippet="经办人：李四",
-            compare_evidence=[
-                EvidenceBox(page_no=1, bbox=BBox(x0=420, y0=780, x1=520, y1=810), text="经办人：李四")
-            ],
+            compare_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=420, y0=780, x1=520, y1=810), text="经办人：李四")],
         ),
         DiffItem(
             diff_id="D002_FOOTER",
@@ -6359,9 +6476,15 @@ def test_diff_quality_prefers_multi_page_footer_over_metadata_duplicate() -> Non
             compare_text="经办人：李四",
             compare_snippet="经办人：李四",
             compare_evidence=[
-                EvidenceBox(page_no=5, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"),
-                EvidenceBox(page_no=6, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"),
-                EvidenceBox(page_no=7, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"),
+                EvidenceBox(
+                    page_no=5, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"
+                ),
+                EvidenceBox(
+                    page_no=6, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"
+                ),
+                EvidenceBox(
+                    page_no=7, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"
+                ),
             ],
         ),
     ]
@@ -6389,7 +6512,9 @@ def test_diff_quality_keeps_table_winner_over_multi_page_footer_duplicate() -> N
             compare_text="经办人：李四",
             compare_snippet="经办人：李四",
             compare_evidence=[
-                EvidenceBox(page_no=1, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="table_cell", text="经办人：李四")
+                EvidenceBox(
+                    page_no=1, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="table_cell", text="经办人：李四"
+                )
             ],
         ),
         DiffItem(
@@ -6400,8 +6525,12 @@ def test_diff_quality_keeps_table_winner_over_multi_page_footer_duplicate() -> N
             compare_text="经办人：李四",
             compare_snippet="经办人：李四",
             compare_evidence=[
-                EvidenceBox(page_no=5, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"),
-                EvidenceBox(page_no=6, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"),
+                EvidenceBox(
+                    page_no=5, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"
+                ),
+                EvidenceBox(
+                    page_no=6, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"
+                ),
             ],
         ),
     ]
@@ -6425,9 +6554,7 @@ def test_diff_quality_keeps_metadata_for_single_page_footer_duplicate() -> None:
             title="封面额外文本",
             compare_text="经办人：李四",
             compare_snippet="经办人：李四",
-            compare_evidence=[
-                EvidenceBox(page_no=1, bbox=BBox(x0=420, y0=780, x1=520, y1=810), text="经办人：李四")
-            ],
+            compare_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=420, y0=780, x1=520, y1=810), text="经办人：李四")],
         ),
         DiffItem(
             diff_id="D002_FOOTER",
@@ -6438,7 +6565,9 @@ def test_diff_quality_keeps_metadata_for_single_page_footer_duplicate() -> None:
             compare_snippet="经办人：李四",
             review_flags=["READING_ORDER_RISK", "OCR_REMEDIATION_PLANNED"],
             compare_evidence=[
-                EvidenceBox(page_no=5, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四")
+                EvidenceBox(
+                    page_no=5, bbox=BBox(x0=420, y0=780, x1=520, y1=810), method="header_footer", text="经办人：李四"
+                )
             ],
         ),
     ]
