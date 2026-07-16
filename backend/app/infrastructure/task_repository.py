@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -9,6 +10,8 @@ from typing import Any, Protocol
 
 from app.config import Settings, settings
 from app.models import CompareTask, OcrRawResultPaths
+
+logger = logging.getLogger(__name__)
 
 
 class TaskRepository(Protocol):
@@ -23,6 +26,7 @@ class TaskRepository(Protocol):
 
     def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
         raise NotImplementedError
+
 
 def to_jsonable(model: Any) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
@@ -87,8 +91,16 @@ class LocalJsonTaskRepository:
             path.parent.mkdir(parents=True, exist_ok=True)
             temp_path = path.with_suffix(path.suffix + ".tmp")
             temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            # task.json is authoritative; manifest.json is a derived index.
             temp_path.replace(path)
-            self._write_manifest(task_id, data)
+            try:
+                self._write_manifest(task_id, data)
+            except OSError:
+                logger.warning(
+                    "Task manifest refresh failed after authoritative task commit: task_id=%s",
+                    task_id,
+                    exc_info=True,
+                )
             return path
 
     def _stamped_payload(self, task_id: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -117,13 +129,14 @@ class LocalJsonTaskRepository:
         debug_paths = normalized.get("debug_artifact_paths")
         if isinstance(debug_paths, dict):
             normalized["debug_artifact_paths"] = {
-                str(name): self._to_task_relative_path(task_id, value) or ""
-                for name, value in debug_paths.items()
+                str(name): self._to_task_relative_path(task_id, value) or "" for name, value in debug_paths.items()
             }
 
         raw_paths = normalized.get("ocr_raw_result_paths")
         if not raw_paths and normalized.get("ocr_raw_result_path"):
-            raw_paths = OcrRawResultPaths.from_legacy_value(normalized.get("ocr_raw_result_path")).model_dump(mode="json")
+            raw_paths = OcrRawResultPaths.from_legacy_value(normalized.get("ocr_raw_result_path")).model_dump(
+                mode="json"
+            )
         normalized["ocr_raw_result_paths"] = self._normalize_ocr_raw_result_paths(task_id, raw_paths)
         normalized["ocr_raw_result_path"] = ""
         return normalized
@@ -141,8 +154,7 @@ class LocalJsonTaskRepository:
         debug_paths = hydrated.get("debug_artifact_paths")
         if isinstance(debug_paths, dict):
             hydrated["debug_artifact_paths"] = {
-                str(name): self._to_task_absolute_path(task_id, value) or ""
-                for name, value in debug_paths.items()
+                str(name): self._to_task_absolute_path(task_id, value) or "" for name, value in debug_paths.items()
             }
 
         raw_paths = hydrated.get("ocr_raw_result_paths")
@@ -298,5 +310,6 @@ class LazyDefaultTaskRepository:
 
     def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
         return self.resolve().update_compare_task(task_id, mutate)
+
 
 default_task_repository = LazyDefaultTaskRepository()

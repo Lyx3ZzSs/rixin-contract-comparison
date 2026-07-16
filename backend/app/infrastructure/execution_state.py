@@ -147,6 +147,8 @@ class ExecutionStateCoordinator:
         with self._process_lock:
             now = _utc_now()
             for job in self.list_jobs():
+                if self._has_matching_terminal_task(job):
+                    continue
                 if self._is_expired_at_attempt_limit(job, now):
                     candidate = job.model_copy(deep=True)
                     candidate.status = "FAILED"
@@ -500,6 +502,19 @@ class ExecutionStateCoordinator:
             raise TaskStaleLeaseError(f"执行记录 {job.job_id} 不属于 worker {worker_id}。")
         if not job.lease_expires_at or job.lease_expires_at <= _utc_now():
             raise TaskStaleLeaseError(f"执行记录 {job.job_id} 的 worker lease 已过期。")
+
+    def _has_matching_terminal_task(self, job: TaskJob) -> bool:
+        if job.status in {"SUCCEEDED", "FAILED", "CANCELLED"} or self._task_repository is None:
+            return False
+        try:
+            task = self._task_repository.load_compare_task(job.task_id)
+        except FileNotFoundError:
+            return False
+        return bool(
+            task.status in {"COMPLETED", "FAILED"}
+            and task.terminal_job_id == job.job_id
+            and task.terminal_attempt == job.attempt
+        )
 
     def _persist_then_replace(self, candidate: TaskJob) -> TaskJob:
         persisted = self._repository._persist(candidate.model_copy(deep=True))

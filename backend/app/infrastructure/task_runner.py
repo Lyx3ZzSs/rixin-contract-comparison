@@ -130,8 +130,16 @@ class LocalJsonTaskJobRepository:
         path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = path.with_suffix(path.suffix + ".tmp")
         temp_path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
+        # jobs/{execution_no}.json is authoritative; manifest.json is a derived index.
         temp_path.replace(path)
-        self._write_manifest(job, path)
+        try:
+            self._write_manifest(job, path)
+        except OSError:
+            logger.warning(
+                "Task Job manifest refresh failed after authoritative Job commit: job_id=%s",
+                job.job_id,
+                exc_info=True,
+            )
 
     def _load_job_path(self, path: Path) -> TaskJob:
         job = TaskJob(**json.loads(path.read_text(encoding="utf-8")))
