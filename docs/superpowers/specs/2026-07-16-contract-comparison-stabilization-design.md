@@ -5,7 +5,26 @@
 - 方案：B（按业务纵切面稳定化）
 - 日期：2026-07-16
 - 范围：合同对比主流程、审核与报告、文件型任务基础设施
-- 状态：四部分设计已沟通确认，第一轮书面 Review 意见已纳入，待最终审阅
+- 状态：四部分设计已沟通确认，两轮书面 Review 意见已纳入，待最终审阅
+
+## Review 闭环索引
+
+| # | 处理结论 | 设计定位 |
+| --- | --- | --- |
+| 1 | Task 取消采用兼容投影，Job 保留独立取消终态 | [任务状态模型](#task-state-model) |
+| 2 | Repository-backed Token 通过 ExecutionContext 逐层传递 | [取消协议](#cancellation-protocol) |
+| 3 | Job 终态 mark 增加状态、owner 和 lease 前置条件 | [取消协议](#cancellation-protocol) |
+| 4 | 证据覆盖重叠率阈值固定为 0.80 | [Diff 去重规则](#diff-deduplication) |
+| 5 | canonical diff_id 采用字典序最小 ID | [Diff 去重规则](#diff-deduplication) |
+| 6 | 前端展示并更新独立 AuditItem 审核状态 | [AuditItem 审核模型](#audit-item-review-model) |
+| 7 | 报告按 report revision 分片互斥并原子发布 | [Revision 化报告](#revisioned-reports) |
+| 8 | 单 API 进程、多 Worker 线程统一使用共享 RLock | [队列互斥与 Worker 模型](#queue-locking) |
+| 9 | 补偿失败写 recovery marker 并支持幂等恢复 | [流式上传和补偿](#upload-compensation) |
+| 10 | 增加 TaskStaleLeaseError 且禁止旧 Worker 写回 | [错误模型](#error-observability) |
+| 11 | 原子写入抽取为 Infrastructure 公共原语 | [文件存储原子性](#atomic-storage) |
+| 12 | 增加取消竞态、阈值、报告并发和崩溃恢复边界测试 | [测试策略](#test-strategy) |
+| 13 | 使用稳定显式 anchor 建立章节交叉引用 | 本索引及各目标章节 |
+| 14 | 定义结构化事件、公共字段、错误字段和脱敏示例 | [结构化日志](#structured-logging) |
 
 ## 1. 背景与问题定义
 
@@ -109,6 +128,8 @@ OpenAPI 和路由回归测试明确断言：合同对比路由存在，字段提
 
 ### 5.2 第二批：任务、差异和审核正确性
 
+<a id="task-state-model"></a>
+
 #### 5.2.1 任务状态模型
 
 公开 `TaskStatus` 继续兼容：
@@ -158,6 +179,8 @@ CANCELLED              CANCEL_REQUESTED
 
 终态只能写入一次。`CANCELLED`、`SUCCEEDED`、`FAILED` 之间不能互相覆盖；冲突转换作为显式
 `TaskTransitionConflict` 处理并记录。
+
+<a id="cancellation-protocol"></a>
 
 #### 5.2.2 取消协议
 
@@ -247,6 +270,8 @@ INITIAL_LOAD -> SSE_ACTIVE
 组件卸载时关闭 EventSource、AbortController 和定时器。服务端每个订阅者使用有界的 latest-only
 队列，慢客户端不能无限积压进度事件。
 
+<a id="diff-deduplication"></a>
+
 #### 5.2.5 Diff 去重规则
 
 去重分两层：
@@ -270,6 +295,8 @@ normalized 坐标时使用同页原始坐标。若两个 Diff 的 original 和 c
 不同 diff_id 合并时，canonical `diff_id` 固定取候选集合中字典序最小的非空 ID，不能依赖输入列表
 顺序。所有其他 ID 写入 `dedupe_remap` 并指向 canonical ID；审核投影、OCR 质量引用和 AuditItem ID
 统一使用该映射。相同 diff_id 的合并继续保留原 ID。
+
+<a id="audit-item-review-model"></a>
 
 #### 5.2.6 AuditItem 作为唯一审核单元
 
@@ -309,6 +336,8 @@ Diff DTO 以向后兼容的可选字段补充：
 
 ### 5.3 第三批：提交链路与报告可靠性
 
+<a id="upload-compensation"></a>
+
 #### 5.3.1 流式上传和补偿
 
 上传按块写入 staging，在写入过程中累计大小并执行上限检查。超限时立即停止并清理临时文件，
@@ -332,6 +361,8 @@ Diff DTO 以向后兼容的可选字段补充：
 写入 marker，记录仅属于本次请求的待清理路径、失败动作和重试次数。启动恢复流程和幂等维护脚本
 重试这些动作，全部成功后删除 recovery marker。
 如果 marker 本身无法写入则记录 CRITICAL 日志，但仍不得尝试扩大删除范围。
+
+<a id="revisioned-reports"></a>
 
 #### 5.3.2 Revision 化报告
 
@@ -360,6 +391,8 @@ Diff DTO 以向后兼容的可选字段补充：
 
 ### 5.4 第四批：单机部署一致性
 
+<a id="atomic-storage"></a>
+
 #### 5.4.1 文件存储原子性
 
 Task、Job、artifact 和 report manifest 通过统一 Repository/Store 入口更新。JSON 写入统一采用：
@@ -378,6 +411,8 @@ manifest，避免递归副作用。
 Task 终态同时记录 `terminal_job_id` 和 `terminal_attempt`。如果进程在“Task 终态已保存、Job 终态
 未保存”之间退出，启动 reconciliation 在取得 Coordinator 后用这两个字段校验对应 Job：匹配且 lease
 已过期时补齐 Job 终态；不匹配时记录冲突并保持不变，禁止盲目把新的 attempt 标记为旧终态。
+
+<a id="queue-locking"></a>
 
 #### 5.4.2 队列互斥和原子领取
 
@@ -429,6 +464,8 @@ Job 保存 owner、claimed_at、lease_expires_at 和 attempt。lease 到期后�
 - 旧固定路径报告可以继续作为历史 artifact 读取；再次生成时使用 revision 化路径。
 - 索引是可重建派生数据，不作为 Task 或审核事实源。
 
+<a id="error-observability"></a>
+
 ## 7. 错误处理与可观测性
 
 应用层使用明确异常区分可预期控制流：
@@ -443,6 +480,50 @@ Job 保存 owner、claimed_at、lease_expires_at 和 attempt。lease 到期后�
 
 每次 Job 日志至少包含 task_id、job_id、attempt、owner、状态转换和 revision；补偿失败、索引更新
 失败和 manifest 解析失败必须有结构化错误记录。日志不记录合同全文、OCR 全文或敏感字段值。
+
+<a id="structured-logging"></a>
+
+### 7.1 结构化日志
+
+日志采用单行 JSON。所有状态事件使用以下公共字段；不适用的字段写 `null`，不得用不同字段名表达
+同一概念：
+
+| 字段 | 含义 |
+| --- | --- |
+| `timestamp` | UTC ISO-8601 时间 |
+| `level` | `INFO`、`WARNING`、`ERROR` 或 `CRITICAL` |
+| `event` | 稳定事件名，不使用自然语言句子 |
+| `request_id` | HTTP 请求关联 ID；后台恢复没有请求时为 null |
+| `task_id`、`job_id` | 任务与执行记录标识 |
+| `attempt`、`worker_id` | 执行轮次与 lease owner |
+| `from_status`、`to_status` | 本次状态转换；非转换事件为 null |
+| `terminal_reason` | Task 具体终态原因 |
+| `task_revision`、`report_revision` | 可见性 revision 与报告业务 revision |
+| `error_type`、`error_code` | 异常类名与稳定机器码；无错误时为 null |
+| `recovery_marker` | 补偿恢复 marker 的 storage 相对路径 |
+| `duration_ms` | 本次操作耗时 |
+
+稳定事件名至少包括：`job_claimed`、`cancellation_requested`、`task_terminal_committed`、
+`stale_lease_detected`、`compensation_failed`、`report_published`、`report_generation_failed`、
+`manifest_recovery_failed` 和 `record_index_rebuilt`。
+
+取消终态示例：
+
+```json
+{"timestamp":"2026-07-16T08:15:30.125Z","level":"INFO","event":"task_terminal_committed","request_id":null,"task_id":"task-7f2a","job_id":"compare:task-7f2a","attempt":1,"worker_id":"worker-a-0","from_status":"CANCEL_REQUESTED","to_status":"CANCELLED","terminal_reason":"CANCELLED","task_revision":18,"report_revision":0,"error_type":null,"error_code":null,"recovery_marker":null,"duration_ms":7}
+```
+
+补偿失败示例：
+
+```json
+{"timestamp":"2026-07-16T08:16:02.410Z","level":"ERROR","event":"compensation_failed","request_id":"req-91bd","task_id":"task-902c","job_id":null,"attempt":0,"worker_id":null,"from_status":"PROCESSING","to_status":"FAILED","terminal_reason":"SUBMISSION_FAILED","task_revision":3,"report_revision":0,"error_type":"PermissionError","error_code":"ARTIFACT_CLEANUP_FAILED","recovery_marker":"recovery/task-902c.json","duration_ms":12}
+```
+
+路径只记录 storage 相对路径。错误消息必须经过脱敏和长度限制；合同文件名、合同文本、OCR 文本、
+用户姓名和 Token 不进入结构化字段。Python traceback 由日志后端单独保存并受生产日志权限控制，不能
+拼入公开 API 错误响应。
+
+<a id="test-strategy"></a>
 
 ## 8. 测试策略
 
