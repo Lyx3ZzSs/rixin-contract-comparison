@@ -32,9 +32,7 @@ class _FakeCv2:
 
     def cvtColor(self, image: Any, code: int) -> Any:
         if code == self.COLOR_BGR2GRAY:
-            return (image[:, :, 0] * 0.114 + image[:, :, 1] * 0.587 + image[:, :, 2] * 0.299).astype(
-                self.np.uint8
-            )
+            return (image[:, :, 0] * 0.114 + image[:, :, 1] * 0.587 + image[:, :, 2] * 0.299).astype(self.np.uint8)
         if code != self.COLOR_BGR2HSV:
             raise ValueError(f"unsupported color conversion: {code}")
 
@@ -63,12 +61,54 @@ class _FakeCv2:
         return self.np.stack([hue, saturation, value], axis=2).astype(self.np.uint8)
 
     def inRange(self, image: Any, lower: Any, upper: Any) -> Any:
-        return self.np.where(self.np.all((image >= lower) & (image <= upper), axis=2), 255, 0).astype(
-            self.np.uint8
-        )
+        return self.np.where(self.np.all((image >= lower) & (image <= upper), axis=2), 255, 0).astype(self.np.uint8)
 
     def bitwise_or(self, left: Any, right: Any) -> Any:
         return self.np.bitwise_or(left, right)
+
+    def connectedComponentsWithStats(self, image: Any, connectivity: int = 8) -> tuple[int, Any, Any, Any]:
+        height, width = image.shape
+        labels = self.np.zeros((height, width), dtype=self.np.int32)
+        stats = [[0, 0, width, height, int(self.np.count_nonzero(image == 0))]]
+        centroids = [[width / 2, height / 2]]
+        offsets = [
+            (-1, -1),
+            (-1, 0),
+            (-1, 1),
+            (0, -1),
+            (0, 1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+        ]
+        if connectivity == 4:
+            offsets = [(-1, 0), (0, -1), (0, 1), (1, 0)]
+
+        label = 0
+        for start_y, start_x in zip(*self.np.nonzero(image)):
+            if labels[start_y, start_x] != 0:
+                continue
+            label += 1
+            stack = [(int(start_y), int(start_x))]
+            labels[start_y, start_x] = label
+            points: list[tuple[int, int]] = []
+            while stack:
+                y, x = stack.pop()
+                points.append((y, x))
+                for dy, dx in offsets:
+                    next_y, next_x = y + dy, x + dx
+                    if not (0 <= next_y < height and 0 <= next_x < width):
+                        continue
+                    if image[next_y, next_x] == 0 or labels[next_y, next_x] != 0:
+                        continue
+                    labels[next_y, next_x] = label
+                    stack.append((next_y, next_x))
+            ys = [point[0] for point in points]
+            xs = [point[1] for point in points]
+            stats.append([min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1, len(points)])
+            centroids.append([sum(xs) / len(xs), sum(ys) / len(ys)])
+
+        return label + 1, labels, self.np.asarray(stats), self.np.asarray(centroids)
 
 
 def _patch_opencv_dependencies(monkeypatch: pytest.MonkeyPatch, detector_cls: Any) -> None:
@@ -169,9 +209,7 @@ def test_opencv_visual_detector_reports_unavailable_when_all_regions_fail_to_ren
     assert result.detections == []
 
 
-def test_opencv_visual_detector_detects_red_seal_in_region(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_opencv_visual_detector_detects_red_seal_in_region(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     import numpy as np
 
     from app.services.signing_region.visual import OpenCvVisualSignatureDetector
@@ -195,9 +233,86 @@ def test_opencv_visual_detector_detects_red_seal_in_region(
     assert result.detections[0].raw_data["red_pixel_ratio"] > 0
 
 
-def test_opencv_visual_detector_detects_handwriting_density(
+def test_opencv_visual_detector_returns_local_bbox_for_dominant_adjacent_seal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    import numpy as np
+
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    image = np.full((240, 240, 3), 255, dtype=np.uint8)
+    image[30:80, 70:170] = [0, 0, 255]
+    image[5:25, 230:238] = [0, 0, 255]
+    rendered_regions: list[SigningRegion] = []
+
+    _patch_opencv_dependencies(monkeypatch, OpenCvVisualSignatureDetector)
+    detector = OpenCvVisualSignatureDetector()
+
+    def render_region(_pdf_path: Path, region: SigningRegion) -> Any:
+        rendered_regions.append(region)
+        return image
+
+    monkeypatch.setattr(detector, "_render_region", render_region)
+
+    result = detector.detect(pdf_path, [_region()], task_id="task-1")
+
+    assert any(region.bbox.y0 < _region().bbox.y0 for region in rendered_regions)
+    assert len(result.detections) == 1
+    assert result.detections[0].label == "seal"
+    assert result.detections[0].bbox.y0 < _region().bbox.y0
+    assert result.detections[0].bbox.x0 == pytest.approx(158.33, abs=0.1)
+    assert result.detections[0].bbox.y0 == pytest.approx(580.5, abs=0.1)
+    assert result.detections[0].bbox.x1 == pytest.approx(241.67, abs=0.1)
+    assert result.detections[0].bbox.y1 == pytest.approx(628.0, abs=0.1)
+    assert result.detections[0].raw_data["red_component_count"] == 2.0
+
+
+def test_opencv_visual_detector_ignores_tiny_red_speck(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import numpy as np
+
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    image = np.full((80, 80, 3), 255, dtype=np.uint8)
+    image[20:24, 20:24] = [0, 0, 255]
+
+    _patch_opencv_dependencies(monkeypatch, OpenCvVisualSignatureDetector)
+    detector = OpenCvVisualSignatureDetector()
+    monkeypatch.setattr(detector, "_render_region", lambda *_args: image)
+
+    result = detector.detect(pdf_path, [_region()], task_id="task-1")
+
+    assert result.available is True
+    assert result.detections == []
+
+
+def test_opencv_visual_detector_ignores_scattered_red_noise(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import numpy as np
+
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    image = np.full((80, 80, 3), 255, dtype=np.uint8)
+    for index in range(12):
+        y = 4 + (index // 4) * 20
+        x = 4 + (index % 4) * 18
+        image[y : y + 2, x : x + 2] = [0, 0, 255]
+
+    _patch_opencv_dependencies(monkeypatch, OpenCvVisualSignatureDetector)
+    detector = OpenCvVisualSignatureDetector()
+    monkeypatch.setattr(detector, "_render_region", lambda *_args: image)
+
+    result = detector.detect(pdf_path, [_region()], task_id="task-1")
+
+    assert result.available is True
+    assert result.detections == []
+
+
+def test_opencv_visual_detector_detects_handwriting_density(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     import numpy as np
 
     from app.services.signing_region.visual import OpenCvVisualSignatureDetector

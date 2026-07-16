@@ -21,12 +21,19 @@ from app.models import (
 )
 from app.services.extractors.base import ExtractionResult
 from app.services.pipeline import PipelineContext
-from app.services.pipeline_stages import ClauseDiffStage, PreClauseDiffStage, SigningRegionStage, SplitStage, SummaryStage
+from app.services.pipeline_stages import (
+    ClauseDiffStage,
+    PreClauseDiffStage,
+    SigningRegionStage,
+    SplitStage,
+    SummaryStage,
+)
 from app.services.signing_region.block_detector import SigningBlockDetectionResult
 from app.services.signing_region.models import (
     SigningBlock,
     SigningBlockConfidenceLevel,
     SigningBlockRole,
+    SigningRegion,
     VisualDetection,
     VisualDetectionResult,
 )
@@ -50,15 +57,25 @@ def _doc(seal_text: str) -> Document:
         filename="test.pdf",
         path="test.pdf",
         page_count=1,
-        pages=[Page(
-            page_no=1,
-            width=595,
-            height=842,
-            blocks=[
-                TextBlock(block_id="label", page_no=1, text="甲方（盖章）：", bbox=BBox(x0=60, y0=650, x1=170, y1=675)),
-                TextBlock(block_id="seal", page_no=1, text=seal_text, bbox=BBox(x0=80, y0=680, x1=190, y1=780), block_type="seal"),
-            ],
-        )],
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="label", page_no=1, text="甲方（盖章）：", bbox=BBox(x0=60, y0=650, x1=170, y1=675)
+                    ),
+                    TextBlock(
+                        block_id="seal",
+                        page_no=1,
+                        text=seal_text,
+                        bbox=BBox(x0=80, y0=680, x1=190, y1=780),
+                        block_type="seal",
+                    ),
+                ],
+            )
+        ],
     )
 
 
@@ -90,11 +107,7 @@ def test_signing_region_stage_builds_diff_and_covers_seal(monkeypatch, tmp_path:
     assert len(ctx.signing_region_diffs) == 1
     assert ctx.signing_region_diffs[0].source_type == "signing_region"
     expected_index = (
-        len(ctx.header_footer_diffs)
-        + len(ctx.metadata_diffs)
-        + len(ctx.table_diffs)
-        + len(ctx.seal_diffs)
-        + 1
+        len(ctx.header_footer_diffs) + len(ctx.metadata_diffs) + len(ctx.table_diffs) + len(ctx.seal_diffs) + 1
     )
     assert ctx.signing_region_diffs[0].diff_id == f"D{expected_index:03d}"
     assert ctx.seal_diffs[0].diff_id in ctx.signing_region_covered_diff_ids
@@ -663,6 +676,44 @@ def test_signing_region_stage_records_visual_only_candidates_without_final_diff(
     assert ctx.signing_region_debug["visual_candidates"]["original"][0]["used_for_promotion"] is False
 
 
+def test_signing_region_stage_keeps_visual_evidence_separate_after_region_refresh(tmp_path: Path) -> None:
+    stage = SigningRegionStage(
+        artifact_store=_TestArtifactStore(tmp_path / "artifacts"),
+        visual_enabled=True,
+    )
+    region = SigningRegion(
+        region_id="SR-7-1",
+        page_no=7,
+        bbox=BBox(x0=48, y0=321, x1=597, y1=660),
+        confidence=0.7,
+    )
+    detection_result = VisualDetectionResult(
+        available=True,
+        model_name="opencv",
+        detections=[
+            VisualDetection(
+                page_no=7,
+                bbox=BBox(x0=384, y0=293, x1=467, y1=311),
+                label="seal",
+                confidence=0.646,
+                model_name="opencv",
+                raw_data={"source_region_id": "SR-7-1"},
+            )
+        ],
+    )
+    visual_status = {"enabled": True, "_detection_result": detection_result}
+
+    stage._refresh_visual_elements_for_regions(
+        visual_status,
+        [region],
+        tmp_path / "missing.pdf",
+        side="compare",
+    )
+
+    assert region.bbox == BBox(x0=48, y0=321, x1=597, y1=660)
+    assert visual_status["_detection_elements"][0][1].bbox == BBox(x0=384, y0=293, x1=467, y1=311)
+
+
 def test_signing_region_stage_promotes_rule_backed_candidate_with_visual_support(tmp_path: Path) -> None:
     class _Detector:
         def detect(self, _document: Document) -> SigningBlockDetectionResult:
@@ -689,11 +740,14 @@ def test_signing_region_stage_promotes_rule_backed_candidate_with_visual_support
                 detections=[
                     VisualDetection(
                         page_no=region.page_no,
-                        bbox=BBox(x0=100, y0=640, x1=500, y1=740),
+                        bbox=BBox(x0=300, y0=590, x1=420, y1=615),
                         label="signature",
                         confidence=0.82,
                         model_name="opencv",
-                        raw_data={"reasons": ["table_or_stroke_density"]},
+                        raw_data={
+                            "reasons": ["table_or_stroke_density"],
+                            "source_region_id": region.region_id,
+                        },
                     )
                 ],
             )
@@ -851,9 +905,7 @@ def test_signing_region_stage_does_not_scan_or_promote_candidates_when_disabled(
     assert [block.page_no for block in ctx.signing_blocks_original] == [1]
     assert "visual_candidate_promoted" not in ctx.signing_blocks_original[0].confidence_reasons
     assert any(
-        element.source == "visual_model"
-        for region in ctx.signing_regions_original
-        for element in region.elements
+        element.source == "visual_model" for region in ctx.signing_regions_original for element in region.elements
     )
 
 
@@ -900,9 +952,7 @@ def test_signing_region_stage_caps_candidate_scan_by_unique_pages(
 
     class _Detector:
         def detect(self, _document: Document) -> SigningBlockDetectionResult:
-            return SigningBlockDetectionResult(
-                low_confidence_candidates=[dict(candidate) for candidate in candidates]
-            )
+            return SigningBlockDetectionResult(low_confidence_candidates=[dict(candidate) for candidate in candidates])
 
     class _VisualDetector:
         def __init__(self) -> None:
@@ -953,8 +1003,7 @@ def test_signing_region_stage_caps_candidate_scan_by_unique_pages(
         3,
     }
     assert all(
-        candidate["used_for_promotion"]
-        for candidate in ctx.signing_region_debug["visual_candidates"]["original"]
+        candidate["used_for_promotion"] for candidate in ctx.signing_region_debug["visual_candidates"]["original"]
     )
 
 
@@ -1060,8 +1109,7 @@ def test_signing_region_stage_does_not_promote_body_text_with_dark_stroke_visual
         "score": 0.4,
         "reasons": ["paired_parties", "bottom_signing_position"],
         "block_ids": ["payment_body", "acceptance_body"],
-        "text": "乙方为甲方提供的标的物总额人民币594000.00元。\n"
-        "乙方设备货到现场，甲方签收确认无误后20日内付款。",
+        "text": "乙方为甲方提供的标的物总额人民币594000.00元。\n乙方设备货到现场，甲方签收确认无误后20日内付款。",
     }
     visual_candidate = {
         "page_no": 7,
@@ -1338,9 +1386,7 @@ def test_signing_region_stage_keeps_visual_enrichment_after_candidate_reextracti
 
     assert visual_detector.call_count == 2
     assert any(
-        element.source == "visual_model"
-        for region in ctx.signing_regions_original
-        for element in region.elements
+        element.source == "visual_model" for region in ctx.signing_regions_original for element in region.elements
     )
     assert any(
         element["source"] == "visual_model"
@@ -1467,7 +1513,9 @@ def test_clause_diff_stage_counts_signing_region_diffs_before_clause_diffs(tmp_p
 
     ctx = _ctx(tmp_path)
     ctx.seal_diffs = [
-        DiffItem(diff_id="D001", diff_type="MODIFY", source_type="seal", title="印章", original_text="A", compare_text="B")
+        DiffItem(
+            diff_id="D001", diff_type="MODIFY", source_type="seal", title="印章", original_text="A", compare_text="B"
+        )
     ]
     ctx.signing_region_diffs = [
         DiffItem(

@@ -77,6 +77,10 @@ class RemoteVisualSignatureDetector:
 
 
 class OpenCvVisualSignatureDetector:
+    seal_probe_top_margin = 48.0
+    min_red_seal_ratio = 0.002
+    min_red_pixel_count = 40
+
     def __init__(
         self,
         *,
@@ -90,9 +94,7 @@ class OpenCvVisualSignatureDetector:
         self.detect_handwriting = (
             detect_handwriting if detect_handwriting is not None else settings.signing_opencv_detect_handwriting
         )
-        self.min_confidence = (
-            min_confidence if min_confidence is not None else settings.signing_opencv_min_confidence
-        )
+        self.min_confidence = min_confidence if min_confidence is not None else settings.signing_opencv_min_confidence
 
     def detect(self, pdf_path: Path, regions: list[SigningRegion], task_id: str) -> VisualDetectionResult:
         del task_id
@@ -110,7 +112,20 @@ class OpenCvVisualSignatureDetector:
                 continue
 
             rendered_count += 1
-            detection = self._detect_region(region, image)
+            detection = self._detect_region(region, image, render_bbox=region.bbox)
+            if self.detect_red_seal:
+                probe_region = self._seal_probe_region(region)
+                if probe_region.bbox != region.bbox:
+                    probe_image = self._render_region(pdf_path, probe_region)
+                    if probe_image is not None:
+                        probe_detection = self._detect_region(
+                            region,
+                            probe_image,
+                            render_bbox=probe_region.bbox,
+                            allow_handwriting=False,
+                        )
+                        if probe_detection is not None and probe_detection.label == "seal":
+                            detection = probe_detection
             if detection is not None and detection.confidence >= self.min_confidence:
                 detections.append(detection)
 
@@ -119,21 +134,33 @@ class OpenCvVisualSignatureDetector:
 
         return VisualDetectionResult(available=True, model_name="opencv", detections=detections)
 
-    def _detect_region(self, region: SigningRegion, image: Any) -> VisualDetection | None:
+    def _detect_region(
+        self,
+        region: SigningRegion,
+        image: Any,
+        *,
+        render_bbox: BBox | None = None,
+        allow_handwriting: bool = True,
+    ) -> VisualDetection | None:
         metrics = self._visual_metrics(image)
         reasons: list[str] = []
         label = ""
         confidence = 0.0
 
         red_pixel_ratio = metrics["red_pixel_ratio"]
-        if self.detect_red_seal and red_pixel_ratio >= 0.01:
+        if (
+            self.detect_red_seal
+            and red_pixel_ratio >= self.min_red_seal_ratio
+            and metrics["red_pixel_count"] >= self.min_red_pixel_count
+            and metrics["red_dominant_pixel_count"] >= self.min_red_pixel_count
+        ):
             label = "seal"
-            confidence = min(0.95, 0.55 + red_pixel_ratio * 8.0)
+            confidence = min(0.95, 0.55 + red_pixel_ratio * 25.0)
             reasons.append("red_seal_pixels")
 
         dark_pixel_ratio = metrics["handwriting_dark_pixel_ratio"]
         long_stroke_ratio = metrics["handwriting_long_stroke_ratio"]
-        if self.detect_handwriting and dark_pixel_ratio >= 0.015 and long_stroke_ratio >= 0.12:
+        if allow_handwriting and self.detect_handwriting and dark_pixel_ratio >= 0.015 and long_stroke_ratio >= 0.12:
             handwriting_confidence = min(0.9, 0.5 + dark_pixel_ratio * 5.0)
             if handwriting_confidence > confidence:
                 label = "signature"
@@ -143,9 +170,12 @@ class OpenCvVisualSignatureDetector:
         if not label:
             return None
 
+        detection_bbox = region.bbox
+        if label == "seal":
+            detection_bbox = self._seal_detection_bbox(region.bbox, render_bbox or region.bbox, metrics)
         return VisualDetection(
             page_no=region.page_no,
-            bbox=region.bbox,
+            bbox=detection_bbox,
             label=label,
             confidence=round(confidence, 3),
             model_name="opencv",
@@ -173,7 +203,24 @@ class OpenCvVisualSignatureDetector:
             red_mask_low = cv2.inRange(hsv, np.array([0, 70, 50]), np.array([12, 255, 255]))
             red_mask_high = cv2.inRange(hsv, np.array([170, 70, 50]), np.array([180, 255, 255]))
             red_mask = cv2.bitwise_or(red_mask_low, red_mask_high)
-            red_pixel_ratio = float(np.count_nonzero(red_mask)) / total_pixels
+            red_y, red_x = np.nonzero(red_mask)
+            red_pixel_count = int(red_x.size)
+            red_pixel_ratio = float(red_pixel_count) / total_pixels
+            red_component_count, red_component = OpenCvVisualSignatureDetector._dominant_red_component(
+                red_mask,
+                cv2,
+            )
+            if red_component is not None:
+                component_x, component_y, component_width, component_height, component_area = red_component
+                red_bbox_x0_ratio = float(component_x) / width
+                red_bbox_y0_ratio = float(component_y) / height
+                red_bbox_x1_ratio = float(component_x + component_width) / width
+                red_bbox_y1_ratio = float(component_y + component_height) / height
+                red_dominant_pixel_count = float(component_area)
+            else:
+                red_bbox_x0_ratio = red_bbox_y0_ratio = 0.0
+                red_bbox_x1_ratio = red_bbox_y1_ratio = 0.0
+                red_dominant_pixel_count = 0.0
 
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             dark_mask = gray < 80
@@ -184,15 +231,20 @@ class OpenCvVisualSignatureDetector:
             rule_mask = np.logical_or(horizontal_rules[:, None], vertical_rules[None, :])
             handwriting_mask = np.logical_and(dark_mask, np.logical_not(rule_mask))
             handwriting_dark_pixel_ratio = float(np.count_nonzero(handwriting_mask)) / total_pixels
-            handwriting_long_stroke_ratio = OpenCvVisualSignatureDetector._longest_dark_stroke_ratio(
-                handwriting_mask
-            )
+            handwriting_long_stroke_ratio = OpenCvVisualSignatureDetector._longest_dark_stroke_ratio(handwriting_mask)
             axis_rule_pixel_ratio = float(np.count_nonzero(np.logical_and(dark_mask, rule_mask))) / total_pixels
         except Exception:
             return OpenCvVisualSignatureDetector._empty_visual_metrics()
 
         return {
             "red_pixel_ratio": red_pixel_ratio,
+            "red_pixel_count": float(red_pixel_count),
+            "red_component_count": float(red_component_count),
+            "red_dominant_pixel_count": red_dominant_pixel_count,
+            "red_bbox_x0_ratio": red_bbox_x0_ratio,
+            "red_bbox_y0_ratio": red_bbox_y0_ratio,
+            "red_bbox_x1_ratio": red_bbox_x1_ratio,
+            "red_bbox_y1_ratio": red_bbox_y1_ratio,
             "dark_pixel_ratio": dark_pixel_ratio,
             "long_stroke_ratio": long_stroke_ratio,
             "handwriting_dark_pixel_ratio": handwriting_dark_pixel_ratio,
@@ -204,12 +256,52 @@ class OpenCvVisualSignatureDetector:
     def _empty_visual_metrics() -> dict[str, float]:
         return {
             "red_pixel_ratio": 0.0,
+            "red_pixel_count": 0.0,
+            "red_component_count": 0.0,
+            "red_dominant_pixel_count": 0.0,
+            "red_bbox_x0_ratio": 0.0,
+            "red_bbox_y0_ratio": 0.0,
+            "red_bbox_x1_ratio": 0.0,
+            "red_bbox_y1_ratio": 0.0,
             "dark_pixel_ratio": 0.0,
             "long_stroke_ratio": 0.0,
             "handwriting_dark_pixel_ratio": 0.0,
             "handwriting_long_stroke_ratio": 0.0,
             "axis_rule_pixel_ratio": 0.0,
         }
+
+    def _seal_probe_region(self, region: SigningRegion) -> SigningRegion:
+        return region.model_copy(
+            update={
+                "bbox": region.bbox.model_copy(update={"y0": max(0.0, region.bbox.y0 - self.seal_probe_top_margin)})
+            }
+        )
+
+    @staticmethod
+    def _dominant_red_component(red_mask: Any, cv2: Any) -> tuple[int, tuple[int, int, int, int, int] | None]:
+        component_count, _, stats, _ = cv2.connectedComponentsWithStats(red_mask, connectivity=8)
+        if component_count <= 1:
+            return 0, None
+        components = [tuple(int(value) for value in stats[index]) for index in range(1, component_count)]
+        return len(components), max(components, key=lambda component: component[4])
+
+    def _seal_detection_bbox(
+        self,
+        region_bbox: BBox,
+        render_bbox: BBox,
+        metrics: dict[str, float],
+    ) -> BBox:
+        if metrics.get("red_pixel_count", 0.0) <= 0:
+            return region_bbox
+        width = max(0.0, render_bbox.x1 - render_bbox.x0)
+        height = max(0.0, render_bbox.y1 - render_bbox.y0)
+        red_bbox = BBox(
+            x0=max(0.0, render_bbox.x0 + width * metrics["red_bbox_x0_ratio"]),
+            y0=max(0.0, render_bbox.y0 + height * metrics["red_bbox_y0_ratio"]),
+            x1=render_bbox.x0 + width * metrics["red_bbox_x1_ratio"],
+            y1=render_bbox.y0 + height * metrics["red_bbox_y1_ratio"],
+        )
+        return red_bbox
 
     @staticmethod
     def _longest_dark_stroke_ratio(mask: Any) -> float:
@@ -228,14 +320,10 @@ class OpenCvVisualSignatureDetector:
         horizontal_runs = [longest_run(row) for row in mask]
         vertical_runs = [longest_run(column) for column in mask.T]
         horizontal = (
-            max(horizontal_runs, default=0) / width
-            if sum(run >= width * 0.12 for run in horizontal_runs) >= 3
-            else 0.0
+            max(horizontal_runs, default=0) / width if sum(run >= width * 0.12 for run in horizontal_runs) >= 3 else 0.0
         )
         vertical = (
-            max(vertical_runs, default=0) / height
-            if sum(run >= height * 0.30 for run in vertical_runs) >= 3
-            else 0.0
+            max(vertical_runs, default=0) / height if sum(run >= height * 0.30 for run in vertical_runs) >= 3 else 0.0
         )
         return float(max(horizontal, vertical))
 

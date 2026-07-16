@@ -170,9 +170,7 @@ class ExtractionStage:
     ) -> None:
         self.artifact_store = artifact_store
         self.require_structured_ocr = (
-            settings.compare_require_structured_ocr
-            if require_structured_ocr is None
-            else require_structured_ocr
+            settings.compare_require_structured_ocr if require_structured_ocr is None else require_structured_ocr
         )
         self.extractor = extractor or build_compare_document_extractor(artifact_store=artifact_store)
         self.structured_extractor = structured_extractor
@@ -191,8 +189,11 @@ class ExtractionStage:
         _emit_progress(ctx, 30, self.name, "compare_extraction_done")
 
         original_extraction, compare_extraction = self._align_structured_extractions(
-            ctx.original_pdf, ctx.compare_pdf, task.task_id,
-            original_extraction, compare_extraction,
+            ctx.original_pdf,
+            ctx.compare_pdf,
+            task.task_id,
+            original_extraction,
+            compare_extraction,
         )
         _emit_progress(ctx, 32, self.name, "structured_alignment_done")
         original_heading_result = self.native_heading_repair.repair(original_extraction.document)
@@ -254,7 +255,9 @@ class ExtractionStage:
             task,
             "document_profiles",
             lambda: self.debug_writer.write_profiles(
-                task.task_id, original_extraction.profile, compare_extraction.profile,
+                task.task_id,
+                original_extraction.profile,
+                compare_extraction.profile,
             ),
         )
         if original_extraction.layout_quality is not None or compare_extraction.layout_quality is not None:
@@ -342,9 +345,7 @@ class ExtractionStage:
             return current
         except Exception:
             logger.exception("Structured extraction alignment failed")
-            current.warnings.append(
-                f"为保持表格边界一致，{side} 尝试切换结构化 OCR 抽取失败，已保留 PyMuPDF 结果"
-            )
+            current.warnings.append(f"为保持表格边界一致，{side} 尝试切换结构化 OCR 抽取失败，已保留 PyMuPDF 结果")
             return current
 
         upgraded.warnings = [
@@ -483,7 +484,8 @@ class PreClauseDiffStage:
         )
         _emit_progress(ctx, 39, self.name, "cover_metadata_diff_done")
         table_diffs, table_warnings = self.table_comparator.build_diffs(
-            original_doc, compare_doc,
+            original_doc,
+            compare_doc,
             start_index=len(header_footer_diffs) + len(metadata_diffs) + 1,
         )
         _write_debug_artifact(
@@ -496,7 +498,8 @@ class PreClauseDiffStage:
         )
         if not task.compare_options.ignore_stamps:
             seal_diffs = build_seal_diffs(
-                original_doc, compare_doc,
+                original_doc,
+                compare_doc,
                 start_index=len(header_footer_diffs) + len(metadata_diffs) + len(table_diffs) + 1,
             )
         result = ctx.set_table_diffs(
@@ -526,15 +529,18 @@ class PreClauseDiffStage:
             if not seal_blocks:
                 continue
             from app.services.models.layout_detector import LayoutRegion, LayoutResult
-            regions = LayoutResult(regions=[
-                LayoutRegion(
-                    region_type="seal",
-                    bbox=b.bbox,
-                    page_number=b.page_no,
-                    text=b.text,
-                )
-                for b in seal_blocks
-            ])
+
+            regions = LayoutResult(
+                regions=[
+                    LayoutRegion(
+                        region_type="seal",
+                        bbox=b.bbox,
+                        page_number=b.page_no,
+                        text=b.text,
+                    )
+                    for b in seal_blocks
+                ]
+            )
             seal_list = seal_detector.predict(regions)
             try:
                 seal_list = service.recognize_seals(pdf_path, seal_list, ctx.task.task_id)
@@ -571,9 +577,7 @@ class SigningRegionStage:
         self.visual_enabled = settings.signing_visual_enabled if visual_enabled is None else visual_enabled
         self.visual_detector = visual_detector if visual_detector is not None else self._default_visual_detector()
         self.visual_fingerprinter = (
-            visual_fingerprinter
-            if visual_fingerprinter is not None
-            else OpenCvSigningRegionFingerprinter()
+            visual_fingerprinter if visual_fingerprinter is not None else OpenCvSigningRegionFingerprinter()
         )
 
     def execute(self, ctx: PipelineContext) -> None:
@@ -954,10 +958,12 @@ class SigningRegionStage:
         if not additions:
             return
 
-        signing_block.bbox = SigningRegionStage._union_bbox([
-            signing_block.bbox,
-            *(block.bbox for block in additions),
-        ])
+        signing_block.bbox = SigningRegionStage._union_bbox(
+            [
+                signing_block.bbox,
+                *(block.bbox for block in additions),
+            ]
+        )
         signing_block.source_block_ids.extend(block.block_id for block in additions)
         if "seal_signature_date_cluster" in signing_block.confidence_reasons:
             signing_block.exclude_from_clause_diff = True
@@ -1057,14 +1063,11 @@ class SigningRegionStage:
         promoted: list[SigningBlock] = []
         visual_candidates = visual_status.get("_visual_candidates", [])
         allowed_candidate_keys = (
-            {
-                SigningRegionStage._candidate_region_key(region.page_no, region.bbox)
-                for region in candidate_regions
-            }
+            {SigningRegionStage._candidate_region_key(region.page_no, region.bbox) for region in candidate_regions}
             if candidate_regions is not None
             else None
         )
-        for candidate in structure.low_confidence_candidates:
+        for candidate_index, candidate in enumerate(structure.low_confidence_candidates, start=1):
             if not isinstance(candidate, dict):
                 continue
             try:
@@ -1093,7 +1096,12 @@ class SigningRegionStage:
                 and SigningRegionStage._candidate_region_key(page_no, bbox) not in allowed_candidate_keys
             ):
                 continue
-            matched_visual = SigningRegionStage._matching_visual_candidate(page_no, bbox, visual_candidates)
+            matched_visual = SigningRegionStage._matching_visual_candidate(
+                page_no,
+                bbox,
+                visual_candidates,
+                source_region_id=f"LC-{page_no}-{candidate_index}",
+            )
             if matched_visual is None:
                 continue
             if not SigningRegionStage._candidate_visual_pair_is_promotable(
@@ -1158,14 +1166,18 @@ class SigningRegionStage:
         if SigningRegionStage._candidate_text_looks_like_body(compact):
             return False
 
-        strong_rule_support = any(reason in {
-            "signing_page_context",
-            "business_signing_form_fields",
-            "page_signing_context_business_fields",
-            "previous_page_signing_context_business_fields",
-            "terminal_signing_clause_context",
-            "signing_context_business_fields",
-        } for reason in reasons)
+        strong_rule_support = any(
+            reason
+            in {
+                "signing_page_context",
+                "business_signing_form_fields",
+                "page_signing_context_business_fields",
+                "previous_page_signing_context_business_fields",
+                "terminal_signing_clause_context",
+                "signing_context_business_fields",
+            }
+            for reason in reasons
+        )
         if strong_rule_support:
             return True
 
@@ -1187,13 +1199,20 @@ class SigningRegionStage:
         if SIGNING_CONTEXT_RE.search(compact_text) and not has_body_reference_to_signing_page:
             return False
         has_party_without_label = PARTY_RE.search(compact_text) and not PARTY_LABEL_RE.search(compact_text)
-        has_strong_signing_label = any(pattern.search(compact_text) for pattern in [
-            SEAL_RE,
-            SIGN_RE,
-            REPRESENTATIVE_RE,
-        ])
+        has_strong_signing_label = any(
+            pattern.search(compact_text)
+            for pattern in [
+                SEAL_RE,
+                SIGN_RE,
+                REPRESENTATIVE_RE,
+            ]
+        )
         if has_body_reference_to_signing_page:
-            return len(compact_text) > 40 or BODY_VERB_RE.search(compact_text) is not None or NUMBERED_RE.match(compact_text) is not None
+            return (
+                len(compact_text) > 40
+                or BODY_VERB_RE.search(compact_text) is not None
+                or NUMBERED_RE.match(compact_text) is not None
+            )
         if has_party_without_label and not has_strong_signing_label:
             return True
         if (BODY_VERB_RE.search(compact_text) or NUMBERED_RE.match(compact_text)) and not has_strong_signing_label:
@@ -1222,6 +1241,8 @@ class SigningRegionStage:
         page_no: int,
         bbox: BBox,
         visual_candidates: list[dict[str, Any]],
+        *,
+        source_region_id: str = "",
     ) -> dict[str, Any] | None:
         for visual_candidate in visual_candidates:
             if not isinstance(visual_candidate, dict):
@@ -1230,6 +1251,8 @@ class SigningRegionStage:
                 continue
             if visual_candidate.get("page_no") != page_no:
                 continue
+            if source_region_id and visual_candidate.get("source_region_id") == source_region_id:
+                return visual_candidate
             visual_bbox_payload = visual_candidate.get("bbox")
             if not isinstance(visual_bbox_payload, dict):
                 continue
@@ -1373,6 +1396,7 @@ class SigningRegionStage:
                     "confidence": detection.confidence,
                     "model_name": detection.model_name or detection_result.model_name,
                     "reasons": detection.raw_data.get("reasons", []),
+                    "source_region_id": detection.raw_data.get("source_region_id", ""),
                     "used_for_promotion": False,
                 }
                 for detection in detection_result.detections
@@ -1452,28 +1476,28 @@ class SigningRegionStage:
             region = self._matching_region(regions, detection)
             if region is None:
                 continue
-            elements.append((
-                region,
-                SigningElement(
-                    element_id=f"{region.region_id}-visual-model-{index}",
-                    element_type=self._visual_detection_type(detection),
-                    page_no=detection.page_no,
-                    bbox=detection.bbox,
-                    text=detection.label,
-                    confidence=detection.confidence,
-                    source="visual_model",
-                    visual_hash=str(
-                        detection.raw_data.get("visual_hash")
-                        or detection.raw_data.get("hash")
-                        or ""
+            elements.append(
+                (
+                    region,
+                    SigningElement(
+                        element_id=f"{region.region_id}-visual-model-{index}",
+                        element_type=self._visual_detection_type(detection),
+                        page_no=detection.page_no,
+                        bbox=detection.bbox,
+                        text=detection.label,
+                        confidence=detection.confidence,
+                        source="visual_model",
+                        visual_hash=str(detection.raw_data.get("visual_hash") or detection.raw_data.get("hash") or ""),
+                        model_name=detection.model_name or detection_result.model_name,
+                        raw_ref=detection.model_dump(mode="json"),
                     ),
-                    model_name=detection.model_name or detection_result.model_name,
-                    raw_ref=detection.model_dump(mode="json"),
                 )
-            ))
+            )
         return elements
 
-    def _visual_fingerprint_elements(self, pdf_path: Path, regions: list[SigningRegion]) -> list[tuple[SigningRegion, SigningElement]]:
+    def _visual_fingerprint_elements(
+        self, pdf_path: Path, regions: list[SigningRegion]
+    ) -> list[tuple[SigningRegion, SigningElement]]:
         if self.visual_fingerprinter is None:
             return []
         elements: list[tuple[SigningRegion, SigningElement]] = []
@@ -1486,19 +1510,21 @@ class SigningRegionStage:
             visual_hash = str(fingerprint.get("hash") or fingerprint.get("visual_hash") or "")
             if not visual_hash:
                 continue
-            elements.append((
-                region,
-                SigningElement(
-                    element_id=f"{region.region_id}-visual-fingerprint",
-                    element_type=SigningElementType.VISUAL_AREA,
-                    page_no=region.page_no,
-                    bbox=region.bbox,
-                    confidence=1.0,
-                    source="visual_fingerprint",
-                    visual_hash=visual_hash,
-                    raw_ref=dict(fingerprint),
+            elements.append(
+                (
+                    region,
+                    SigningElement(
+                        element_id=f"{region.region_id}-visual-fingerprint",
+                        element_type=SigningElementType.VISUAL_AREA,
+                        page_no=region.page_no,
+                        bbox=region.bbox,
+                        confidence=1.0,
+                        source="visual_fingerprint",
+                        visual_hash=visual_hash,
+                        raw_ref=dict(fingerprint),
+                    ),
                 )
-            ))
+            )
         return elements
 
     @staticmethod
@@ -1531,8 +1557,16 @@ class SigningRegionStage:
 
     @staticmethod
     def _matching_region(regions: list[SigningRegion], detection: VisualDetection) -> SigningRegion | None:
+        source_region_id = str(detection.raw_data.get("source_region_id") or "")
+        if source_region_id:
+            for region in regions:
+                if region.page_no == detection.page_no and region.region_id == source_region_id:
+                    return region
         for region in regions:
-            if region.page_no == detection.page_no and SigningRegionStage._overlap_ratio(region.bbox, detection.bbox) >= 0.2:
+            if (
+                region.page_no == detection.page_no
+                and SigningRegionStage._overlap_ratio(region.bbox, detection.bbox) >= 0.2
+            ):
                 return region
         return None
 
@@ -1581,7 +1615,9 @@ class SigningRegionStage:
             "visual_detector_url_configured": bool(settings.signing_visual_detector_url.strip()),
             "visual_local_model_configured": bool(settings.signing_visual_local_model_path.strip()),
             "visual_detector_timeout": settings.signing_visual_detector_timeout,
-            "visual_fingerprinter": type(self.visual_fingerprinter).__name__ if self.visual_fingerprinter is not None else "",
+            "visual_fingerprinter": type(self.visual_fingerprinter).__name__
+            if self.visual_fingerprinter is not None
+            else "",
             "opencv_available": OpenCvVisualSignatureDetector._dependencies() is not None,
         }
 
@@ -1742,17 +1778,23 @@ class EvidenceStage:
         clauses = ctx.require_clauses()
         matches = ctx.require_matches()
         original_locate_clauses = _clauses_for_evidence(
-            clauses.original_clauses, [pair.original for pair in matches.pairs],
+            clauses.original_clauses,
+            [pair.original for pair in matches.pairs],
         )
         compare_locate_clauses = _clauses_for_evidence(
-            clauses.compare_clauses, [pair.compare for pair in matches.pairs],
+            clauses.compare_clauses,
+            [pair.compare for pair in matches.pairs],
         )
         ctx.diffs = self.evidence_locator.locate(
-            ctx.diffs, original_locate_clauses, compare_locate_clauses,
+            ctx.diffs,
+            original_locate_clauses,
+            compare_locate_clauses,
         )
         _emit_progress(ctx, 66, self.name, "text_evidence_located")
         ctx.diffs = self.text_coordinate_locator.refine(
-            ctx.original_pdf, ctx.compare_pdf, ctx.diffs,
+            ctx.original_pdf,
+            ctx.compare_pdf,
+            ctx.diffs,
         )
         _emit_progress(ctx, 76, self.name, "coordinate_refined")
         self.evidence_locator.assign_evidence_confidence(ctx.diffs)
@@ -1964,16 +2006,10 @@ class OcrRemediationStage:
     @staticmethod
     def _refresh_summary_counts(summary) -> None:
         actions = summary.actions
-        successful_diff_ids = {
-            action.diff_id
-            for action in actions
-            if action.status == "SUCCEEDED" and action.diff_id
-        }
+        successful_diff_ids = {action.diff_id for action in actions if action.status == "SUCCEEDED" and action.diff_id}
         manual_count = sum(1 for action in actions if action.status == "MANUAL_REVIEW_REQUIRED")
         unresolved_count = sum(
-            1
-            for action in actions
-            if action.status in {"PLANNED", "FAILED", "MANUAL_REVIEW_REQUIRED"}
+            1 for action in actions if action.status in {"PLANNED", "FAILED", "MANUAL_REVIEW_REQUIRED"}
         )
 
         summary.attempted_action_count = len(actions)
@@ -2177,11 +2213,7 @@ class SummaryStage:
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
-        diffs = [
-            diff
-            for diff in ctx.require_diffs()
-            if diff.diff_id not in ctx.signing_region_covered_diff_ids
-        ]
+        diffs = [diff for diff in ctx.require_diffs() if diff.diff_id not in ctx.signing_region_covered_diff_ids]
         task.diffs, dedupe_remap = _dedupe_final_diffs(_filter_compare_option_diffs(task, diffs))
         ctx.diffs = task.diffs
         _remap_ocr_quality_summary_after_final_dedupe(task, dedupe_remap)
