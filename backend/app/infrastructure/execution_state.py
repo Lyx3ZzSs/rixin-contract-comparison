@@ -18,11 +18,11 @@ class TaskJobPersistence(Protocol):
     @property
     def job_dir(self) -> Path: ...
 
-    def enqueue(self, job: TaskJob) -> TaskJob: ...
+    def load(self, job_id: str) -> TaskJob: ...
 
     def list_jobs(self) -> list[TaskJob]: ...
 
-    def persist(self, job: TaskJob) -> TaskJob: ...
+    def _persist(self, job: TaskJob) -> TaskJob: ...
 
 
 @dataclass(frozen=True)
@@ -58,9 +58,36 @@ class ExecutionStateCoordinator:
     def enqueue(self, job: TaskJob) -> TaskJob:
         with self._process_lock:
             self._ensure_repository_namespace()
-            persisted = self._repository.enqueue(job.model_copy(deep=True))
-            self._replace_snapshot(persisted)
-            return persisted.model_copy(deep=True)
+            existing_jobs = list(self._snapshots.values())
+            job_id_matches = [existing for existing in existing_jobs if existing.job_id == job.job_id]
+            if job_id_matches:
+                if len(job_id_matches) != 1 or not self._has_same_identity(job_id_matches[0], job):
+                    raise TaskTransitionConflict(f"执行记录 ID {job.job_id} 与已有执行身份冲突。")
+                existing = job_id_matches[0]
+                if existing.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+                    raise TaskTransitionConflict(
+                        f"执行记录 {existing.job_id} 已为终态 {existing.status}，不能重新入队。"
+                    )
+                return existing.model_copy(deep=True)
+            if any(self._has_same_execution_identity(existing, job) for existing in existing_jobs):
+                raise TaskTransitionConflict(
+                    f"任务 {job.task_id} 的第 {job.execution_no} 次 {job.task_type} 执行记录已存在，不能重复创建。"
+                )
+            active_jobs = [
+                existing
+                for existing in existing_jobs
+                if existing.task_id == job.task_id
+                and existing.task_type == job.task_type
+                and existing.status not in {"SUCCEEDED", "FAILED", "CANCELLED"}
+            ]
+            if active_jobs:
+                raise TaskTransitionConflict(f"任务 {job.task_id} 已有活动执行记录 {active_jobs[0].job_id}。")
+            candidate = job.model_copy(deep=True)
+            candidate.status = "QUEUED"
+            candidate.queued_at = _utc_now()
+            candidate.updated_at = candidate.queued_at
+            candidate.source_path = ""
+            return self._persist_then_replace(candidate)
 
     def load(self, job_id: str) -> TaskJob:
         with self._process_lock:
@@ -224,7 +251,7 @@ class ExecutionStateCoordinator:
             raise TaskStaleLeaseError(f"执行记录 {job.job_id} 的 worker lease 已过期。")
 
     def _persist_then_replace(self, candidate: TaskJob) -> TaskJob:
-        persisted = self._repository.persist(candidate.model_copy(deep=True))
+        persisted = self._repository._persist(candidate.model_copy(deep=True))
         self._replace_snapshot(persisted)
         return persisted.model_copy(deep=True)
 
@@ -283,6 +310,18 @@ class ExecutionStateCoordinator:
             and job.lease_expires_at
             and job.lease_expires_at <= now
             and job.attempt >= job.max_attempts
+        )
+
+    @classmethod
+    def _has_same_identity(cls, existing: TaskJob, candidate: TaskJob) -> bool:
+        return bool(existing.job_id == candidate.job_id and cls._has_same_execution_identity(existing, candidate))
+
+    @staticmethod
+    def _has_same_execution_identity(existing: TaskJob, candidate: TaskJob) -> bool:
+        return bool(
+            existing.task_id == candidate.task_id
+            and existing.task_type == candidate.task_type
+            and existing.execution_no == candidate.execution_no
         )
 
 

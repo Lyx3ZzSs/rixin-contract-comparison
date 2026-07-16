@@ -11,7 +11,7 @@ import pytest
 from app.application.compare_tasks import CompareTaskApplication
 from app.config import Settings
 from app.errors import TaskCancelled, TaskExecutionError, TaskStaleLeaseError, TaskTransitionConflict
-from app.infrastructure.execution_state import CancellationToken, TaskExecutionContext
+from app.infrastructure.execution_state import CancellationToken, ExecutionStateCoordinator, TaskExecutionContext
 from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.infrastructure.task_runner import LocalJsonTaskJobRepository, QueuedTaskRunner, TaskJob
 from app.models import CompareTask
@@ -81,14 +81,15 @@ def test_local_json_task_job_repository_skips_legacy_extraction_job(tmp_path: Pa
     legacy_json = json.dumps(legacy_job, ensure_ascii=False, indent=2)
     legacy_path.write_text(legacy_json, encoding="utf-8")
     compare_path.write_text(json.dumps(compare_job, ensure_ascii=False, indent=2), encoding="utf-8")
+    coordinator = ExecutionStateCoordinator(repository)
 
     jobs = repository.list_jobs()
-    claimed = repository.claim_next(worker_id="compare-worker", lease_seconds=30)
+    claimed = coordinator.claim_next(worker_id="compare-worker", lease_seconds=30)
 
     assert [(job.job_id, job.task_type) for job in jobs] == [("compare:TCOMPARE", "compare")]
     assert claimed is not None
     assert (claimed.job_id, claimed.task_type) == ("compare:TCOMPARE", "compare")
-    assert repository.claim_next(worker_id="compare-worker", lease_seconds=30) is None
+    assert coordinator.claim_next(worker_id="compare-worker", lease_seconds=30) is None
     assert legacy_path.read_text(encoding="utf-8") == legacy_json
 
 
@@ -128,9 +129,8 @@ def test_new_submission_creates_first_execution_in_jobs_directory(tmp_path: Path
 
 
 def test_submit_rejects_legacy_raw_job_id_collision_with_different_identity(tmp_path: Path) -> None:
-    runner = build_runner(tmp_path, autostart=False)
-    runner.register_handler("compare", lambda _context, _payload: None)
-    legacy_path = runner.settings.tasks_dir / "tenant_1" / "job.json"
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    legacy_path = app_settings.tasks_dir / "tenant_1" / "job.json"
     legacy_path.parent.mkdir(parents=True)
     legacy_path.write_text(
         TaskJob(
@@ -143,6 +143,8 @@ def test_submit_rejects_legacy_raw_job_id_collision_with_different_identity(tmp_
         encoding="utf-8",
     )
     original_legacy_job = legacy_path.read_text(encoding="utf-8")
+    runner = build_runner(tmp_path, autostart=False)
+    runner.register_handler("compare", lambda _context, _payload: None)
 
     with pytest.raises(TaskTransitionConflict):
         runner.submit(task_type="compare", task_id="tenant", payload={"task_id": "tenant"})
@@ -268,10 +270,11 @@ def test_user_retry_creates_new_execution_and_preserves_failed_job(tmp_path: Pat
 def test_repository_rejects_second_active_execution(tmp_path: Path) -> None:
     app_settings = Settings(storage_dir=tmp_path / "storage")
     repository = LocalJsonTaskJobRepository(app_settings)
-    repository.enqueue(TaskJob(job_id="compare:TACTIVE:1", task_id="TACTIVE", task_type="compare", execution_no=1))
+    coordinator = ExecutionStateCoordinator(repository)
+    coordinator.enqueue(TaskJob(job_id="compare:TACTIVE:1", task_id="TACTIVE", task_type="compare", execution_no=1))
 
     with pytest.raises(TaskTransitionConflict):
-        repository.enqueue(TaskJob(job_id="compare:TACTIVE:2", task_id="TACTIVE", task_type="compare", execution_no=2))
+        coordinator.enqueue(TaskJob(job_id="compare:TACTIVE:2", task_id="TACTIVE", task_type="compare", execution_no=2))
 
     assert [(job.job_id, job.status) for job in repository.list_jobs()] == [("compare:TACTIVE:1", "QUEUED")]
 
@@ -279,19 +282,20 @@ def test_repository_rejects_second_active_execution(tmp_path: Path) -> None:
 def test_enqueue_cannot_replace_terminal_job(tmp_path: Path) -> None:
     app_settings = Settings(storage_dir=tmp_path / "storage")
     repository = LocalJsonTaskJobRepository(app_settings)
-    job = repository.enqueue(
+    coordinator = ExecutionStateCoordinator(repository)
+    job = coordinator.enqueue(
         TaskJob(
             job_id="compare:TENQUEUE_TERMINAL:1",
             task_id="TENQUEUE_TERMINAL",
             task_type="compare",
             execution_no=1,
-            attempt=1,
         )
     )
-    repository.mark_failed(job.job_id, worker_id="", error="original failure", retry_delay_seconds=0)
+    coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
+    coordinator.mark_failed(job.job_id, worker_id="worker-1", error="original failure", retry_delay_seconds=0)
 
     with pytest.raises(TaskTransitionConflict):
-        repository.enqueue(job.model_copy(update={"status": "QUEUED", "attempt": 0, "last_error": ""}))
+        coordinator.enqueue(job.model_copy(update={"status": "QUEUED", "attempt": 0, "last_error": ""}))
 
     stored = repository.load(job.job_id)
     assert stored.status == "FAILED"
@@ -302,7 +306,8 @@ def test_enqueue_cannot_replace_terminal_job(tmp_path: Path) -> None:
 def test_enqueue_cannot_overwrite_terminal_execution_path(tmp_path: Path) -> None:
     app_settings = Settings(storage_dir=tmp_path / "storage")
     repository = LocalJsonTaskJobRepository(app_settings)
-    job = repository.enqueue(
+    coordinator = ExecutionStateCoordinator(repository)
+    job = coordinator.enqueue(
         TaskJob(
             job_id="compare:TPATH_TERMINAL:1",
             task_id="TPATH_TERMINAL",
@@ -311,10 +316,11 @@ def test_enqueue_cannot_overwrite_terminal_execution_path(tmp_path: Path) -> Non
             attempt=1,
         )
     )
-    repository.mark_failed(job.job_id, worker_id="", error="original failure", retry_delay_seconds=0)
+    coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
+    coordinator.mark_failed(job.job_id, worker_id="worker-1", error="original failure", retry_delay_seconds=0)
 
     with pytest.raises(TaskTransitionConflict):
-        repository.enqueue(
+        coordinator.enqueue(
             TaskJob(
                 job_id="compare:TPATH_TERMINAL:01",
                 task_id="TPATH_TERMINAL",
@@ -344,9 +350,10 @@ def test_enqueue_rejects_execution_identity_already_stored_in_legacy_path(tmp_pa
         ).model_dump_json(indent=2),
         encoding="utf-8",
     )
+    coordinator = ExecutionStateCoordinator(repository)
 
     with pytest.raises(TaskTransitionConflict):
-        repository.enqueue(
+        coordinator.enqueue(
             TaskJob(
                 job_id="compare:TLEGACY_TERMINAL:1",
                 task_id="TLEGACY_TERMINAL",
@@ -362,7 +369,8 @@ def test_enqueue_rejects_execution_identity_already_stored_in_legacy_path(tmp_pa
 def test_lease_takeover_increments_attempt(tmp_path: Path) -> None:
     app_settings = Settings(storage_dir=tmp_path / "storage")
     repository = LocalJsonTaskJobRepository(app_settings)
-    repository.enqueue(
+    coordinator = ExecutionStateCoordinator(repository)
+    coordinator.enqueue(
         TaskJob(
             job_id="compare:TLEASE:1",
             task_id="TLEASE",
@@ -372,8 +380,8 @@ def test_lease_takeover_increments_attempt(tmp_path: Path) -> None:
         )
     )
 
-    first_claim = repository.claim_next(worker_id="worker-1", lease_seconds=-1)
-    takeover = repository.claim_next(worker_id="worker-2", lease_seconds=30)
+    first_claim = coordinator.claim_next(worker_id="worker-1", lease_seconds=-1)
+    takeover = coordinator.claim_next(worker_id="worker-2", lease_seconds=30)
 
     assert first_claim is not None
     assert first_claim.attempt == 1
@@ -626,7 +634,7 @@ def test_running_cancellation_timing_finishes_task_and_job_without_success_publi
             nonlocal token_checks
             if token.job_id.endswith(f":{task_id}:1"):
                 token_checks += 1
-                if token_checks == 5:
+                if token_checks == 7:
                     entered.set()
                     assert release.wait(1)
             original_token_check(token)
@@ -648,8 +656,10 @@ def test_running_cancellation_timing_finishes_task_and_job_without_success_publi
             release.set()
 
         wait_until(
-            lambda: runner.job_repository.load(job.job_id).status == "CANCELLED"
-            and task_repository.load_compare_task(task_id).terminal_reason == "CANCELLED"
+            lambda: (
+                runner.job_repository.load(job.job_id).status == "CANCELLED"
+                and task_repository.load_compare_task(task_id).terminal_reason == "CANCELLED"
+            )
         )
     finally:
         release.set()
@@ -659,6 +669,90 @@ def test_running_cancellation_timing_finishes_task_and_job_without_success_publi
     assert runner.job_repository.load(job.job_id).status == "CANCELLED"
     assert (stored_task.status, stored_task.terminal_reason) == ("FAILED", "CANCELLED")
     assert not any(getattr(event, "status", None) == "COMPLETED" for event in events)
+
+
+@pytest.mark.parametrize("control_flow", ["cancel", "stale_lease"])
+def test_stage_error_arbitrates_cancel_or_stale_lease_before_generic_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_flow: str,
+) -> None:
+    runner = build_runner(tmp_path)
+    runner.max_attempts = 2
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+    task_id = f"TSTAGE_ERROR_{control_flow.upper()}"
+    task_repository.save_compare_task(CompareTask(task_id=task_id))
+    stage_entered = threading.Event()
+    release_stage = threading.Event()
+    compare_finished = threading.Event()
+    events: list[object] = []
+    monkeypatch.setattr(ProgressBus.get_instance(), "publish", events.append)
+
+    class FailingStage:
+        name = "failing-stage"
+        start_progress = 20
+        progress = 80
+
+        def execute(self, ctx: PipelineContext) -> None:
+            if control_flow == "stale_lease":
+                assert ctx.execution_context is not None
+                runner.coordinator.extend_lease(
+                    ctx.execution_context.job_id,
+                    worker_id=ctx.execution_context.worker_id,
+                    lease_seconds=-1,
+                )
+            stage_entered.set()
+            assert release_stage.wait(1)
+            raise RuntimeError("stage exploded after control-flow change")
+
+    def build_pipeline(service: CompareService) -> ComparePipeline:
+        return ComparePipeline(stages=[FailingStage()], repository=service.repository)
+
+    monkeypatch.setattr(CompareService, "_build_pipeline", build_pipeline)
+    original_compare = CompareService.compare
+
+    def track_compare(service: CompareService, *args: object, **kwargs: object) -> CompareTask:
+        try:
+            return original_compare(service, *args, **kwargs)
+        finally:
+            compare_finished.set()
+
+    monkeypatch.setattr(CompareService, "compare", track_compare)
+    job = application.submit_compare(
+        original_path=tmp_path / "original.pdf",
+        compare_path=tmp_path / "compare.pdf",
+        task_id=task_id,
+        original_filename="original.pdf",
+        compare_filename="compare.pdf",
+    )
+
+    try:
+        assert stage_entered.wait(1)
+        if control_flow == "cancel":
+            assert application.cancel_compare(task_id).status == "CANCEL_REQUESTED"
+        else:
+            takeover = runner.coordinator.claim_next(worker_id="replacement-worker", lease_seconds=30)
+            assert takeover is not None
+            assert takeover.job_id == job.job_id
+        release_stage.set()
+        assert compare_finished.wait(1)
+
+        if control_flow == "cancel":
+            wait_until(lambda: runner.coordinator.load(job.job_id).status == "CANCELLED")
+            stored_job = runner.coordinator.load(job.job_id)
+            stored_task = task_repository.load_compare_task(task_id)
+            assert stored_job.status == "CANCELLED"
+            assert (stored_task.status, stored_task.terminal_reason) == ("FAILED", "CANCELLED")
+        else:
+            stored_job = runner.coordinator.load(job.job_id)
+            stored_task = task_repository.load_compare_task(task_id)
+            assert (stored_job.status, stored_job.lease_owner) == ("RUNNING", "replacement-worker")
+            assert (stored_task.status, stored_task.terminal_reason) == ("PROCESSING", "NONE")
+        assert not any(getattr(event, "status", None) == "FAILED" for event in events)
+    finally:
+        release_stage.set()
+        runner.stop()
 
 
 def test_legacy_job_updates_preserve_source_path(tmp_path: Path) -> None:
@@ -674,9 +768,10 @@ def test_legacy_job_updates_preserve_source_path(tmp_path: Path) -> None:
         ).model_dump_json(indent=2),
         encoding="utf-8",
     )
+    coordinator = ExecutionStateCoordinator(repository)
 
     [loaded] = repository.list_jobs()
-    claimed = repository.claim_next(worker_id="legacy-worker", lease_seconds=30)
+    claimed = coordinator.claim_next(worker_id="legacy-worker", lease_seconds=30)
 
     assert loaded.source_path == str(legacy_path)
     assert claimed is not None
@@ -700,7 +795,8 @@ def test_job_terminal_state_is_immutable(
 ) -> None:
     app_settings = Settings(storage_dir=tmp_path / "storage")
     repository = LocalJsonTaskJobRepository(app_settings)
-    job = repository.enqueue(
+    coordinator = ExecutionStateCoordinator(repository)
+    job = coordinator.enqueue(
         TaskJob(
             job_id="compare:TTERMINAL",
             task_id="TTERMINAL",
@@ -709,16 +805,17 @@ def test_job_terminal_state_is_immutable(
         )
     )
 
+    coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
     if first_terminal == "SUCCEEDED":
-        repository.mark_succeeded(job.job_id, worker_id="")
+        coordinator.mark_succeeded(job.job_id, worker_id="worker-1")
     else:
-        repository.mark_failed(job.job_id, worker_id="", error="first", retry_delay_seconds=0)
+        coordinator.mark_failed(job.job_id, worker_id="worker-1", error="first", retry_delay_seconds=0)
 
     with pytest.raises(TaskTransitionConflict):
         if second_terminal == "SUCCEEDED":
-            repository.mark_succeeded(job.job_id, worker_id="")
+            coordinator.mark_succeeded(job.job_id, worker_id="worker-1")
         else:
-            repository.mark_failed(job.job_id, worker_id="", error="second", retry_delay_seconds=0)
+            coordinator.mark_failed(job.job_id, worker_id="worker-1", error="second", retry_delay_seconds=0)
 
     assert repository.load(job.job_id).status == first_terminal
 

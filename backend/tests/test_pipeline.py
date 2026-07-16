@@ -297,12 +297,8 @@ def test_extraction_stage_repairs_native_heading_refreshes_preattached_profiles_
     assert ctx.compare_extraction.document.pages[0].blocks[0].text == "9. 违约责任"
     assert ctx.original_extraction.profile is not None
     assert ctx.compare_extraction.profile is not None
-    repaired_original_chars = sum(
-        len(block.text.strip()) for block in ctx.original_extraction.document.pages[0].blocks
-    )
-    repaired_compare_chars = sum(
-        len(block.text.strip()) for block in ctx.compare_extraction.document.pages[0].blocks
-    )
+    repaired_original_chars = sum(len(block.text.strip()) for block in ctx.original_extraction.document.pages[0].blocks)
+    repaired_compare_chars = sum(len(block.text.strip()) for block in ctx.compare_extraction.document.pages[0].blocks)
     assert repaired_original_chars > stale_original_chars
     assert repaired_compare_chars > stale_compare_chars
     assert ctx.original_extraction.profile.total_text_chars == repaired_original_chars
@@ -542,12 +538,10 @@ class TestPreClauseDiffStage:
     def test_extracts_metadata_and_table_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         original_html = (
-            "<table><tr><td>甲方</td><td>江苏东大</td></tr>"
-            "<tr><td>签订日期</td><td>2026年4月 日</td></tr></table>"
+            "<table><tr><td>甲方</td><td>江苏东大</td></tr><tr><td>签订日期</td><td>2026年4月 日</td></tr></table>"
         )
         compare_html = (
-            "<table><tr><td>甲方</td><td>江苏东大</td></tr>"
-            "<tr><td>签订日期</td><td>2026年4月21日</td></tr></table>"
+            "<table><tr><td>甲方</td><td>江苏东大</td></tr><tr><td>签订日期</td><td>2026年4月21日</td></tr></table>"
         )
         ctx.original_extraction = ExtractionResult(document=make_table_document(original_html), extractor_used="test")
         ctx.compare_extraction = ExtractionResult(document=make_table_document(compare_html), extractor_used="test")
@@ -999,8 +993,7 @@ class TestComparePipeline:
             "SplitStage",
         ]
         progress_values = {
-            type(stage).__name__: (stage.start_progress, stage.progress)
-            for stage in ComparePipeline().stages
+            type(stage).__name__: (stage.start_progress, stage.progress) for stage in ComparePipeline().stages
         }
         assert progress_values["SigningRegionStage"] == (40, 42)
         assert progress_values["OcrQualityStage"] == (83, 84)
@@ -1037,11 +1030,13 @@ class TestComparePipeline:
             def execute(self, ctx: PipelineContext) -> None:
                 execution_log.append(self.name)
 
-        pipeline = ComparePipeline(stages=[
-            FakeStage("stage_a", 30),
-            FakeStage("stage_b", 60),
-            FakeStage("stage_c", 90),
-        ])
+        pipeline = ComparePipeline(
+            stages=[
+                FakeStage("stage_a", 30),
+                FakeStage("stage_b", 60),
+                FakeStage("stage_c", 90),
+            ]
+        )
         result = pipeline.run(ctx)
 
         assert result.status == "COMPLETED"
@@ -1061,11 +1056,13 @@ class TestComparePipeline:
             def execute(self, ctx: PipelineContext) -> None:
                 progress_values.append(ctx.task.progress_percent)
 
-        pipeline = ComparePipeline(stages=[
-            TrackingStage("a", 30),
-            TrackingStage("b", 60),
-            TrackingStage("c", 90),
-        ])
+        pipeline = ComparePipeline(
+            stages=[
+                TrackingStage("a", 30),
+                TrackingStage("b", 60),
+                TrackingStage("c", 90),
+            ]
+        )
         pipeline.run(ctx)
 
         assert progress_values == [30, 60, 90]
@@ -2001,6 +1998,61 @@ def test_pipeline_rechecks_cancellation_after_progress_write_before_stage(
     assert executed == []
 
 
+def test_pipeline_rechecks_cancellation_after_stage_end_progress_persistence_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(tmp_path)
+    coordinator, job = _attach_running_execution(ctx, tmp_path)
+    repository = LocalJsonTaskRepository(Settings(storage_dir=tmp_path / "pipeline-tasks"))
+    entered_stage_end_progress = threading.Event()
+    release_stage_end_progress = threading.Event()
+    errors: list[BaseException] = []
+    events: list[object] = []
+    update_calls = 0
+    update = repository.update_compare_task
+    monkeypatch.setattr(ProgressBus.get_instance(), "publish", events.append)
+
+    def block_stage_end_update(task_id: str, mutate: object) -> CompareTask:
+        nonlocal update_calls
+        update_calls += 1
+        if update_calls == 2:
+            entered_stage_end_progress.set()
+            assert release_stage_end_progress.wait(1)
+        return update(task_id, mutate)
+
+    monkeypatch.setattr(repository, "update_compare_task", block_stage_end_update)
+
+    class Stage:
+        name = "stage-end-race"
+        start_progress = 20
+        progress = 80
+
+        def execute(self, _ctx: PipelineContext) -> None:
+            return None
+
+    def run() -> None:
+        try:
+            ComparePipeline(stages=[Stage()], repository=repository).run(ctx)
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert entered_stage_end_progress.wait(1)
+    coordinator.request_cancel(job.task_id, task_type="compare")
+    release_stage_end_progress.set()
+    thread.join()
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], TaskCancelled)
+    assert repository.load_compare_task(ctx.task.task_id).progress_percent == 80
+    assert not any(
+        getattr(event, "stage", None) == "stage-end-race" and getattr(event, "progress_percent", None) == 80
+        for event in events
+    )
+
+
 def test_pipeline_checks_cancellation_after_blocked_stage_before_downstream_stage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2094,7 +2146,7 @@ def test_pipeline_checks_cancellation_immediately_before_terminal_commit(
         def raise_if_cancelled(self) -> None:
             nonlocal checks
             checks += 1
-            if checks == 4:
+            if checks == 6:
                 coordinator.request_cancel(job.task_id, task_type="compare")
             token.raise_if_cancelled()
 
@@ -2116,7 +2168,7 @@ def test_pipeline_checks_cancellation_immediately_before_terminal_commit(
     with pytest.raises(TaskCancelled):
         ComparePipeline(stages=[Stage()]).run(ctx)
 
-    assert checks == 4
+    assert checks == 6
     assert ctx.task.status == "PROCESSING"
     assert not any(getattr(event, "status", None) == "COMPLETED" for event in events)
     assert coordinator.mark_cancelled(job.job_id, worker_id="pipeline-worker").status == "CANCELLED"

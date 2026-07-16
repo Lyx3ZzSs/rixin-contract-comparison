@@ -5,7 +5,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -67,7 +67,8 @@ TaskHandler = Callable[[TaskExecutionContext, Mapping[str, Any]], CompareTask | 
 
 
 class TaskJobRepository(Protocol):
-    def enqueue(self, job: TaskJob) -> TaskJob:
+    @property
+    def job_dir(self) -> Path:
         raise NotImplementedError
 
     def load(self, job_id: str) -> TaskJob:
@@ -76,22 +77,7 @@ class TaskJobRepository(Protocol):
     def list_jobs(self) -> list[TaskJob]:
         raise NotImplementedError
 
-    def persist(self, job: TaskJob) -> TaskJob:
-        raise NotImplementedError
-
-    def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        raise NotImplementedError
-
-    def extend_lease(self, job_id: str, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        raise NotImplementedError
-
-    def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
-        raise NotImplementedError
-
-    def mark_failed(self, job_id: str, *, worker_id: str, error: str, retry_delay_seconds: float) -> TaskJob:
-        raise NotImplementedError
-
-    def request_cancel(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
+    def _persist(self, job: TaskJob) -> TaskJob:
         raise NotImplementedError
 
 
@@ -101,46 +87,6 @@ class LocalJsonTaskJobRepository:
     def __init__(self, app_settings: Settings = settings) -> None:
         self.settings = app_settings
         self._lock = threading.RLock()
-
-    def enqueue(self, job: TaskJob) -> TaskJob:
-        with self._lock:
-            existing_jobs = self.list_jobs()
-            job_id_matches = [existing for existing in existing_jobs if existing.job_id == job.job_id]
-            if job_id_matches:
-                if len(job_id_matches) != 1 or not self._has_same_identity(job_id_matches[0], job):
-                    raise TaskTransitionConflict(f"执行记录 ID {job.job_id} 与已有执行身份冲突。")
-                existing = job_id_matches[0]
-                if existing.status in TERMINAL_JOB_STATUSES:
-                    raise TaskTransitionConflict(
-                        f"执行记录 {existing.job_id} 已为终态 {existing.status}，不能重新入队。"
-                    )
-                return existing
-            execution_matches = [
-                existing for existing in existing_jobs if self._has_same_execution_identity(existing, job)
-            ]
-            if execution_matches:
-                raise TaskTransitionConflict(
-                    f"任务 {job.task_id} 的第 {job.execution_no} 次 {job.task_type} 执行记录已存在，不能重复创建。"
-                )
-            target_path = self._new_job_path(job)
-            if target_path.exists():
-                raise TaskTransitionConflict(f"任务 {job.task_id} 的第 {job.execution_no} 次执行记录已存在，不能覆盖。")
-            active_jobs = [
-                existing_job
-                for existing_job in existing_jobs
-                if existing_job.task_id == job.task_id
-                and existing_job.task_type == job.task_type
-                and existing_job.status not in TERMINAL_JOB_STATUSES
-            ]
-            if active_jobs:
-                raise TaskTransitionConflict(f"任务 {job.task_id} 已有活动执行记录 {active_jobs[0].job_id}。")
-            job = job.model_copy(deep=True)
-            job.status = "QUEUED"
-            job.queued_at = _utc_now()
-            job.updated_at = job.queued_at
-            job.source_path = str(target_path)
-            self._write_job(job)
-            return job
 
     def load(self, job_id: str) -> TaskJob:
         path = self._find_job_path(job_id)
@@ -163,144 +109,19 @@ class LocalJsonTaskJobRepository:
                     continue
         return sorted(jobs, key=lambda job: (job.next_run_at or job.queued_at, job.queued_at))
 
-    def persist(self, job: TaskJob) -> TaskJob:
+    def _persist(self, job: TaskJob) -> TaskJob:
         with self._lock:
             persisted = job.model_copy(deep=True)
+            if not persisted.source_path and self._new_job_path(persisted).exists():
+                raise TaskTransitionConflict(
+                    f"任务 {persisted.task_id} 的第 {persisted.execution_no} 次执行记录已存在，不能覆盖。"
+                )
             self._write_job(persisted)
             return persisted
-
-    def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        with self._lock:
-            now = _utc_now()
-            for job in self.list_jobs():
-                if self._is_expired_at_attempt_limit(job, now):
-                    job.status = "FAILED"
-                    job.error_code = "LEASE_EXPIRED_MAX_ATTEMPTS"
-                    job.last_error = "任务租约过期且已达到最大尝试次数。"
-                    job.finished_at = now
-                    job.updated_at = now
-                    job.lease_owner = ""
-                    job.lease_expires_at = ""
-                    self._write_job(job)
-                    continue
-                if not self._is_claimable(job, now):
-                    continue
-                job.status = "RUNNING"
-                job.attempt += 1
-                job.started_at = now
-                job.updated_at = now
-                job.lease_owner = worker_id
-                job.lease_expires_at = _plus_seconds(lease_seconds)
-                job.last_error = ""
-                self._write_job(job)
-                return job
-        return None
-
-    def extend_lease(self, job_id: str, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        with self._lock:
-            try:
-                job = self.load(job_id)
-            except FileNotFoundError:
-                return None
-            if job.status != "RUNNING" or job.lease_owner != worker_id:
-                return None
-            job.lease_expires_at = _plus_seconds(lease_seconds)
-            job.updated_at = _utc_now()
-            self._write_job(job)
-            return job
-
-    def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
-        def mutate(job: TaskJob) -> None:
-            self._ensure_terminal_write_allowed(job, "SUCCEEDED")
-            if job.lease_owner != worker_id and job.status == "RUNNING":
-                raise RuntimeError(f"执行记录 {job_id} 不属于当前 worker。")
-            job.status = "SUCCEEDED"
-            job.finished_at = _utc_now()
-            job.updated_at = job.finished_at
-            job.lease_owner = ""
-            job.lease_expires_at = ""
-
-        return self._update_job(job_id, mutate)
-
-    def mark_failed(self, job_id: str, *, worker_id: str, error: str, retry_delay_seconds: float) -> TaskJob:
-        def mutate(job: TaskJob) -> None:
-            self._ensure_terminal_write_allowed(job, "FAILED")
-            if job.lease_owner != worker_id and job.status == "RUNNING":
-                raise RuntimeError(f"执行记录 {job_id} 不属于当前 worker。")
-            job.last_error = error
-            job.updated_at = _utc_now()
-            job.lease_owner = ""
-            job.lease_expires_at = ""
-            if job.attempt < job.max_attempts:
-                job.status = "QUEUED"
-                job.next_run_at = _plus_seconds(retry_delay_seconds)
-                return
-            job.status = "FAILED"
-            job.finished_at = job.updated_at
-
-        return self._update_job(job_id, mutate)
-
-    def request_cancel(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
-        with self._lock:
-            jobs = [
-                job
-                for job in self.list_jobs()
-                if job.task_id == task_id and (task_type is None or job.task_type == task_type)
-            ]
-            if not jobs:
-                return []
-            active_jobs = [job for job in jobs if job.status not in TERMINAL_JOB_STATUSES]
-            job = max(active_jobs or jobs, key=lambda item: item.execution_no)
-            if job.status in TERMINAL_JOB_STATUSES:
-                return [job]
-            if job.status == "QUEUED":
-                job.status = "CANCELLED"
-                job.finished_at = _utc_now()
-                job.lease_owner = ""
-                job.lease_expires_at = ""
-            else:
-                job.status = "CANCEL_REQUESTED"
-            job.updated_at = _utc_now()
-            self._write_job(job)
-            return [job]
 
     @property
     def job_dir(self) -> Path:
         return self.settings.tasks_dir
-
-    def job_path(self, job_id: str) -> Path:
-        existing = self._find_job_path(job_id)
-        if existing is not None:
-            return existing
-        task_id, execution_no = self._job_identity_parts(job_id)
-        return self._task_dir(task_id) / "jobs" / f"{execution_no}.json"
-
-    def _is_claimable(self, job: TaskJob, now: str) -> bool:
-        if job.status == "QUEUED":
-            return not job.next_run_at or job.next_run_at <= now
-        if job.status == "RUNNING":
-            return bool(job.lease_expires_at and job.lease_expires_at <= now)
-        return False
-
-    def _is_expired_at_attempt_limit(self, job: TaskJob, now: str) -> bool:
-        return bool(
-            job.status == "RUNNING"
-            and job.lease_expires_at
-            and job.lease_expires_at <= now
-            and job.attempt >= job.max_attempts
-        )
-
-    def _update_job(self, job_id: str, mutate: Callable[[TaskJob], None]) -> TaskJob:
-        with self._lock:
-            job = self.load(job_id)
-            mutate(job)
-            self._write_job(job)
-            return job
-
-    def _ensure_terminal_write_allowed(self, job: TaskJob, target_status: TaskJobStatus) -> None:
-        if job.status not in TERMINAL_JOB_STATUSES:
-            return
-        raise TaskTransitionConflict(f"执行记录 {job.job_id} 已为终态 {job.status}，不能改写为 {target_status}。")
 
     def _write_job(self, job: TaskJob) -> None:
         path = Path(job.source_path) if job.source_path else self._new_job_path(job)
@@ -334,26 +155,6 @@ class LocalJsonTaskJobRepository:
 
     def _new_job_path(self, job: TaskJob) -> Path:
         return self._task_dir(job.task_id) / "jobs" / f"{job.execution_no}.json"
-
-    def _has_same_identity(self, existing: TaskJob, candidate: TaskJob) -> bool:
-        return bool(existing.job_id == candidate.job_id and self._has_same_execution_identity(existing, candidate))
-
-    def _has_same_execution_identity(self, existing: TaskJob, candidate: TaskJob) -> bool:
-        return bool(
-            existing.task_id == candidate.task_id
-            and existing.task_type == candidate.task_type
-            and existing.execution_no == candidate.execution_no
-        )
-
-    def _job_identity_parts(self, job_id: str) -> tuple[str, int]:
-        identity = job_id.split(":", 1)[1] if ":" in job_id else job_id
-        task_id, separator, execution = identity.rpartition(":")
-        if separator:
-            try:
-                return task_id, int(execution)
-            except ValueError:
-                pass
-        return identity, 1
 
     def _task_dir(self, task_id: str) -> Path:
         safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in task_id)
@@ -412,37 +213,14 @@ class LazyDefaultTaskJobRepository:
     def job_dir(self) -> Path:
         return self.settings.tasks_dir
 
-    def enqueue(self, job: TaskJob) -> TaskJob:
-        return self.resolve().enqueue(job)
-
     def load(self, job_id: str) -> TaskJob:
         return self.resolve().load(job_id)
 
     def list_jobs(self) -> list[TaskJob]:
         return self.resolve().list_jobs()
 
-    def persist(self, job: TaskJob) -> TaskJob:
-        return self.resolve().persist(job)
-
-    def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        return self.resolve().claim_next(worker_id=worker_id, lease_seconds=lease_seconds)
-
-    def extend_lease(self, job_id: str, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        return self.resolve().extend_lease(job_id, worker_id=worker_id, lease_seconds=lease_seconds)
-
-    def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
-        return self.resolve().mark_succeeded(job_id, worker_id=worker_id)
-
-    def mark_failed(self, job_id: str, *, worker_id: str, error: str, retry_delay_seconds: float) -> TaskJob:
-        return self.resolve().mark_failed(
-            job_id,
-            worker_id=worker_id,
-            error=error,
-            retry_delay_seconds=retry_delay_seconds,
-        )
-
-    def request_cancel(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
-        return self.resolve().request_cancel(task_id, task_type=task_type)
+    def _persist(self, job: TaskJob) -> TaskJob:
+        return self.resolve()._persist(job)
 
 
 def build_task_job_repository(app_settings: Settings = settings) -> TaskJobRepository:
@@ -467,7 +245,9 @@ class QueuedTaskRunner:
         self.settings = app_settings
         persistence = job_repository or LazyDefaultTaskJobRepository(app_settings)
         self.coordinator = (
-            persistence if isinstance(persistence, ExecutionStateCoordinator) else ExecutionStateCoordinator(persistence)
+            persistence
+            if isinstance(persistence, ExecutionStateCoordinator)
+            else ExecutionStateCoordinator(persistence)
         )
         self.job_repository: ExecutionStateCoordinator = self.coordinator
         self.max_workers = max_workers or app_settings.task_runner_max_workers
@@ -662,7 +442,9 @@ class QueuedTaskRunner:
         try:
             self.coordinator.mark_cancelled(job.job_id, worker_id=worker_id)
         except TaskStaleLeaseError:
-            logger.warning("Stale task job cancellation; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id)
+            logger.warning(
+                "Stale task job cancellation; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id
+            )
 
     def _mark_job_failed(self, job: TaskJob, worker_id: str, exc: Exception) -> None:
         try:
@@ -695,10 +477,6 @@ class QueuedTaskRunner:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _plus_seconds(seconds: float) -> str:
-    return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
 
 
 default_task_runner = QueuedTaskRunner()

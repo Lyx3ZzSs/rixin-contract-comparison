@@ -12,7 +12,12 @@ from app.infrastructure.execution_state import (
     ExecutionStateCoordinator,
     TaskExecutionContext,
 )
-from app.infrastructure.task_runner import LocalJsonTaskJobRepository, TaskJob
+from app.infrastructure.task_runner import (
+    LazyDefaultTaskJobRepository,
+    LocalJsonTaskJobRepository,
+    TaskJob,
+    TaskJobRepository,
+)
 
 
 def build_coordinator(tmp_path: Path) -> tuple[ExecutionStateCoordinator, LocalJsonTaskJobRepository]:
@@ -31,17 +36,56 @@ def enqueue_job(coordinator: ExecutionStateCoordinator, task_id: str = "TCOORD")
     )
 
 
+@pytest.mark.parametrize(
+    "repository_type",
+    [TaskJobRepository, LocalJsonTaskJobRepository, LazyDefaultTaskJobRepository],
+)
+def test_raw_job_storage_does_not_expose_state_transition_methods(
+    tmp_path: Path,
+    repository_type: type[object],
+) -> None:
+    repository = (
+        repository_type(Settings(storage_dir=tmp_path / "storage"))
+        if repository_type is not TaskJobRepository
+        else repository_type
+    )
+
+    transition_methods = {
+        "enqueue",
+        "claim_next",
+        "extend_lease",
+        "request_cancel",
+        "mark_succeeded",
+        "mark_failed",
+    }
+
+    assert transition_methods.isdisjoint(dir(repository))
+
+
+def test_raw_storage_cannot_cancel_on_disk_behind_coordinator_token(tmp_path: Path) -> None:
+    coordinator, repository = build_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TRAW_CANCEL")
+    coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
+    token = CancellationToken(job_id=job.job_id, worker_id="worker-1", coordinator=coordinator)
+
+    with pytest.raises(AttributeError):
+        repository.request_cancel(job.task_id, task_type="compare")  # type: ignore[attr-defined]
+
+    token.raise_if_cancelled()
+    assert repository.load(job.job_id).status == "RUNNING"
+
+
 def test_mutation_persists_before_replacing_memory_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     coordinator, repository = build_coordinator(tmp_path)
     job = enqueue_job(coordinator)
     persisted_while_memory_was: list[str] = []
-    persist = repository.persist
+    persist = repository._persist
 
     def observe_persist(candidate: TaskJob) -> TaskJob:
         persisted_while_memory_was.append(coordinator.load(job.job_id).status)
         return persist(candidate)
 
-    monkeypatch.setattr(repository, "persist", observe_persist)
+    monkeypatch.setattr(repository, "_persist", observe_persist)
 
     claimed = coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
 
@@ -58,7 +102,7 @@ def test_persistence_failure_leaves_memory_snapshot_unchanged(tmp_path: Path, mo
     def fail_persist(_candidate: TaskJob) -> TaskJob:
         raise OSError("disk unavailable")
 
-    monkeypatch.setattr(repository, "persist", fail_persist)
+    monkeypatch.setattr(repository, "_persist", fail_persist)
 
     with pytest.raises(OSError, match="disk unavailable"):
         coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
@@ -127,14 +171,14 @@ def test_mark_cancelled_is_idempotent_without_another_write(
     job = enqueue_job(coordinator)
     first = coordinator.mark_cancelled(job.job_id, worker_id="")
     writes = 0
-    persist = repository.persist
+    persist = repository._persist
 
     def count_persist(candidate: TaskJob) -> TaskJob:
         nonlocal writes
         writes += 1
         return persist(candidate)
 
-    monkeypatch.setattr(repository, "persist", count_persist)
+    monkeypatch.setattr(repository, "_persist", count_persist)
 
     second = coordinator.mark_cancelled(job.job_id, worker_id="stale-worker")
 
@@ -152,14 +196,14 @@ def test_stale_owner_terminal_attempt_has_no_writes(
     job = enqueue_job(coordinator)
     coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
     writes = 0
-    persist = repository.persist
+    persist = repository._persist
 
     def count_persist(candidate: TaskJob) -> TaskJob:
         nonlocal writes
         writes += 1
         return persist(candidate)
 
-    monkeypatch.setattr(repository, "persist", count_persist)
+    monkeypatch.setattr(repository, "_persist", count_persist)
 
     with pytest.raises(TaskStaleLeaseError):
         if terminal_method == "mark_succeeded":
@@ -186,14 +230,14 @@ def test_expired_lease_terminal_attempt_has_no_writes(
     job = enqueue_job(coordinator)
     coordinator.claim_next(worker_id="worker-1", lease_seconds=-1)
     writes = 0
-    persist = repository.persist
+    persist = repository._persist
 
     def count_persist(candidate: TaskJob) -> TaskJob:
         nonlocal writes
         writes += 1
         return persist(candidate)
 
-    monkeypatch.setattr(repository, "persist", count_persist)
+    monkeypatch.setattr(repository, "_persist", count_persist)
 
     with pytest.raises(TaskStaleLeaseError):
         if terminal_method == "mark_succeeded":

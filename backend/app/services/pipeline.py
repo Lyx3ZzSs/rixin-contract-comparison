@@ -181,12 +181,15 @@ def _update_progress(ctx: PipelineContext, stage: str, progress: int, repository
         ctx.task.updated_at = persisted.updated_at
         ctx.task.revision = persisted.revision
 
-    ProgressBus.get_instance().publish(ProgressEvent(
-        task_id=ctx.task.task_id,
-        stage=ctx.task.stage,
-        progress_percent=ctx.task.progress_percent,
-        status="PROCESSING",
-    ))
+    _raise_if_cancelled(ctx)
+    ProgressBus.get_instance().publish(
+        ProgressEvent(
+            task_id=ctx.task.task_id,
+            stage=ctx.task.stage,
+            progress_percent=ctx.task.progress_percent,
+            status="PROCESSING",
+        )
+    )
 
 
 class ComparePipeline:
@@ -228,6 +231,7 @@ class ComparePipeline:
                 metrics.total_duration_seconds = time.perf_counter() - pipeline_t0
                 metrics.peak_memory_mb = peak_memory
                 ctx.task.metrics = {**ctx.task.metrics, **dataclasses.asdict(metrics)}
+                _raise_if_cancelled(ctx)
                 raise
             sm.duration_seconds = time.perf_counter() - stage_t0
             sm.memory_mb_end = get_process_memory_mb()
@@ -245,12 +249,14 @@ class ComparePipeline:
         ctx.task.progress_percent = 100
         ctx.task.errors = []
         ctx.task.updated_at = datetime.now(UTC).isoformat()
-        ProgressBus.get_instance().publish(ProgressEvent(
-            task_id=ctx.task.task_id,
-            stage="已完成",
-            progress_percent=100,
-            status="COMPLETED",
-        ))
+        ProgressBus.get_instance().publish(
+            ProgressEvent(
+                task_id=ctx.task.task_id,
+                stage="已完成",
+                progress_percent=100,
+                status="COMPLETED",
+            )
+        )
         try:
             ctx.task = self.repository.update_compare_task(
                 ctx.task.task_id,
