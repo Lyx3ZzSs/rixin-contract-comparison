@@ -107,9 +107,8 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
     service = CompareService(extractor=LocalStructuredExtractor())
     task = service.compare(original, compare, task_id="TTEST000001")
 
-    assert task.status == "COMPLETED"
-    assert task.stage == "已完成"
-    assert task.progress_percent == 100
+    assert task.status == "PROCESSING"
+    assert task.progress_percent < 100
     assert task.extractor_used == "ppstructure_ocr_hybrid"
     assert task.document_profiles["original"].recommended_strategy == "text"
     assert task.document_profiles["compare"].total_text_chars > 0
@@ -243,7 +242,7 @@ def test_compare_service_keeps_pymupdf_when_structured_alignment_fails(tmp_path:
     assert "compare 尝试切换结构化 OCR 抽取失败，已保留 PyMuPDF 结果" in compare_aligned.warnings[0]
 
 
-def test_compare_service_marks_task_failed_when_structured_ocr_fails(tmp_path: Path) -> None:
+def test_compare_service_leaves_terminal_failure_to_execution_coordinator(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     original = tmp_path / "original.pdf"
     compare = tmp_path / "compare.pdf"
@@ -256,8 +255,8 @@ def test_compare_service_marks_task_failed_when_structured_ocr_fails(tmp_path: P
         service.compare(original, compare, task_id="TSTRICT_FAIL")
 
     task = repository.load_compare_task("TSTRICT_FAIL")
-    assert task.status == "FAILED"
-    assert any("原版文件结构化 OCR 失败" in error for error in task.errors)
+    assert task.status == "PROCESSING"
+    assert task.errors == []
 
 
 def test_extraction_stage_rejects_ocr_only_result_in_strict_mode(tmp_path: Path) -> None:

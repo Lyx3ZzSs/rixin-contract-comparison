@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from app.auth.models import CurrentUser
-from app.errors import NotFoundError, TaskCancelled, TaskStaleLeaseError
+from app.errors import NotFoundError, TaskStaleLeaseError
 from app.infrastructure.execution_state import TaskExecutionContext
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.infrastructure.task_runner import QueuedTaskRunner, TaskJob, default_task_runner
@@ -24,6 +24,9 @@ class CompareTaskApplication:
     ) -> None:
         self.repository = repository
         self.runner = runner
+        from app.services.progress_bus import ProgressBus
+
+        self.runner.coordinator.configure_terminal_commits(repository, ProgressBus.get_instance())
         self.runner.register_handler("compare", self._run_compare_job)
 
     def create_queued_task(
@@ -96,12 +99,7 @@ class CompareTaskApplication:
         jobs = self.runner.cancel(task_id, task_type="compare")
         if not jobs:
             raise NotFoundError(f"任务执行记录不存在: {task_id}")
-        job = jobs[0]
-        if job.status == "CANCELLED":
-            self._mark_cancelled(task_id)
-        elif job.status == "CANCEL_REQUESTED":
-            self._mark_cancel_requested(task_id)
-        return job
+        return jobs[0]
 
     def retry_compare(self, task_id: str) -> TaskJob:
         task = self.load_compare_task(task_id)
@@ -184,9 +182,6 @@ class CompareTaskApplication:
                 compare_options=compare_options,
                 execution_context=execution_context,
             )
-        except TaskCancelled:
-            self._mark_cancelled(task_id)
-            raise
         except TaskStaleLeaseError:
             logger.warning(
                 "Background compare task lost lease: task_id=%s job_id=%s worker_id=%s",
@@ -198,24 +193,6 @@ class CompareTaskApplication:
         except Exception:
             logger.exception("Background compare task failed: %s", task_id)
             raise
-
-    def _mark_cancelled(self, task_id: str) -> None:
-        def mutate(task: CompareTask) -> None:
-            task.status = "FAILED"
-            task.terminal_reason = "CANCELLED"
-            task.stage = "已取消"
-            task.progress_percent = 100
-            if "任务已取消。" not in task.errors:
-                task.errors.append("任务已取消。")
-
-        self.repository.update_compare_task(task_id, mutate)
-
-    def _mark_cancel_requested(self, task_id: str) -> None:
-        def mutate(task: CompareTask) -> None:
-            if task.status == "PROCESSING":
-                task.stage = "取消请求已提交"
-
-        self.repository.update_compare_task(task_id, mutate)
 
     def _mark_active_job(self, task_id: str, job_id: str) -> None:
         def mutate(task: CompareTask) -> None:

@@ -431,7 +431,7 @@ def test_compare_progress_stream_sends_current_snapshot(tmp_path: Path) -> None:
         lines = [line for line in response.iter_lines() if line]
 
     assert lines == [
-        'data: {"task_id": "TPROGRESS_SNAPSHOT", "stage": "已完成", "progress_percent": 100, "status": "COMPLETED"}'
+        'data: {"task_id": "TPROGRESS_SNAPSHOT", "stage": "已完成", "progress_percent": 100, "status": "COMPLETED", "revision": 1}'
     ]
 
 
@@ -457,9 +457,17 @@ def test_compare_execution_api_gets_and_cancels_queued_job(tmp_path: Path) -> No
     configure_storage(tmp_path)
     default_task_runner.stop(wait=True)
     task_id = "TEXEC_CANCEL"
-    save_task(CompareTask(task_id=task_id, original_pdf_path="a.pdf", compare_pdf_path="b.pdf"))
+    job_id = f"compare:{task_id}"
+    save_task(
+        CompareTask(
+            task_id=task_id,
+            active_job_id=job_id,
+            original_pdf_path="a.pdf",
+            compare_pdf_path="b.pdf",
+        )
+    )
     job = default_task_runner.job_repository.enqueue(
-        TaskJob(job_id=f"compare:{task_id}", task_id=task_id, task_type="compare", payload={"task_id": task_id})
+        TaskJob(job_id=job_id, task_id=task_id, task_type="compare", payload={"task_id": task_id})
     )
 
     client = TestClient(app)

@@ -147,6 +147,7 @@ async def stream_progress(task_id: str, user: CurrentUser = Depends(get_current_
                 "stage": current_task.stage,
                 "progress_percent": current_task.progress_percent,
                 "status": current_task.status,
+                "revision": current_task.revision,
             }
             yield f"data: {json.dumps(initial_payload, ensure_ascii=False)}\n\n"
             if current_task.status in ("COMPLETED", "FAILED"):
@@ -162,6 +163,7 @@ async def stream_progress(task_id: str, user: CurrentUser = Depends(get_current_
                     "stage": event.stage,
                     "progress_percent": event.progress_percent,
                     "status": event.status,
+                    "revision": event.revision,
                 }
                 if event.detail:
                     payload["detail"] = event.detail

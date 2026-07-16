@@ -555,10 +555,7 @@ def test_application_handles_cancellation_separately_from_stale_lease(
         )
 
     stored_task = task_repository.load_compare_task(job.task_id)
-    if error_type is TaskCancelled:
-        assert (stored_task.status, stored_task.terminal_reason) == ("FAILED", "CANCELLED")
-    else:
-        assert (stored_task.status, stored_task.terminal_reason) == ("PROCESSING", "NONE")
+    assert (stored_task.status, stored_task.terminal_reason) == ("PROCESSING", "NONE")
 
 
 def test_queued_cancellation_before_claim_finishes_task_and_job_as_cancelled(tmp_path: Path) -> None:
@@ -749,7 +746,12 @@ def test_stage_error_arbitrates_cancel_or_stale_lease_before_generic_failure(
             stored_task = task_repository.load_compare_task(task_id)
             assert (stored_job.status, stored_job.lease_owner) == ("RUNNING", "replacement-worker")
             assert (stored_task.status, stored_task.terminal_reason) == ("PROCESSING", "NONE")
-        assert not any(getattr(event, "status", None) == "FAILED" for event in events)
+        if control_flow == "cancel":
+            terminal_events = [event for event in events if getattr(event, "status", None) == "FAILED"]
+            assert len(terminal_events) == 1
+            assert terminal_events[0].stage == "已取消"
+        else:
+            assert not any(getattr(event, "status", None) == "FAILED" for event in events)
     finally:
         release_stage.set()
         runner.stop()

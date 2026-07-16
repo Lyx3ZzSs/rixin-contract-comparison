@@ -19,6 +19,7 @@ from app.auth.errors import IdentityProviderUnavailable
 from app.auth.runtime import AuthRuntime
 from app.clients import close_clients
 from app.config import settings
+from app.infrastructure.reconciliation import reconcile_terminal_jobs
 from app.infrastructure.task_repository import default_task_repository
 from app.infrastructure.task_runner import default_task_runner
 from app.logging_config import setup_logging
@@ -33,6 +34,7 @@ auth_runtime = AuthRuntime(settings.auth)
 async def lifespan(app: FastAPI):
     settings.ensure_storage()
     default_task_repository.resolve()
+    reconcile_terminal_jobs(default_task_repository, default_task_runner.coordinator)
     default_task_runner.start()
     register_default_models()
 

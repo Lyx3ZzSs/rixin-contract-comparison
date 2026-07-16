@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar, Protocol
 
 from app.errors import TaskCancelled, TaskStaleLeaseError, TaskTransitionConflict
+from app.models import CompareTask, DiffItem, TaskStatus, TaskTerminalReason
 
 if TYPE_CHECKING:
     from app.infrastructure.task_runner import TaskJob, TaskJobStatus, TaskJobType
@@ -23,6 +24,18 @@ class TaskJobPersistence(Protocol):
     def list_jobs(self) -> list[TaskJob]: ...
 
     def _persist(self, job: TaskJob) -> TaskJob: ...
+
+
+class CompareTaskPersistence(Protocol):
+    def load_compare_task(self, task_id: str) -> CompareTask: ...
+
+    def list_compare_tasks(self) -> list[CompareTask]: ...
+
+    def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask: ...
+
+
+class ProgressPublisher(Protocol):
+    def publish(self, event: object) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -49,11 +62,32 @@ class ExecutionStateCoordinator:
     _process_lock: ClassVar[threading.RLock] = threading.RLock()
     _process_snapshots: ClassVar[dict[str, Mapping[str, TaskJob]]] = {}
 
-    def __init__(self, repository: TaskJobPersistence) -> None:
+    def __init__(
+        self,
+        repository: TaskJobPersistence,
+        *,
+        task_repository: CompareTaskPersistence | None = None,
+        progress_publisher: ProgressPublisher | None = None,
+    ) -> None:
         self._repository = repository
+        self._task_repository = task_repository
+        self._progress_publisher = progress_publisher
         with self._process_lock:
             self._repository_namespace = self._storage_namespace()
             self._snapshots = self._hydrate_snapshots()
+
+    def configure_terminal_commits(
+        self,
+        task_repository: CompareTaskPersistence,
+        progress_publisher: ProgressPublisher,
+    ) -> None:
+        with self._process_lock:
+            self._task_repository = task_repository
+            self._progress_publisher = progress_publisher
+
+    @property
+    def has_terminal_dependencies(self) -> bool:
+        return self._task_repository is not None and self._progress_publisher is not None
 
     def enqueue(self, job: TaskJob) -> TaskJob:
         with self._process_lock:
@@ -164,6 +198,16 @@ class ExecutionStateCoordinator:
             else:
                 raise TaskTransitionConflict(f"执行记录 {candidate.job_id} 不能从 {candidate.status} 请求取消。")
             candidate.updated_at = now
+            if candidate.status == "CANCELLED" and self.has_terminal_dependencies:
+                task = self._persist_terminal_task(
+                    job,
+                    status="FAILED",
+                    terminal_reason="CANCELLED",
+                    error="任务已取消。",
+                )
+                persisted = self._persist_then_replace(candidate)
+                self._publish_terminal(task)
+                return [persisted]
             return [self._persist_then_replace(candidate)]
 
     def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
@@ -176,6 +220,106 @@ class ExecutionStateCoordinator:
             candidate.lease_owner = ""
             candidate.lease_expires_at = ""
             return self._persist_then_replace(candidate)
+
+    def commit_success(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        result: CompareTask,
+    ) -> tuple[CompareTask, TaskJob]:
+        with self._process_lock:
+            replay = self._matching_terminal_replay(job_id, "COMPLETED", "NONE", "SUCCEEDED")
+            if replay is not None:
+                return replay
+            job = self._validate_running_terminal(job_id, worker_id, "SUCCEEDED")
+            task = self._persist_terminal_task(
+                job,
+                status="COMPLETED",
+                terminal_reason="NONE",
+                result=result,
+            )
+            candidate = self._terminal_job_candidate(job, "SUCCEEDED")
+            persisted_job = self._persist_then_replace(candidate)
+            self._publish_terminal(task)
+            return task, persisted_job
+
+    def commit_failure(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        error: str,
+        retry_delay_seconds: float,
+    ) -> tuple[CompareTask | None, TaskJob]:
+        with self._process_lock:
+            replay = self._matching_terminal_replay(
+                job_id,
+                "FAILED",
+                "EXECUTION_FAILED",
+                "FAILED",
+            )
+            if replay is not None:
+                return replay
+            job = self._validate_running_terminal(job_id, worker_id, "FAILED")
+            if job.attempt < job.max_attempts:
+                candidate = job.model_copy(deep=True)
+                candidate.status = "QUEUED"
+                candidate.last_error = error
+                candidate.updated_at = _utc_now()
+                candidate.next_run_at = _plus_seconds(retry_delay_seconds)
+                candidate.lease_owner = ""
+                candidate.lease_expires_at = ""
+                return None, self._persist_then_replace(candidate)
+            task = self._persist_terminal_task(
+                job,
+                status="FAILED",
+                terminal_reason="EXECUTION_FAILED",
+                error=error,
+            )
+            candidate = self._terminal_job_candidate(job, "FAILED", error=error)
+            persisted_job = self._persist_then_replace(candidate)
+            self._publish_terminal(task, detail={"error": error})
+            return task, persisted_job
+
+    def commit_cancelled(self, job_id: str, *, worker_id: str) -> tuple[CompareTask, TaskJob]:
+        with self._process_lock:
+            replay = self._matching_terminal_replay(job_id, "FAILED", "CANCELLED", "CANCELLED")
+            if replay is not None:
+                return replay
+            job = self._get(job_id)
+            if job.status != "CANCEL_REQUESTED":
+                raise TaskTransitionConflict(f"执行记录 {job_id} 不能从 {job.status} 改写为 CANCELLED。")
+            self._ensure_current_lease(job, worker_id)
+            task = self._persist_terminal_task(
+                job,
+                status="FAILED",
+                terminal_reason="CANCELLED",
+                error="任务已取消。",
+            )
+            candidate = self._terminal_job_candidate(job, "CANCELLED")
+            persisted_job = self._persist_then_replace(candidate)
+            self._publish_terminal(task)
+            return task, persisted_job
+
+    def repair_job_from_terminal_task(self, task: CompareTask) -> bool:
+        with self._process_lock:
+            if task.status not in {"COMPLETED", "FAILED"} or not task.terminal_job_id:
+                return False
+            try:
+                job = self._get(task.terminal_job_id)
+            except FileNotFoundError:
+                return False
+            if job.task_id != task.task_id or job.attempt != task.terminal_attempt:
+                return False
+            target = self._job_status_for_task(task)
+            if job.status == target:
+                return False
+            if job.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+                return False
+            error = task.errors[-1] if target == "FAILED" and task.errors else ""
+            self._persist_then_replace(self._terminal_job_candidate(job, target, error=error))
+            return True
 
     def mark_failed(
         self,
@@ -243,6 +387,103 @@ class ExecutionStateCoordinator:
             raise TaskTransitionConflict(f"执行记录 {job_id} 不能从 {job.status} 改写为 {target_status}。")
         self._ensure_current_lease(job, worker_id)
         return job
+
+    def _matching_terminal_replay(
+        self,
+        job_id: str,
+        task_status: str,
+        terminal_reason: str,
+        job_status: str,
+    ) -> tuple[CompareTask, TaskJob] | None:
+        job = self._get(job_id)
+        if job.status != job_status or self._task_repository is None:
+            return None
+        task = self._task_repository.load_compare_task(job.task_id)
+        if (
+            task.status == task_status
+            and task.terminal_reason == terminal_reason
+            and task.terminal_job_id == job.job_id
+            and task.terminal_attempt == job.attempt
+        ):
+            return task, job.model_copy(deep=True)
+        raise TaskTransitionConflict(f"执行记录 {job_id} 的终态与任务终态不一致。")
+
+    def _persist_terminal_task(
+        self,
+        job: TaskJob,
+        *,
+        status: TaskStatus,
+        terminal_reason: TaskTerminalReason,
+        result: CompareTask | None = None,
+        error: str = "",
+    ) -> CompareTask:
+        if self._task_repository is None:
+            raise RuntimeError("ExecutionStateCoordinator 未配置 Task persistence。")
+
+        def mutate(task: CompareTask) -> None:
+            task.ensure_transition_allowed(
+                status,
+                terminal_reason=terminal_reason,
+                job_id=job.job_id,
+            )
+            if result is not None:
+                _copy_processing_result(task, result)
+            task.status = status
+            task.terminal_reason = terminal_reason
+            task.terminal_job_id = job.job_id
+            task.terminal_attempt = job.attempt
+            task.progress_percent = 100
+            if status == "COMPLETED":
+                task.stage = "已完成"
+                task.errors = []
+                if task.report_revision == 0:
+                    task.report_revision = 1
+            elif terminal_reason == "CANCELLED":
+                task.stage = "已取消"
+                if error and error not in task.errors:
+                    task.errors.append(error)
+            else:
+                task.stage = "失败"
+                if error and error not in task.errors:
+                    task.errors.append(error)
+
+        return self._task_repository.update_compare_task(job.task_id, mutate)
+
+    def _publish_terminal(self, task: CompareTask, *, detail: dict | None = None) -> None:
+        if self._progress_publisher is None:
+            return
+        from app.services.progress_bus import ProgressEvent
+
+        self._progress_publisher.publish(
+            ProgressEvent(
+                task_id=task.task_id,
+                stage=task.stage,
+                progress_percent=task.progress_percent,
+                status=task.status,
+                detail=detail,
+                revision=task.revision,
+            )
+        )
+
+    @staticmethod
+    def _terminal_job_candidate(job: TaskJob, status: TaskJobStatus, *, error: str = "") -> TaskJob:
+        candidate = job.model_copy(deep=True)
+        candidate.status = status
+        candidate.finished_at = _utc_now()
+        candidate.updated_at = candidate.finished_at
+        candidate.lease_owner = ""
+        candidate.lease_expires_at = ""
+        if error:
+            candidate.last_error = error
+        return candidate
+
+    @staticmethod
+    def _job_status_for_task(task: CompareTask) -> TaskJobStatus:
+        if task.status == "COMPLETED":
+            return "SUCCEEDED"
+        if task.terminal_reason == "CANCELLED":
+            return "CANCELLED"
+        return "FAILED"
 
     def _ensure_current_lease(self, job: TaskJob, worker_id: str) -> None:
         if job.lease_owner != worker_id:
@@ -331,3 +572,55 @@ def _utc_now() -> str:
 
 def _plus_seconds(seconds: float) -> str:
     return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
+
+
+def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
+    target.original_filename = source.original_filename
+    target.compare_filename = source.compare_filename
+    target.original_pdf_path = source.original_pdf_path
+    target.compare_pdf_path = source.compare_pdf_path
+    target.original_highlight_pdf_path = source.original_highlight_pdf_path
+    target.compare_highlight_pdf_path = source.compare_highlight_pdf_path
+    target.extractor_used = source.extractor_used
+    target.ocr_raw_result_path = source.ocr_raw_result_path
+    target.ocr_raw_result_paths = source.ocr_raw_result_paths
+    target.parse_warnings = source.parse_warnings
+    target.parse_warning_details = source.parse_warning_details
+    target.document_profiles = source.document_profiles
+    target.ocr_quality_summary = source.ocr_quality_summary
+    target.ocr_remediation_summary = source.ocr_remediation_summary
+    target.debug_artifact_paths = source.debug_artifact_paths
+    target.diff_count = source.diff_count
+    target.audit_item_reviews = source.audit_item_reviews
+    target.diffs = _merge_review_state(target.diffs, source.diffs)
+    target.metrics = source.metrics
+
+
+def _merge_review_state(existing: list[DiffItem], incoming: list[DiffItem]) -> list[DiffItem]:
+    existing_by_id = {diff.diff_id: diff for diff in existing}
+    merged: list[DiffItem] = []
+    for diff in incoming:
+        previous = existing_by_id.get(diff.diff_id)
+        if previous is None or not _has_review_state(previous):
+            merged.append(diff)
+            continue
+        merged.append(
+            diff.model_copy(
+                update={
+                    "review_status": previous.review_status,
+                    "review_comment": previous.review_comment,
+                    "reviewed_by": previous.reviewed_by,
+                    "reviewed_at": previous.reviewed_at,
+                }
+            )
+        )
+    return merged
+
+
+def _has_review_state(diff: DiffItem) -> bool:
+    return (
+        diff.review_status != "UNREVIEWED"
+        or bool(diff.review_comment)
+        or bool(diff.reviewed_by)
+        or bool(diff.reviewed_at)
+    )

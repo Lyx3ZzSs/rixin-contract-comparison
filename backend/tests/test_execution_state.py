@@ -12,12 +12,15 @@ from app.infrastructure.execution_state import (
     ExecutionStateCoordinator,
     TaskExecutionContext,
 )
+from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.infrastructure.task_runner import (
     LazyDefaultTaskJobRepository,
     LocalJsonTaskJobRepository,
     TaskJob,
     TaskJobRepository,
 )
+from app.models import CompareTask
+from app.services.progress_bus import ProgressEvent
 
 
 def build_coordinator(tmp_path: Path) -> tuple[ExecutionStateCoordinator, LocalJsonTaskJobRepository]:
@@ -34,6 +37,204 @@ def enqueue_job(coordinator: ExecutionStateCoordinator, task_id: str = "TCOORD")
             execution_no=1,
         )
     )
+
+
+class RecordingPublisher:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+        self.events: list[ProgressEvent] = []
+
+    def publish(self, event: ProgressEvent) -> None:
+        self.calls.append("publish_terminal")
+        self.events.append(event)
+
+
+def build_terminal_coordinator(
+    tmp_path: Path,
+) -> tuple[
+    ExecutionStateCoordinator,
+    LocalJsonTaskJobRepository,
+    LocalJsonTaskRepository,
+    RecordingPublisher,
+    list[str],
+]:
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    job_repository = LocalJsonTaskJobRepository(app_settings)
+    task_repository = LocalJsonTaskRepository(app_settings)
+    calls: list[str] = []
+    publisher = RecordingPublisher(calls)
+    coordinator = ExecutionStateCoordinator(
+        job_repository,
+        task_repository=task_repository,
+        progress_publisher=publisher,
+    )
+    return coordinator, job_repository, task_repository, publisher, calls
+
+
+def seed_running_terminal_job(
+    coordinator: ExecutionStateCoordinator,
+    task_repository: LocalJsonTaskRepository,
+    task_id: str,
+) -> TaskJob:
+    job = enqueue_job(coordinator, task_id)
+    task_repository.save_compare_task(CompareTask(task_id=task_id, active_job_id=job.job_id))
+    claimed = coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
+    assert claimed is not None
+    return claimed
+
+
+@pytest.mark.parametrize("terminal", ["success", "failure", "cancel"])
+def test_terminal_commit_persists_task_then_job_then_publishes_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: str,
+) -> None:
+    coordinator, job_repository, task_repository, publisher, calls = build_terminal_coordinator(tmp_path)
+    job = seed_running_terminal_job(coordinator, task_repository, f"TORDER_{terminal.upper()}")
+    persist_task = task_repository.update_compare_task
+    persist_job = job_repository._persist
+
+    def record_task(*args: object, **kwargs: object) -> CompareTask:
+        calls.append("persist_task")
+        return persist_task(*args, **kwargs)
+
+    def record_job(candidate: TaskJob) -> TaskJob:
+        calls.append("persist_job")
+        return persist_job(candidate)
+
+    monkeypatch.setattr(task_repository, "update_compare_task", record_task)
+    monkeypatch.setattr(job_repository, "_persist", record_job)
+
+    if terminal == "success":
+        task, stored_job = coordinator.commit_success(
+            job.job_id,
+            worker_id="worker-1",
+            result=CompareTask(task_id=job.task_id, metrics={"pipeline": "complete"}),
+        )
+        expected = ("COMPLETED", "NONE", "SUCCEEDED")
+        assert task.report_revision == 1
+    elif terminal == "failure":
+        task, stored_job = coordinator.commit_failure(
+            job.job_id,
+            worker_id="worker-1",
+            error="stage exploded",
+            retry_delay_seconds=0,
+        )
+        expected = ("FAILED", "EXECUTION_FAILED", "FAILED")
+    else:
+        coordinator.request_cancel(job.task_id, task_type="compare")
+        calls.clear()
+        task, stored_job = coordinator.commit_cancelled(job.job_id, worker_id="worker-1")
+        expected = ("FAILED", "CANCELLED", "CANCELLED")
+
+    assert calls == ["persist_task", "persist_job", "publish_terminal"]
+    assert (task.status, task.terminal_reason, stored_job.status) == expected
+    assert task.terminal_job_id == job.job_id
+    assert task.terminal_attempt == job.attempt
+    assert publisher.events[-1].revision == task.revision
+
+
+def test_success_terminal_replay_is_idempotent_without_revision_or_report_increment(tmp_path: Path) -> None:
+    coordinator, _job_repository, task_repository, publisher, calls = build_terminal_coordinator(tmp_path)
+    job = seed_running_terminal_job(coordinator, task_repository, "TREPLAY_SUCCESS")
+    first_task, first_job = coordinator.commit_success(
+        job.job_id,
+        worker_id="worker-1",
+        result=CompareTask(task_id=job.task_id),
+    )
+    calls.clear()
+
+    second_task, second_job = coordinator.commit_success(
+        job.job_id,
+        worker_id="worker-1",
+        result=CompareTask(task_id=job.task_id),
+    )
+
+    assert second_task == first_task
+    assert second_job == first_job
+    assert second_task.report_revision == 1
+    assert second_task.revision == first_task.revision
+    assert calls == []
+    assert len(publisher.events) == 1
+
+
+@pytest.mark.parametrize("terminal", ["success", "failure"])
+def test_cancel_wins_authoritative_terminal_barrier_without_task_or_event_write(
+    tmp_path: Path,
+    terminal: str,
+) -> None:
+    coordinator, _job_repository, task_repository, publisher, calls = build_terminal_coordinator(tmp_path)
+    job = seed_running_terminal_job(coordinator, task_repository, "TCANCEL_WINS_COMMIT")
+    barrier = threading.Barrier(2)
+    cancel_done = threading.Event()
+    terminal_errors: list[BaseException] = []
+
+    def cancel() -> None:
+        barrier.wait()
+        coordinator.request_cancel(job.task_id, task_type="compare")
+        cancel_done.set()
+
+    def succeed() -> None:
+        barrier.wait()
+        assert cancel_done.wait(1)
+        try:
+            if terminal == "success":
+                coordinator.commit_success(
+                    job.job_id,
+                    worker_id="worker-1",
+                    result=CompareTask(task_id=job.task_id),
+                )
+            else:
+                coordinator.commit_failure(
+                    job.job_id,
+                    worker_id="worker-1",
+                    error="stage failed",
+                    retry_delay_seconds=0,
+                )
+        except BaseException as exc:
+            terminal_errors.append(exc)
+
+    threads = [threading.Thread(target=cancel), threading.Thread(target=succeed)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    stored_task = task_repository.load_compare_task(job.task_id)
+    assert len(terminal_errors) == 1
+    assert isinstance(terminal_errors[0], TaskCancelled)
+    assert stored_task.status == "PROCESSING"
+    assert publisher.events == []
+    assert "publish_terminal" not in calls
+
+
+def test_queued_cancellation_uses_authoritative_terminal_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator, job_repository, task_repository, publisher, calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TQUEUED_CANCEL_ORDER")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    persist_task = task_repository.update_compare_task
+    persist_job = job_repository._persist
+
+    def record_task(*args: object, **kwargs: object) -> CompareTask:
+        calls.append("persist_task")
+        return persist_task(*args, **kwargs)
+
+    def record_job(candidate: TaskJob) -> TaskJob:
+        calls.append("persist_job")
+        return persist_job(candidate)
+
+    monkeypatch.setattr(task_repository, "update_compare_task", record_task)
+    monkeypatch.setattr(job_repository, "_persist", record_job)
+
+    [cancelled] = coordinator.request_cancel(job.task_id, task_type="compare")
+
+    task = task_repository.load_compare_task(job.task_id)
+    assert calls == ["persist_task", "persist_job", "publish_terminal"]
+    assert (task.status, task.terminal_reason, cancelled.status) == ("FAILED", "CANCELLED", "CANCELLED")
+    assert publisher.events[-1].revision == task.revision
 
 
 @pytest.mark.parametrize(

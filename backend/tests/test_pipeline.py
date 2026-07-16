@@ -1039,9 +1039,36 @@ class TestComparePipeline:
         )
         result = pipeline.run(ctx)
 
-        assert result.status == "COMPLETED"
-        assert result.progress_percent == 100
+        assert result.status == "PROCESSING"
+        assert result.progress_percent == 90
         assert execution_log == ["stage_a", "stage_b", "stage_c"]
+
+    def test_pipeline_returns_computation_without_terminal_persistence_or_publication(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = make_ctx(tmp_path)
+        repository = LocalJsonTaskRepository(settings)
+        repository.save_compare_task(ctx.task)
+        events: list[object] = []
+        monkeypatch.setattr(ProgressBus.get_instance(), "publish", events.append)
+
+        class Stage:
+            name = "compute"
+            start_progress = 20
+            progress = 90
+
+            def execute(self, stage_ctx: PipelineContext) -> None:
+                stage_ctx.task.metrics["result"] = "ready"
+
+        result = ComparePipeline(stages=[Stage()], repository=repository).run(ctx)
+        stored = repository.load_compare_task(ctx.task.task_id)
+
+        assert result.metrics["result"] == "ready"
+        assert result.status == "PROCESSING"
+        assert stored.status == "PROCESSING"
+        assert not any(getattr(event, "status", None) in {"COMPLETED", "FAILED"} for event in events)
 
     def test_pipeline_sets_progress_for_each_stage(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
@@ -1143,7 +1170,7 @@ class TestComparePipeline:
         assert "stages" in result.metrics
 
 
-def test_pipeline_completion_preserves_ocr_quality_summary(tmp_path: Path) -> None:
+def test_pipeline_result_preserves_ocr_quality_summary_without_terminal_persistence(tmp_path: Path) -> None:
     ctx = make_ctx(tmp_path)
     repository = LocalJsonTaskRepository(settings)
     repository.save_compare_task(CompareTask(task_id=ctx.task.task_id, status="PROCESSING"))
@@ -1172,13 +1199,14 @@ def test_pipeline_completion_preserves_ocr_quality_summary(tmp_path: Path) -> No
                 ],
             )
 
-    ComparePipeline(stages=[OcrQualitySummaryStage()], repository=repository).run(ctx)
+    result = ComparePipeline(stages=[OcrQualitySummaryStage()], repository=repository).run(ctx)
 
     persisted = repository.load_compare_task(ctx.task.task_id)
-    assert persisted.ocr_quality_summary is not None
-    assert persisted.ocr_quality_summary.status == "LOW_TEXT_CONFIDENCE"
-    assert persisted.ocr_quality_summary.risk_page_count == 1
-    assert persisted.ocr_quality_summary.affected_diff_count == 1
+    assert result.ocr_quality_summary is not None
+    assert result.ocr_quality_summary.status == "LOW_TEXT_CONFIDENCE"
+    assert result.ocr_quality_summary.risk_page_count == 1
+    assert result.ocr_quality_summary.affected_diff_count == 1
+    assert persisted.ocr_quality_summary is None
 
 
 def test_copy_processing_result_persists_ocr_remediation_summary() -> None:

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import settings
-from app.errors import TaskCancelled, TaskStaleLeaseError
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.infrastructure.execution_state import TaskExecutionContext
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
@@ -15,8 +13,6 @@ from app.services.pipeline import ComparePipeline, PipelineContext
 from app.services.pipeline_stages import ExtractionStage
 from app.services.report_generator import ReportGenerator
 from app.utils.id_utils import generate_task_id
-
-logger = logging.getLogger(__name__)
 
 
 class CompareService:
@@ -106,16 +102,7 @@ class CompareService:
             progress_callback=self._make_progress_callback(task.task_id, execution_context),
         )
         pipeline = self._build_pipeline()
-        try:
-            pipeline.run(ctx)
-        except TaskCancelled:
-            raise
-        except TaskStaleLeaseError:
-            raise
-        except Exception as exc:
-            logger.exception("Compare task failed")
-            ctx.task = self._mark_failed(ctx.task, str(exc))
-            raise
+        pipeline.run(ctx)
         return ctx.task
 
     def _make_progress_callback(self, task_id: str, execution_context: TaskExecutionContext | None = None):
@@ -175,30 +162,6 @@ class CompareService:
         task.updated_at = datetime.now(UTC).isoformat()
         self.repository.save_compare_task(task)
         return task
-
-    def _mark_failed(self, task: CompareTask, error: str) -> CompareTask:
-        def mutate(persisted: CompareTask) -> None:
-            persisted.status = "FAILED"
-            persisted.stage = "失败"
-            persisted.progress_percent = 100
-            if error not in persisted.errors:
-                persisted.errors.append(error)
-
-        from app.services.progress_bus import ProgressBus, ProgressEvent
-        ProgressBus.get_instance().publish(ProgressEvent(
-            task_id=task.task_id,
-            stage="失败",
-            progress_percent=100,
-            status="FAILED",
-            detail={"error": error},
-        ))
-
-        try:
-            return self.repository.update_compare_task(task.task_id, mutate)
-        except FileNotFoundError:
-            mutate(task)
-            self.repository.save_compare_task(task)
-            return task
 
     def ensure_report(self, task: CompareTask) -> CompareTask:
         settings.ensure_storage()

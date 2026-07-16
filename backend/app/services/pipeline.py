@@ -244,26 +244,12 @@ class ComparePipeline:
         ctx.task.metrics = {**ctx.task.metrics, **dataclasses.asdict(metrics)}
 
         _raise_if_cancelled(ctx)
-        ctx.task.status = "COMPLETED"
-        ctx.task.stage = "已完成"
-        ctx.task.progress_percent = 100
-        ctx.task.errors = []
-        ctx.task.updated_at = datetime.now(UTC).isoformat()
-        ProgressBus.get_instance().publish(
-            ProgressEvent(
-                task_id=ctx.task.task_id,
-                stage="已完成",
-                progress_percent=100,
-                status="COMPLETED",
-            )
-        )
         try:
-            ctx.task = self.repository.update_compare_task(
-                ctx.task.task_id,
-                lambda persisted: _copy_processing_result(persisted, ctx.task),
-            )
+            persisted = self.repository.load_compare_task(ctx.task.task_id)
         except FileNotFoundError:
-            self.repository.save_compare_task(ctx.task)
+            pass
+        else:
+            ctx.task.diffs = _merge_review_state(persisted.diffs, ctx.task.diffs)
         return ctx.task
 
 

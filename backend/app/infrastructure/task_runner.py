@@ -422,9 +422,12 @@ class QueuedTaskRunner:
         try:
             logger.info("Task job started: job_id=%s task_type=%s attempt=%s", job.job_id, job.task_type, job.attempt)
             token.raise_if_cancelled()
-            handler(context, job.payload)
+            result = handler(context, job.payload)
             token.raise_if_cancelled()
-            self.coordinator.mark_succeeded(job.job_id, worker_id=worker_id)
+            if result is None:
+                self.coordinator.mark_succeeded(job.job_id, worker_id=worker_id)
+            else:
+                self.coordinator.commit_success(job.job_id, worker_id=worker_id, result=result)
         except TaskCancelled:
             self._mark_job_cancelled(job, worker_id)
         except TaskStaleLeaseError:
@@ -440,7 +443,10 @@ class QueuedTaskRunner:
 
     def _mark_job_cancelled(self, job: TaskJob, worker_id: str) -> None:
         try:
-            self.coordinator.mark_cancelled(job.job_id, worker_id=worker_id)
+            if self.coordinator.has_terminal_dependencies:
+                self.coordinator.commit_cancelled(job.job_id, worker_id=worker_id)
+            else:
+                self.coordinator.mark_cancelled(job.job_id, worker_id=worker_id)
         except TaskStaleLeaseError:
             logger.warning(
                 "Stale task job cancellation; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id
@@ -448,12 +454,20 @@ class QueuedTaskRunner:
 
     def _mark_job_failed(self, job: TaskJob, worker_id: str, exc: Exception) -> None:
         try:
-            self.coordinator.mark_failed(
-                job.job_id,
-                worker_id=worker_id,
-                error=str(exc),
-                retry_delay_seconds=self.retry_delay_seconds,
-            )
+            if self.coordinator.has_terminal_dependencies:
+                self.coordinator.commit_failure(
+                    job.job_id,
+                    worker_id=worker_id,
+                    error=str(exc),
+                    retry_delay_seconds=self.retry_delay_seconds,
+                )
+            else:
+                self.coordinator.mark_failed(
+                    job.job_id,
+                    worker_id=worker_id,
+                    error=str(exc),
+                    retry_delay_seconds=self.retry_delay_seconds,
+                )
         except TaskCancelled:
             self._mark_job_cancelled(job, worker_id)
         except TaskStaleLeaseError:
