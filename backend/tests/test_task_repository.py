@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app.config import settings
 from app.config import Settings
+from app.errors import TaskTransitionConflict
 from app.infrastructure.task_repository import LocalJsonTaskRepository, build_task_repository
 from app.models import CompareTask, DiffItem
 
@@ -65,9 +68,7 @@ def test_local_json_task_repository_uses_last_write(tmp_path: Path) -> None:
 
 def test_local_json_task_repository_partial_update_increments_revision(tmp_path: Path) -> None:
     repository = configure_task_storage(tmp_path)
-    repository.save_compare_task(
-        CompareTask(task_id="TPARTIAL", stage="first", original_filename="original.pdf")
-    )
+    repository.save_compare_task(CompareTask(task_id="TPARTIAL", stage="first", original_filename="original.pdf"))
     first = repository.load_compare_task("TPARTIAL")
 
     updated = repository.update_compare_task(
@@ -103,7 +104,9 @@ def test_local_json_task_repository_contract_in_task_directory(tmp_path: Path) -
 
     repository.save_compare_task(CompareTask(task_id="TCOMPARE", stage="first"))
     repository.save_compare_task(CompareTask(task_id="TCOMPARE", stage="second"))
-    repository.update_compare_task("TCOMPARE", lambda task: task.diffs.append(DiffItem(diff_id="D001", diff_type="ADD")))
+    repository.update_compare_task(
+        "TCOMPARE", lambda task: task.diffs.append(DiffItem(diff_id="D001", diff_type="ADD"))
+    )
 
     assert repository.task_json_path("TCOMPARE") == settings.tasks_dir / "TCOMPARE" / "task.json"
     assert (settings.tasks_dir / "TCOMPARE" / "manifest.json").exists()
@@ -208,3 +211,122 @@ def test_local_json_task_repository_loads_legacy_task_without_owner_fields(tmp_p
 
     assert loaded.owner_sub == ""
     assert loaded.owner_username == ""
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_reason", "expected_report_revision"),
+    [
+        ({"status": "PROCESSING"}, "NONE", 0),
+        ({"status": "COMPLETED"}, "NONE", 1),
+        ({"status": "FAILED", "stage": "已取消"}, "CANCELLED", 0),
+        ({"status": "FAILED", "errors": ["任务已取消。"]}, "CANCELLED", 0),
+        ({"status": "FAILED", "errors": ["pipeline failed"]}, "EXECUTION_FAILED", 0),
+    ],
+)
+def test_local_json_task_repository_projects_legacy_terminal_state(
+    tmp_path: Path,
+    payload: dict[str, object],
+    expected_reason: str,
+    expected_report_revision: int,
+) -> None:
+    repository = configure_task_storage(tmp_path)
+    task_dir = repository.task_dir("TLEGACY_STATE")
+    task_dir.mkdir(parents=True)
+    repository.task_json_path("TLEGACY_STATE").write_text(
+        json.dumps({"task_id": "TLEGACY_STATE", **payload}),
+        encoding="utf-8",
+    )
+
+    loaded = repository.load_compare_task("TLEGACY_STATE")
+
+    assert loaded.terminal_reason == expected_reason
+    assert loaded.report_revision == expected_report_revision
+
+
+def test_compare_task_preserves_explicit_terminal_and_report_revisions() -> None:
+    failed = CompareTask(
+        task_id="TSUBMISSION",
+        status="FAILED",
+        terminal_reason="SUBMISSION_FAILED",
+        report_revision=4,
+    )
+    completed_without_a_report = CompareTask(
+        task_id="TCOMPLETED_WITH_ZERO",
+        status="COMPLETED",
+        report_revision=0,
+    )
+    inconsistent_nonterminal = CompareTask(
+        task_id="TPROCESSING_REASON",
+        status="PROCESSING",
+        terminal_reason="CANCELLED",
+    )
+
+    assert failed.terminal_reason == "SUBMISSION_FAILED"
+    assert failed.report_revision == 4
+    assert completed_without_a_report.report_revision == 0
+    assert inconsistent_nonterminal.terminal_reason == "NONE"
+
+
+def test_compare_task_allows_only_legal_state_transitions() -> None:
+    processing = CompareTask(task_id="TPROCESSING", active_job_id="compare:TPROCESSING:1")
+    execution_failed = CompareTask(
+        task_id="TEXECUTION_FAILED",
+        status="FAILED",
+        terminal_reason="EXECUTION_FAILED",
+    )
+    submission_failed = CompareTask(
+        task_id="TSUBMISSION_FAILED",
+        status="FAILED",
+        terminal_reason="SUBMISSION_FAILED",
+    )
+
+    processing.ensure_transition_allowed(
+        "COMPLETED",
+        terminal_reason="NONE",
+        job_id="compare:TPROCESSING:1",
+    )
+    execution_failed.ensure_transition_allowed("PROCESSING")
+    submission_failed.ensure_transition_allowed("PROCESSING", validated_inputs_exist=True)
+
+
+@pytest.mark.parametrize(
+    ("task", "target_status", "terminal_reason", "job_id", "validated_inputs_exist"),
+    [
+        (CompareTask(task_id="TCOMPLETED", status="COMPLETED"), "FAILED", "EXECUTION_FAILED", "", False),
+        (
+            CompareTask(task_id="TCANCELLED", status="FAILED", terminal_reason="CANCELLED"),
+            "PROCESSING",
+            "NONE",
+            "",
+            True,
+        ),
+        (
+            CompareTask(task_id="TSUBMIT", status="FAILED", terminal_reason="SUBMISSION_FAILED"),
+            "PROCESSING",
+            "NONE",
+            "",
+            False,
+        ),
+        (
+            CompareTask(task_id="TSTALE", active_job_id="compare:TSTALE:2"),
+            "FAILED",
+            "EXECUTION_FAILED",
+            "compare:TSTALE:1",
+            False,
+        ),
+    ],
+)
+def test_compare_task_rejects_illegal_state_transitions(
+    task: CompareTask,
+    target_status: str,
+    terminal_reason: str,
+    job_id: str,
+    validated_inputs_exist: bool,
+) -> None:
+    with pytest.raises(TaskTransitionConflict):
+        task.ensure_transition_allowed(
+            target_status,
+            terminal_reason=terminal_reason,
+            job_id=job_id,
+            validated_inputs_exist=validated_inputs_exist,
+        )

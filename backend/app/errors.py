@@ -31,5 +31,17 @@ class TaskExecutionError(AppError, RuntimeError):
     status_code = 409
 
 
+class TaskCancelled(TaskExecutionError):
+    """Normal worker control flow when cancellation has been requested."""
+
+
+class TaskStaleLeaseError(TaskExecutionError):
+    """The worker no longer owns the lease required for an execution write."""
+
+
+class TaskTransitionConflict(TaskExecutionError):
+    """The requested Task or Job state transition is not legal."""
+
+
 class PipelineContractError(TaskExecutionError):
     pass

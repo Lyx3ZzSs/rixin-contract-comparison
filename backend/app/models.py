@@ -6,11 +6,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.errors import TaskTransitionConflict
+
 
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
+TaskTerminalReason = Literal["NONE", "EXECUTION_FAILED", "SUBMISSION_FAILED", "CANCELLED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
 DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal", "page", "signing_region"]
 LayoutMatchStatus = Literal[
@@ -412,6 +415,11 @@ class CompareTask(BaseModel):
     schema_version: int = 1
     revision: int = 0
     status: TaskStatus = "PROCESSING"
+    terminal_reason: TaskTerminalReason = "NONE"
+    active_job_id: str = ""
+    terminal_job_id: str = ""
+    terminal_attempt: int = 0
+    report_revision: int = 0
     stage: str = "已创建"
     progress_percent: int = Field(default=0, ge=0, le=100)
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -455,6 +463,15 @@ class CompareTask(BaseModel):
         if not isinstance(data, dict):
             return data
         normalized = dict(data)
+        status = normalized.get("status", "PROCESSING")
+        if status != "FAILED":
+            normalized["terminal_reason"] = "NONE"
+        elif normalized.get("terminal_reason") in (None, "", "NONE"):
+            normalized["terminal_reason"] = (
+                "CANCELLED" if cls._has_legacy_cancellation_marker(normalized) else "EXECUTION_FAILED"
+            )
+        if normalized.get("report_revision") is None:
+            normalized["report_revision"] = 1 if status == "COMPLETED" else 0
         for key in [
             "original_highlight_pdf_path",
             "compare_highlight_pdf_path",
@@ -467,3 +484,58 @@ class CompareTask(BaseModel):
                 normalized.get("ocr_raw_result_path")
             ).model_dump(mode="json")
         return normalized
+
+    @staticmethod
+    def _has_legacy_cancellation_marker(data: dict[str, Any]) -> bool:
+        messages = [str(data.get("stage") or ""), *[str(error) for error in data.get("errors") or []]]
+        normalized_messages = "\n".join(messages).lower()
+        return any(marker in normalized_messages for marker in ("取消", "cancelled", "canceled"))
+
+    def is_transition_allowed(
+        self,
+        target_status: TaskStatus,
+        *,
+        terminal_reason: TaskTerminalReason = "NONE",
+        job_id: str = "",
+        validated_inputs_exist: bool = False,
+    ) -> bool:
+        if self.status == "PROCESSING":
+            if target_status not in {"COMPLETED", "FAILED"}:
+                return False
+            if target_status == "COMPLETED" and terminal_reason != "NONE":
+                return False
+            if target_status == "FAILED" and terminal_reason == "NONE":
+                return False
+            if job_id and job_id != self.active_job_id:
+                return False
+            if self.active_job_id and terminal_reason != "SUBMISSION_FAILED":
+                return job_id == self.active_job_id
+            return True
+
+        if self.status != "FAILED" or target_status != "PROCESSING" or terminal_reason != "NONE":
+            return False
+        if self.terminal_reason == "EXECUTION_FAILED":
+            return True
+        if self.terminal_reason == "SUBMISSION_FAILED":
+            return validated_inputs_exist
+        return False
+
+    def ensure_transition_allowed(
+        self,
+        target_status: TaskStatus,
+        *,
+        terminal_reason: TaskTerminalReason = "NONE",
+        job_id: str = "",
+        validated_inputs_exist: bool = False,
+    ) -> None:
+        if self.is_transition_allowed(
+            target_status,
+            terminal_reason=terminal_reason,
+            job_id=job_id,
+            validated_inputs_exist=validated_inputs_exist,
+        ):
+            return
+        raise TaskTransitionConflict(
+            f"任务 {self.task_id} 不允许从 {self.status}/{self.terminal_reason} "
+            f"转换为 {target_status}/{terminal_reason}。"
+        )

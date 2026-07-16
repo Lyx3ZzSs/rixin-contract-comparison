@@ -25,6 +25,9 @@ def compare_task_response(task: CompareTask) -> CompareTaskResponse:
     data = {
         "task_id": task.task_id,
         "status": task.status,
+        "terminal_reason": task.terminal_reason,
+        "revision": task.revision,
+        "report_revision": task.report_revision,
         "stage": task.stage,
         "progress_percent": task.progress_percent,
         "diff_count": task.diff_count,
@@ -33,10 +36,7 @@ def compare_task_response(task: CompareTask) -> CompareTaskResponse:
         "false_positive_count": task.false_positive_count,
         "manual_review_count": task.manual_review_count,
         "ignored_count": task.ignored_count,
-        "audit_item_reviews": {
-            item_id: to_jsonable(review)
-            for item_id, review in task.audit_item_reviews.items()
-        },
+        "audit_item_reviews": {item_id: to_jsonable(review) for item_id, review in task.audit_item_reviews.items()},
         "extractor_used": task.extractor_used,
         "parse_warnings": task.parse_warnings,
         "parse_warning_details": [to_jsonable(item) for item in task.parse_warning_details],
@@ -80,6 +80,9 @@ def compare_record_summary(task: CompareTask) -> CompareRecordResponse:
     return CompareRecordResponse(
         task_id=task.task_id,
         status=task.status,
+        terminal_reason=task.terminal_reason,
+        revision=task.revision,
+        report_revision=task.report_revision,
         stage=task.stage,
         progress_percent=task.progress_percent,
         created_at=task.created_at,
@@ -170,11 +173,13 @@ def task_execution_response(job: TaskJob) -> TaskExecutionResponse:
         task_id=job.task_id,
         task_type=job.task_type,
         status=job.status,
+        execution_no=job.execution_no,
         attempt=job.attempt,
         max_attempts=job.max_attempts,
         queued_at=job.queued_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
         updated_at=job.updated_at,
+        error_code=job.error_code,
         last_error=job.last_error,
     )

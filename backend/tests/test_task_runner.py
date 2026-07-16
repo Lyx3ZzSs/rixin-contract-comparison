@@ -6,8 +6,11 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
+import pytest
+
 from app.config import Settings
-from app.infrastructure.task_runner import LocalJsonTaskJobRepository, QueuedTaskRunner
+from app.errors import TaskCancelled, TaskExecutionError, TaskStaleLeaseError, TaskTransitionConflict
+from app.infrastructure.task_runner import LocalJsonTaskJobRepository, QueuedTaskRunner, TaskJob
 
 
 def build_runner(tmp_path: Path, *, max_workers: int = 1, autostart: bool = True) -> QueuedTaskRunner:
@@ -204,3 +207,50 @@ def test_queued_task_runner_retries_failed_job_from_repository(tmp_path: Path) -
     assert stored.status == "SUCCEEDED"
     assert stored.attempt == 1
     assert seen_payload == [{"task_id": "TRETRY_API"}]
+
+
+def test_task_job_execution_identity_fields_have_legacy_defaults() -> None:
+    job = TaskJob(job_id="compare:TLEGACY", task_id="TLEGACY", task_type="compare")
+
+    assert job.execution_no == 1
+    assert job.error_code == ""
+
+
+@pytest.mark.parametrize(("first_terminal", "second_terminal"), [("SUCCEEDED", "FAILED"), ("FAILED", "SUCCEEDED")])
+def test_job_terminal_state_is_immutable(
+    tmp_path: Path,
+    first_terminal: str,
+    second_terminal: str,
+) -> None:
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    repository = LocalJsonTaskJobRepository(app_settings)
+    job = repository.enqueue(
+        TaskJob(
+            job_id="compare:TTERMINAL",
+            task_id="TTERMINAL",
+            task_type="compare",
+            attempt=1,
+        )
+    )
+
+    if first_terminal == "SUCCEEDED":
+        repository.mark_succeeded(job.job_id, worker_id="")
+    else:
+        repository.mark_failed(job.job_id, worker_id="", error="first", retry_delay_seconds=0)
+
+    with pytest.raises(TaskTransitionConflict):
+        if second_terminal == "SUCCEEDED":
+            repository.mark_succeeded(job.job_id, worker_id="")
+        else:
+            repository.mark_failed(job.job_id, worker_id="", error="second", retry_delay_seconds=0)
+
+    assert repository.load(job.job_id).status == first_terminal
+
+
+def test_task_control_flow_errors_share_execution_error_base() -> None:
+    error = TaskStaleLeaseError("stale worker")
+
+    assert isinstance(error, TaskExecutionError)
+    assert isinstance(TaskCancelled("cancelled"), TaskExecutionError)
+    assert isinstance(TaskTransitionConflict("conflict"), TaskExecutionError)
+    assert error.status_code == 409

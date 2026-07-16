@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
+TaskTerminalReason = Literal["NONE", "EXECUTION_FAILED", "SUBMISSION_FAILED", "CANCELLED"]
 TaskExecutionStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED"]
 TaskExecutionType = Literal["compare"]
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
@@ -117,6 +118,9 @@ class TextRangeResponse(BaseModel):
 class CompareTaskResponse(BaseModel):
     task_id: str
     status: TaskStatus
+    terminal_reason: TaskTerminalReason = "NONE"
+    revision: int = 0
+    report_revision: int = 0
     stage: str
     progress_percent: int
     diff_count: int
@@ -152,6 +156,9 @@ class CompareTaskDetailResponse(CompareTaskResponse):
 class CompareRecordResponse(BaseModel):
     task_id: str
     status: TaskStatus
+    terminal_reason: TaskTerminalReason = "NONE"
+    revision: int = 0
+    report_revision: int = 0
     stage: str
     progress_percent: int
     created_at: str
@@ -175,12 +182,14 @@ class TaskExecutionResponse(BaseModel):
     task_id: str
     task_type: TaskExecutionType
     status: TaskExecutionStatus
+    execution_no: int = 1
     attempt: int
     max_attempts: int
     queued_at: str
     started_at: str = ""
     finished_at: str = ""
     updated_at: str
+    error_code: str = ""
     last_error: str = ""
 
 

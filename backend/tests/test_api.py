@@ -6,13 +6,16 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import fitz
+import pytest
 from fastapi.testclient import TestClient
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from app import api_schemas
-from app.api_presenters import compare_task_response
+from app.api_errors import http_error
+from app.api_presenters import compare_task_response, task_execution_response
 from app.config import settings
+from app.errors import TaskStaleLeaseError, TaskTransitionConflict
 from app.infrastructure.task_runner import TaskJob, default_task_runner
 from app.main import app
 from app.models import (
@@ -125,7 +128,9 @@ def test_api_compare_contracts(tmp_path: Path) -> None:
     assert payload["report_filename"].endswith("差异分析报告.pdf")
     assert payload["original_highlight_pdf_url"] == ""
     assert "schema_version" not in payload
-    assert "revision" not in payload
+    assert payload["terminal_reason"] == "NONE"
+    assert payload["revision"] == 0
+    assert payload["report_revision"] == 0
     assert "original_pdf_path" not in payload
     assert "compare_pdf_path" not in payload
 
@@ -381,12 +386,14 @@ def test_compare_options_default_signing_region_mode_full() -> None:
 
 def test_compare_progress_stream_sends_current_snapshot(tmp_path: Path) -> None:
     configure_storage(tmp_path)
-    save_task(CompareTask(
-        task_id="TPROGRESS_SNAPSHOT",
-        status="COMPLETED",
-        stage="已完成",
-        progress_percent=100,
-    ))
+    save_task(
+        CompareTask(
+            task_id="TPROGRESS_SNAPSHOT",
+            status="COMPLETED",
+            stage="已完成",
+            progress_percent=100,
+        )
+    )
 
     client = TestClient(app)
     with client.stream("GET", "/api/compare/TPROGRESS_SNAPSHOT/progress") as response:
@@ -496,6 +503,44 @@ def test_compare_execution_api_rejects_retry_for_processing_task(tmp_path: Path)
     assert response.status_code == 409
 
 
+def test_compare_task_api_projects_terminal_reason_and_revisions(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TSTATE_FIELDS",
+            status="FAILED",
+            terminal_reason="EXECUTION_FAILED",
+            report_revision=3,
+        )
+    )
+
+    payload = TestClient(app).get("/api/compare/TSTATE_FIELDS").json()
+
+    assert payload["terminal_reason"] == "EXECUTION_FAILED"
+    assert payload["revision"] >= 1
+    assert payload["report_revision"] == 3
+
+
+def test_task_execution_presenter_includes_execution_identity_and_error_code() -> None:
+    job = TaskJob(
+        job_id="compare:TEXECUTION_FIELDS:4",
+        task_id="TEXECUTION_FIELDS",
+        task_type="compare",
+        execution_no=4,
+        error_code="LEASE_EXPIRED_MAX_ATTEMPTS",
+    )
+
+    payload = task_execution_response(job).model_dump()
+
+    assert payload["execution_no"] == 4
+    assert payload["error_code"] == "LEASE_EXPIRED_MAX_ATTEMPTS"
+
+
+@pytest.mark.parametrize("error_type", [TaskTransitionConflict, TaskStaleLeaseError])
+def test_task_state_conflicts_map_to_http_409(error_type: type[Exception]) -> None:
+    mapped = http_error(error_type("state changed"))
+
+    assert mapped.status_code == 409
 
 
 def test_compare_records_list_uses_compare_tasks_only(tmp_path: Path) -> None:
@@ -537,6 +582,10 @@ def test_compare_records_list_uses_compare_tasks_only(tmp_path: Path) -> None:
     assert [record["task_id"] for record in records] == ["TNEWER", "TOLDER"]
     assert records[0]["report_url"] == ""
     assert records[1]["report_url"] == "/api/compare/TOLDER/report"
+    assert records[0]["terminal_reason"] == "NONE"
+    assert records[1]["terminal_reason"] == "NONE"
+    assert records[0]["report_revision"] == 0
+    assert records[1]["report_revision"] == 1
     assert all(record["task_id"] != "TEXT001" for record in records)
 
 
@@ -587,7 +636,9 @@ def test_compare_records_list_supports_pagination_and_created_time_filter(tmp_pa
 def save_compare_task_fixture(**kwargs) -> None:
     task = _owned_task(CompareTask(**kwargs))
     save_task(task)
-    task_json_path(task.task_id).write_text(json.dumps(to_jsonable(task), ensure_ascii=False, indent=2), encoding="utf-8")
+    task_json_path(task.task_id).write_text(
+        json.dumps(to_jsonable(task), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def test_api_updates_diff_review_and_quality_summary(tmp_path: Path) -> None:
@@ -933,8 +984,6 @@ def test_api_review_missing_diff_returns_404(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 404
-
-
 
 
 def test_cors_allows_frontend_dev_origin() -> None:

@@ -12,7 +12,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from app.config import Settings, settings
-from app.errors import ConflictError, NotFoundError
+from app.errors import ConflictError, NotFoundError, TaskTransitionConflict
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,7 @@ class TaskJob(BaseModel):
     task_id: str
     task_type: TaskJobType
     status: TaskJobStatus = "QUEUED"
+    execution_no: int = 1
     payload: dict[str, Any] = Field(default_factory=dict)
     attempt: int = 0
     max_attempts: int = 1
@@ -36,6 +37,7 @@ class TaskJob(BaseModel):
     next_run_at: str = ""
     lease_owner: str = ""
     lease_expires_at: str = ""
+    error_code: str = ""
     last_error: str = ""
 
 
@@ -150,6 +152,7 @@ class LocalJsonTaskJobRepository:
 
     def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
         def mutate(job: TaskJob) -> None:
+            self._ensure_terminal_write_allowed(job, "SUCCEEDED")
             if job.lease_owner != worker_id and job.status == "RUNNING":
                 raise RuntimeError(f"执行记录 {job_id} 不属于当前 worker。")
             job.status = "SUCCEEDED"
@@ -162,6 +165,7 @@ class LocalJsonTaskJobRepository:
 
     def mark_failed(self, job_id: str, *, worker_id: str, error: str, retry_delay_seconds: float) -> TaskJob:
         def mutate(job: TaskJob) -> None:
+            self._ensure_terminal_write_allowed(job, "FAILED")
             if job.lease_owner != worker_id and job.status == "RUNNING":
                 raise RuntimeError(f"执行记录 {job_id} 不属于当前 worker。")
             job.last_error = error
@@ -219,6 +223,11 @@ class LocalJsonTaskJobRepository:
             mutate(job)
             self._write_job(job)
             return job
+
+    def _ensure_terminal_write_allowed(self, job: TaskJob, target_status: TaskJobStatus) -> None:
+        if job.status not in TERMINAL_JOB_STATUSES:
+            return
+        raise TaskTransitionConflict(f"执行记录 {job.job_id} 已为终态 {job.status}，不能改写为 {target_status}。")
 
     def _write_job(self, job: TaskJob) -> None:
         path = self.job_path(job.job_id)
@@ -334,9 +343,7 @@ class QueuedTaskRunner:
         self.max_attempts = max_attempts or app_settings.task_runner_max_attempts
         self.lease_seconds = lease_seconds or app_settings.task_runner_lease_seconds
         self.retry_delay_seconds = (
-            retry_delay_seconds
-            if retry_delay_seconds is not None
-            else app_settings.task_runner_retry_delay_seconds
+            retry_delay_seconds if retry_delay_seconds is not None else app_settings.task_runner_retry_delay_seconds
         )
         self.poll_interval_seconds = (
             poll_interval_seconds
