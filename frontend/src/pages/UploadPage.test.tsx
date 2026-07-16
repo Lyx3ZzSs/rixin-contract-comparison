@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -118,15 +118,48 @@ describe("UploadPage", () => {
 
   it("hides the background task notice after a few seconds", async () => {
     const user = userEvent.setup();
+    let resolveComparison!: (value: Awaited<ReturnType<typeof compareContracts>>) => void;
+    vi.mocked(compareContracts).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveComparison = resolve;
+        }),
+    );
     render(<UploadPage onTaskCreated={vi.fn()} onOpenRecords={vi.fn()} taskToastDurationMs={10} />);
 
     await user.upload(screen.getByLabelText("原版文件"), new File(["original"], "original.pdf", { type: "application/pdf" }));
     await user.upload(screen.getByLabelText("新版文件"), new File(["compare"], "compare.pdf", { type: "application/pdf" }));
     await user.click(screen.getByRole("button", { name: "开始对比" }));
 
-    expect(await screen.findByRole("status", { name: "后台对比任务通知" })).toBeInTheDocument();
+    try {
+      vi.useFakeTimers();
+      await act(async () => {
+        resolveComparison({
+          task_id: "task-1",
+          status: "PROCESSING",
+          stage: "文档解析中",
+          progress_percent: 8,
+          diff_count: 0,
+          report_url: "",
+          report_filename: "",
+          original_pdf_url: "",
+          compare_pdf_url: "",
+          original_highlight_pdf_url: "",
+          compare_highlight_pdf_url: "",
+          errors: [],
+        });
+      });
 
-    await waitFor(() => expect(screen.queryByRole("status", { name: "后台对比任务通知" })).not.toBeInTheDocument());
+      expect(screen.getByRole("status", { name: "后台对比任务通知" })).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(10);
+      });
+
+      expect(screen.queryByRole("status", { name: "后台对比任务通知" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows uploaded file actions and clears a selected file", async () => {
