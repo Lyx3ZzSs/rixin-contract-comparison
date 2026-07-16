@@ -3,19 +3,23 @@
 Compares seal blocks between two documents and produces diffs with
 ``source_type="seal"`` and region-level evidence boxes.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 import re
 
 from app.models import BBox, DiffItem, Document, EvidenceBox, Page, TextBlock, TextRange
+from app.services.red_seal_visual import RedSealVisualInspector
 from app.utils.id_utils import generate_diff_id
 
 
 SEAL_BLOCK_TYPES = {"seal", "stamp"}
 NO_TEXT_MARKER_RE = re.compile(r"以下无正文")
 SIGNING_TITLE_RE = re.compile(r"签署页|签字页|签章页")
-SIGNING_MARKER_RE = re.compile(r"甲方|乙方|丙方|盖章|签章|法定代表|授权代表|负责人|签字|签名|签署|签订|时间[:：]|日期[:：]")
+SIGNING_MARKER_RE = re.compile(
+    r"甲方|乙方|丙方|盖章|签章|法定代表|授权代表|负责人|签字|签名|签署|签订|时间[:：]|日期[:：]"
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,7 @@ def build_seal_diffs(
         return []
 
     pairs = _match_seals(original_seals, compare_seals)
+    pairs = [pair for pair in pairs if not _is_visually_present_on_both_sides(pair[0], pair[1], original, compare)]
 
     diffs: list[DiffItem] = []
     next_index = start_index
@@ -111,6 +116,37 @@ def _match_seals(
             c = c_list[i] if i < len(c_list) else None
             pairs.append((o, c))
     return pairs
+
+
+def _is_visually_present_on_both_sides(
+    original_entry: SealEntry | None,
+    compare_entry: SealEntry | None,
+    original: Document,
+    compare: Document,
+) -> bool:
+    if (original_entry is None) == (compare_entry is None):
+        return False
+
+    source_entry = original_entry or compare_entry
+    assert source_entry is not None
+    source_document = original if original_entry is not None else compare
+    target_document = compare if original_entry is not None else original
+    source_page = next((page for page in source_document.pages if page.page_no == source_entry.page_no), None)
+    target_page = next((page for page in target_document.pages if page.page_no == source_entry.page_no), None)
+    if source_page is None or target_page is None:
+        return False
+
+    inspector = RedSealVisualInspector()
+    target_bbox = inspector.normalized_bbox(source_entry.bbox, source_page, target_page)
+    source_metrics = inspector.inspect(source_document, source_entry.page_no, source_entry.bbox, padding=2.0)
+    target_metrics = inspector.inspect(target_document, source_entry.page_no, target_bbox, padding=2.0)
+    if source_metrics.red_pixels < 40 or source_metrics.ratio < 0.02:
+        return False
+    return bool(
+        target_metrics.red_pixels >= 40
+        and target_metrics.ratio >= 0.02
+        and target_metrics.ratio >= source_metrics.ratio * 0.2
+    )
 
 
 def _seal_entry(blocks: list[TextBlock]) -> SealEntry:

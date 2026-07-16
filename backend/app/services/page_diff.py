@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from app.models import BBox, DiffItem, DiffType, Document, EvidenceBox, Page, TextBlock
@@ -21,15 +22,17 @@ class _PageCoverage:
     diff_type: DiffType
     page_no: int
     bbox: BBox
+    compact_text: str
 
 
 class PageDiffConsolidator:
     """Promotes one-sided full-page changes above duplicate structural diffs."""
 
-    duplicate_sources = {"table", "metadata", "header_footer"}
+    duplicate_sources = {"clause", "table", "metadata", "header_footer"}
     aggregate_sources = {"clause", "table", "metadata", "header_footer"}
     match_anchor_sources = {"clause", "table", "metadata"}
     min_compact_text_length = 80
+    max_page_text_length = 20_000
     min_block_count = 2
     min_content_area_ratio = 0.18
     min_block_coverage_ratio = 0.65
@@ -131,7 +134,7 @@ class PageDiffConsolidator:
 
     def _make_page_diff(self, candidate: _PageCandidate, diff_type: DiffType, index: int) -> DiffItem:
         page_label = f"第{candidate.page.page_no}页"
-        text = candidate.text[:1200]
+        text = candidate.text[: self.max_page_text_length]
         snippet = text[:300]
         evidence = EvidenceBox(
             page_no=candidate.page.page_no,
@@ -166,12 +169,36 @@ class PageDiffConsolidator:
         relevant = [item for item in coverage if item.diff_type == diff.diff_type]
         if not relevant:
             return False
+        if diff.source_type == "clause":
+            return all(
+                self._clause_evidence_covered(
+                    item,
+                    relevant,
+                    fallback_text=diff.compare_snippet if diff.diff_type == "ADD" else diff.original_snippet,
+                )
+                for item in evidence
+            )
         return all(self._evidence_covered(item, relevant) for item in evidence)
+
+    def _clause_evidence_covered(
+        self,
+        evidence: EvidenceBox,
+        coverage: list[_PageCoverage],
+        *,
+        fallback_text: str,
+    ) -> bool:
+        evidence_text = self._content_key(evidence.text or fallback_text)
+        return any(
+            evidence.page_no == item.page_no
+            and self._bbox_contains(item.bbox, evidence.bbox)
+            and bool(evidence_text)
+            and evidence_text in item.compact_text
+            for item in coverage
+        )
 
     def _evidence_covered(self, evidence: EvidenceBox, coverage: list[_PageCoverage]) -> bool:
         return any(
-            evidence.page_no == item.page_no and self._bbox_contains(item.bbox, evidence.bbox)
-            for item in coverage
+            evidence.page_no == item.page_no and self._bbox_contains(item.bbox, evidence.bbox) for item in coverage
         )
 
     @staticmethod
@@ -180,7 +207,16 @@ class PageDiffConsolidator:
         for diff in page_diffs:
             evidence = diff.compare_evidence if diff.diff_type == "ADD" else diff.original_evidence
             for item in evidence:
-                result.append(_PageCoverage(diff_type=diff.diff_type, page_no=item.page_no, bbox=item.bbox))
+                result.append(
+                    _PageCoverage(
+                        diff_type=diff.diff_type,
+                        page_no=item.page_no,
+                        bbox=item.bbox,
+                        compact_text=PageDiffConsolidator._content_key(
+                            diff.compare_text if diff.diff_type == "ADD" else diff.original_text
+                        ),
+                    )
+                )
         return result
 
     def _is_meaningful_block(self, block: TextBlock, page: Page) -> bool:
@@ -251,6 +287,11 @@ class PageDiffConsolidator:
     @staticmethod
     def _compact(text: str) -> str:
         return re.sub(r"\s+", "", text or "")
+
+    @staticmethod
+    def _content_key(text: str) -> str:
+        normalized = unicodedata.normalize("NFKC", text or "")
+        return re.sub(r"[^\w\u4e00-\u9fff]+", "", normalized, flags=re.UNICODE)
 
     @staticmethod
     def _next_diff_index(diffs: list[DiffItem]) -> int:

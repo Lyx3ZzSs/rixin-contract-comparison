@@ -40,6 +40,7 @@ MULTILINE_TITLE_TOP_REGION_RATIO = 0.45
 MULTILINE_TITLE_MAX_LINES = 4
 MULTILINE_TITLE_MIN_LINES = 2
 MULTILINE_TITLE_MAX_GAP_HEIGHT_RATIO = 2.5
+TABLE_SECTION_TITLE_COVERAGE_THRESHOLD = 0.8
 
 
 def normalize_heading_text(text: str) -> str:
@@ -876,6 +877,16 @@ class NativeHeadingRepairService:
                 continue
             inserted: list[TextBlock] = []
             for candidate in candidates:
+                if self._candidate_overlaps_table(page, candidate):
+                    result.decisions.append(
+                        {
+                            "action": "skipped",
+                            "page_no": page_no,
+                            "title": candidate.text,
+                            "reason": "native_section_title_inside_table",
+                        }
+                    )
+                    continue
                 if self._has_equivalent_text(page, candidate.text):
                     continue
                 block_id = f"p{page_no}_native_section_title_{len(inserted) + 1}"
@@ -933,6 +944,34 @@ class NativeHeadingRepairService:
             for block in page.blocks
             if block.text
         )
+
+    @classmethod
+    def _candidate_overlaps_table(
+        cls,
+        page: Page,
+        candidate: NativeSectionTitleCandidate,
+    ) -> bool:
+        candidate_text = normalize_heading_text(candidate.text)
+        if not candidate_text:
+            return False
+        return any(
+            block.block_type == "table"
+            and cls._bbox_coverage(candidate.bbox, block.bbox)
+            >= TABLE_SECTION_TITLE_COVERAGE_THRESHOLD
+            and candidate_text in normalize_heading_text(block.text)
+            for block in page.blocks
+        )
+
+    @staticmethod
+    def _bbox_coverage(inner: BBox, outer: BBox) -> float:
+        width = max(0.0, inner.x1 - inner.x0)
+        height = max(0.0, inner.y1 - inner.y0)
+        area = width * height
+        if area <= 0:
+            return 0.0
+        overlap_width = max(0.0, min(inner.x1, outer.x1) - max(inner.x0, outer.x0))
+        overlap_height = max(0.0, min(inner.y1, outer.y1) - max(inner.y0, outer.y0))
+        return overlap_width * overlap_height / area
 
     @staticmethod
     def _bare_block(page: Page, number: str) -> TextBlock | None:

@@ -122,6 +122,7 @@ def test_diff_quality_suppresses_signing_table_label_noise_but_reclassifies_sign
 
     assert "D021" not in by_id
     assert by_id["D022"].source_type == "metadata"
+    assert by_id["D022"].diff_type == "ADD"
     assert by_id["D022"].title == "签署日期"
     assert by_id["D022"].section_type == "signature"
     assert "SIGNING_DATE_FIELD_CHANGE" in by_id["D022"].review_flags

@@ -5320,12 +5320,15 @@ def test_diff_quality_reclassifies_clause_mixed_signing_date_fill_as_signature_d
 
     assert len(result.diffs) == 1
     reclassified = result.diffs[0]
+    assert reclassified.diff_type == "ADD"
     assert reclassified.source_type == "metadata"
     assert reclassified.title == "签署日期"
     assert reclassified.original_snippet == ""
     assert "SIGNING_DATE_FIELD_CHANGE" in reclassified.review_flags
     assert "CRITICAL_FIELD_CHANGE" not in reclassified.review_flags
     assert "CRITICAL_VALUE_CHANGE" not in reclassified.review_flags
+    assert reclassified.readable_change == "新增签署日期：20260522"
+    assert {evidence.highlight_type for evidence in reclassified.compare_evidence} == {"ADD"}
     assert any(decision.action == "signing_date_field_reclassified" for decision in result.decisions)
 
 
@@ -5362,12 +5365,111 @@ def test_diff_quality_reclassifies_ocr_split_signing_date_without_duration_flag(
 
     assert len(result.diffs) == 1
     reclassified = result.diffs[0]
+    assert reclassified.diff_type == "ADD"
     assert reclassified.source_type == "metadata"
     assert reclassified.title == "签署日期"
     assert reclassified.original_snippet == ""
     assert "SIGNING_DATE_FIELD_CHANGE" in reclassified.review_flags
     assert "CRITICAL_FIELD_DURATION_CHANGE" not in reclassified.review_flags
     assert "CRITICAL_VALUE_CHANGE" not in reclassified.review_flags
+
+
+def test_diff_quality_reclassifies_cleared_signing_date_as_delete() -> None:
+    diff = DiffItem(
+        diff_id="D020",
+        diff_type="MODIFY",
+        source_type="clause",
+        title="协议的效力和变更",
+        original_text=(
+            "第六条协议的效力和变更\n"
+            "甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司\n"
+            "2026年05月22日\n年月日"
+        ),
+        compare_text=(
+            "第六条协议的效力和变更\n"
+            "甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司\n"
+            "年月日\n年月日"
+        ),
+        original_snippet="20260522",
+        compare_snippet="月",
+        review_flags=["CRITICAL_FIELD_CHANGE", "CRITICAL_FIELD_DATE_CHANGE"],
+        original_evidence=[
+            EvidenceBox(
+                page_no=40,
+                bbox=BBox(x0=85, y0=613, x1=185, y1=638),
+                text="20260522",
+                highlight_type="MODIFY",
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    reclassified = result.diffs[0]
+    assert reclassified.diff_type == "DELETE"
+    assert reclassified.source_type == "metadata"
+    assert reclassified.original_snippet == "20260522"
+    assert reclassified.compare_snippet == ""
+    assert reclassified.readable_change == "删除签署日期：20260522"
+    assert {evidence.highlight_type for evidence in reclassified.original_evidence} == {"DELETE"}
+
+
+def test_diff_quality_keeps_replaced_signing_date_as_modify() -> None:
+    diff = DiffItem(
+        diff_id="D021",
+        diff_type="MODIFY",
+        source_type="clause",
+        title="协议的效力和变更",
+        original_text=(
+            "第六条协议的效力和变更\n"
+            "甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司\n"
+            "2026年05月21日\n年月日"
+        ),
+        compare_text=(
+            "第六条协议的效力和变更\n"
+            "甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司\n"
+            "2026年05月22日\n年月日"
+        ),
+        original_snippet="20260521",
+        compare_snippet="20260522",
+        review_flags=["CRITICAL_FIELD_CHANGE", "CRITICAL_FIELD_DATE_CHANGE"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    reclassified = result.diffs[0]
+    assert reclassified.diff_type == "MODIFY"
+    assert reclassified.source_type == "metadata"
+    assert reclassified.readable_change == "签署日期变更：20260521 → 20260522"
+
+
+def test_diff_quality_reclassifies_cleared_table_signing_date_as_delete() -> None:
+    diff = DiffItem(
+        diff_id="D022",
+        diff_type="MODIFY",
+        source_type="table",
+        title="表格字段：签订时间",
+        original_text="签订时间：2026年05月22日",
+        compare_text="签订时间：年月日",
+        original_snippet="20260522",
+        compare_snippet="年月日",
+        original_evidence=[
+            EvidenceBox(
+                page_no=13,
+                bbox=BBox(x0=85, y0=513, x1=185, y1=535),
+                text="20260522",
+                highlight_type="MODIFY",
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    reclassified = result.diffs[0]
+    assert reclassified.diff_type == "DELETE"
+    assert reclassified.source_type == "metadata"
+    assert reclassified.title == "签署日期"
+    assert reclassified.readable_change == "删除签署日期：20260522"
 
 
 def test_diff_quality_trims_seal_occluded_signing_form_text_before_date_reclassification() -> None:
@@ -5392,11 +5494,18 @@ def test_diff_quality_trims_seal_occluded_signing_form_text_before_date_reclassi
             TextRange(start=67, end=94, highlight_type="DELETE"),
         ],
         compare_change_ranges=[
-            TextRange(start=72, end=83, highlight_type="ADD"),
+            TextRange(start=67, end=78, highlight_type="ADD"),
         ],
         original_evidence=[
-            EvidenceBox(page_no=13, bbox=BBox(x0=83, y0=140, x1=137, y1=154), text="单位名称:", highlight_type="DELETE"),
-            EvidenceBox(page_no=13, bbox=BBox(x0=142, y0=140, x1=286, y1=154), text="定边县瑞能新能源科技有限", highlight_type="DELETE"),
+            EvidenceBox(
+                page_no=13, bbox=BBox(x0=83, y0=140, x1=137, y1=154), text="单位名称:", highlight_type="DELETE"
+            ),
+            EvidenceBox(
+                page_no=13,
+                bbox=BBox(x0=142, y0=140, x1=286, y1=154),
+                text="定边县瑞能新能源科技有限",
+                highlight_type="DELETE",
+            ),
             EvidenceBox(page_no=13, bbox=BBox(x0=83, y0=167, x1=110, y1=183), text="公司", highlight_type="DELETE"),
             EvidenceBox(page_no=13, bbox=BBox(x0=115, y0=167, x1=137, y1=183), text="(章)", highlight_type="DELETE"),
             EvidenceBox(page_no=13, bbox=BBox(x0=328, y0=165, x1=353, y1=184), text="(章)", highlight_type="DELETE"),
@@ -5422,12 +5531,15 @@ def test_diff_quality_trims_seal_occluded_signing_form_text_before_date_reclassi
 
     assert len(result.diffs) == 1
     reclassified = result.diffs[0]
+    assert reclassified.diff_type == "ADD"
     assert reclassified.source_type == "metadata"
     assert reclassified.title == "签署日期"
     assert reclassified.original_snippet == ""
     assert reclassified.compare_snippet == "20260522"
     assert {evidence.text for evidence in reclassified.original_evidence} == set()
     assert {evidence.text for evidence in reclassified.compare_evidence} == {"2026", "05", "22"}
+    assert {evidence.highlight_type for evidence in reclassified.compare_evidence} == {"ADD"}
+    assert {item.highlight_type for item in reclassified.compare_change_ranges} == {"ADD"}
     assert any(decision.action == "trimmed_signing_form_ocr_noise" for decision in result.decisions)
 
 
@@ -5898,10 +6010,85 @@ def test_diff_quality_suppresses_isolated_seal_region_ocr_fragment() -> None:
 
     assert result.diffs == []
     assert any(
-        decision.action == "suppressed_low_value_noise"
-        and decision.detail["reason"] == "isolated_seal_artifact_text"
+        decision.action == "suppressed_low_value_noise" and decision.detail["reason"] == "isolated_seal_artifact_text"
         for decision in result.decisions
     )
+
+
+def test_diff_quality_suppresses_short_clause_fragment_rendered_as_red_seal(tmp_path: Path) -> None:
+    compare_path = tmp_path / "compare.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=595, height=842)
+    page.draw_rect(fitz.Rect(380, 290, 470, 320), color=(1, 0, 0), fill=(1, 0, 0))
+    pdf.save(compare_path)
+    pdf.close()
+    compare_document = Document(
+        filename=compare_path.name,
+        path=str(compare_path),
+        page_count=1,
+        pages=[Page(page_no=1, width=595, height=842, blocks=[])],
+    )
+    diff = DiffItem(
+        diff_id="D009",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="22.5 本合同一式两份。",
+        compare_text="22.5 本合同一式两份。\n公技股",
+        compare_snippet="公技股",
+        review_flags=["SEAL_OR_SIGNATURE_RISK", "POSSIBLE_OCR_NOISE"],
+        compare_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=390, y0=297, x1=454, y1=313),
+                method="char_exact",
+                text="公技股",
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_document=compare_document)
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise" and decision.detail["reason"] == "visual_seal_ocr_fragment"
+        for decision in result.decisions
+    )
+
+
+def test_diff_quality_keeps_short_clause_fragment_without_red_seal_pixels(tmp_path: Path) -> None:
+    compare_path = tmp_path / "compare.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=595, height=842)
+    page.insert_text((390, 310), "ABC", color=(0, 0, 0))
+    pdf.save(compare_path)
+    pdf.close()
+    compare_document = Document(
+        filename=compare_path.name,
+        path=str(compare_path),
+        page_count=1,
+        pages=[Page(page_no=1, width=595, height=842, blocks=[])],
+    )
+    diff = DiffItem(
+        diff_id="D010",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="22.5 本合同一式两份。",
+        compare_text="22.5 本合同一式两份。\n补充项",
+        compare_snippet="补充项",
+        review_flags=["SEAL_OR_SIGNATURE_RISK", "POSSIBLE_OCR_NOISE"],
+        compare_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=385, y0=295, x1=455, y1=315),
+                method="char_exact",
+                text="补充项",
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_document=compare_document)
+
+    assert [item.diff_id for item in result.diffs] == ["D010"]
 
 
 def test_diff_quality_keeps_real_seal_or_signature_region_addition() -> None:

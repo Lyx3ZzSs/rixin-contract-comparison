@@ -3,11 +3,13 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
-from app.models import Clause, DiffItem, Document, EvidenceBox
+from app.models import Clause, DiffItem, DiffType, Document, EvidenceBox
 from app.services.diff.boundary_coverage import BoundaryCoverageContext, ClauseBoundaryCoverageFilter
 from app.services.diff.range_refiner import layout_punctuation_equivalent
+from app.services.red_seal_visual import RedSealVisualInspector
 
 
 def _is_signing_contact_table_label_loss(diff: DiffItem, flags: set[str]) -> bool:
@@ -123,6 +125,7 @@ class DiffQualityProcessor:
         "seal_occluded_signing_label_covered",
         "signing_contact_table_label_noise",
         "isolated_seal_artifact_text",
+        "visual_seal_ocr_fragment",
         "single_latin_layout_glyph_noise",
         "table_header_serialization_equivalent",
     }
@@ -143,7 +146,12 @@ class DiffQualityProcessor:
         decisions: list[DiffQualityDecision] = []
         working = self._dedupe_cross_source(working, decisions)
         self._classify(working, decisions)
-        working = self._suppress_low_value_noise(working, decisions)
+        working = self._suppress_low_value_noise(
+            working,
+            decisions,
+            original_document=original_document,
+            compare_document=compare_document,
+        )
         self._flag_structural_risks(working, decisions)
         self._flag_boundary_drift(working, decisions)
         self._flag_cross_source_structural_misclassification(working, decisions)
@@ -254,7 +262,11 @@ class DiffQualityProcessor:
                     DiffQualityDecision(
                         action="signing_date_field_reclassified",
                         diff_id=diff.diff_id,
-                        detail={"source_type": "metadata", "reason": "signing_date_field_fill"},
+                        detail={
+                            "source_type": "metadata",
+                            "diff_type": diff.diff_type,
+                            "reason": "signing_date_field_change",
+                        },
                     )
                 )
                 continue
@@ -307,7 +319,7 @@ class DiffQualityProcessor:
                 if (
                     "TABLE_REGION_REVIEW" not in pre_review_flags
                     and _is_signing_contact_table_label_loss(diff, pre_review_flags)
-                    and not self._looks_like_table_signing_date_fill(diff)
+                    and not self._looks_like_table_signing_date_change(diff)
                 ):
                     self._add_flag(diff, "SIGNING_TABLE_LABEL_NOISE")
                 self._remove_flag(diff, "CRITICAL_VALUE_CHANGE")
@@ -339,10 +351,17 @@ class DiffQualityProcessor:
         self,
         diffs: list[DiffItem],
         decisions: list[DiffQualityDecision],
+        *,
+        original_document: Document | None = None,
+        compare_document: Document | None = None,
     ) -> list[DiffItem]:
         kept: list[DiffItem] = []
         for diff in diffs:
-            reason = self._suppression_reason(diff)
+            reason = self._suppression_reason(
+                diff,
+                original_document=original_document,
+                compare_document=compare_document,
+            )
             if reason:
                 if (
                     reason not in self.directly_suppressible_review_reasons
@@ -357,7 +376,13 @@ class DiffQualityProcessor:
             kept.append(diff)
         return kept
 
-    def _suppression_reason(self, diff: DiffItem) -> str:
+    def _suppression_reason(
+        self,
+        diff: DiffItem,
+        *,
+        original_document: Document | None = None,
+        compare_document: Document | None = None,
+    ) -> str:
         if self._looks_like_cover_annotation_noise(diff):
             return "cover_annotation_noise"
         if "VISUAL_FOOTER_ANNOTATION" in diff.review_flags:
@@ -380,6 +405,12 @@ class DiffQualityProcessor:
             return "signing_contact_table_label_noise"
         if self._looks_like_isolated_seal_artifact_text(diff):
             return "isolated_seal_artifact_text"
+        if self._looks_like_visual_seal_ocr_fragment(
+            diff,
+            original_document=original_document,
+            compare_document=compare_document,
+        ):
+            return "visual_seal_ocr_fragment"
         if self._has_critical_field_change(diff):
             return ""
         if self._is_range_connector_equivalent_clause_change(diff):
@@ -526,6 +557,51 @@ class DiffQualityProcessor:
         if re.search(r"[\d¥￥]|甲|乙|签|章|[\u4e00-\u9fff]{2}", text or ""):
             return False
         return changed in {"图", "圈", "圆", "印", "红", "点", "口", "o"}
+
+    def _looks_like_visual_seal_ocr_fragment(
+        self,
+        diff: DiffItem,
+        *,
+        original_document: Document | None,
+        compare_document: Document | None,
+    ) -> bool:
+        if diff.source_type != "clause":
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if not {"SEAL_OR_SIGNATURE_RISK", "POSSIBLE_OCR_NOISE"}.issubset(flags):
+            return False
+        changed = self._compact(self._changed_text(diff))
+        if not changed or len(changed) > 8:
+            return False
+        if self.business_token_pattern.search(changed) or self._canonical_date(changed) or re.search(r"\d", changed):
+            return False
+
+        sides: list[tuple[Document | None, list[EvidenceBox], str]] = []
+        if self._compact(diff.original_snippet):
+            sides.append((original_document, diff.original_evidence, diff.original_snippet))
+        if self._compact(diff.compare_snippet):
+            sides.append((compare_document, diff.compare_evidence, diff.compare_snippet))
+        if not sides:
+            return False
+
+        inspector = RedSealVisualInspector()
+        inspected = 0
+        for document, evidences, snippet in sides:
+            if document is None:
+                return False
+            matching = [
+                evidence
+                for evidence in evidences
+                if self._compact(evidence.text) and self._compact(evidence.text) in self._compact(snippet)
+            ]
+            if not matching:
+                return False
+            for evidence in matching:
+                metrics = inspector.inspect(document, evidence.page_no, evidence.bbox)
+                if metrics.red_pixels < 30 or metrics.ratio < 0.08:
+                    return False
+                inspected += 1
+        return inspected > 0
 
     def _flag_boundary_drift(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> None:
         clause_diffs = [diff for diff in diffs if diff.source_type == "clause"]
@@ -750,18 +826,27 @@ class DiffQualityProcessor:
             context = f"{diff.original_text}\n{diff.compare_text}"
             if not self._has_signing_date_context(context):
                 return False
-            if not self._changed_text_is_signing_date_fill(diff):
+            if not self._changed_text_is_signing_date_change(diff):
                 return False
         elif diff.source_type == "table":
-            if not self._looks_like_table_signing_date_fill(diff):
+            if not self._looks_like_table_signing_date_change(diff):
                 return False
         else:
+            return False
+        original_snippet = self._strip_signing_date_placeholder(diff.original_snippet)
+        compare_snippet = self._strip_signing_date_placeholder(diff.compare_snippet)
+        if diff.source_type == "table":
+            original_snippet = original_snippet or self._signing_date_snippet(diff.original_text)
+            compare_snippet = compare_snippet or self._signing_date_snippet(diff.compare_text)
+        field_diff_type = self._signing_date_diff_type(original_snippet, compare_snippet)
+        if field_diff_type is None:
             return False
         diff.source_type = "metadata"
         diff.title = "签署日期"
         diff.section_type = "signature"
-        diff.original_snippet = self._strip_signing_date_placeholder(diff.original_snippet)
-        diff.compare_snippet = self._strip_signing_date_placeholder(diff.compare_snippet)
+        diff.original_snippet = original_snippet
+        diff.compare_snippet = compare_snippet
+        diff.diff_type = field_diff_type
         diff.original_evidence = self._keep_evidence_covered_by_snippet(diff.original_evidence, diff.original_snippet)
         diff.compare_evidence = self._keep_evidence_covered_by_snippet(diff.compare_evidence, diff.compare_snippet)
         diff.original_change_ranges = self._keep_ranges_covered_by_snippet(
@@ -774,6 +859,7 @@ class DiffQualityProcessor:
             diff.compare_change_ranges,
             diff.compare_snippet,
         )
+        self._normalize_signing_date_change_payload(diff)
         self._add_flag(diff, "SIGNING_DATE_FIELD_CHANGE")
         for flag in (
             "CRITICAL_FIELD_CHANGE",
@@ -784,7 +870,35 @@ class DiffQualityProcessor:
             self._remove_flag(diff, flag)
         return True
 
-    def _looks_like_table_signing_date_fill(self, diff: DiffItem) -> bool:
+    def _normalize_signing_date_change_payload(self, diff: DiffItem) -> None:
+        if diff.diff_type == "ADD":
+            diff.original_snippet = ""
+            diff.original_evidence = []
+            diff.original_change_ranges = []
+            self._set_highlight_type(diff.compare_evidence, "ADD")
+            self._set_highlight_type(diff.compare_change_ranges, "ADD")
+            diff.readable_change = f"新增签署日期：{diff.compare_snippet}"
+            return
+        if diff.diff_type == "DELETE":
+            diff.compare_snippet = ""
+            diff.compare_evidence = []
+            diff.compare_change_ranges = []
+            self._set_highlight_type(diff.original_evidence, "DELETE")
+            self._set_highlight_type(diff.original_change_ranges, "DELETE")
+            diff.readable_change = f"删除签署日期：{diff.original_snippet}"
+            return
+        self._set_highlight_type(diff.original_evidence, "MODIFY")
+        self._set_highlight_type(diff.compare_evidence, "MODIFY")
+        self._set_highlight_type(diff.original_change_ranges, "MODIFY")
+        self._set_highlight_type(diff.compare_change_ranges, "MODIFY")
+        diff.readable_change = f"签署日期变更：{diff.original_snippet} → {diff.compare_snippet}"
+
+    @staticmethod
+    def _set_highlight_type(items: list, highlight_type: DiffType) -> None:
+        for item in items:
+            item.highlight_type = highlight_type
+
+    def _looks_like_table_signing_date_change(self, diff: DiffItem) -> bool:
         if diff.source_type != "table" or diff.diff_type != "MODIFY":
             return False
         flags = set(diff.review_flags)
@@ -793,9 +907,13 @@ class DiffQualityProcessor:
         context = f"{diff.title}\n{diff.original_text}\n{diff.compare_text}"
         if not re.search(r"签订时间|签署日期|签字日期|签订日期", context):
             return False
-        if self._text_contains_filled_date(diff.original_text or diff.original_snippet):
-            return False
-        return self._text_contains_filled_date(diff.compare_text or diff.compare_snippet)
+        original = self._strip_signing_date_placeholder(diff.original_snippet) or self._signing_date_snippet(
+            diff.original_text
+        )
+        compare = self._strip_signing_date_placeholder(diff.compare_snippet) or self._signing_date_snippet(
+            diff.compare_text
+        )
+        return self._signing_date_diff_type(original, compare) is not None
 
     def _trim_signing_form_ocr_noise_from_date_change(self, diff: DiffItem) -> bool:
         if diff.source_type != "clause" or diff.diff_type != "MODIFY":
@@ -858,9 +976,12 @@ class DiffQualityProcessor:
         if not snippet_key:
             return []
         kept = []
+        snippet_date = self._signing_date_value(snippet)
         for range_ in ranges:
             fragment = text[range_.start : range_.end]
-            if self._compact(fragment) in snippet_key:
+            if self._compact(fragment) in snippet_key or (
+                snippet_date and self._signing_date_value(fragment) == snippet_date
+            ):
                 kept.append(range_)
         return kept
 
@@ -873,23 +994,66 @@ class DiffQualityProcessor:
         has_signature_label = bool(re.search(r"(签字日期|签订日期|法定代表人|授权代表|年月日)", compact))
         return has_parties and has_signature_label
 
-    def _changed_text_is_signing_date_fill(self, diff: DiffItem) -> bool:
-        changed = unicodedata.normalize("NFKC", self._changed_text(diff) or "")
-        compact = re.sub(r"\s+", "", changed)
-        if not compact:
-            return False
-        has_filled_date = bool(
-            re.search(r"\d{4}年\d{1,2}月\d{1,2}日", compact)
-            or re.search(r"\d{4}年\d{3,4}日", compact)
-            or re.search(r"\d{8}", compact)
-        )
-        if not has_filled_date:
-            return False
-        residue = re.sub(r"\d{4}年\d{1,2}月\d{1,2}日", "", compact)
-        residue = re.sub(r"\d{4}年\d{3,4}日", "", residue)
-        residue = re.sub(r"\d{8}", "", residue)
-        residue = residue.replace("年月日", "").replace("年月", "").replace("月日", "").replace("月", "")
-        return residue == ""
+    def _changed_text_is_signing_date_change(self, diff: DiffItem) -> bool:
+        original = self._strip_signing_date_placeholder(diff.original_snippet)
+        compare = self._strip_signing_date_placeholder(diff.compare_snippet)
+        return self._signing_date_diff_type(original, compare) is not None
+
+    def _signing_date_diff_type(self, original: str, compare: str) -> DiffType | None:
+        original_date = self._signing_date_value(original)
+        compare_date = self._signing_date_value(compare)
+        if not original_date and compare_date:
+            return "ADD"
+        if original_date and not compare_date:
+            return "DELETE"
+        if original_date and compare_date and original_date != compare_date:
+            return "MODIFY"
+        return None
+
+    def _signing_date_snippet(self, text: str) -> str:
+        return self._signing_date_value(text).replace("-", "")
+
+    @staticmethod
+    def _signing_date_value(text: str) -> str:
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
+        match = re.search(r"(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日", compact)
+        if match:
+            return DiffQualityProcessor._validated_date_value(
+                match.group("year"), match.group("month"), match.group("day")
+            )
+        match = re.search(r"(?P<year>\d{4})年(?P<month_day>\d{3,4})日", compact)
+        if match:
+            month_day = match.group("month_day")
+            candidates = (
+                [(month_day[:2], month_day[2:])]
+                if len(month_day) == 4
+                else [(month_day[:1], month_day[1:]), (month_day[:2], month_day[2:])]
+            )
+            for month, day in candidates:
+                value = DiffQualityProcessor._validated_date_value(match.group("year"), month, day)
+                if value:
+                    return value
+        match = re.search(r"(?<!\d)(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})(?!\d)", compact)
+        if match:
+            return DiffQualityProcessor._validated_date_value(
+                match.group("year"), match.group("month"), match.group("day")
+            )
+        return ""
+
+    @staticmethod
+    def _validated_date_value(year: str, month: str, day: str) -> str:
+        try:
+            year_value = int(year)
+            month_value = int(month)
+            day_value = int(day)
+        except ValueError:
+            return ""
+        if not 1900 <= year_value <= 2200:
+            return ""
+        try:
+            return date(year_value, month_value, day_value).isoformat()
+        except ValueError:
+            return ""
 
     @staticmethod
     def _strip_signing_date_placeholder(text: str) -> str:

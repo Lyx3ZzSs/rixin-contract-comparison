@@ -74,6 +74,7 @@ class HeaderFooterComparator:
     page_number_with_total_pattern = re.compile(r"^共\s*(?P<total>\d+)\s*页\s*第\s*(?P<page>\d+)\s*页$")
     fuzzy_match_flag = "FUZZY_HEADER_FOOTER_MATCH"
     footer_annotation_band = 0.90
+    page_number_footer_band = 0.88
     footer_variant_prototype_min_pages = 5
     footer_variant_max_characters = 8
     footer_variant_substitution_max_confidence = 0.85
@@ -126,21 +127,20 @@ class HeaderFooterComparator:
         is_page_number = self._is_page_number(text)
         explicit_header = block_type in self.header_types
         explicit_footer = block_type in self.footer_types
-        lower_footer_annotation = (
-            page_height > 0 and block.bbox.y0 >= page_height * self.footer_annotation_band
-        )
-        if (block.layout_match_status or "") == "noise_unmatched" and not (
-            explicit_footer and lower_footer_annotation
-        ):
+        lower_footer_annotation = page_height > 0 and block.bbox.y0 >= page_height * self.footer_annotation_band
+        if (block.layout_match_status or "") == "noise_unmatched" and not (explicit_footer and lower_footer_annotation):
             return None
         if self._is_bare_field_label(text):
             return None
         if self._looks_like_short_edge_noise(text, block, page_height):
             return None
-        if is_page_number and block.bbox.y1 <= page_height * 0.12:
-            return None
-        slot = ""
-        if explicit_header:
+        if is_page_number:
+            if page_height <= 0 or block.bbox.y0 < page_height * self.page_number_footer_band:
+                return None
+            slot = "footer"
+        else:
+            slot = ""
+        if not slot and explicit_header:
             slot = "header"
         elif explicit_footer and not self._looks_like_clause_start(text):
             slot = "footer"
@@ -209,11 +209,7 @@ class HeaderFooterComparator:
         self,
         grouped: dict[str, list[HeaderFooterCandidate]],
     ) -> None:
-        prototypes = [
-            (key, group)
-            for key, group in grouped.items()
-            if self._is_footer_annotation_prototype(group)
-        ]
+        prototypes = [(key, group) for key, group in grouped.items() if self._is_footer_annotation_prototype(group)]
         for variant_key, variant_group in list(grouped.items()):
             if len(variant_group) != 1 or variant_key not in grouped:
                 continue
@@ -280,7 +276,9 @@ class HeaderFooterComparator:
         )
 
     def _is_short_cjk_annotation(self, text: str) -> bool:
-        return 2 <= len(text) <= self.footer_variant_max_characters and all("\u4e00" <= char <= "\u9fff" for char in text)
+        return 2 <= len(text) <= self.footer_variant_max_characters and all(
+            "\u4e00" <= char <= "\u9fff" for char in text
+        )
 
     def _footer_annotation_position_matches(
         self,
@@ -299,7 +297,8 @@ class HeaderFooterComparator:
         center_x, center_y = self._footer_annotation_cluster_center(group)
         return all(
             abs((candidate.bbox.x0 + candidate.bbox.x1) / 2 - center_x) <= self.footer_annotation_cluster_max_x_delta
-            and abs((candidate.bbox.y0 + candidate.bbox.y1) / 2 - center_y) <= self.footer_annotation_cluster_max_y_delta
+            and abs((candidate.bbox.y0 + candidate.bbox.y1) / 2 - center_y)
+            <= self.footer_annotation_cluster_max_y_delta
             for candidate in group
         )
 
@@ -315,7 +314,7 @@ class HeaderFooterComparator:
         slot: str,
         candidates: list[HeaderFooterCandidate],
     ) -> HeaderFooterEntry | None:
-        page_numbers = [candidate for candidate in candidates if candidate.is_page_number]
+        page_numbers = self._sequenced_page_numbers([candidate for candidate in candidates if candidate.is_page_number])
         if not page_numbers:
             return None
         profile = self._page_number_profile(page_numbers)
@@ -326,6 +325,39 @@ class HeaderFooterComparator:
             evidences=self._evidences(page_numbers),
             is_page_number=True,
         )
+
+    def _sequenced_page_numbers(
+        self,
+        candidates: list[HeaderFooterCandidate],
+    ) -> list[HeaderFooterCandidate]:
+        by_page: dict[int, HeaderFooterCandidate] = {}
+        for candidate in sorted(candidates, key=lambda item: (item.page_no, item.bbox.y0, item.bbox.x0)):
+            by_page.setdefault(candidate.page_no, candidate)
+        ordered = list(by_page.values())
+        if len(ordered) == 1:
+            compact = self._compact(ordered[0].text)
+            match = self.page_number_with_total_pattern.fullmatch(compact)
+            if match and int(match.group("total")) == 1 and int(match.group("page")) == 1:
+                return ordered
+            return []
+
+        values = [self._page_number_value(candidate.text) for candidate in ordered]
+        supported_indexes: set[int] = set()
+        for index in range(len(ordered) - 1):
+            left = values[index]
+            right = values[index + 1]
+            page_delta = ordered[index + 1].page_no - ordered[index].page_no
+            if left is not None and right is not None and page_delta > 0 and right - left == page_delta:
+                supported_indexes.update({index, index + 1})
+        return [candidate for index, candidate in enumerate(ordered) if index in supported_indexes]
+
+    def _page_number_value(self, text: str) -> int | None:
+        compact = self._compact(text)
+        total_match = self.page_number_with_total_pattern.fullmatch(compact)
+        if total_match:
+            return int(total_match.group("page"))
+        match = re.fullmatch(r"(?:第)?(\d+)(?:页)?", compact)
+        return int(match.group(1)) if match else None
 
     def _diff_slot(
         self,

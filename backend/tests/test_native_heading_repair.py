@@ -3,11 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 
 import fitz
+import pytest
 
 from app.models import BBox, Document, Page, TextBlock
 from app.services.clause_splitter import ClauseSplitter
 from app.services.document_preparation import DocumentPreparer
-from app.services.native_heading_repair import NativeHeadingRepairService, load_native_heading_index
+from app.services.native_heading_repair import (
+    NativeHeadingIndex,
+    NativeHeadingRepairService,
+    NativeSectionTitleCandidate,
+    load_native_heading_index,
+)
 
 
 def _write_pdf(path: Path, lines: list[tuple[float, str]]) -> None:
@@ -239,6 +245,127 @@ def test_inserts_missing_multiline_native_document_title_without_title_keywords(
         if block.source == "native_section_title_repair"
     )
     assert result.repaired_count == 3
+
+
+def test_does_not_insert_native_multiline_title_inside_ocr_table(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "table-continuation-fragments.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr(
+        "app.services.native_heading_repair.load_native_heading_index",
+        lambda _path: NativeHeadingIndex(),
+    )
+    monkeypatch.setattr(
+        "app.services.native_heading_repair.load_native_section_title_candidates",
+        lambda _path: (
+            NativeSectionTitleCandidate(
+                page_no=1,
+                text="学与技",
+                bbox=BBox(x0=477, y0=91, x1=522, y1=109),
+                char_boxes=(),
+            ),
+            NativeSectionTitleCandidate(
+                page_no=1,
+                text="有限公司",
+                bbox=BBox(x0=166, y0=112, x1=225, y1=130),
+                char_boxes=(),
+            ),
+        ),
+    )
+    document = Document(
+        filename=path.name,
+        path=str(path),
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="ocr-table-continuation",
+                        page_no=1,
+                        text="科技股份\n学与技\n术\n有限公司",
+                        bbox=BBox(x0=70, y0=72, x1=525, y1=145),
+                        block_type="table",
+                        source="ppocrv5",
+                    ),
+                    TextBlock(
+                        block_id="ocr-body",
+                        page_no=1,
+                        text="普通表格说明内容",
+                        bbox=BBox(x0=72, y0=220, x1=220, y1=244),
+                        source="ppocrv5",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    result = NativeHeadingRepairService().repair(document)
+
+    assert all(block.source != "native_section_title_repair" for block in document.pages[0].blocks)
+    assert result.repaired_count == 0
+    assert {
+        (decision["title"], decision["reason"])
+        for decision in result.decisions
+        if decision["action"] == "skipped"
+    } == {
+        ("学与技", "native_section_title_inside_table"),
+        ("有限公司", "native_section_title_inside_table"),
+    }
+
+
+def test_table_title_guard_requires_high_candidate_coverage() -> None:
+    candidate = NativeSectionTitleCandidate(
+        page_no=1,
+        text="附件二",
+        bbox=BBox(x0=100, y0=100, x1=200, y1=120),
+        char_boxes=(),
+    )
+    page = Page(
+        page_no=1,
+        width=595,
+        height=842,
+        blocks=[
+            TextBlock(
+                block_id="oversized-neighboring-table",
+                page_no=1,
+                text="附件二",
+                bbox=BBox(x0=130, y0=90, x1=210, y1=130),
+                block_type="table",
+            )
+        ],
+    )
+
+    assert NativeHeadingRepairService._candidate_overlaps_table(page, candidate) is False
+
+
+def test_table_title_guard_requires_candidate_text_in_table() -> None:
+    candidate = NativeSectionTitleCandidate(
+        page_no=1,
+        text="附件二",
+        bbox=BBox(x0=100, y0=100, x1=200, y1=120),
+        char_boxes=(),
+    )
+    page = Page(
+        page_no=1,
+        width=595,
+        height=842,
+        blocks=[
+            TextBlock(
+                block_id="unrelated-table",
+                page_no=1,
+                text="技术服务人员表",
+                bbox=BBox(x0=90, y0=90, x1=210, y1=130),
+                block_type="table",
+            )
+        ],
+    )
+
+    assert NativeHeadingRepairService._candidate_overlaps_table(page, candidate) is False
 
 
 def test_inserts_missing_cover_document_title_as_cover_metadata(tmp_path: Path) -> None:

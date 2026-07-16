@@ -90,17 +90,92 @@ def test_full_page_add_promotes_pages_and_suppresses_duplicate_table_diff() -> N
     assert all(diff.readable_change.startswith("整页新增") for diff in result)
 
 
+def test_full_page_add_suppresses_nested_clause_diff() -> None:
+    original = _document([_base_page()])
+    compare = _document([_base_page(), _added_page(2, "设备报价明细")])
+    table_diff = DiffItem(
+        diff_id="D001",
+        diff_type="ADD",
+        source_type="table",
+        title="表格：标的物",
+        compare_text="新增表格",
+        compare_evidence=[_evidence(2, BBox(x0=60, y0=130, x1=540, y1=560), "ADD")],
+    )
+    clause_diff = DiffItem(
+        diff_id="D002",
+        diff_type="ADD",
+        source_type="clause",
+        title="设备报价明细",
+        compare_text="设备报价明细",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=2,
+                bbox=BBox(x0=80, y0=70, x1=440, y1=100),
+                method="char_exact",
+                text="设备报价明细",
+                highlight_type="ADD",
+            )
+        ],
+    )
+
+    result = PageDiffConsolidator().consolidate(original, compare, [table_diff, clause_diff])
+
+    assert [diff.source_type for diff in result] == ["page"]
+
+
+def test_full_page_add_keeps_clause_not_represented_in_bounded_page_payload() -> None:
+    added = _added_page(2, "设备报价明细")
+    added.blocks.insert(
+        0,
+        _block("p2_long", 2, "前置说明" * 6000, BBox(x0=60, y0=50, x1=540, y1=65)),
+    )
+    original = _document([_base_page()])
+    compare = _document([_base_page(), added])
+    table_diff = DiffItem(
+        diff_id="D001",
+        diff_type="ADD",
+        source_type="table",
+        title="表格：标的物",
+        compare_text="新增表格",
+        compare_evidence=[_evidence(2, BBox(x0=60, y0=130, x1=540, y1=560), "ADD")],
+    )
+    clause_diff = DiffItem(
+        diff_id="D002",
+        diff_type="ADD",
+        source_type="clause",
+        title="设备报价明细",
+        compare_text="设备报价明细",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=2,
+                bbox=BBox(x0=80, y0=70, x1=440, y1=100),
+                method="char_exact",
+                text="设备报价明细",
+                highlight_type="ADD",
+            )
+        ],
+    )
+
+    result = PageDiffConsolidator().consolidate(original, compare, [table_diff, clause_diff])
+
+    assert [diff.source_type for diff in result] == ["clause", "page"]
+
+
 def test_same_page_table_add_remains_table_diff() -> None:
     original = _document([_base_page()])
-    compare = _document([
-        _page(
-            1,
-            [
-                *_base_page().blocks,
-                _block("p1_table", 1, "新增设备 SP-100 数量 1 金额 10000", BBox(x0=60, y0=220, x1=540, y1=320), "table"),
-            ],
-        )
-    ])
+    compare = _document(
+        [
+            _page(
+                1,
+                [
+                    *_base_page().blocks,
+                    _block(
+                        "p1_table", 1, "新增设备 SP-100 数量 1 金额 10000", BBox(x0=60, y0=220, x1=540, y1=320), "table"
+                    ),
+                ],
+            )
+        ]
+    )
     table_diff = DiffItem(
         diff_id="D001",
         diff_type="ADD",

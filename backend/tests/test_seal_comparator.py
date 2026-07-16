@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import fitz
+
 from app.models import BBox, Document, Page, TextBlock
 from app.services.seal_comparator import build_seal_diffs
 
@@ -33,11 +37,13 @@ def _document(blocks: list[TextBlock]) -> Document:
 
 def test_seal_diffs_merge_fragments_with_same_layout_bbox() -> None:
     seal_bbox = BBox(x0=208, y0=121, x1=322, y1=232)
-    compare = _document([
-        _block("c1", "京", BBox(x0=211, y0=153, x1=239, y1=175), layout_bbox=seal_bbox),
-        _block("c2", "限公司", BBox(x0=283, y0=156, x1=322, y1=210), layout_bbox=seal_bbox),
-        _block("c3", "合同专用章", BBox(x0=216, y0=178, x1=299, y1=225), layout_bbox=seal_bbox),
-    ])
+    compare = _document(
+        [
+            _block("c1", "京", BBox(x0=211, y0=153, x1=239, y1=175), layout_bbox=seal_bbox),
+            _block("c2", "限公司", BBox(x0=283, y0=156, x1=322, y1=210), layout_bbox=seal_bbox),
+            _block("c3", "合同专用章", BBox(x0=216, y0=178, x1=299, y1=225), layout_bbox=seal_bbox),
+        ]
+    )
 
     diffs = build_seal_diffs(_document([]), compare)
 
@@ -52,10 +58,12 @@ def test_seal_diffs_merge_fragments_with_same_layout_bbox() -> None:
 def test_seal_diffs_keep_distinct_layout_regions_separate() -> None:
     first_bbox = BBox(x0=100, y0=100, x1=180, y1=180)
     second_bbox = BBox(x0=300, y0=300, x1=380, y1=380)
-    compare = _document([
-        _block("c1", "合同专用章", BBox(x0=110, y0=120, x1=170, y1=150), layout_bbox=first_bbox),
-        _block("c2", "财务专用章", BBox(x0=310, y0=320, x1=370, y1=350), layout_bbox=second_bbox),
-    ])
+    compare = _document(
+        [
+            _block("c1", "合同专用章", BBox(x0=110, y0=120, x1=170, y1=150), layout_bbox=first_bbox),
+            _block("c2", "财务专用章", BBox(x0=310, y0=320, x1=370, y1=350), layout_bbox=second_bbox),
+        ]
+    )
 
     diffs = build_seal_diffs(_document([]), compare)
 
@@ -76,14 +84,16 @@ def test_seal_diffs_fall_back_to_block_bbox_without_layout_bbox() -> None:
 def test_seal_diffs_ignore_text_or_html_changes_inside_matched_regions() -> None:
     seal_bbox = BBox(x0=208, y0=121, x1=322, y1=232)
     original = _document([_block("o1", "司", BBox(x0=211, y0=153, x1=239, y1=175), layout_bbox=seal_bbox)])
-    compare = _document([
-        _block(
-            "c1",
-            '<div style="text-align: center;"><img src="imgs/img_in_seal_box.jpg" alt="Image" /></div>',
-            BBox(x0=216, y0=178, x1=299, y1=225),
-            layout_bbox=seal_bbox,
-        )
-    ])
+    compare = _document(
+        [
+            _block(
+                "c1",
+                '<div style="text-align: center;"><img src="imgs/img_in_seal_box.jpg" alt="Image" /></div>',
+                BBox(x0=216, y0=178, x1=299, y1=225),
+                layout_bbox=seal_bbox,
+            )
+        ]
+    )
 
     diffs = build_seal_diffs(original, compare)
 
@@ -141,3 +151,70 @@ def test_seal_diffs_ignore_no_text_marker_page_artifact_before_signing_page() ->
     diffs = build_seal_diffs(_document([]), compare)
 
     assert diffs == []
+
+
+def _visual_document(path: Path, blocks: list[TextBlock], *, width: float, height: float) -> Document:
+    return Document(
+        filename=path.name,
+        path=str(path),
+        page_count=1,
+        pages=[Page(page_no=1, width=width, height=height, blocks=blocks)],
+    )
+
+
+def _write_seal_pdf(path: Path, *, width: float, height: float, seal_bbox: BBox | None) -> None:
+    pdf = fitz.open()
+    page = pdf.new_page(width=width, height=height)
+    if seal_bbox is not None:
+        page.draw_rect(
+            fitz.Rect(seal_bbox.x0, seal_bbox.y0, seal_bbox.x1, seal_bbox.y1),
+            color=(1, 0, 0),
+            fill=(1, 0, 0),
+        )
+    pdf.save(path)
+    pdf.close()
+
+
+def test_seal_diffs_suppress_one_sided_layout_miss_when_red_seal_exists_on_both_pdfs(tmp_path: Path) -> None:
+    original_path = tmp_path / "original.pdf"
+    compare_path = tmp_path / "compare.pdf"
+    original_bbox = BBox(x0=500, y0=400, x1=580, y1=500)
+    compare_bbox = BBox(
+        x0=500 / 600 * 595,
+        y0=400 / 800 * 842,
+        x1=580 / 600 * 595,
+        y1=500 / 800 * 842,
+    )
+    _write_seal_pdf(original_path, width=600, height=800, seal_bbox=original_bbox)
+    _write_seal_pdf(compare_path, width=595, height=842, seal_bbox=compare_bbox)
+    original = _visual_document(
+        original_path,
+        [_block("o1", "合同专用章", original_bbox, layout_bbox=original_bbox)],
+        width=600,
+        height=800,
+    )
+    compare = _visual_document(compare_path, [], width=595, height=842)
+
+    diffs = build_seal_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_seal_diffs_keep_real_visual_seal_deletion(tmp_path: Path) -> None:
+    original_path = tmp_path / "original.pdf"
+    compare_path = tmp_path / "compare.pdf"
+    seal_bbox = BBox(x0=500, y0=400, x1=580, y1=500)
+    _write_seal_pdf(original_path, width=600, height=800, seal_bbox=seal_bbox)
+    _write_seal_pdf(compare_path, width=600, height=800, seal_bbox=None)
+    original = _visual_document(
+        original_path,
+        [_block("o1", "合同专用章", seal_bbox, layout_bbox=seal_bbox)],
+        width=600,
+        height=800,
+    )
+    compare = _visual_document(compare_path, [], width=600, height=800)
+
+    diffs = build_seal_diffs(original, compare)
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "DELETE"

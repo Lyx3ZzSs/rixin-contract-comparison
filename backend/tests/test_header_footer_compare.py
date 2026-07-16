@@ -404,6 +404,66 @@ def test_header_footer_ignores_top_unmatched_single_digit_as_page_number() -> No
     assert diffs == []
 
 
+def test_header_footer_ignores_cover_handwriting_digit_outside_footer_band() -> None:
+    compare = Document(
+        filename="compare.pdf",
+        path="compare.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=597,
+                height=818,
+                blocks=[
+                    _block(
+                        "c1",
+                        "3",
+                        x0=462.5,
+                        y0=79,
+                        x1=487.5,
+                        y1=100.5,
+                        block_type="header",
+                    )
+                ],
+            )
+        ],
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(_document([[]]), compare)
+
+    assert diffs == []
+
+
+def test_header_footer_requires_cross_page_sequence_for_bare_page_number() -> None:
+    original = _document([[], []])
+    compare = _document(
+        [
+            [_block("c1", "1", y0=810, y1=826, page_no=1)],
+            [_block("c2", "7", y0=810, y1=826, page_no=2)],
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_accepts_sequenced_bare_page_numbers_in_footer_band() -> None:
+    original = _document([[], []])
+    compare = _document(
+        [
+            [_block("c1", "1", y0=810, y1=826, page_no=1)],
+            [_block("c2", "2", y0=810, y1=826, page_no=2)],
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert len(diffs) == 1
+    assert diffs[0].title == "页脚页码"
+    assert diffs[0].diff_type == "ADD"
+
+
 def test_header_footer_fuzzy_requires_close_position_for_supplemental_match() -> None:
     original = _document(
         [
