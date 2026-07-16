@@ -11,8 +11,7 @@ export interface AppState {
 export type Action =
   | { type: "SET_ROUTE"; route: AppRoute }
   | { type: "TOGGLE_SIDEBAR" }
-  | { type: "TOGGLE_COMPARISON_MENU" }
-  | { type: "TOGGLE_EXTRACTION_MENU" };
+  | { type: "TOGGLE_COMPARISON_MENU" };
 
 function getInitialState(): AppState {
   return {

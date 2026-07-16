@@ -236,20 +236,6 @@ export interface DiffItem {
   compare_evidence?: EvidenceBox[];
 }
 
-export type ExtractionFieldStatus = "found" | "not_found" | "error";
-
-export interface ExtractionFieldValue {
-  field_id: string;
-  field_name: string;
-  value: string;
-  confidence: number;
-  source_snippet: string;
-  status: ExtractionFieldStatus;
-  extraction_method?: "explicit" | "semantic" | null;
-}
-
-
-
 export interface DiffReviewPayload {
   review_status: ReviewStatus;
   review_comment?: string;

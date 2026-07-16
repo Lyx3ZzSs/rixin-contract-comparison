@@ -2,7 +2,7 @@
 
 ## Current Shape
 
-The system is a FastAPI backend plus a Vite/React frontend. Backend code lives under `backend/`, while the frontend lives under `frontend/`. Backend routes expose contract comparison and field extraction. Runtime state is persisted in a MinerU-style local file layout under `storage/tasks/{task_id}/`.
+The system is a contract-comparison product with a FastAPI backend and a Vite/React frontend. Backend code lives under `backend/`, while the frontend lives under `frontend/`. Runtime state is persisted in a MinerU-style local file layout under `storage/tasks/{task_id}/`.
 
 ## Backend Boundaries
 
@@ -14,7 +14,7 @@ The system is a FastAPI backend plus a Vite/React frontend. Backend code lives u
 
 ## API Contract Boundary
 
-HTTP responses are built through presenter functions and API schemas. Public JSON responses should expose artifact URLs, not local filesystem paths, and should not leak persistence-only fields such as `schema_version`, `revision`, raw result paths, or converted file paths. Internal models such as `CompareTask`, `DiffItem`, and `ExtractionTask` remain service and repository payload models; API handlers should not return `model_dump()` or `to_jsonable()` for whole internal tasks.
+HTTP responses are built through presenter functions and API schemas. Public JSON responses should expose artifact URLs, not local filesystem paths, and should not leak persistence-only fields such as `schema_version`, `revision`, raw result paths, or converted file paths. Internal models such as `CompareTask` and `DiffItem` remain service and repository payload models; API handlers should not return `model_dump()` or `to_jsonable()` for whole internal tasks.
 
 ## Migration Direction
 
@@ -28,20 +28,17 @@ HTTP responses are built through presenter functions and API schemas. Public JSO
 
 Runtime file locations are resolved through `ArtifactStore`. Uploads, OCR raw JSON, compare debug files, and reports should not be built by direct `settings.*_dir` path concatenation outside infrastructure adapters. The default implementation is local filesystem storage under `storage/tasks/{task_id}/`, with `manifest.json` tracking generated artifacts. Online comparison highlights are rendered by the frontend from diff evidence coordinates; the backend no longer renders or exports highlighted PDFs.
 
-External OCR and PP-Structure calls go through `HttpClientProvider`. Extractors and extraction services accept the provider and app settings through constructors, which keeps tests injectable and avoids hard-wiring module-level clients into domain flow.
+External OCR and PP-Structure calls go through `HttpClientProvider`. Document extractors and document-processing services accept the provider and app settings through constructors, which keeps tests injectable and avoids hard-wiring module-level clients into domain flow.
 
 ## Task Execution
 
-Compare and extraction submissions are serialized into queue payloads before execution. The default runner stores job metadata in `storage/tasks/{task_id}/job.json`, enforces a configurable worker limit, records attempts and terminal state, renews leases while jobs are running, and supports retry and queued-job cancellation through the runner boundary.
+Compare submissions are serialized into queue payloads before execution. The default runner stores job metadata in `storage/tasks/{task_id}/job.json`, enforces a configurable worker limit, records attempts and terminal state, renews leases while jobs are running, and supports retry and queued-job cancellation through the runner boundary.
 
 Execution metadata is exposed through narrow operational endpoints:
 
 - `GET /api/compare/{task_id}/execution`
 - `POST /api/compare/{task_id}/cancel`
 - `POST /api/compare/{task_id}/retry`
-- `GET /api/extract/{task_id}/execution`
-- `POST /api/extract/{task_id}/cancel`
-- `POST /api/extract/{task_id}/retry`
 
 Task services still own domain status such as `PROCESSING`, `COMPLETED`, and `FAILED`; execution endpoints expose queue job state separately so the main task DTOs stay compatible.
 
@@ -50,7 +47,7 @@ Task services still own domain status such as `PROCESSING`, `COMPLETED`, and `FA
 The comparison pipeline still runs the same stage order, but stage data should move through typed `PipelineContext` accessors such as `require_extractions`, `set_clauses`, and `set_clause_diffs`. Stages should raise `PipelineContractError` for missing required inputs instead of assuming previous mutable fields are populated.
 
 PP-Structure response conversion is centralized in the shared layout adapter.
-Production extraction and the model orchestration layer must reuse that adapter
+Production document extraction and the model orchestration layer must reuse that adapter
 instead of implementing separate bbox, label, or table-cell parsing. Hybrid OCR
 results expose deterministic `reading_order` values and write layout quality
 diagnostics to the task debug directory.
@@ -89,7 +86,7 @@ storage/
       reports/
 ```
 
-`task.json` contains the complete `CompareTask` or `ExtractionTask` payload. `job.json` contains queue execution metadata. `manifest.json` is an artifact index maintained by the local repository and artifact store. The frontend login remains hard-coded for now; real users, permissions, and tenant-aware task lists should be designed separately if the product needs them later.
+`task.json` contains the complete `CompareTask` payload. Historical field-extraction task files can remain in storage; compare read and list paths skip those payloads without deleting them. `job.json` contains queue execution metadata. `manifest.json` is an artifact index maintained by the local repository and artifact store. The frontend login remains hard-coded for now; real users, permissions, and tenant-aware task lists should be designed separately if the product needs them later.
 
 ## Verification Baseline
 

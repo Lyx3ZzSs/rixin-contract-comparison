@@ -86,8 +86,6 @@ PPSTRUCTURE_USE_SEAL_RECOGNITION=true
 
 ```
 MAX_UPLOAD_SIZE_MB=30
-EXTRACTION_MAX_DOCUMENT_SIZE_MB=60
-EXTRACTION_MAX_IMAGE_SIZE_MB=5
 ```
 
 ### 4.4 差异匹配与报告
@@ -97,7 +95,7 @@ MATCH_THRESHOLD=85
 REPORT_FONT_PATH=/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc
 ```
 
-### 4.5 合同比对文档提取
+### 4.5 Document extraction/OCR（合同比对）
 
 ```
 DOCUMENT_EXTRACTOR=auto
@@ -199,26 +197,9 @@ docker run --rm -v rixin-contract-comparison_storage_data:/data -v $(pwd):/backu
     tar xzf /backup/storage-backup-YYYYMMDD.tar.gz -C /data
 ```
 
-## 7. 功能开关
+## 7. 验证部署
 
-如需控制功能开关（如隐藏菜单），在 `frontend/.env` 中设置环境变量：
-
-```
-VITE_ENABLE_EXTRACTION=false
-```
-
-然后重新构建前端镜像：
-
-```bash
-docker compose build frontend
-docker compose up -d frontend
-```
-
-设为 `true` 即可恢复。
-
-## 8. 验证部署
-
-### 8.1 健康检查
+### 7.1 健康检查
 
 ```bash
 curl http://localhost:8000/health
@@ -228,7 +209,7 @@ curl -I http://localhost/
 # HTTP/1.1 200 OK
 ```
 
-### 8.2 合同比对测试
+### 7.2 合同比对测试
 
 ```bash
 curl -X POST "http://localhost:8000/api/compare" \
@@ -236,11 +217,11 @@ curl -X POST "http://localhost:8000/api/compare" \
   -F "compare_file=@test_compare.pdf"
 ```
 
-### 8.3 前端访问
+### 7.3 前端访问
 
 浏览器打开 `http://<your-server-ip>` 即可访问。
 
-## 9. 健康监控
+## 8. 健康监控
 
 | 端点 | 用途 |
 |------|------|
@@ -249,7 +230,7 @@ curl -X POST "http://localhost:8000/api/compare" \
 | `docker compose ps` | 容器运行状态 |
 | `docker stats` | 容器资源使用 |
 
-## 10. 故障排查
+## 9. 故障排查
 
 ### 后端容器无法启动
 
@@ -300,9 +281,9 @@ docker compose exec backend bash
 ls /data/storage/tasks/  # 手动清理旧目录
 ```
 
-## 11. 高级配置
+## 10. 高级配置
 
-### 11.1 自定义后端端口
+### 10.1 自定义后端端口
 
 修改 `docker-compose.yml`：
 
@@ -319,7 +300,7 @@ services:
 
 同时修改 `frontend/nginx.conf` 中的 `proxy_pass`（如果后端服务名或端口变更）。
 
-### 11.2 添加中文字体支持
+### 10.2 添加中文字体支持
 
 在 `backend/Dockerfile` 的 `RUN apt-get` 行中追加：
 
@@ -336,11 +317,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 REPORT_FONT_PATH=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
 ```
 
-### 11.3 HTTPS 配置
+### 10.3 HTTPS 配置
 
 在前端 Nginx 容器前面加一层反向代理（如 Traefik、Nginx Proxy Manager），或者将 SSL 证书挂载到前端容器并修改 `nginx.conf` 添加 443 端口监听。
 
-### 11.4 资源限制
+### 10.4 资源限制
 
 在 `docker-compose.yml` 中为每个服务添加资源限制：
 
@@ -354,7 +335,7 @@ services:
           cpus: "2"
 ```
 
-## 12. 安全建议
+## 11. 安全建议
 
 - 不要将 `.env` 提交到 Git（已在 `.gitignore` 中排除）
 - 生产环境替换前端测试账号，接入真实认证

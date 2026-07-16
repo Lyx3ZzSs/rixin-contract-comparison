@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is a contract comparison and field extraction MVP with a FastAPI backend and a Vite/React frontend. Keep backend behavior compatible with the existing `/api/compare/*` and `/api/extract/*` routes unless a change explicitly calls for an API migration.
+This repository is a contract-comparison product with a FastAPI backend and a Vite/React frontend. Keep backend behavior compatible with the existing `/api/compare/*` routes unless a change explicitly calls for an API migration. Repository read and list paths must tolerate historical field-extraction task files by skipping them without deleting stored data.
 
 Current structure:
 
