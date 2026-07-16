@@ -5,7 +5,7 @@
 - 方案：B（按业务纵切面稳定化）
 - 日期：2026-07-16
 - 范围：合同对比主流程、审核与报告、文件型任务基础设施
-- 状态：四部分设计已沟通确认，三轮书面 Review 意见已纳入，待最终审阅
+- 状态：四部分设计已沟通确认，四轮书面 Review 意见已纳入，待最终审阅
 
 ## Review 闭环索引
 
@@ -31,6 +31,12 @@
 | P4 | 镜像携带脱敏种子案例，首次启动幂等初始化到 volume | [质量案例供给](#quality-case-supply) |
 | P5 | 历史 Diff 审核广播到该 Diff 的全部缺省 AuditItem | [历史审核迁移](#legacy-review-projection) |
 | P6 | Token 读取 Coordinator 内存快照，持久化文件负责重启恢复 | [取消协议](#cancellation-protocol) |
+| R1 | 启动 reconciliation 统一处理终态缺口和孤立 Job | [文件存储原子性](#atomic-storage) |
+| R2 | SSE 终态在队列内 sticky；传输失败由轮询确认兜底 | [终态事件顺序](#terminal-event-ordering) |
+| R3 | mark_cancelled 明确接受 QUEUED 和 CANCEL_REQUESTED | [取消协议](#cancellation-protocol) |
+| R4 | attempt 在每次 claim/lease takeover 时递增并受 max_attempts 约束 | [任务状态模型](#task-state-model) |
+| R5 | 审核 revision、响应、恢复写入和去重取舍形成明确 checklist | [Audit](#audit-item-review-model)、[补偿](#upload-compensation)、[去重](#diff-deduplication) |
+| R6 | 质量目录必须分离；legacy/new Job 路径合并读取 | [兼容与迁移](#compatibility-migration) |
 
 ## 1. 背景与问题定义
 
@@ -121,8 +127,27 @@ Application/Domain 层；共享进程锁、原子写入和索引维护位于 Inf
 - 字段提取请求/响应 DTO、Presenter 和 JSON 转换函数。
 - Repository 中只服务于字段提取结果的读写方法。
 - `TaskJobType` 中的 extraction 类型和相关分支。
-- 前端字段提取结果类型、菜单开关和已失效入口。
+- 前端字段提取结果类型、未使用的 feature flag 和字段提取专属死 CSS。当前前端没有实际字段提取
+  路由或菜单入口，因此不描述为“删除入口”。
 - 架构文档、README、部署说明和 `AGENTS.md` 中已过期的产品描述。
+
+命名陷阱：`ExtractionResult`（`services/extractors/base.py`，文档解析返回类型）与
+`ExtractionTask`（`models_extraction.py`，字段提取产品任务）名称相似但边界完全不同。删除必须从
+API/use case 使用方反向确认，禁止按类名或 `extraction` 字符串全局删除。同理，文档 profile 的
+`extraction_strategy` 和 Config 中的 `document_extractor`、OCR/PP-Structure 设置属于合同对比能力。
+
+第一批实现 checklist 至少覆盖：
+
+- 删除 `models_extraction.py`、字段提取 schema/Presenter 和 `TaskJobType="extraction"`。
+- 删除 Repository 的 `save/load/list/update_extraction_task` 及 `utils/json_utils.py` 中对应三个包装函数。
+- 删除无 compare 调用方的 `validate_extraction_upload_bytes`、`save_upload_file_generic` 及其专属常量。
+- 删除前端 `ExtractionField*`/字段提取结果类型和 `styles.css` 中字段提取专属样式；保留文档 profile
+  使用的 `extraction_strategy`。
+- 删除或改写 `test_api.py`、`test_task_repository.py`、`test_file_utils.py` 中字段提取产品测试；历史
+  extraction 文件跳过测试改用原始 legacy JSON fixture，不再依赖已删除的 `ExtractionTask`。
+- 删除 `frontend/.env.example` 的 `VITE_ENABLE_EXTRACTION`，清理部署文档中的
+  `EXTRACTION_MAX_DOCUMENT_SIZE_MB`、`EXTRACTION_MAX_IMAGE_SIZE_MB` 和 feature flag；保留合同对比
+  文档解析/OCR 配置并把含糊的 “Extraction” 配置注释改为 “Document extraction”。
 
 保留内容：
 
@@ -175,6 +200,10 @@ Task 和 Job 使用不同的不变式：
 - 一个 Task 可以按顺序关联多个 Job，但同一时间最多一个非终态 Job。
 - 用户 Retry 不复用终态 Job，而是递增 `execution_no` 并创建新 Job。`attempt` 只表示同一个 Job 内部的
   自动重试次数，不能和 `execution_no` 混用。
+- `attempt` 初始为 0；每次 Worker 成功 claim `QUEUED` Job 时递增，过期 lease 被新 Worker takeover
+  也视为一次新 claim 并递增。普通执行异常且 `attempt < max_attempts` 时，同一 Job 延迟回到 `QUEUED`
+  等待下一次自动尝试；取消不会增加 attempt。过期 lease 已达到 max_attempts 时不再执行 Handler，直接
+  将该 Job 标记 `FAILED`，错误码为 `LEASE_EXPIRED_MAX_ATTEMPTS`。
 - 新 Job ID 使用 `compare:{task_id}:{execution_no}`；任务目录保存 `jobs/{execution_no}.json`，Task
   保存 `active_job_id`。历史单文件 `job.json` 读取为 `execution_no=1`，不要求离线搬迁。
 - `GET /execution` 和取消接口操作当前 `active_job_id`；历史 Job 保留用于审计，不参与当前状态判断。
@@ -235,7 +264,8 @@ Job Repository 提供受状态前置条件约束的终态方法：
 
 - `mark_succeeded` 只接受 owner 和 lease 均有效的 `RUNNING`。
 - `mark_failed` 只接受 owner 和 lease 均有效的 `RUNNING`。
-- `mark_cancelled` 接受 `CANCEL_REQUESTED`，并对已经 `CANCELLED` 的重复调用保持幂等。
+- `mark_cancelled` 接受无 owner 的 `QUEUED` 或当前 owner 的 `CANCEL_REQUESTED`，并对已经
+  `CANCELLED` 的重复调用保持幂等。队列中直接取消和运行中检查点取消统一走该转换方法。
 - 两个 mark 方法看到 `CANCEL_REQUESTED/CANCELLED` 时不能覆盖，取消优先；看到 owner 不匹配或
   lease 过期时抛出 `TaskStaleLeaseError`，且不修改任何状态。
 - 其他非法转换抛出 `TaskTransitionConflict`。
@@ -262,7 +292,9 @@ Job 创建失败时执行补偿，清理 staging 和临时 Job；已经归属到
 内提交：先持久化新 Job，再保存 Task 的 `PROCESSING`、`active_job_id` 和新 revision，释放锁后 Job 才
 对 claim 可见。claim 除检查 Job 为 `QUEUED` 外，还必须验证 Task 的 `active_job_id` 与 Job 一致。
 Task 保存失败时删除尚不可见的新 Job 并保留旧失败 Task；进程中断产生的不匹配 Job 由启动
-reconciliation 标记为孤立而不执行。
+[reconciliation](#atomic-storage) 标记为孤立而不执行。
+
+<a id="terminal-event-ordering"></a>
 
 #### 5.2.4 终态事件顺序
 
@@ -304,7 +336,10 @@ INITIAL_LOAD -> SSE_ACTIVE
 ```
 
 组件卸载时关闭 EventSource、AbortController 和定时器。服务端每个订阅者使用有界的 latest-only
-队列，慢客户端不能无限积压进度事件。
+队列，慢客户端不能无限积压进度事件。队列策略是 terminal-sticky：新的非终态进度可以替换尚未发送的
+旧进度，终态事件可以替换任意待发送进度；一旦队列中已有终态，后续事件不得替换或删除它。若连接在
+终态送达前发生传输级断开，SSE 本身不承诺送达，前端必须按上述状态机降级轮询并以持久化 Task
+revision 确认终态。
 
 <a id="diff-deduplication"></a>
 
@@ -328,6 +363,10 @@ normalized 坐标时使用同页原始坐标。若两个 Diff 的 original 和 c
 可定位证据时禁止基于文本合并。阈值作为具名常量 `FINAL_DIFF_EVIDENCE_OVERLAP_THRESHOLD = 0.80`，
 边界值 `0.80` 视为可合并。
 
+双侧 `AND` 规则是明确的 precision-first 取舍：两侧任一证据位置不一致时宁可保留可能重复的 Diff，
+也不冒险吞掉不同位置的真实差异。由此产生的少量重复可在质量评估中观察，但不能退化为“任一侧达到
+0.80 即合并”的 recall-first 规则，除非后续 golden 数据证明并重新评审阈值策略。
+
 不同 diff_id 合并时，canonical `diff_id` 固定取候选集合中字典序最小的非空 ID，不能依赖输入列表
 顺序。所有其他 ID 写入 `dedupe_remap` 并指向 canonical ID；审核投影、OCR 质量引用和 AuditItem ID
 统一使用该映射。相同 diff_id 的合并继续保留原 ID。
@@ -344,6 +383,8 @@ normalized 坐标时使用同页原始坐标。若两个 Diff 的 original 和 c
 - AuditItem 审核接口只更新目标 AuditItem。
 - 旧的 Diff 级审核接口作为兼容入口，对该 Diff 下全部 AuditItem 执行相同审核动作。
 - Diff 上的审核字段只作为 AuditItem 审核的投影，不再独立写入。
+- 单次 Diff 级兼容审核即使更新多个 AuditItem，也只在同一次受锁 Task 更新末尾递增一次
+  `report_revision`；AuditItem 单项审核同样每个成功请求只递增一次。
 
 Diff 投影规则：全部 AuditItem 同一审核状态时投影该状态；存在混合状态时投影 `NEEDS_REVIEW`；
 全部未审核时投影 `UNREVIEWED`。
@@ -355,6 +396,10 @@ Diff 投影规则：全部 AuditItem 同一审核状态时投影该状态；存�
 `需复核` 或 `已忽略`。操作只更新当前 `audit_item_id`，同一 Diff 下的其他卡片不跟随改变；服务端
 响应中的审核统计覆盖本地统计。前端不再以 Diff 投影状态作为卡片状态，Diff 级接口仅保留给旧客户端
 做批量兼容。
+
+AuditItem 审核响应固定返回 `task_id`、完整的更新后 `audit_item`（含独立 review）、AuditItem 口径的
+`review_stats` 和新的 `report_revision`。前端用该响应原子替换当前卡片和统计，不自行推测兄弟 item
+状态或 revision。
 
 #### 5.2.7 报告与 API
 
@@ -395,7 +440,8 @@ Diff DTO 以向后兼容的可选字段补充：
 同时把补偿错误追加到结构化日志。如果 Task 已创建，则保存 `terminal_reason=SUBMISSION_FAILED` 和
 “补偿未完整完成”的错误摘要。无论 Task 是否已经成功保存，都在 `storage/recovery/{task_id}.json`
 写入 marker，记录仅属于本次请求的待清理路径、失败动作和重试次数。启动恢复流程和幂等维护脚本
-重试这些动作，全部成功后删除 recovery marker。
+重试这些动作，全部成功后删除 recovery marker。Marker 创建和每次重试计数更新统一调用
+[公共 `atomic_write_json`](#atomic-storage)，不得直接覆盖写入。
 如果 marker 本身无法写入则记录 CRITICAL 日志，但仍不得尝试扩大删除范围。
 
 <a id="revisioned-reports"></a>
@@ -425,6 +471,8 @@ Diff DTO 以向后兼容的可选字段补充：
 - 测试通过依赖注入使用临时目录；测试 fixture 仍可作为测试数据存在。
 - 仓库新增非 tests 路径 `backend/resources/quality_cases/`，只存放经过脱敏和授权的最小种子案例；
   Docker 镜像复制到只读 `QUALITY_CASES_SEED_DIR=/app/resources/quality_cases`。
+- 启动时要求 `QUALITY_CASES_DIR` 与 `QUALITY_CASES_SEED_DIR` 的 resolve 结果互不相同且不存在父子
+  包含关系；冲突时以 `QUALITY_CASES_PATH_CONFLICT` 失败，防止初始化覆盖只读 seed 或递归复制自身。
 - 生产启动包装器在启动 API 前执行幂等初始化：目标 volume 中不存在同 case_id 时，将 seed case 原子
   复制到 `QUALITY_CASES_DIR=/data/storage/quality/cases`；已有 case 永不覆盖，并保存 seed manifest
   version。复制先进入同目录隐藏 staging 目录，校验 `expected.json` 后再 rename 发布；空 volume 首次
@@ -456,9 +504,23 @@ Job Repository、Artifact Store、质量案例和 manifest 不再各自维护 `.
 manifest，避免递归副作用。
 
 启动时检查 storage 目录可写性、关键 manifest 可解析性，并清理可确认未被引用的陈旧临时文件。
-Task 终态同时记录 `terminal_job_id` 和 `terminal_attempt`。如果进程在“Task 终态已保存、Job 终态
-未保存”之间退出，启动 reconciliation 在取得 Coordinator 后用这两个字段校验对应 Job：匹配且 lease
-已过期时补齐 Job 终态；不匹配时记录冲突并保持不变，禁止盲目把新的 attempt 标记为旧终态。
+Task 终态同时记录 `terminal_job_id` 和 `terminal_attempt`。Worker 启动前，reconciliation 在取得
+singleton lock 与 Coordinator 后统一扫描以下崩溃窗口。此时尚无本进程 Worker，所有持久化 owner
+均属于上一进程并视为 stale，不受尚未到期的旧时间戳保护；Worker 启动后的运行期检查仍必须尊重当前
+进程的有效 lease。
+
+1. Task 已有终态，`terminal_job_id/terminal_attempt` 指向的 Job 仍为非终态：仅在 ID、attempt 匹配
+   时按 Task 终态补齐 Job；不匹配时记录冲突并保持不变。
+2. 非终态 Job 文件既不等于所属 Task 的 `active_job_id`，也不等于 `terminal_job_id`：将其标记为
+   `FAILED`、写入 `ORPHANED_JOB`，保留文件供审计且永不执行。历史上已经终态的旧 Job 不受影响。
+3. `PROCESSING` Task 的 `active_job_id` 缺失，或指向 Job 的 task_id/execution_no 不匹配：Task 转为
+   `FAILED/SUBMISSION_FAILED` 并写 recovery marker，禁止猜测或领取其他 Job。
+4. `PROCESSING` Task 指向匹配的旧 `RUNNING` Job：清除 stale owner/lease；`attempt < max_attempts`
+   时回到 `QUEUED`，否则将 Job 和 Task 终结为 `FAILED/EXECUTION_FAILED`，错误码为
+   `PROCESS_RESTART_MAX_ATTEMPTS`。
+
+reconciliation 必须幂等，所有修复使用公共原子写入并记录结构化事件；运行期不得修改当前进程中具有
+有效 lease 的 Job，也不得把新的 execution_no/attempt 标记成旧终态。
 
 <a id="queue-locking"></a>
 
@@ -512,6 +574,8 @@ lockfile 是兜底报警，不保证把外部错误启动器转化为干净的�
 未来如需多节点部署，应在既有 Adapter 边界后替换为共享数据库、对象存储和跨进程事件总线；
 不在本次四批次中实现。
 
+<a id="compatibility-migration"></a>
+
 ## 6. 兼容与迁移策略
 
 - `/api/compare/*` 路径和既有必需字段保持兼容，新字段均为附加字段。
@@ -521,6 +585,11 @@ lockfile 是兜底报警，不保证把外部错误启动器转化为干净的�
 - 历史 Task 缺少 `report_revision` 时，以“已有完成结果”为 1、其他状态为 0 初始化；首次审核变更后
   按新规则递增。
 - 历史 extraction Task/Job 在扫描时按未知或退役类型跳过，不删除原文件。
+- Job Repository 合并读取 legacy `job.json` 和新 `jobs/*.json`。Legacy 文件映射为 execution_no=1，
+  Repository 同时保留其 `source_path`，对该 Job 的取消/终态补齐仍原位写回 `job.json`，不得隐式再创建
+  `jobs/1.json`。历史 Task 首次 Retry 从现有最大 execution_no 递增，并只写 `jobs/2.json` 及后续文件。
+- 如果 legacy `job.json` 与 `jobs/1.json` 同时存在：内容一致时去重为一个执行；job_id、attempt 或状态
+  冲突时记录 `DUPLICATE_JOB_EXECUTION`，两者均不允许 claim，等待人工修复，不能按文件时间静默覆盖。
 - 旧固定路径报告可以继续作为历史 artifact 读取；再次生成时使用 revision 化路径。
 - 索引是可重建派生数据，不作为 Task 或审核事实源。
 
@@ -576,7 +645,7 @@ lockfile 是兜底报警，不保证把外部错误启动器转化为干净的�
 
 稳定事件名至少包括：`job_claimed`、`cancellation_requested`、`task_terminal_committed`、
 `stale_lease_detected`、`compensation_failed`、`report_published`、`report_generation_failed`、
-`manifest_recovery_failed` 和 `record_index_rebuilt`。
+`orphan_job_detected`、`execution_reconciled`、`manifest_recovery_failed` 和 `record_index_rebuilt`。
 
 取消终态示例：
 
@@ -604,7 +673,8 @@ lockfile 是兜底报警，不保证把外部错误启动器转化为干净的�
 
 - OpenAPI 和路由范围测试。
 - 历史 extraction 文件不会破坏 compare Task/Job 列表的兼容测试。
-- 全仓库静态搜索，确认无字段提取产品类型和展示入口。
+- 全仓库静态搜索，确认无字段提取产品类型、feature flag 和死 CSS；同时导入/流水线测试确认
+  `ExtractionResult`、document extractor 配置和合同对比解析能力仍存在。
 
 ### 8.2 第二批
 
@@ -614,16 +684,22 @@ lockfile 是兜底报警，不保证把外部错误启动器转化为干净的�
 - owner 不匹配和 lease 过期测试，断言抛出 `TaskStaleLeaseError` 且 Task/Job 保持不变。
 - 执行失败 Retry 创建新 execution_no/job_id 且旧 Job 保持 FAILED；取消和已完成 Task Retry 被拒绝的
   Task/Job 状态机测试。
+- `mark_cancelled` 的 QUEUED、CANCEL_REQUESTED 和幂等 CANCELLED 三条路径测试。
+- attempt 在正常 claim、异常自动重试、lease takeover 时递增，达到 max_attempts 后不再调用 Handler
+  的测试。
 - 重复 Token checkpoint 不读取 Job JSON；取消持久化成功后内存快照立即可见，持久化失败时快照不变。
 - 终态持久化和 SSE 发布顺序测试。
+- latest-only 队列中终态替换进度、终态不被后续事件替换，以及传输断开后轮询收敛的测试。
 - 前端 SSE error、EOF、首事件超时、轮询网络错误和组件卸载测试。
 - 跨页、跨条款相同文本的 Diff 去重回归测试；覆盖率 `0.79` 不合并、`0.80` 合并、无定位证据
-  不合并，以及输入顺序变化仍选择相同 canonical diff_id。
+  不合并、双侧仅一侧达标不合并，以及输入顺序变化仍选择相同 canonical diff_id。
 - 无证据和无坐标 Diff 的 AuditItem/报告完整性测试。
 - AuditItem 单项审核、旧 Diff 批量审核和统计投影测试；前端断言同一 Diff 下各卡片独立显示审核
   状态徽标，更新一个 item 不改变兄弟 item。
 - 历史 Diff 审核广播到全部 AuditItem、partial canonical map 只补缺项以及 UNREVIEWED 不生成冗余记录
   的迁移测试。
+- Diff 级批量审核只增长一次 report_revision，AuditItem 审核响应包含更新 item、统计和 revision 的
+  API 契约测试。
 
 ### 8.3 第三批
 
@@ -632,16 +708,20 @@ lockfile 是兜底报警，不保证把外部错误启动器转化为干净的�
 - 同 report revision 并发请求只调用一次 Generator、审核后新 revision、不同 revision 互不阻塞、
   生成失败保留旧报告和临时文件清理测试。
 - 补偿动作失败时保留主错误、写入 recovery marker，以及启动恢复重试成功后删除 marker 的测试。
+- recovery marker 创建和重试计数更新均调用公共 atomic writer 的故障注入测试。
 - 空 volume 从镜像 seed 幂等初始化、已有同名 case 不覆盖、管理员导出追加案例以及无 tests 目录的
   生产质量目录测试。
+- quality cases 与 seed 目录相同或互为父子目录时启动失败的配置测试。
 - 隔离 OIDC 环境变量的前端测试。
 
 ### 8.4 第四批
 
 - 同进程多 Worker 线程并发 claim，断言一个 Job 只有一个 owner；lease 转移后旧 Worker 不能写终态。
 - 公共原子写入在写入、fsync、replace 各故障点的清理测试，以及损坏 manifest 恢复测试。
-- 模拟 Task 终态保存后、Job 终态保存前退出，断言启动 reconciliation 只补齐匹配 job_id/attempt
-  的 Job，不覆盖新 attempt。
+- 分别模拟 Task 终态/Job 非终态、Retry 产生未引用非终态 Job、PROCESSING Task 指向缺失 Job、重启时
+  active Job 仍为 RUNNING 四个崩溃窗口；断言 reconciliation 幂等执行对应补齐、ORPHANED_JOB、
+  SUBMISSION_FAILED 或按剩余 attempt 重新排队/失败，且运行期不修改当前进程的有效 lease。
+- Legacy `job.json` 原位更新、首次 Retry 写 `jobs/2.json`、一致重复去重和冲突重复禁止 claim 的测试。
 - 摘要索引更新失败、重建和分页不加载完整 Diff 的测试。
 - 启动包装器对三种 worker 环境变量的非 1/冲突值前置失败测试，以及第二进程无法取得 singleton lock
   时输出 `MULTI_API_PROCESS_UNSUPPORTED` 的集成测试。
