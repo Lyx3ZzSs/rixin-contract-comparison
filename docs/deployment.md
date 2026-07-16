@@ -338,7 +338,7 @@ services:
 ## 11. 安全建议
 
 - 不要将 `.env` 提交到 Git（已在 `.gitignore` 中排除）
-- 生产环境替换前端测试账号，接入真实认证
+- 按部署环境配置 Keycloak 公共 OIDC 客户端的 authority、client ID、精确回调地址、登出回调地址和 Web Origin；前端使用授权码 + PKCE，不得配置 Client Secret
 - 配置 HTTPS（Let's Encrypt 或企业证书）
 - 限制 PP-OCRv5 / PP-Structure 的网络访问范围
 - 不要在公网暴露后端 8000 端口（移除 `docker-compose.yml` 中 `ports: "8000:8000"`）

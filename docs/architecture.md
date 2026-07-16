@@ -86,7 +86,7 @@ storage/
       reports/
 ```
 
-`task.json` contains the complete `CompareTask` payload. Historical field-extraction task files can remain in storage; compare read and list paths skip those payloads without deleting them. `job.json` contains queue execution metadata. `manifest.json` is an artifact index maintained by the local repository and artifact store. The frontend login remains hard-coded for now; real users, permissions, and tenant-aware task lists should be designed separately if the product needs them later.
+`task.json` contains the complete `CompareTask` payload. Historical field-extraction task files can remain in storage; compare read and list paths skip those payloads without deleting them. `job.json` contains queue execution metadata. `manifest.json` is an artifact index maintained by the local repository and artifact store. The frontend uses `react-oidc-context` with Keycloak as a public OIDC client, following the authorization-code flow with PKCE; OIDC protocol state is stored in browser `sessionStorage`, and the frontend must not contain a Client Secret. The backend validates access tokens and enforces Keycloak roles and task ownership.
 
 ## Verification Baseline
 
