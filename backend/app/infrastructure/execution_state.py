@@ -38,6 +38,9 @@ class ProgressPublisher(Protocol):
     def publish(self, event: object) -> None: ...
 
 
+TaskEnqueueMutation = Callable[[CompareTask, "TaskJob"], None]
+
+
 @dataclass(frozen=True)
 class TaskExecutionContext:
     job_id: str
@@ -89,7 +92,12 @@ class ExecutionStateCoordinator:
     def has_terminal_dependencies(self) -> bool:
         return self._task_repository is not None and self._progress_publisher is not None
 
-    def enqueue(self, job: TaskJob) -> TaskJob:
+    def enqueue(
+        self,
+        job: TaskJob,
+        *,
+        task_mutation: TaskEnqueueMutation | None = None,
+    ) -> TaskJob:
         with self._process_lock:
             self._ensure_repository_namespace()
             existing_jobs = list(self._snapshots.values())
@@ -121,6 +129,8 @@ class ExecutionStateCoordinator:
             candidate.queued_at = _utc_now()
             candidate.updated_at = candidate.queued_at
             candidate.source_path = ""
+            if task_mutation is not None:
+                return self._persist_enqueue_with_task(candidate, task_mutation)
             return self._persist_then_replace(candidate)
 
     def load(self, job_id: str) -> TaskJob:
@@ -495,6 +505,32 @@ class ExecutionStateCoordinator:
         persisted = self._repository._persist(candidate.model_copy(deep=True))
         self._replace_snapshot(persisted)
         return persisted.model_copy(deep=True)
+
+    def _persist_enqueue_with_task(
+        self,
+        candidate: TaskJob,
+        task_mutation: TaskEnqueueMutation,
+    ) -> TaskJob:
+        if self._task_repository is None:
+            raise RuntimeError("ExecutionStateCoordinator 未配置 Task persistence。")
+        previous = self._task_repository.load_compare_task(candidate.task_id)
+        self._task_repository.update_compare_task(
+            candidate.task_id,
+            lambda task: task_mutation(task, candidate),
+        )
+        try:
+            return self._persist_then_replace(candidate)
+        except BaseException:
+            self._task_repository.update_compare_task(
+                candidate.task_id,
+                lambda task: self._restore_task_snapshot(task, previous),
+            )
+            raise
+
+    @staticmethod
+    def _restore_task_snapshot(task: CompareTask, previous: CompareTask) -> None:
+        task.__dict__.clear()
+        task.__dict__.update(previous.model_copy(deep=True).__dict__)
 
     def _replace_snapshot(self, job: TaskJob) -> None:
         replacement = dict(self._snapshots)

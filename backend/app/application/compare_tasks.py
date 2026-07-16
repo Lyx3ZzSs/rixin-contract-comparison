@@ -80,8 +80,8 @@ class CompareTaskApplication:
                 "compare_filename": compare_filename or "",
                 "compare_options": options.model_dump(),
             },
+            task_mutation=self._mark_active_job,
         )
-        self._mark_active_job(task_id, job.job_id)
         return job
 
     def load_compare_task(self, task_id: str) -> CompareTask:
@@ -103,12 +103,29 @@ class CompareTaskApplication:
 
     def retry_compare(self, task_id: str) -> TaskJob:
         task = self.load_compare_task(task_id)
+        validated_inputs_exist = Path(task.original_pdf_path).is_file() and Path(task.compare_pdf_path).is_file()
         task.ensure_transition_allowed(
             "PROCESSING",
-            validated_inputs_exist=(Path(task.original_pdf_path).is_file() and Path(task.compare_pdf_path).is_file()),
+            validated_inputs_exist=validated_inputs_exist,
         )
-        job = self.runner.retry(task_id, task_type="compare")
-        self._mark_retry_queued(task, job)
+
+        def mark_retry_queued(persisted: CompareTask, job: TaskJob) -> None:
+            persisted.ensure_transition_allowed(
+                "PROCESSING",
+                validated_inputs_exist=validated_inputs_exist,
+            )
+            persisted.status = "PROCESSING"
+            persisted.terminal_reason = "NONE"
+            persisted.active_job_id = job.job_id
+            persisted.stage = "排队中"
+            persisted.progress_percent = 3
+            persisted.errors = []
+
+        job = self.runner.retry(
+            task_id,
+            task_type="compare",
+            task_mutation=mark_retry_queued,
+        )
         return job
 
     def ensure_report(self, task: CompareTask) -> CompareTask:
@@ -194,22 +211,9 @@ class CompareTaskApplication:
             logger.exception("Background compare task failed: %s", task_id)
             raise
 
-    def _mark_active_job(self, task_id: str, job_id: str) -> None:
-        def mutate(task: CompareTask) -> None:
-            task.active_job_id = job_id
-
-        self.repository.update_compare_task(task_id, mutate)
-
-    def _mark_retry_queued(self, task: CompareTask, job: TaskJob) -> None:
-        def mutate(persisted: CompareTask) -> None:
-            persisted.status = "PROCESSING"
-            persisted.terminal_reason = "NONE"
-            persisted.active_job_id = job.job_id
-            persisted.stage = "排队中"
-            persisted.progress_percent = 3
-            persisted.errors = []
-
-        self.repository.update_compare_task(task.task_id, mutate)
+    @staticmethod
+    def _mark_active_job(task: CompareTask, job: TaskJob) -> None:
+        task.active_job_id = job.job_id
 
 
 default_compare_task_application = CompareTaskApplication()

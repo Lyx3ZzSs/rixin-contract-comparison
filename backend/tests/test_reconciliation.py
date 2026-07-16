@@ -79,3 +79,55 @@ def test_startup_reconciliation_repairs_task_terminal_job_gap_without_task_chang
     assert terminal_after == terminal_before
     assert publisher.events == []
     assert reconcile_terminal_jobs(task_repository, restarted) == 0
+
+
+@pytest.mark.parametrize(
+    ("terminal_reason", "expected_job_status", "expected_error"),
+    [
+        ("EXECUTION_FAILED", "FAILED", "handler failed"),
+        ("CANCELLED", "CANCELLED", ""),
+    ],
+)
+def test_startup_reconciliation_maps_failed_task_reason_to_job_terminal(
+    tmp_path: Path,
+    terminal_reason: str,
+    expected_job_status: str,
+    expected_error: str,
+) -> None:
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    task_repository = LocalJsonTaskRepository(app_settings)
+    job_repository = LocalJsonTaskJobRepository(app_settings)
+    publisher = RecordingPublisher()
+    coordinator = ExecutionStateCoordinator(
+        job_repository,
+        task_repository=task_repository,
+        progress_publisher=publisher,
+    )
+    task_id = f"TRECONCILE_{terminal_reason}"
+    job = coordinator.enqueue(
+        TaskJob(
+            job_id=f"compare:{task_id}:1",
+            task_id=task_id,
+            task_type="compare",
+            execution_no=1,
+            max_attempts=1,
+        )
+    )
+    task_repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            status="FAILED",
+            terminal_reason=terminal_reason,
+            active_job_id=job.job_id,
+            terminal_job_id=job.job_id,
+            terminal_attempt=job.attempt,
+            errors=["handler failed" if terminal_reason == "EXECUTION_FAILED" else "任务已取消。"],
+        )
+    )
+
+    assert reconcile_terminal_jobs(task_repository, coordinator) == 1
+
+    repaired = coordinator.load(job.job_id)
+    assert repaired.status == expected_job_status
+    assert repaired.last_error == expected_error
+    assert publisher.events == []

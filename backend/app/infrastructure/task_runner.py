@@ -22,6 +22,7 @@ from app.errors import (
 from app.infrastructure.execution_state import (
     CancellationToken,
     ExecutionStateCoordinator,
+    TaskEnqueueMutation,
     TaskExecutionContext,
 )
 from app.models import CompareTask
@@ -278,6 +279,7 @@ class QueuedTaskRunner:
         task_id: str,
         payload: Mapping[str, Any],
         max_attempts: int | None = None,
+        task_mutation: TaskEnqueueMutation | None = None,
     ) -> TaskJob:
         if task_type not in self._handlers:
             raise RuntimeError(f"未注册任务执行器: {task_type}")
@@ -289,7 +291,7 @@ class QueuedTaskRunner:
             payload=dict(payload),
             max_attempts=max_attempts or self.max_attempts,
         )
-        queued = self.job_repository.enqueue(job)
+        queued = self.job_repository.enqueue(job, task_mutation=task_mutation)
         if self.autostart:
             self.start()
         self._wake_event.set()
@@ -318,7 +320,13 @@ class QueuedTaskRunner:
             raise NotFoundError(f"任务执行记录不存在: {task_id}")
         return jobs[0]
 
-    def retry(self, task_id: str, *, task_type: TaskJobType) -> TaskJob:
+    def retry(
+        self,
+        task_id: str,
+        *,
+        task_type: TaskJobType,
+        task_mutation: TaskEnqueueMutation | None = None,
+    ) -> TaskJob:
         jobs = self.jobs_for_task(task_id, task_type=task_type)
         if not jobs:
             raise NotFoundError(f"任务执行记录不存在: {task_id}")
@@ -336,7 +344,7 @@ class QueuedTaskRunner:
             payload=dict(job.payload),
             max_attempts=job.max_attempts,
         )
-        queued = self.job_repository.enqueue(retried)
+        queued = self.job_repository.enqueue(retried, task_mutation=task_mutation)
         if self.autostart:
             self.start()
         self._wake_event.set()
@@ -396,7 +404,10 @@ class QueuedTaskRunner:
                 self._wake_event.wait(self.poll_interval_seconds)
                 self._wake_event.clear()
                 continue
-            self._run_job(job, worker_id)
+            try:
+                self._run_job(job, worker_id)
+            except Exception:
+                logger.exception("Unexpected task worker error; worker continuing: job_id=%s", job.job_id)
 
     def _run_job(self, job: TaskJob, worker_id: str) -> None:
         handler = self._handlers.get(job.task_type)
@@ -424,10 +435,6 @@ class QueuedTaskRunner:
             token.raise_if_cancelled()
             result = handler(context, job.payload)
             token.raise_if_cancelled()
-            if result is None:
-                self.coordinator.mark_succeeded(job.job_id, worker_id=worker_id)
-            else:
-                self.coordinator.commit_success(job.job_id, worker_id=worker_id, result=result)
         except TaskCancelled:
             self._mark_job_cancelled(job, worker_id)
         except TaskStaleLeaseError:
@@ -436,10 +443,25 @@ class QueuedTaskRunner:
             logger.exception("Task job failed: job_id=%s", job.job_id)
             self._mark_job_failed(job, worker_id, exc)
         else:
-            logger.info("Task job succeeded: job_id=%s", job.job_id)
+            self._mark_job_succeeded(job, worker_id, result)
         finally:
             heartbeat_stop.set()
             heartbeat.join(timeout=1)
+
+    def _mark_job_succeeded(self, job: TaskJob, worker_id: str, result: CompareTask | None) -> None:
+        try:
+            if result is None:
+                self.coordinator.mark_succeeded(job.job_id, worker_id=worker_id)
+            else:
+                self.coordinator.commit_success(job.job_id, worker_id=worker_id, result=result)
+        except TaskCancelled:
+            self._mark_job_cancelled(job, worker_id)
+        except TaskStaleLeaseError:
+            logger.warning("Stale task job success; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id)
+        except Exception:
+            self._log_terminal_commit_failure(job, "success")
+        else:
+            logger.info("Task job succeeded: job_id=%s", job.job_id)
 
     def _mark_job_cancelled(self, job: TaskJob, worker_id: str) -> None:
         try:
@@ -451,6 +473,8 @@ class QueuedTaskRunner:
             logger.warning(
                 "Stale task job cancellation; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id
             )
+        except Exception:
+            self._log_terminal_commit_failure(job, "cancellation")
 
     def _mark_job_failed(self, job: TaskJob, worker_id: str, exc: Exception) -> None:
         try:
@@ -472,6 +496,16 @@ class QueuedTaskRunner:
             self._mark_job_cancelled(job, worker_id)
         except TaskStaleLeaseError:
             logger.warning("Stale task job failure; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id)
+        except Exception:
+            self._log_terminal_commit_failure(job, "failure")
+
+    @staticmethod
+    def _log_terminal_commit_failure(job: TaskJob, terminal_path: str) -> None:
+        logger.exception(
+            "Authoritative terminal %s commit failed; startup reconciliation required if Task is terminal: job_id=%s",
+            terminal_path,
+            job.job_id,
+        )
 
     def _heartbeat_loop(self, job_id: str, worker_id: str, stop_event: threading.Event) -> None:
         interval = max(1.0, self.lease_seconds / 3)
