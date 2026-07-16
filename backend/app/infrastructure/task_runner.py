@@ -39,6 +39,7 @@ class TaskJob(BaseModel):
     lease_expires_at: str = ""
     error_code: str = ""
     last_error: str = ""
+    source_path: str = Field(default="", exclude=True, repr=False)
 
 
 class TaskRunnerStats(BaseModel):
@@ -92,20 +93,38 @@ class LocalJsonTaskJobRepository:
                 existing = self.load(job.job_id)
             except FileNotFoundError:
                 existing = None
-            if existing and existing.status not in TERMINAL_JOB_STATUSES:
+            if existing:
+                if existing.status in TERMINAL_JOB_STATUSES:
+                    raise TaskTransitionConflict(
+                        f"执行记录 {existing.job_id} 已为终态 {existing.status}，不能重新入队。"
+                    )
                 return existing
+            target_path = self._new_job_path(job)
+            if target_path.exists():
+                raise TaskTransitionConflict(f"任务 {job.task_id} 的第 {job.execution_no} 次执行记录已存在，不能覆盖。")
+            active_jobs = [
+                existing_job
+                for existing_job in self.list_jobs()
+                if existing_job.task_id == job.task_id
+                and existing_job.task_type == job.task_type
+                and existing_job.status not in TERMINAL_JOB_STATUSES
+            ]
+            if active_jobs:
+                raise TaskTransitionConflict(f"任务 {job.task_id} 已有活动执行记录 {active_jobs[0].job_id}。")
+            job = job.model_copy(deep=True)
             job.status = "QUEUED"
             job.queued_at = _utc_now()
             job.updated_at = job.queued_at
+            job.source_path = str(target_path)
             self._write_job(job)
             return job
 
     def load(self, job_id: str) -> TaskJob:
-        path = self.job_path(job_id)
-        if not path.exists():
+        path = self._find_job_path(job_id)
+        if path is None:
             raise FileNotFoundError(f"任务执行记录不存在: {job_id}")
         with self._lock:
-            return TaskJob(**json.loads(path.read_text(encoding="utf-8")))
+            return self._load_job_path(path)
 
     def list_jobs(self) -> list[TaskJob]:
         tasks_dir = self.settings.tasks_dir
@@ -113,9 +132,10 @@ class LocalJsonTaskJobRepository:
             return []
         jobs: list[TaskJob] = []
         with self._lock:
-            for path in tasks_dir.glob("*/job.json"):
+            paths = [*tasks_dir.glob("*/job.json"), *tasks_dir.glob("*/jobs/*.json")]
+            for path in paths:
                 try:
-                    jobs.append(TaskJob(**json.loads(path.read_text(encoding="utf-8"))))
+                    jobs.append(self._load_job_path(path))
                 except (OSError, ValueError, TypeError):
                     continue
         return sorted(jobs, key=lambda job: (job.next_run_at or job.queued_at, job.queued_at))
@@ -124,6 +144,16 @@ class LocalJsonTaskJobRepository:
         with self._lock:
             now = _utc_now()
             for job in self.list_jobs():
+                if self._is_expired_at_attempt_limit(job, now):
+                    job.status = "FAILED"
+                    job.error_code = "LEASE_EXPIRED_MAX_ATTEMPTS"
+                    job.last_error = "任务租约过期且已达到最大尝试次数。"
+                    job.finished_at = now
+                    job.updated_at = now
+                    job.lease_owner = ""
+                    job.lease_expires_at = ""
+                    self._write_job(job)
+                    continue
                 if not self._is_claimable(job, now):
                     continue
                 job.status = "RUNNING"
@@ -182,33 +212,39 @@ class LocalJsonTaskJobRepository:
         return self._update_job(job_id, mutate)
 
     def request_cancel(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
-        updated: list[TaskJob] = []
         with self._lock:
-            for job in self.list_jobs():
-                if job.task_id != task_id or (task_type and job.task_type != task_type):
-                    continue
-                if job.status in TERMINAL_JOB_STATUSES:
-                    updated.append(job)
-                    continue
-                if job.status == "QUEUED":
-                    job.status = "CANCELLED"
-                    job.finished_at = _utc_now()
-                    job.lease_owner = ""
-                    job.lease_expires_at = ""
-                else:
-                    job.status = "CANCEL_REQUESTED"
-                job.updated_at = _utc_now()
-                self._write_job(job)
-                updated.append(job)
-        return updated
+            jobs = [
+                job
+                for job in self.list_jobs()
+                if job.task_id == task_id and (task_type is None or job.task_type == task_type)
+            ]
+            if not jobs:
+                return []
+            active_jobs = [job for job in jobs if job.status not in TERMINAL_JOB_STATUSES]
+            job = max(active_jobs or jobs, key=lambda item: item.execution_no)
+            if job.status in TERMINAL_JOB_STATUSES:
+                return [job]
+            if job.status == "QUEUED":
+                job.status = "CANCELLED"
+                job.finished_at = _utc_now()
+                job.lease_owner = ""
+                job.lease_expires_at = ""
+            else:
+                job.status = "CANCEL_REQUESTED"
+            job.updated_at = _utc_now()
+            self._write_job(job)
+            return [job]
 
     @property
     def job_dir(self) -> Path:
         return self.settings.tasks_dir
 
     def job_path(self, job_id: str) -> Path:
-        task_id = job_id.split(":", 1)[1] if ":" in job_id else job_id
-        return self._task_dir(task_id) / "job.json"
+        existing = self._find_job_path(job_id)
+        if existing is not None:
+            return existing
+        task_id, execution_no = self._job_identity_parts(job_id)
+        return self._task_dir(task_id) / "jobs" / f"{execution_no}.json"
 
     def _is_claimable(self, job: TaskJob, now: str) -> bool:
         if job.status == "QUEUED":
@@ -216,6 +252,14 @@ class LocalJsonTaskJobRepository:
         if job.status == "RUNNING":
             return bool(job.lease_expires_at and job.lease_expires_at <= now)
         return False
+
+    def _is_expired_at_attempt_limit(self, job: TaskJob, now: str) -> bool:
+        return bool(
+            job.status == "RUNNING"
+            and job.lease_expires_at
+            and job.lease_expires_at <= now
+            and job.attempt >= job.max_attempts
+        )
 
     def _update_job(self, job_id: str, mutate: Callable[[TaskJob], None]) -> TaskJob:
         with self._lock:
@@ -230,19 +274,55 @@ class LocalJsonTaskJobRepository:
         raise TaskTransitionConflict(f"执行记录 {job.job_id} 已为终态 {job.status}，不能改写为 {target_status}。")
 
     def _write_job(self, job: TaskJob) -> None:
-        path = self.job_path(job.job_id)
+        path = Path(job.source_path) if job.source_path else self._new_job_path(job)
+        job.source_path = str(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = path.with_suffix(path.suffix + ".tmp")
         temp_path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
         temp_path.replace(path)
-        self._write_manifest(job)
+        self._write_manifest(job, path)
+
+    def _load_job_path(self, path: Path) -> TaskJob:
+        job = TaskJob(**json.loads(path.read_text(encoding="utf-8")))
+        job.source_path = str(path)
+        return job
+
+    def _find_job_path(self, job_id: str) -> Path | None:
+        if not self.settings.tasks_dir.exists():
+            return None
+        paths = [
+            *self.settings.tasks_dir.glob("*/job.json"),
+            *self.settings.tasks_dir.glob("*/jobs/*.json"),
+        ]
+        for path in paths:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+            if payload.get("job_id") == job_id:
+                return path
+        return None
+
+    def _new_job_path(self, job: TaskJob) -> Path:
+        return self._task_dir(job.task_id) / "jobs" / f"{job.execution_no}.json"
+
+    def _job_identity_parts(self, job_id: str) -> tuple[str, int]:
+        identity = job_id.split(":", 1)[1] if ":" in job_id else job_id
+        task_id, separator, execution = identity.rpartition(":")
+        if separator:
+            try:
+                return task_id, int(execution)
+            except ValueError:
+                pass
+        return identity, 1
 
     def _task_dir(self, task_id: str) -> Path:
         safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in task_id)
         return self.settings.tasks_dir / (safe_name or "task")
 
-    def _write_manifest(self, job: TaskJob) -> None:
+    def _write_manifest(self, job: TaskJob, job_path: Path) -> None:
         task_dir = self._task_dir(job.task_id)
+        task_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = task_dir / "manifest.json"
         now = _utc_now()
         if manifest_path.exists():
@@ -257,8 +337,9 @@ class LocalJsonTaskJobRepository:
             for item in manifest.get("artifacts", [])
             if isinstance(item, dict) and item.get("path")
         }
-        artifacts["job.json"] = {
-            "path": "job.json",
+        artifact_path = job_path.relative_to(task_dir).as_posix()
+        artifacts[artifact_path] = {
+            "path": artifact_path,
             "area": "metadata",
             "kind": "json",
             "updated_at": now,
@@ -371,9 +452,10 @@ class QueuedTaskRunner:
         if task_type not in self._handlers:
             raise RuntimeError(f"未注册任务执行器: {task_type}")
         job = TaskJob(
-            job_id=f"{task_type}:{task_id}",
+            job_id=f"{task_type}:{task_id}:1",
             task_id=task_id,
             task_type=task_type,
+            execution_no=1,
             payload=dict(payload),
             max_attempts=max_attempts or self.max_attempts,
         )
@@ -394,7 +476,11 @@ class QueuedTaskRunner:
             for job in self.job_repository.list_jobs()
             if job.task_id == task_id and (task_type is None or job.task_type == task_type)
         ]
-        return sorted(jobs, key=lambda job: job.updated_at or job.queued_at, reverse=True)
+        return sorted(
+            jobs,
+            key=lambda job: (job.execution_no, job.updated_at or job.queued_at),
+            reverse=True,
+        )
 
     def latest_job(self, task_id: str, *, task_type: TaskJobType | None = None) -> TaskJob:
         jobs = self.jobs_for_task(task_id, task_type=task_type)
@@ -403,22 +489,22 @@ class QueuedTaskRunner:
         return jobs[0]
 
     def retry(self, task_id: str, *, task_type: TaskJobType) -> TaskJob:
-        job = self.latest_job(task_id, task_type=task_type)
+        jobs = self.jobs_for_task(task_id, task_type=task_type)
+        if not jobs:
+            raise NotFoundError(f"任务执行记录不存在: {task_id}")
+        if any(job.status not in TERMINAL_JOB_STATUSES for job in jobs):
+            raise ConflictError("任务已有活动执行，不能重试。")
+        job = max(jobs, key=lambda item: item.execution_no)
         if job.status != "FAILED":
             raise ConflictError("只有执行失败的任务可以重试。")
-        retried = job.model_copy(
-            update={
-                "status": "QUEUED",
-                "attempt": 0,
-                "queued_at": _utc_now(),
-                "started_at": "",
-                "finished_at": "",
-                "updated_at": _utc_now(),
-                "next_run_at": "",
-                "lease_owner": "",
-                "lease_expires_at": "",
-                "last_error": "",
-            }
+        execution_no = max(existing.execution_no for existing in jobs) + 1
+        retried = TaskJob(
+            job_id=f"{task_type}:{task_id}:{execution_no}",
+            task_id=task_id,
+            task_type=task_type,
+            execution_no=execution_no,
+            payload=dict(job.payload),
+            max_attempts=job.max_attempts,
         )
         queued = self.job_repository.enqueue(retried)
         if self.autostart:

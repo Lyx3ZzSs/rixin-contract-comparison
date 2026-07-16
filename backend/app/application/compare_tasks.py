@@ -63,9 +63,9 @@ class CompareTaskApplication:
         original_filename: str | None,
         compare_filename: str | None,
         compare_options: CompareOptions | None = None,
-    ) -> None:
+    ) -> TaskJob:
         options = compare_options or CompareOptions()
-        self.runner.submit(
+        job = self.runner.submit(
             task_type="compare",
             task_id=task_id,
             payload={
@@ -77,6 +77,8 @@ class CompareTaskApplication:
                 "compare_options": options.model_dump(),
             },
         )
+        self._mark_active_job(task_id, job.job_id)
+        return job
 
     def load_compare_task(self, task_id: str) -> CompareTask:
         return self.repository.load_compare_task(task_id)
@@ -107,7 +109,7 @@ class CompareTaskApplication:
             validated_inputs_exist=(Path(task.original_pdf_path).is_file() and Path(task.compare_pdf_path).is_file()),
         )
         job = self.runner.retry(task_id, task_type="compare")
-        self._mark_retry_queued(task)
+        self._mark_retry_queued(task, job)
         return job
 
     def ensure_report(self, task: CompareTask) -> CompareTask:
@@ -195,9 +197,17 @@ class CompareTaskApplication:
 
         self.repository.update_compare_task(task_id, mutate)
 
-    def _mark_retry_queued(self, task: CompareTask) -> None:
+    def _mark_active_job(self, task_id: str, job_id: str) -> None:
+        def mutate(task: CompareTask) -> None:
+            task.active_job_id = job_id
+
+        self.repository.update_compare_task(task_id, mutate)
+
+    def _mark_retry_queued(self, task: CompareTask, job: TaskJob) -> None:
         def mutate(persisted: CompareTask) -> None:
             persisted.status = "PROCESSING"
+            persisted.terminal_reason = "NONE"
+            persisted.active_job_id = job.job_id
             persisted.stage = "排队中"
             persisted.progress_percent = 3
             persisted.errors = []

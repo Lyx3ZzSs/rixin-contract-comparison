@@ -83,9 +83,10 @@ def configure_storage(tmp_path: Path) -> None:
 def failed_compare_job(runner: QueuedTaskRunner, task_id: str) -> TaskJob:
     job = runner.job_repository.enqueue(
         TaskJob(
-            job_id=f"compare:{task_id}",
+            job_id=f"compare:{task_id}:1",
             task_id=task_id,
             task_type="compare",
+            execution_no=1,
             payload={"task_id": task_id},
             attempt=1,
             max_attempts=1,
@@ -489,9 +490,10 @@ def test_compare_execution_api_retries_failed_job(tmp_path: Path) -> None:
     )
     job = default_task_runner.job_repository.enqueue(
         TaskJob(
-            job_id=f"compare:{task_id}",
+            job_id=f"compare:{task_id}:1",
             task_id=task_id,
             task_type="compare",
+            execution_no=1,
             payload={"task_id": task_id, "original_path": "a.pdf", "compare_path": "b.pdf"},
             attempt=1,
             max_attempts=1,
@@ -506,18 +508,25 @@ def test_compare_execution_api_retries_failed_job(tmp_path: Path) -> None:
         default_task_runner.autostart = original_autostart
 
     assert retry_response.status_code == 200
+    assert retry_response.json()["job_id"] == f"compare:{task_id}:2"
+    assert retry_response.json()["execution_no"] == 2
     assert retry_response.json()["status"] == "QUEUED"
     assert retry_response.json()["attempt"] == 0
     retried_task = load_task(task_id)
     assert retried_task.status == "PROCESSING"
     assert retried_task.stage == "排队中"
     assert retried_task.errors == []
+    assert retried_task.active_job_id == f"compare:{task_id}:2"
+    assert default_task_runner.job_repository.load(job.job_id).status == "FAILED"
+    assert (settings.tasks_dir / task_id / "jobs" / "1.json").is_file()
+    assert (settings.tasks_dir / task_id / "jobs" / "2.json").is_file()
 
 
 @pytest.mark.parametrize(
     ("terminal_reason", "create_original", "create_compare"),
     [
         ("CANCELLED", True, True),
+        ("COMPLETED", True, True),
         ("SUBMISSION_FAILED", False, True),
     ],
 )
@@ -545,8 +554,8 @@ def test_compare_task_application_rejects_ineligible_retry_transition(
     repository.save_compare_task(
         CompareTask(
             task_id=task_id,
-            status="FAILED",
-            terminal_reason=terminal_reason,
+            status="COMPLETED" if terminal_reason == "COMPLETED" else "FAILED",
+            terminal_reason="NONE" if terminal_reason == "COMPLETED" else terminal_reason,
             original_pdf_path=str(original),
             compare_pdf_path=str(compare),
         )
@@ -556,7 +565,8 @@ def test_compare_task_application_rejects_ineligible_retry_transition(
     with pytest.raises(TaskTransitionConflict):
         application.retry_compare(task_id)
 
-    assert repository.load_compare_task(task_id).status == "FAILED"
+    expected_status = "COMPLETED" if terminal_reason == "COMPLETED" else "FAILED"
+    assert repository.load_compare_task(task_id).status == expected_status
     assert runner.latest_job(task_id, task_type="compare").status == "FAILED"
 
 
@@ -597,7 +607,9 @@ def test_compare_task_application_allows_eligible_retry_transition(
     job = application.retry_compare(task_id)
 
     assert job.status == "QUEUED"
-    assert repository.load_compare_task(task_id).status == "PROCESSING"
+    retried_task = repository.load_compare_task(task_id)
+    assert retried_task.status == "PROCESSING"
+    assert retried_task.active_job_id == job.job_id
 
 
 @pytest.mark.parametrize(
