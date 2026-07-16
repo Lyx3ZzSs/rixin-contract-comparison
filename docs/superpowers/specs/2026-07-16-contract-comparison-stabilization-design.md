@@ -5,14 +5,14 @@
 - 方案：B（按业务纵切面稳定化）
 - 日期：2026-07-16
 - 范围：合同对比主流程、审核与报告、文件型任务基础设施
-- 状态：四部分设计已沟通确认，两轮书面 Review 意见已纳入，待最终审阅
+- 状态：四部分设计已沟通确认，三轮书面 Review 意见已纳入，待最终审阅
 
 ## Review 闭环索引
 
 | # | 处理结论 | 设计定位 |
 | --- | --- | --- |
 | 1 | Task 取消采用兼容投影，Job 保留独立取消终态 | [任务状态模型](#task-state-model) |
-| 2 | Repository-backed Token 通过 ExecutionContext 逐层传递 | [取消协议](#cancellation-protocol) |
+| 2 | Coordinator-backed Token 通过 ExecutionContext 逐层传递 | [取消协议](#cancellation-protocol) |
 | 3 | Job 终态 mark 增加状态、owner 和 lease 前置条件 | [取消协议](#cancellation-protocol) |
 | 4 | 证据覆盖重叠率阈值固定为 0.80 | [Diff 去重规则](#diff-deduplication) |
 | 5 | canonical diff_id 采用字典序最小 ID | [Diff 去重规则](#diff-deduplication) |
@@ -25,6 +25,12 @@
 | 12 | 增加取消竞态、阈值、报告并发和崩溃恢复边界测试 | [测试策略](#test-strategy) |
 | 13 | 使用稳定显式 anchor 建立章节交叉引用 | 本索引及各目标章节 |
 | 14 | 定义结构化事件、公共字段、错误字段和脱敏示例 | [结构化日志](#structured-logging) |
+| P1 | Job 终态不可变；Task 仅允许显式失败重试转换 | [任务状态模型](#task-state-model) |
+| P2 | 只保护正确 golden 行为，允许修正已确认的 bug 基线 | [Golden 保护政策](#golden-test-policy) |
+| P3 | 生产启动包装器前置拒绝多 worker，单实例锁仅作兜底 | [部署约束](#single-api-deployment) |
+| P4 | 镜像携带脱敏种子案例，首次启动幂等初始化到 volume | [质量案例供给](#quality-case-supply) |
+| P5 | 历史 Diff 审核广播到该 Diff 的全部缺省 AuditItem | [历史审核迁移](#legacy-review-projection) |
+| P6 | Token 读取 Coordinator 内存快照，持久化文件负责重启恢复 | [取消协议](#cancellation-protocol) |
 
 ## 1. 背景与问题定义
 
@@ -163,6 +169,29 @@ Retry 校验 Task 原因和输入 artifact：`EXECUTION_FAILED` 还要求现有 
 `SUBMISSION_FAILED` 在左右输入仍完整时允许创建新 Job，即使上次提交没有成功落盘 Job。Task 虽投影
 为 `FAILED`，但取消任务不能通过 Retry 接口恢复。
 
+Task 和 Job 使用不同的不变式：
+
+- 一个 Job 代表一次用户可见的执行。Job 一旦进入 `SUCCEEDED`、`FAILED` 或 `CANCELLED`，终态不可变。
+- 一个 Task 可以按顺序关联多个 Job，但同一时间最多一个非终态 Job。
+- 用户 Retry 不复用终态 Job，而是递增 `execution_no` 并创建新 Job。`attempt` 只表示同一个 Job 内部的
+  自动重试次数，不能和 `execution_no` 混用。
+- 新 Job ID 使用 `compare:{task_id}:{execution_no}`；任务目录保存 `jobs/{execution_no}.json`，Task
+  保存 `active_job_id`。历史单文件 `job.json` 读取为 `execution_no=1`，不要求离线搬迁。
+- `GET /execution` 和取消接口操作当前 `active_job_id`；历史 Job 保留用于审计，不参与当前状态判断。
+
+Task 允许的状态转换固定如下：
+
+| 起始 Task 状态 | 目标状态 | 条件 |
+| --- | --- | --- |
+| `PROCESSING` | `COMPLETED` | 当前 active Job 成功提交终态 |
+| `PROCESSING` | `FAILED` | 当前 active Job 失败、取消或提交失败 |
+| `FAILED/EXECUTION_FAILED` | `PROCESSING` | 用户 Retry，旧 Job 保持 FAILED，新建 Job |
+| `FAILED/SUBMISSION_FAILED` | `PROCESSING` | 输入 artifact 完整且用户 Retry，新建 Job |
+
+`COMPLETED -> *`、`FAILED/CANCELLED -> PROCESSING`、终态原因互相改写、非 active Job 写 Task 终态均为
+非法转换并抛出 `TaskTransitionConflict`。因此“终态不可覆盖”严格约束单个 Job；Task 的上述两个
+Retry 转换是显式白名单，不构成冲突。
+
 Job 内部状态继续表达队列执行细节：
 
 ```text
@@ -177,8 +206,8 @@ CANCELLED              CANCEL_REQUESTED
                           CANCELLED
 ```
 
-终态只能写入一次。`CANCELLED`、`SUCCEEDED`、`FAILED` 之间不能互相覆盖；冲突转换作为显式
-`TaskTransitionConflict` 处理并记录。
+每个 Job 的终态只能写入一次。`CANCELLED`、`SUCCEEDED`、`FAILED` 之间不能互相覆盖；冲突转换作为
+显式 `TaskTransitionConflict` 处理并记录。
 
 <a id="cancellation-protocol"></a>
 
@@ -190,9 +219,12 @@ CANCELLED              CANCEL_REQUESTED
   Handler 签名从只接收 payload 改为同时接收该上下文。
 - Application Handler 将 `cancellation_token` 依次传给 `CompareService.compare()` 和
   `PipelineContext`，不使用模块全局变量或仅存在于 HTTP 请求内的标志。
-- `CancellationToken` 是 Repository-backed Token。`raise_if_cancelled()` 每次从 Job Repository
-  读取最新持久化状态；`CANCEL_REQUESTED/CANCELLED` 抛出 `TaskCancelled`，owner 不匹配或 lease
-  已失效时抛出 `TaskStaleLeaseError`。
+- `ExecutionStateCoordinator` 启动时从 Job 文件加载受 RLock 保护的内存状态视图。所有 Job 状态修改
+  必须在 Coordinator 内先完成原子持久化，再替换内存快照；持久化失败时内存状态不变并让操作失败。
+- `CancellationToken` 持有 job_id、worker_id 和 Coordinator 引用。`raise_if_cancelled()` 只在 RLock
+  内读取不可变内存快照，不在每个检查点重新读取 JSON 文件；文件仍是进程重启后的持久事实源。
+- 快照为 `CANCEL_REQUESTED/CANCELLED` 时抛出 `TaskCancelled`，owner 不匹配或 lease 已失效时抛出
+  `TaskStaleLeaseError`。任何绕过 Coordinator 直接写 Job 文件的路径均不受支持并应被移除。
 - `ComparePipeline.run()` 在每个 stage 开始前、`stage.execute()` 返回后和终态提交前检查 Token；
   stage 内部的进度回调也执行检查，使有细粒度进度的长阶段可以更早退出。
 - 检查点抛出 `TaskCancelled`，由统一终态处理器保存 Job 和 Task 的取消终态。
@@ -226,7 +258,11 @@ stream to staging
 
 Job 创建失败时执行补偿，清理 staging 和临时 Job；已经归属到成功保存 Task 的两份已验证输入予以
 保留，使 `SUBMISSION_FAILED` 可以重试。Task 保存失败时输入尚无有效 owner，必须清理。重试必须先
-验证输入文件、重置 Task 和 revision，再创建对 Worker 可见的新 Job；入队失败同样补偿。
+验证输入文件和旧 Job 终态，然后创建新的 execution_no/Job。新 Job 与 Task 重置在 Coordinator 临界区
+内提交：先持久化新 Job，再保存 Task 的 `PROCESSING`、`active_job_id` 和新 revision，释放锁后 Job 才
+对 claim 可见。claim 除检查 Job 为 `QUEUED` 外，还必须验证 Task 的 `active_job_id` 与 Job 一致。
+Task 保存失败时删除尚不可见的新 Job 并保留旧失败 Task；进程中断产生的不匹配 Job 由启动
+reconciliation 标记为孤立而不执行。
 
 #### 5.2.4 终态事件顺序
 
@@ -380,12 +416,24 @@ Diff DTO 以向后兼容的可选字段补充：
 - 相同 report revision 的并发请求只生成一次；审核变更提升 report revision，不同 revision 使用
   不同锁和文件，互不覆盖。
 
+<a id="quality-case-supply"></a>
+
 #### 5.3.3 质量工作台和前端请求
 
 - 新增可配置 `QUALITY_CASES_DIR`，生产默认位置位于 storage 下。
 - 运行时代码不再从 `backend/tests/fixtures` 加载质量案例。
 - 测试通过依赖注入使用临时目录；测试 fixture 仍可作为测试数据存在。
-- Docker 镜像无需复制 tests 目录即可运行应用和质量工作台。
+- 仓库新增非 tests 路径 `backend/resources/quality_cases/`，只存放经过脱敏和授权的最小种子案例；
+  Docker 镜像复制到只读 `QUALITY_CASES_SEED_DIR=/app/resources/quality_cases`。
+- 生产启动包装器在启动 API 前执行幂等初始化：目标 volume 中不存在同 case_id 时，将 seed case 原子
+  复制到 `QUALITY_CASES_DIR=/data/storage/quality/cases`；已有 case 永不覆盖，并保存 seed manifest
+  version。复制先进入同目录隐藏 staging 目录，校验 `expected.json` 后再 rename 发布；空 volume 首次
+  启动后至少具有镜像内置基线案例。
+- 管理员可以继续通过现有质量案例导出能力，把经过审批的已完成 Task 导出到 `QUALITY_CASES_DIR`；
+  本轮不新增匿名上传入口。独立 `scripts/init_quality_cases.py` 支持部署人员手工预置或重新执行初始化。
+- 质量运行输出使用 `QUALITY_RUNS_DIR=/data/storage/quality/runs`，不再写源码目录
+  `.ocr-compare-quality`。
+- Docker 镜像无需复制 tests 目录即可运行应用和具有基线数据的质量工作台。
 - 前端普通 HTTP 请求统一支持超时、AbortSignal 和卸载取消。
 - OIDC 前端测试显式清理或模拟环境变量，避免本地 `.env` 改变测试结果。
 
@@ -418,8 +466,9 @@ Task 终态同时记录 `terminal_job_id` 和 `terminal_attempt`。如果进程�
 
 当前 `QueuedTaskRunner` 的 Worker 是同一 API 进程内的 `threading.Thread`，正式支持模型也限定为
 单 API 进程，因此使用 `ExecutionStateCoordinator` 持有的共享 `threading.RLock`，不使用
-`fcntl/flock` 冒充多进程支持。Queue、Task 终态协调和 manifest 元数据更新必须使用同一个
-Coordinator，不能由各 Repository 各自创建互不相干的 `RLock`。
+`fcntl/flock` 做 Queue 状态协调或冒充多进程支持。[部署约束](#single-api-deployment)中的 OS lock 只
+用于检测第二 API 进程。Queue、Task 终态协调和 manifest 元数据更新必须使用同一个 Coordinator，
+不能由各 Repository 各自创建互不相干的 `RLock`。
 
 Job 列表读取、领取、取消、重试和状态写回在相应锁临界区内完成：
 
@@ -441,11 +490,24 @@ Job 保存 owner、claimed_at、lease_expires_at 和 attempt。lease 到期后�
 - 提供幂等重建脚本，从 Task 文件恢复摘要索引。
 - API 分页只读取索引命中的 Task，避免为一页记录加载全部历史 Diff。
 
+<a id="single-api-deployment"></a>
+
 #### 5.4.4 部署约束
 
 本轮正式支持“单节点、单 API 进程、一个或多个受共享 RLock 保护的 Worker 线程”。SSE ProgressBus 仍是
 进程内组件，因此配置多个 API 进程时启动检查必须明确拒绝或报错，不能静默进入部分实时事件丢失的
 状态。前端轮询降级是网络容错机制，不作为多 API 进程支持方案。
+
+生产入口统一改为 `backend/scripts/run_api.py`：读取 `API_WORKERS`、`WEB_CONCURRENCY` 和
+`UVICORN_WORKERS`，任一显式值不是整数 1，或三个值互相冲突时，在创建 Uvicorn 子进程前退出并打印
+`MULTI_API_PROCESS_UNSUPPORTED`。Docker CMD 和部署文档只使用该包装器，固定 `workers=1`；禁止生产
+使用 `uvicorn --workers N` 或 Gunicorn 多 worker 绕过包装器。
+
+Application lifespan 另持有 `storage/runtime/api-singleton.lock` 的非阻塞 OS advisory lock，直至进程
+退出。该锁只用于检测绕过包装器的第二 API 进程，不参与 Queue/Task 状态协调；获取失败时启动失败并
+打印包含 storage 路径和单进程要求的明确错误。由于预 fork 工具无法从单个子进程可靠获知兄弟数量，
+lockfile 是兜底报警，不保证把外部错误启动器转化为干净的整体退出；干净拒绝由生产包装器和部署配置
+负责。开发环境单进程 `--reload` 可以使用同一 guard，但同时只能有一个实际 serving child 持锁。
 
 未来如需多节点部署，应在既有 Adapter 边界后替换为共享数据库、对象存储和跨进程事件总线；
 不在本次四批次中实现。
@@ -459,10 +521,19 @@ Job 保存 owner、claimed_at、lease_expires_at 和 attempt。lease 到期后�
 - 历史 Task 缺少 `report_revision` 时，以“已有完成结果”为 1、其他状态为 0 初始化；首次审核变更后
   按新规则递增。
 - 历史 extraction Task/Job 在扫描时按未知或退役类型跳过，不删除原文件。
-- 历史 Diff 只有 Diff 级审核状态时，读取层生成 AuditItem 初始审核投影；发生下一次审核写入后，
-  持久化为 canonical `audit_item_reviews`。
 - 旧固定路径报告可以继续作为历史 artifact 读取；再次生成时使用 revision 化路径。
 - 索引是可重建派生数据，不作为 Task 或审核事实源。
+
+<a id="legacy-review-projection"></a>
+
+### 6.1 历史 Diff 审核投影
+
+- 历史 Diff 只有 Diff 级审核状态时，先生成该 Diff 的完整 AuditItem 集合，再把 Diff 的
+  `review_status`、`review_comment`、`reviewed_by` 和 `reviewed_at` 广播到其全部 AuditItem。一个历史
+  MODIFY Diff 拆成 ADD/DELETE/MODIFY 多个 AuditItem 时，各 item 初始获得相同审核状态。
+- 已经存在的 canonical `audit_item_reviews` 优先，广播只填充缺失 item，不覆盖已完成的独立审核；
+  Diff 为 `UNREVIEWED` 时不创建冗余记录。发生下一次审核写入时，在同一 Task 更新内持久化完整归一化
+  map。统计始终基于广播后的完整 AuditItem 集合，不根据 map 是否为空切换回 Diff 计数。
 
 <a id="error-observability"></a>
 
@@ -478,7 +549,7 @@ Job 保存 owner、claimed_at、lease_expires_at 和 attempt。lease 到期后�
 - `TaskSubmissionError`：Task/Job 提交链失败，触发补偿并返回可解释错误。
 - artifact/report 发布错误：保留原有已发布版本，临时文件进入安全清理流程。
 
-每次 Job 日志至少包含 task_id、job_id、attempt、owner、状态转换和 revision；补偿失败、索引更新
+每次 Job 日志至少包含 task_id、job_id、execution_no、attempt、owner、状态转换和 revision；补偿失败、索引更新
 失败和 manifest 解析失败必须有结构化错误记录。日志不记录合同全文、OCR 全文或敏感字段值。
 
 <a id="structured-logging"></a>
@@ -495,7 +566,7 @@ Job 保存 owner、claimed_at、lease_expires_at 和 attempt。lease 到期后�
 | `event` | 稳定事件名，不使用自然语言句子 |
 | `request_id` | HTTP 请求关联 ID；后台恢复没有请求时为 null |
 | `task_id`、`job_id` | 任务与执行记录标识 |
-| `attempt`、`worker_id` | 执行轮次与 lease owner |
+| `execution_no`、`attempt`、`worker_id` | 用户执行序号、Job 内自动尝试次数与 lease owner |
 | `from_status`、`to_status` | 本次状态转换；非转换事件为 null |
 | `terminal_reason` | Task 具体终态原因 |
 | `task_revision`、`report_revision` | 可见性 revision 与报告业务 revision |
@@ -510,13 +581,13 @@ Job 保存 owner、claimed_at、lease_expires_at 和 attempt。lease 到期后�
 取消终态示例：
 
 ```json
-{"timestamp":"2026-07-16T08:15:30.125Z","level":"INFO","event":"task_terminal_committed","request_id":null,"task_id":"task-7f2a","job_id":"compare:task-7f2a","attempt":1,"worker_id":"worker-a-0","from_status":"CANCEL_REQUESTED","to_status":"CANCELLED","terminal_reason":"CANCELLED","task_revision":18,"report_revision":0,"error_type":null,"error_code":null,"recovery_marker":null,"duration_ms":7}
+{"timestamp":"2026-07-16T08:15:30.125Z","level":"INFO","event":"task_terminal_committed","request_id":null,"task_id":"task-7f2a","job_id":"compare:task-7f2a:1","execution_no":1,"attempt":1,"worker_id":"worker-a-0","from_status":"CANCEL_REQUESTED","to_status":"CANCELLED","terminal_reason":"CANCELLED","task_revision":18,"report_revision":0,"error_type":null,"error_code":null,"recovery_marker":null,"duration_ms":7}
 ```
 
 补偿失败示例：
 
 ```json
-{"timestamp":"2026-07-16T08:16:02.410Z","level":"ERROR","event":"compensation_failed","request_id":"req-91bd","task_id":"task-902c","job_id":null,"attempt":0,"worker_id":null,"from_status":"PROCESSING","to_status":"FAILED","terminal_reason":"SUBMISSION_FAILED","task_revision":3,"report_revision":0,"error_type":"PermissionError","error_code":"ARTIFACT_CLEANUP_FAILED","recovery_marker":"recovery/task-902c.json","duration_ms":12}
+{"timestamp":"2026-07-16T08:16:02.410Z","level":"ERROR","event":"compensation_failed","request_id":"req-91bd","task_id":"task-902c","job_id":null,"execution_no":1,"attempt":0,"worker_id":null,"from_status":"PROCESSING","to_status":"FAILED","terminal_reason":"SUBMISSION_FAILED","task_revision":3,"report_revision":0,"error_type":"PermissionError","error_code":"ARTIFACT_CLEANUP_FAILED","recovery_marker":"recovery/task-902c.json","duration_ms":12}
 ```
 
 路径只记录 storage 相对路径。错误消息必须经过脱敏和长度限制；合同文件名、合同文本、OCR 文本、
@@ -541,7 +612,9 @@ Job 保存 owner、claimed_at、lease_expires_at 和 attempt。lease 到期后�
 - 使用 Barrier 精确覆盖“取消与成功 mark”“取消与失败 mark”的竞态，断言先取得 Coordinator 的
   合法转换胜出，终态不会被后写覆盖。
 - owner 不匹配和 lease 过期测试，断言抛出 `TaskStaleLeaseError` 且 Task/Job 保持不变。
-- 取消任务 Retry 被拒绝、执行失败 Retry 可用的 Task/Job 映射测试。
+- 执行失败 Retry 创建新 execution_no/job_id 且旧 Job 保持 FAILED；取消和已完成 Task Retry 被拒绝的
+  Task/Job 状态机测试。
+- 重复 Token checkpoint 不读取 Job JSON；取消持久化成功后内存快照立即可见，持久化失败时快照不变。
 - 终态持久化和 SSE 发布顺序测试。
 - 前端 SSE error、EOF、首事件超时、轮询网络错误和组件卸载测试。
 - 跨页、跨条款相同文本的 Diff 去重回归测试；覆盖率 `0.79` 不合并、`0.80` 合并、无定位证据
@@ -549,6 +622,8 @@ Job 保存 owner、claimed_at、lease_expires_at 和 attempt。lease 到期后�
 - 无证据和无坐标 Diff 的 AuditItem/报告完整性测试。
 - AuditItem 单项审核、旧 Diff 批量审核和统计投影测试；前端断言同一 Diff 下各卡片独立显示审核
   状态徽标，更新一个 item 不改变兄弟 item。
+- 历史 Diff 审核广播到全部 AuditItem、partial canonical map 只补缺项以及 UNREVIEWED 不生成冗余记录
+  的迁移测试。
 
 ### 8.3 第三批
 
@@ -557,7 +632,8 @@ Job 保存 owner、claimed_at、lease_expires_at 和 attempt。lease 到期后�
 - 同 report revision 并发请求只调用一次 Generator、审核后新 revision、不同 revision 互不阻塞、
   生成失败保留旧报告和临时文件清理测试。
 - 补偿动作失败时保留主错误、写入 recovery marker，以及启动恢复重试成功后删除 marker 的测试。
-- 无 tests 目录的生产质量目录测试。
+- 空 volume 从镜像 seed 幂等初始化、已有同名 case 不覆盖、管理员导出追加案例以及无 tests 目录的
+  生产质量目录测试。
 - 隔离 OIDC 环境变量的前端测试。
 
 ### 8.4 第四批
@@ -567,7 +643,8 @@ Job 保存 owner、claimed_at、lease_expires_at 和 attempt。lease 到期后�
 - 模拟 Task 终态保存后、Job 终态保存前退出，断言启动 reconciliation 只补齐匹配 job_id/attempt
   的 Job，不覆盖新 attempt。
 - 摘要索引更新失败、重建和分页不加载完整 Diff 的测试。
-- 不受支持的多 API 进程配置启动失败测试。
+- 启动包装器对三种 worker 环境变量的非 1/冲突值前置失败测试，以及第二进程无法取得 singleton lock
+  时输出 `MULTI_API_PROCESS_UNSUPPORTED` 的集成测试。
 
 每批完成后执行相关测试和完整门禁：
 
@@ -589,13 +666,27 @@ cd frontend && npm run build
 4. 单机部署一致性。
 
 每批采用 Red-Green-Refactor，完成后运行该批相关测试与完整回归，并启用独立 SubAgent Review
-对应流程代码。阻断级 Review 问题修复并复验后才进入下一批。现有 OCR、匹配和报告 golden tests
-作为行为保护网，不因重构随意修改期望值。
+对应流程代码。阻断级 Review 问题修复并复验后才进入下一批。
+
+<a id="golden-test-policy"></a>
+
+### 9.1 Golden test 保护政策
+
+Golden tests 保护已确认的正确产品行为，不把历史 bug 固化为不可变契约：
+
+- 与本次改造无关、且编码正确行为的 OCR、匹配和报告期望必须保持不变。
+- 如果失败期望能够由已批准设计和最小缺陷复现证明是在编码 bug，例如跨页相同文本被错误合并，
+  则必须把 golden 更新为正确结果，否则修复无法交付。
+- Golden 更新只改受该缺陷直接影响的条目、数量或报告片段，并在测试名或 fixture 说明中记录缺陷规则；
+  不允许用整份重新生成的快照掩盖无关变化。
+- 提交时同时提供修复前失败的定向回归测试、golden 差异和完整回归结果；该批 SubAgent Review 必须
+  单独确认每一处 golden 变更与已批准规则一致。
 
 ## 10. 完成标准
 
 - 字段提取产品逻辑、接口描述和前端入口全部移除，合同对比解析/OCR 能力正常。
 - 取消、失败、重试和成功状态不存在互相覆盖，前端最终状态可收敛。
+- 每次用户 Retry 创建独立 Job，历史 Job 终态不可变；只有白名单 Task 失败原因可回到 PROCESSING。
 - Diff 不会因缺少位置维度而误合并，每个 Diff 均进入 AuditItem 和报告。
 - AuditItem 是审核、统计和报告的唯一业务口径，历史审核可以兼容迁移。
 - 上传和入队失败不会留下不可解释的孤儿任务或永久处理中状态。
@@ -603,4 +694,6 @@ cd frontend && npm run build
 - 报告与 report revision 对齐，同 revision 只生成一次且不会损坏或覆盖其他 revision。
 - 文件队列在单进程多 Worker 线程下不会重复领取任务，旧 lease owner 不能覆盖新 owner，记录分页
   不再加载全部历史差异。
+- 生产启动入口在 pre-fork 前拒绝多 API worker，绕过入口的第二进程被 singleton guard 明确拒绝。
+- 全新生产 volume 自动获得脱敏基线质量案例，且不会覆盖管理员已有案例。
 - 后端编译、lint、完整测试以及前端测试和生产构建全部通过。
