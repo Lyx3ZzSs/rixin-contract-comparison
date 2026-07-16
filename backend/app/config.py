@@ -47,8 +47,9 @@ class Settings(BaseSettings):
 
     All flat fields are kept for backward compatibility — existing ``.env``
     files and ``settings.xxx`` access patterns continue to work.
-    Nested models (``extraction``, ``matching``, etc.) provide per-domain
-    grouped access.
+    Nested models (``matching``, ``ppstructure``, ``ppocrv5``, etc.) provide
+    per-domain grouped access. Document extraction/OCR settings configure the
+    comparison pipeline; they are not a separate product model.
     """
 
     model_config = SettingsConfigDict(
@@ -70,7 +71,7 @@ class Settings(BaseSettings):
     cache_dir: Path | None = None
     max_upload_size_mb: int = Field(default=30, ge=1)
 
-    # -- Extraction (flat env vars → nested model) ----------------------
+    # -- Document extraction/OCR ------------------------------------------
 
     document_extractor: str = "auto"
     compare_document_extractor: str = "ppstructure_ocr_hybrid"
