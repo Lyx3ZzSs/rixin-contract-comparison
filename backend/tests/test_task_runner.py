@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -32,6 +33,53 @@ def wait_until(predicate, timeout: float = 2.0) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("condition was not met before timeout")
+
+
+def test_local_json_task_job_repository_skips_legacy_extraction_job(tmp_path: Path) -> None:
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    repository = LocalJsonTaskJobRepository(app_settings)
+    legacy_job = {
+        "job_id": "extraction:TEXTRACT",
+        "task_id": "TEXTRACT",
+        "task_type": "extraction",
+        "status": "QUEUED",
+        "payload": {"task_id": "TEXTRACT"},
+        "attempt": 0,
+        "max_attempts": 1,
+        "queued_at": "2026-05-20T08:00:00+00:00",
+        "started_at": "",
+        "finished_at": "",
+        "updated_at": "2026-05-20T08:00:00+00:00",
+        "next_run_at": "",
+        "lease_owner": "",
+        "lease_expires_at": "",
+        "last_error": "",
+    }
+    compare_job = {
+        **legacy_job,
+        "job_id": "compare:TCOMPARE",
+        "task_id": "TCOMPARE",
+        "task_type": "compare",
+        "payload": {"task_id": "TCOMPARE"},
+        "queued_at": "2026-05-21T08:00:00+00:00",
+        "updated_at": "2026-05-21T08:00:00+00:00",
+    }
+    legacy_path = app_settings.tasks_dir / "TEXTRACT" / "job.json"
+    compare_path = app_settings.tasks_dir / "TCOMPARE" / "job.json"
+    legacy_path.parent.mkdir(parents=True)
+    compare_path.parent.mkdir(parents=True)
+    legacy_json = json.dumps(legacy_job, ensure_ascii=False, indent=2)
+    legacy_path.write_text(legacy_json, encoding="utf-8")
+    compare_path.write_text(json.dumps(compare_job, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    jobs = repository.list_jobs()
+    claimed = repository.claim_next(worker_id="compare-worker", lease_seconds=30)
+
+    assert [(job.job_id, job.task_type) for job in jobs] == [("compare:TCOMPARE", "compare")]
+    assert claimed is not None
+    assert (claimed.job_id, claimed.task_type) == ("compare:TCOMPARE", "compare")
+    assert repository.claim_next(worker_id="compare-worker", lease_seconds=30) is None
+    assert legacy_path.read_text(encoding="utf-8") == legacy_json
 
 
 def test_queued_task_runner_persists_and_runs_job(tmp_path: Path) -> None:
