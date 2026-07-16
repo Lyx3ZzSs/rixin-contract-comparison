@@ -5,7 +5,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import settings
+from app.errors import TaskCancelled, TaskStaleLeaseError
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
+from app.infrastructure.execution_state import TaskExecutionContext
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.models import CompareOptions, CompareTask
 from app.services.extractors.base import DocumentExtractor
@@ -83,6 +85,7 @@ class CompareService:
         original_filename: str | None = None,
         compare_filename: str | None = None,
         compare_options: CompareOptions | None = None,
+        execution_context: TaskExecutionContext | None = None,
     ) -> CompareTask:
         settings.ensure_storage()
         task_id = task_id or generate_task_id()
@@ -99,20 +102,28 @@ class CompareService:
             task=task,
             original_pdf=Path(original_pdf),
             compare_pdf=Path(compare_pdf),
-            progress_callback=self._make_progress_callback(task.task_id),
+            execution_context=execution_context,
+            progress_callback=self._make_progress_callback(task.task_id, execution_context),
         )
         pipeline = self._build_pipeline()
         try:
             pipeline.run(ctx)
+        except TaskCancelled:
+            raise
+        except TaskStaleLeaseError:
+            raise
         except Exception as exc:
             logger.exception("Compare task failed")
             ctx.task = self._mark_failed(ctx.task, str(exc))
             raise
         return ctx.task
 
-    def _make_progress_callback(self, task_id: str):
+    def _make_progress_callback(self, task_id: str, execution_context: TaskExecutionContext | None = None):
         def callback(percent: int, stage: str, detail: dict | None = None) -> None:
             from app.services.progress_bus import ProgressBus, ProgressEvent
+
+            if execution_context is not None:
+                execution_context.cancellation_token.raise_if_cancelled()
             progress = min(max(percent, 0), 99)
 
             def mutate(task: CompareTask) -> None:
@@ -125,6 +136,8 @@ class CompareService:
                 task = CompareTask(task_id=task_id, stage=stage, progress_percent=progress)
                 self.repository.save_compare_task(task)
 
+            if execution_context is not None:
+                execution_context.cancellation_token.raise_if_cancelled()
             ProgressBus.get_instance().publish(ProgressEvent(
                 task_id=task_id,
                 stage=task.stage,

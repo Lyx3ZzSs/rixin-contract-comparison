@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import fitz
 import pytest
 
 from app.config import Settings, settings
-from app.errors import PipelineContractError
+from app.errors import PipelineContractError, TaskCancelled
 from app.infrastructure.artifact_store import LocalArtifactStore
+from app.infrastructure.execution_state import (
+    CancellationToken,
+    ExecutionStateCoordinator,
+    TaskExecutionContext,
+)
 from app.infrastructure.task_repository import LocalJsonTaskRepository
+from app.infrastructure.task_runner import LocalJsonTaskJobRepository, TaskJob
 from app.models import (
     BBox,
     Clause,
@@ -46,6 +53,7 @@ from app.services.pipeline_stages import (
     SplitStage,
     SummaryStage,
 )
+from app.services.progress_bus import ProgressBus
 from app.services.repeated_overlay_filter import RepeatedOverlayFilterResult
 
 
@@ -1895,3 +1903,272 @@ def test_ocr_quality_survives_diff_quality_cross_source_merge(tmp_path: Path) ->
     assert "OCR_LOW_CONFIDENCE" in winner.review_flags
     assert task.ocr_quality_summary.profiles[0].affected_diff_ids == ["D001"]
     assert task.ocr_quality_summary.affected_diff_count == 1
+
+
+def _attach_running_execution(
+    ctx: PipelineContext,
+    tmp_path: Path,
+) -> tuple[ExecutionStateCoordinator, TaskJob]:
+    repository = LocalJsonTaskJobRepository(Settings(storage_dir=tmp_path / "execution-state"))
+    coordinator = ExecutionStateCoordinator(repository)
+    job = coordinator.enqueue(
+        TaskJob(
+            job_id=f"compare:{ctx.task.task_id}:1",
+            task_id=ctx.task.task_id,
+            task_type="compare",
+        )
+    )
+    claimed = coordinator.claim_next(worker_id="pipeline-worker", lease_seconds=30)
+    assert claimed is not None
+    ctx.execution_context = TaskExecutionContext(
+        job_id=job.job_id,
+        task_id=job.task_id,
+        worker_id="pipeline-worker",
+        cancellation_token=CancellationToken(
+            job_id=job.job_id,
+            worker_id="pipeline-worker",
+            coordinator=coordinator,
+        ),
+    )
+    return coordinator, job
+
+
+def test_pipeline_checks_cancellation_immediately_before_stage(tmp_path: Path) -> None:
+    ctx = make_ctx(tmp_path)
+    coordinator, job = _attach_running_execution(ctx, tmp_path)
+    coordinator.request_cancel(job.task_id, task_type="compare")
+    executed: list[str] = []
+
+    class Stage:
+        name = "must-not-run"
+        start_progress = 20
+        progress = 30
+
+        def execute(self, _ctx: PipelineContext) -> None:
+            executed.append(self.name)
+
+    with pytest.raises(TaskCancelled):
+        ComparePipeline(stages=[Stage()]).run(ctx)
+
+    assert executed == []
+    assert ctx.task.status == "PROCESSING"
+    assert coordinator.mark_cancelled(job.job_id, worker_id="pipeline-worker").status == "CANCELLED"
+
+
+def test_pipeline_rechecks_cancellation_after_progress_write_before_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(tmp_path)
+    coordinator, job = _attach_running_execution(ctx, tmp_path)
+    repository = LocalJsonTaskRepository(Settings(storage_dir=tmp_path / "pipeline-tasks"))
+    entered_progress = threading.Event()
+    release_progress = threading.Event()
+    executed: list[str] = []
+    errors: list[BaseException] = []
+    update = repository.update_compare_task
+
+    def blocking_update(task_id: str, mutate: object) -> CompareTask:
+        entered_progress.set()
+        assert release_progress.wait(1)
+        return update(task_id, mutate)
+
+    monkeypatch.setattr(repository, "update_compare_task", blocking_update)
+
+    class Stage:
+        name = "must-not-start"
+        start_progress = 20
+        progress = 30
+
+        def execute(self, _ctx: PipelineContext) -> None:
+            executed.append(self.name)
+
+    def run() -> None:
+        try:
+            ComparePipeline(stages=[Stage()], repository=repository).run(ctx)
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert entered_progress.wait(1)
+    coordinator.request_cancel(job.task_id, task_type="compare")
+    release_progress.set()
+    thread.join()
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], TaskCancelled)
+    assert executed == []
+
+
+def test_pipeline_checks_cancellation_after_blocked_stage_before_downstream_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(tmp_path)
+    coordinator, job = _attach_running_execution(ctx, tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    downstream: list[str] = []
+    errors: list[BaseException] = []
+    events: list[object] = []
+    monkeypatch.setattr(ProgressBus.get_instance(), "publish", events.append)
+
+    class BlockedStage:
+        name = "blocked"
+        start_progress = 20
+        progress = 40
+
+        def execute(self, _ctx: PipelineContext) -> None:
+            entered.set()
+            assert release.wait(1)
+
+    class DownstreamStage:
+        name = "downstream"
+        start_progress = 50
+        progress = 80
+
+        def execute(self, _ctx: PipelineContext) -> None:
+            downstream.append(self.name)
+
+    def run() -> None:
+        try:
+            ComparePipeline(stages=[BlockedStage(), DownstreamStage()]).run(ctx)
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert entered.wait(1)
+    coordinator.request_cancel(job.task_id, task_type="compare")
+    release.set()
+    thread.join()
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], TaskCancelled)
+    assert downstream == []
+    assert not any(getattr(event, "status", None) == "COMPLETED" for event in events)
+    assert coordinator.mark_cancelled(job.job_id, worker_id="pipeline-worker").status == "CANCELLED"
+
+
+def test_pipeline_checks_cancellation_immediately_after_stage_returns(tmp_path: Path) -> None:
+    ctx = make_ctx(tmp_path)
+    coordinator, job = _attach_running_execution(ctx, tmp_path)
+    downstream: list[str] = []
+
+    class CancellingStage:
+        name = "remote-ocr"
+        start_progress = 20
+        progress = 50
+
+        def execute(self, _ctx: PipelineContext) -> None:
+            coordinator.request_cancel(job.task_id, task_type="compare")
+
+    class DownstreamStage:
+        name = "downstream"
+        start_progress = 60
+        progress = 80
+
+        def execute(self, _ctx: PipelineContext) -> None:
+            downstream.append(self.name)
+
+    with pytest.raises(TaskCancelled):
+        ComparePipeline(stages=[CancellingStage(), DownstreamStage()]).run(ctx)
+
+    assert downstream == []
+    assert coordinator.mark_cancelled(job.job_id, worker_id="pipeline-worker").status == "CANCELLED"
+
+
+def test_pipeline_checks_cancellation_immediately_before_terminal_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(tmp_path)
+    coordinator, job = _attach_running_execution(ctx, tmp_path)
+    token = ctx.execution_context.cancellation_token
+    checks = 0
+    events: list[object] = []
+    monkeypatch.setattr(ProgressBus.get_instance(), "publish", events.append)
+
+    class CancelBeforeTerminalToken:
+        def raise_if_cancelled(self) -> None:
+            nonlocal checks
+            checks += 1
+            if checks == 4:
+                coordinator.request_cancel(job.task_id, task_type="compare")
+            token.raise_if_cancelled()
+
+    ctx.execution_context = TaskExecutionContext(
+        job_id=job.job_id,
+        task_id=job.task_id,
+        worker_id="pipeline-worker",
+        cancellation_token=CancelBeforeTerminalToken(),
+    )
+
+    class Stage:
+        name = "last-stage"
+        start_progress = 20
+        progress = 90
+
+        def execute(self, _ctx: PipelineContext) -> None:
+            return None
+
+    with pytest.raises(TaskCancelled):
+        ComparePipeline(stages=[Stage()]).run(ctx)
+
+    assert checks == 4
+    assert ctx.task.status == "PROCESSING"
+    assert not any(getattr(event, "status", None) == "COMPLETED" for event in events)
+    assert coordinator.mark_cancelled(job.job_id, worker_id="pipeline-worker").status == "CANCELLED"
+
+
+def test_compare_service_passes_execution_context_into_pipeline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_repository = LocalJsonTaskRepository(Settings(storage_dir=tmp_path / "task-store"))
+    service = CompareService(repository=task_repository)
+    seed_ctx = PipelineContext(
+        task=CompareTask(task_id="TSERVICE_CONTEXT"),
+        original_pdf=tmp_path / "original.pdf",
+        compare_pdf=tmp_path / "compare.pdf",
+    )
+    _coordinator, _job = _attach_running_execution(seed_ctx, tmp_path)
+    execution_context = seed_ctx.execution_context
+    seen: list[TaskExecutionContext | None] = []
+
+    class CapturingPipeline:
+        def run(self, ctx: PipelineContext) -> CompareTask:
+            seen.append(ctx.execution_context)
+            return ctx.task
+
+    monkeypatch.setattr(service, "_build_pipeline", lambda: CapturingPipeline())
+
+    service.compare(
+        tmp_path / "original.pdf",
+        tmp_path / "compare.pdf",
+        task_id="TSERVICE_CONTEXT",
+        execution_context=execution_context,
+    )
+
+    assert seen == [execution_context]
+
+
+def test_compare_service_progress_callback_checks_cancellation_before_writing(tmp_path: Path) -> None:
+    task_repository = LocalJsonTaskRepository(Settings(storage_dir=tmp_path / "task-store"))
+    task_repository.save_compare_task(CompareTask(task_id="TPROGRESS_CANCEL", stage="before", progress_percent=10))
+    service = CompareService(repository=task_repository)
+    seed_ctx = PipelineContext(
+        task=CompareTask(task_id="TPROGRESS_CANCEL"),
+        original_pdf=tmp_path / "original.pdf",
+        compare_pdf=tmp_path / "compare.pdf",
+    )
+    coordinator, job = _attach_running_execution(seed_ctx, tmp_path)
+    coordinator.request_cancel(job.task_id, task_type="compare")
+    callback = service._make_progress_callback("TPROGRESS_CANCEL", seed_ctx.execution_context)
+
+    with pytest.raises(TaskCancelled):
+        callback(50, "after")
+
+    stored = task_repository.load_compare_task("TPROGRESS_CANCEL")
+    assert (stored.stage, stored.progress_percent) == ("before", 10)

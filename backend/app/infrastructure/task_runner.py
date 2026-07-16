@@ -12,7 +12,19 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from app.config import Settings, settings
-from app.errors import ConflictError, NotFoundError, TaskTransitionConflict
+from app.errors import (
+    ConflictError,
+    NotFoundError,
+    TaskCancelled,
+    TaskStaleLeaseError,
+    TaskTransitionConflict,
+)
+from app.infrastructure.execution_state import (
+    CancellationToken,
+    ExecutionStateCoordinator,
+    TaskExecutionContext,
+)
+from app.models import CompareTask
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +63,7 @@ class TaskRunnerStats(BaseModel):
     cancelled: int = 0
 
 
-TaskHandler = Callable[[Mapping[str, Any]], None]
+TaskHandler = Callable[[TaskExecutionContext, Mapping[str, Any]], CompareTask | None]
 
 
 class TaskJobRepository(Protocol):
@@ -62,6 +74,9 @@ class TaskJobRepository(Protocol):
         raise NotImplementedError
 
     def list_jobs(self) -> list[TaskJob]:
+        raise NotImplementedError
+
+    def persist(self, job: TaskJob) -> TaskJob:
         raise NotImplementedError
 
     def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
@@ -147,6 +162,12 @@ class LocalJsonTaskJobRepository:
                 except (OSError, ValueError, TypeError):
                     continue
         return sorted(jobs, key=lambda job: (job.next_run_at or job.queued_at, job.queued_at))
+
+    def persist(self, job: TaskJob) -> TaskJob:
+        with self._lock:
+            persisted = job.model_copy(deep=True)
+            self._write_job(persisted)
+            return persisted
 
     def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
         with self._lock:
@@ -387,6 +408,10 @@ class LazyDefaultTaskJobRepository:
                 self._repository = build_task_job_repository(self.settings)
             return self._repository
 
+    @property
+    def job_dir(self) -> Path:
+        return self.settings.tasks_dir
+
     def enqueue(self, job: TaskJob) -> TaskJob:
         return self.resolve().enqueue(job)
 
@@ -395,6 +420,9 @@ class LazyDefaultTaskJobRepository:
 
     def list_jobs(self) -> list[TaskJob]:
         return self.resolve().list_jobs()
+
+    def persist(self, job: TaskJob) -> TaskJob:
+        return self.resolve().persist(job)
 
     def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
         return self.resolve().claim_next(worker_id=worker_id, lease_seconds=lease_seconds)
@@ -437,7 +465,11 @@ class QueuedTaskRunner:
         autostart: bool = True,
     ) -> None:
         self.settings = app_settings
-        self.job_repository = job_repository or LazyDefaultTaskJobRepository(app_settings)
+        persistence = job_repository or LazyDefaultTaskJobRepository(app_settings)
+        self.coordinator = (
+            persistence if isinstance(persistence, ExecutionStateCoordinator) else ExecutionStateCoordinator(persistence)
+        )
+        self.job_repository: ExecutionStateCoordinator = self.coordinator
         self.max_workers = max_workers or app_settings.task_runner_max_workers
         self.max_attempts = max_attempts or app_settings.task_runner_max_attempts
         self.lease_seconds = lease_seconds or app_settings.task_runner_lease_seconds
@@ -589,12 +621,7 @@ class QueuedTaskRunner:
     def _run_job(self, job: TaskJob, worker_id: str) -> None:
         handler = self._handlers.get(job.task_type)
         if handler is None:
-            self.job_repository.mark_failed(
-                job.job_id,
-                worker_id=worker_id,
-                error=f"未注册任务执行器: {job.task_type}",
-                retry_delay_seconds=self.retry_delay_seconds,
-            )
+            self._mark_job_failed(job, worker_id, RuntimeError(f"未注册任务执行器: {job.task_type}"))
             return
 
         heartbeat_stop = threading.Event()
@@ -605,28 +632,65 @@ class QueuedTaskRunner:
             daemon=True,
         )
         heartbeat.start()
+        token = CancellationToken(job_id=job.job_id, worker_id=worker_id, coordinator=self.coordinator)
+        context = TaskExecutionContext(
+            job_id=job.job_id,
+            task_id=job.task_id,
+            worker_id=worker_id,
+            cancellation_token=token,
+        )
         try:
             logger.info("Task job started: job_id=%s task_type=%s attempt=%s", job.job_id, job.task_type, job.attempt)
-            handler(job.payload)
+            token.raise_if_cancelled()
+            handler(context, job.payload)
+            token.raise_if_cancelled()
+            self.coordinator.mark_succeeded(job.job_id, worker_id=worker_id)
+        except TaskCancelled:
+            self._mark_job_cancelled(job, worker_id)
+        except TaskStaleLeaseError:
+            logger.warning("Stale task job lease; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id)
         except Exception as exc:
             logger.exception("Task job failed: job_id=%s", job.job_id)
-            self.job_repository.mark_failed(
-                job.job_id,
-                worker_id=worker_id,
-                error=str(exc),
-                retry_delay_seconds=self.retry_delay_seconds,
-            )
+            self._mark_job_failed(job, worker_id, exc)
         else:
-            self.job_repository.mark_succeeded(job.job_id, worker_id=worker_id)
             logger.info("Task job succeeded: job_id=%s", job.job_id)
         finally:
             heartbeat_stop.set()
             heartbeat.join(timeout=1)
 
+    def _mark_job_cancelled(self, job: TaskJob, worker_id: str) -> None:
+        try:
+            self.coordinator.mark_cancelled(job.job_id, worker_id=worker_id)
+        except TaskStaleLeaseError:
+            logger.warning("Stale task job cancellation; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id)
+
+    def _mark_job_failed(self, job: TaskJob, worker_id: str, exc: Exception) -> None:
+        try:
+            self.coordinator.mark_failed(
+                job.job_id,
+                worker_id=worker_id,
+                error=str(exc),
+                retry_delay_seconds=self.retry_delay_seconds,
+            )
+        except TaskCancelled:
+            self._mark_job_cancelled(job, worker_id)
+        except TaskStaleLeaseError:
+            logger.warning("Stale task job failure; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id)
+
     def _heartbeat_loop(self, job_id: str, worker_id: str, stop_event: threading.Event) -> None:
         interval = max(1.0, self.lease_seconds / 3)
         while not stop_event.wait(interval):
-            self.job_repository.extend_lease(job_id, worker_id=worker_id, lease_seconds=self.lease_seconds)
+            try:
+                extended = self.coordinator.extend_lease(
+                    job_id,
+                    worker_id=worker_id,
+                    lease_seconds=self.lease_seconds,
+                )
+            except TaskStaleLeaseError:
+                logger.warning("Task heartbeat lost lease: job_id=%s worker_id=%s", job_id, worker_id)
+                return
+            if extended is None:
+                return
 
 
 def _utc_now() -> str:

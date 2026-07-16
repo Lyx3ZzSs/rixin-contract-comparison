@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from app.errors import PipelineContractError
+from app.infrastructure.execution_state import TaskExecutionContext
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.models import (
     Clause,
@@ -61,6 +62,7 @@ class PipelineContext:
     task: CompareTask
     original_pdf: Path
     compare_pdf: Path
+    execution_context: TaskExecutionContext | None = None
 
     original_extraction: ExtractionResult | None = None
     compare_extraction: ExtractionResult | None = None
@@ -206,13 +208,16 @@ class ComparePipeline:
         )
         peak_memory = 0.0
         for stage in self.stages:
+            _raise_if_cancelled(ctx)
             _update_progress(ctx, stage.name, stage.start_progress, self.repository)
+            _raise_if_cancelled(ctx)
             stage_t0 = time.perf_counter()
             mem_start = get_process_memory_mb()
             peak_memory = max(peak_memory, mem_start)
             sm = StageMetrics(name=stage.name, memory_mb_start=mem_start)
             try:
                 stage.execute(ctx)
+                _raise_if_cancelled(ctx)
             except Exception as exc:
                 sm.error = str(exc)
                 sm.duration_seconds = time.perf_counter() - stage_t0
@@ -234,6 +239,7 @@ class ComparePipeline:
         metrics.peak_memory_mb = peak_memory
         ctx.task.metrics = {**ctx.task.metrics, **dataclasses.asdict(metrics)}
 
+        _raise_if_cancelled(ctx)
         ctx.task.status = "COMPLETED"
         ctx.task.stage = "已完成"
         ctx.task.progress_percent = 100
@@ -253,6 +259,11 @@ class ComparePipeline:
         except FileNotFoundError:
             self.repository.save_compare_task(ctx.task)
         return ctx.task
+
+
+def _raise_if_cancelled(ctx: PipelineContext) -> None:
+    if ctx.execution_context is not None:
+        ctx.execution_context.cancellation_token.raise_if_cancelled()
 
 
 def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:

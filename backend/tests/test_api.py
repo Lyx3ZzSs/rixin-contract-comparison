@@ -88,13 +88,16 @@ def failed_compare_job(runner: QueuedTaskRunner, task_id: str) -> TaskJob:
             task_type="compare",
             execution_no=1,
             payload={"task_id": task_id},
-            attempt=1,
             max_attempts=1,
         )
     )
+    worker_id = "api-test-worker"
+    claimed = runner.job_repository.claim_next(worker_id=worker_id, lease_seconds=30)
+    assert claimed is not None
+    assert claimed.job_id == job.job_id
     return runner.job_repository.mark_failed(
         job.job_id,
-        worker_id="",
+        worker_id=worker_id,
         error="failed",
         retry_delay_seconds=0,
     )
@@ -495,11 +498,19 @@ def test_compare_execution_api_retries_failed_job(tmp_path: Path) -> None:
             task_type="compare",
             execution_no=1,
             payload={"task_id": task_id, "original_path": "a.pdf", "compare_path": "b.pdf"},
-            attempt=1,
             max_attempts=1,
         )
     )
-    default_task_runner.job_repository.mark_failed(job.job_id, worker_id="", error="failed", retry_delay_seconds=0)
+    worker_id = "api-test-worker"
+    claimed = default_task_runner.job_repository.claim_next(worker_id=worker_id, lease_seconds=30)
+    assert claimed is not None
+    assert claimed.job_id == job.job_id
+    default_task_runner.job_repository.mark_failed(
+        job.job_id,
+        worker_id=worker_id,
+        error="failed",
+        retry_delay_seconds=0,
+    )
 
     try:
         client = TestClient(app)

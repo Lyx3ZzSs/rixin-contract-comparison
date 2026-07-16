@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from app.auth.models import CurrentUser
-from app.errors import NotFoundError
+from app.errors import NotFoundError, TaskCancelled, TaskStaleLeaseError
+from app.infrastructure.execution_state import TaskExecutionContext
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.infrastructure.task_runner import QueuedTaskRunner, TaskJob, default_task_runner
 from app.models import AuditItemReview, CompareOptions, CompareTask, DiffItem, ReviewStatus
@@ -147,8 +148,13 @@ class CompareTaskApplication:
             reviewed_by,
         )
 
-    def _run_compare_job(self, payload: Mapping[str, Any]) -> None:
-        self._run_compare_task(
+    def _run_compare_job(
+        self,
+        execution_context: TaskExecutionContext,
+        payload: Mapping[str, Any],
+    ) -> CompareTask:
+        return self._run_compare_task(
+            execution_context=execution_context,
             original_path=Path(str(payload["original_path"])),
             compare_path=Path(str(payload["compare_path"])),
             task_id=str(payload["task_id"]),
@@ -160,22 +166,35 @@ class CompareTaskApplication:
     def _run_compare_task(
         self,
         *,
+        execution_context: TaskExecutionContext,
         original_path: Path,
         compare_path: Path,
         task_id: str,
         original_filename: str | None,
         compare_filename: str | None,
         compare_options: CompareOptions | None = None,
-    ) -> None:
+    ) -> CompareTask:
         try:
-            CompareService(repository=self.repository).compare(
+            return CompareService(repository=self.repository).compare(
                 original_path,
                 compare_path,
                 task_id=task_id,
                 original_filename=original_filename,
                 compare_filename=compare_filename,
                 compare_options=compare_options,
+                execution_context=execution_context,
             )
+        except TaskCancelled:
+            self._mark_cancelled(task_id)
+            raise
+        except TaskStaleLeaseError:
+            logger.warning(
+                "Background compare task lost lease: task_id=%s job_id=%s worker_id=%s",
+                task_id,
+                execution_context.job_id,
+                execution_context.worker_id,
+            )
+            raise
         except Exception:
             logger.exception("Background compare task failed: %s", task_id)
             raise
@@ -183,6 +202,7 @@ class CompareTaskApplication:
     def _mark_cancelled(self, task_id: str) -> None:
         def mutate(task: CompareTask) -> None:
             task.status = "FAILED"
+            task.terminal_reason = "CANCELLED"
             task.stage = "已取消"
             task.progress_percent = 100
             if "任务已取消。" not in task.errors:
