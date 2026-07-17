@@ -28,6 +28,8 @@ import {
 } from "./env";
 import { ApiError, authorizedFetch } from "./authFetch";
 
+export const READ_REQUEST_TIMEOUT_MS = 15_000;
+
 export function getApiBaseUrl(): string {
   return getLegacyApiBaseUrl() ?? getConfiguredApiBasePath() ?? normalizeBaseUrl(`${getAppBasePath()}/api`);
 }
@@ -87,7 +89,7 @@ export async function compareContracts(
 }
 
 export async function getTask(taskId: string, signal?: AbortSignal): Promise<CompareTask> {
-  const response = await authorizedFetch(toApiUrl(`/api/compare/${taskId}`), { signal });
+  const response = await readAuthorizedFetch(`/api/compare/${taskId}`, signal);
   return parseJsonResponse<CompareTask>(response);
 }
 
@@ -96,19 +98,19 @@ export async function retryCompareTask(taskId: string): Promise<TaskExecutionRes
   return parseJsonResponse<TaskExecutionResponse>(response);
 }
 
-export async function getCompareRecords(query: CompareRecordQuery = {}): Promise<CompareRecordListResponse> {
+export async function getCompareRecords(query: CompareRecordQuery = {}, signal?: AbortSignal): Promise<CompareRecordListResponse> {
   const searchParams = new URLSearchParams();
   if (query.page !== undefined) searchParams.set("page", String(query.page));
   if (query.pageSize !== undefined) searchParams.set("page_size", String(query.pageSize));
   if (query.startDate) searchParams.set("start_date", query.startDate);
   if (query.endDate) searchParams.set("end_date", query.endDate);
   const queryString = searchParams.toString();
-  const response = await authorizedFetch(toApiUrl(`/api/compare/records${queryString ? `?${queryString}` : ""}`));
+  const response = await readAuthorizedFetch(`/api/compare/records${queryString ? `?${queryString}` : ""}`, signal);
   return parseJsonResponse<CompareRecordListResponse>(response);
 }
 
 export async function getDiffs(taskId: string, signal?: AbortSignal): Promise<DiffItem[]> {
-  const response = await authorizedFetch(toApiUrl(`/api/compare/${taskId}/diffs`), { signal });
+  const response = await readAuthorizedFetch(`/api/compare/${taskId}/diffs`, signal);
   const payload = await parseJsonResponse<{ diffs: DiffItem[] }>(response);
   return payload.diffs;
 }
@@ -138,13 +140,13 @@ export async function updateAuditItemReview(
   return parseJsonResponse<AuditItemReviewResponse>(response);
 }
 
-export async function getCompareQuality(taskId: string): Promise<CompareQualitySummary> {
-  const response = await authorizedFetch(toApiUrl(`/api/compare/${taskId}/quality`));
+export async function getCompareQuality(taskId: string, signal?: AbortSignal): Promise<CompareQualitySummary> {
+  const response = await readAuthorizedFetch(`/api/compare/${taskId}/quality`, signal);
   return parseJsonResponse<CompareQualitySummary>(response);
 }
 
-export async function listQualityCases(): Promise<QualityCaseListResponse> {
-  const response = await authorizedFetch(toApiUrl("/api/quality/cases"));
+export async function listQualityCases(signal?: AbortSignal): Promise<QualityCaseListResponse> {
+  const response = await readAuthorizedFetch("/api/quality/cases", signal);
   return parseJsonResponse<QualityCaseListResponse>(response);
 }
 
@@ -157,13 +159,13 @@ export async function exportQualityCase(payload: QualityCaseExportRequest): Prom
   return parseJsonResponse<QualityCaseExportResponse>(response);
 }
 
-export async function getQualityCase(caseId: string): Promise<QualityCaseDetail> {
-  const response = await authorizedFetch(toApiUrl(`/api/quality/cases/${encodeURIComponent(caseId)}`));
+export async function getQualityCase(caseId: string, signal?: AbortSignal): Promise<QualityCaseDetail> {
+  const response = await readAuthorizedFetch(`/api/quality/cases/${encodeURIComponent(caseId)}`, signal);
   return parseJsonResponse<QualityCaseDetail>(response);
 }
 
-export async function getQualityTaskReview(taskId: string): Promise<QualityTaskReviewResponse> {
-  const response = await authorizedFetch(toApiUrl(`/api/quality/tasks/${encodeURIComponent(taskId)}/review`));
+export async function getQualityTaskReview(taskId: string, signal?: AbortSignal): Promise<QualityTaskReviewResponse> {
+  const response = await readAuthorizedFetch(`/api/quality/tasks/${encodeURIComponent(taskId)}/review`, signal);
   return parseJsonResponse<QualityTaskReviewResponse>(response);
 }
 
@@ -218,4 +220,12 @@ export async function runQualityRegression(payload: QualityRegressionRequest): P
     body: JSON.stringify(payload),
   });
   return parseJsonResponse<QualityRunResponse>(response);
+}
+
+function readAuthorizedFetch(path: string, signal?: AbortSignal): Promise<Response> {
+  return authorizedFetch(
+    toApiUrl(path),
+    signal ? { signal } : undefined,
+    { timeoutMs: READ_REQUEST_TIMEOUT_MS },
+  );
 }

@@ -18,6 +18,7 @@ afterEach(() => {
   signinRedirect.mockClear();
   vi.unstubAllGlobals();
   window.sessionStorage.clear();
+  vi.useRealTimers();
 });
 
 describe("authorizedFetch", () => {
@@ -32,6 +33,80 @@ describe("authorizedFetch", () => {
     const headers = fetchMock.mock.calls[0][1].headers as Headers;
     expect(headers.get("Authorization")).toBe("Bearer access-token");
     expect(headers.get("X-Request-ID")).toBe("request-id");
+  });
+
+  it("aborts an authorized request when its timeout expires", async () => {
+    vi.useFakeTimers();
+    getUser.mockResolvedValue({ access_token: "access-token", expired: false });
+    let requestSignal: AbortSignal | undefined;
+    let notifyFetchStarted!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => { notifyFetchStarted = resolve; });
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      notifyFetchStarted();
+      return new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
+      });
+    }));
+
+    const request = authorizedFetch("/api/tasks", undefined, { timeoutMs: 1000 });
+    await fetchStarted;
+    vi.advanceTimersByTime(1000);
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
+  it("propagates a caller abort signal to the authorized fetch", async () => {
+    getUser.mockResolvedValue({ access_token: "access-token", expired: false });
+    const caller = new AbortController();
+    let requestSignal: AbortSignal | undefined;
+    let notifyFetchStarted!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => { notifyFetchStarted = resolve; });
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      notifyFetchStarted();
+      return new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
+      });
+    }));
+
+    const request = authorizedFetch("/api/tasks", { signal: caller.signal }, { timeoutMs: 1000 });
+    await fetchStarted;
+    caller.abort(new DOMException("Request cancelled", "AbortError"));
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(requestSignal).not.toBe(caller.signal);
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
+  it("uses a merged signal when the timeout cancels a request with a caller signal", async () => {
+    vi.useFakeTimers();
+    getUser.mockResolvedValue({ access_token: "access-token", expired: false });
+    const caller = new AbortController();
+    let requestSignal: AbortSignal | undefined;
+    let abortCount = 0;
+    let notifyFetchStarted!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => { notifyFetchStarted = resolve; });
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      notifyFetchStarted();
+      return new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener("abort", () => {
+          abortCount += 1;
+          reject(requestSignal?.reason);
+        }, { once: true });
+      });
+    }));
+
+    const request = authorizedFetch("/api/tasks", { signal: caller.signal }, { timeoutMs: 1000 });
+    await fetchStarted;
+    vi.advanceTimersByTime(1000);
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(requestSignal?.aborted).toBe(true);
+    expect(caller.signal.aborted).toBe(false);
+    expect(abortCount).toBe(1);
   });
 
   it("maps protected API failures to stable user messages", () => {

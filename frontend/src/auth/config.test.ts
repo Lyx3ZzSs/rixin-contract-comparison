@@ -34,6 +34,10 @@ describe("getOidcConfig", () => {
       "VITE_OIDC_AUTHORITY, VITE_OIDC_CLIENT_ID, VITE_OIDC_REDIRECT_URI, VITE_OIDC_POST_LOGOUT_REDIRECT_URI, VITE_OIDC_SCOPE",
     );
   });
+
+  it("does not inherit local OIDC values from the test process", () => {
+    expect(() => getOidcConfig()).toThrow("缺少 OIDC 前端配置");
+  });
 });
 
 describe("safeReturnTo", () => {

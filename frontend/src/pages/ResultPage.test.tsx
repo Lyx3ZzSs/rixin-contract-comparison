@@ -797,6 +797,20 @@ describe("ResultPage", () => {
     expect(diffSignal?.aborted).toBe(true);
   });
 
+  it("keeps an aborted task read out of the user-visible error state", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getTask)
+      .mockRejectedValueOnce(new DOMException("Request cancelled", "AbortError"))
+      .mockResolvedValueOnce({ ...mockTask, status: "PROCESSING", stage: "轮询恢复", report_url: "" });
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(screen.queryByText("Request cancelled")).not.toBeInTheDocument();
+    await act(async () => { vi.advanceTimersByTime(2400); await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getByText("轮询恢复")).toBeInTheDocument();
+  });
+
   it("clears the first-event fallback timer when unmounted", async () => {
     vi.useFakeTimers();
     vi.mocked(getTask).mockResolvedValueOnce({ ...mockTask, status: "PROCESSING", report_url: "" });

@@ -1,19 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const { authorizedFetch } = vi.hoisted(() => ({
+  authorizedFetch: vi.fn((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init)),
+}));
+
 vi.mock("./authFetch", () => ({
   ApiError: class ApiError extends Error {
     constructor(readonly status: number, message = `请求失败 (${status})`) { super(message); }
   },
-  authorizedFetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+  authorizedFetch,
 }));
 
-import { compareContracts, getApiBaseUrl, getCompareRecords, toApiUrl } from "./api";
+import { compareContracts, getApiBaseUrl, getCompareRecords, getTask, toApiUrl } from "./api";
 import type { AuditItem } from "../types";
 
 const auditStructuralContract: Pick<AuditItem, "structural_flags"> = { structural_flags: [] };
 
 describe("api client URLs", () => {
   afterEach(() => {
+    authorizedFetch.mockClear();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
   });
@@ -172,12 +177,33 @@ describe("api client URLs", () => {
       endDate: "2026-05-22",
     });
 
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(authorizedFetch).toHaveBeenCalledWith(
       toApiUrl("/api/compare/records?page=2&page_size=10&start_date=2026-05-21&end_date=2026-05-22"),
       undefined,
+      { timeoutMs: 15_000 },
     );
     expect(payload.total).toBe(12);
     expect(payload.total_pages).toBe(2);
+  });
+
+  it("forwards a caller signal while applying the read timeout", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ task_id: "task-1", status: "PROCESSING" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getTask("task-1", controller.signal);
+
+    expect(authorizedFetch).toHaveBeenCalledWith(
+      toApiUrl("/api/compare/task-1"),
+      { signal: controller.signal },
+      { timeoutMs: 15_000 },
+    );
+    const init = fetchMock.mock.calls[0][1];
+    expect(init?.signal).toBe(controller.signal);
+    controller.abort();
+    expect(init?.signal?.aborted).toBe(true);
   });
 
 });

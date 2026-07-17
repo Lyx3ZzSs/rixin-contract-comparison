@@ -16,6 +16,10 @@ function normalizeRevision(value: unknown): number | null {
   return Number.isFinite(revision) && revision >= 0 ? revision : null;
 }
 
+function isAbortError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
+}
+
 interface ProgressSynchronizationOptions {
   taskId: string;
   skipInitialLoad?: boolean;
@@ -148,7 +152,7 @@ function startProgressSynchronization(options: ProgressSynchronizationOptions): 
       }
     } catch (error) {
       if (stopped || controller.signal.aborted) return;
-      options.onError?.(error);
+      if (!isAbortError(error)) options.onError?.(error);
       pollDelay = Math.min(POLL_MAX_DELAY_MS, Math.max(POLL_INITIAL_DELAY_MS, pollDelay * 2));
       schedulePoll(pollDelay);
     }
