@@ -84,25 +84,18 @@ def configure_storage(tmp_path: Path) -> None:
 
 
 def failed_compare_job(runner: QueuedTaskRunner, task_id: str) -> TaskJob:
-    job = runner.job_repository.enqueue(
+    return runner.coordinator._persist_then_replace(
         TaskJob(
             job_id=f"compare:{task_id}:1",
             task_id=task_id,
             task_type="compare",
+            status="FAILED",
             execution_no=1,
             payload={"task_id": task_id},
             max_attempts=1,
+            attempt=1,
+            last_error="failed",
         )
-    )
-    worker_id = "api-test-worker"
-    claimed = runner.job_repository.claim_next(worker_id=worker_id, lease_seconds=30)
-    assert claimed is not None
-    assert claimed.job_id == job.job_id
-    return runner.job_repository.mark_failed(
-        job.job_id,
-        worker_id=worker_id,
-        error="failed",
-        retry_delay_seconds=0,
     )
 
 
@@ -506,25 +499,18 @@ def test_compare_execution_api_retries_failed_job(tmp_path: Path) -> None:
             errors=["failed"],
         )
     )
-    job = default_task_runner.job_repository.enqueue(
+    job = default_task_runner.coordinator._persist_then_replace(
         TaskJob(
             job_id=f"compare:{task_id}:1",
             task_id=task_id,
             task_type="compare",
+            status="FAILED",
             execution_no=1,
             payload={"task_id": task_id, "original_path": "a.pdf", "compare_path": "b.pdf"},
+            attempt=1,
             max_attempts=1,
+            last_error="failed",
         )
-    )
-    worker_id = "api-test-worker"
-    claimed = default_task_runner.job_repository.claim_next(worker_id=worker_id, lease_seconds=30)
-    assert claimed is not None
-    assert claimed.job_id == job.job_id
-    default_task_runner.job_repository.mark_failed(
-        job.job_id,
-        worker_id=worker_id,
-        error="failed",
-        retry_delay_seconds=0,
     )
 
     try:
@@ -805,20 +791,16 @@ def test_execution_failure_retry_projection_matches_job_constraints(
     )
     save_task(task)
     if job_status is not None:
-        job = default_task_runner.job_repository.enqueue(
+        default_task_runner.coordinator._persist_then_replace(
             TaskJob(
                 job_id=f"compare:{task_id}:1",
                 task_id=task_id,
                 task_type="compare",
+                status=job_status,
                 execution_no=1,
                 payload={"task_id": task_id},
             )
         )
-        claimed = default_task_runner.job_repository.claim_next(worker_id="constraint-worker", lease_seconds=30)
-        assert claimed is not None
-        if job_status == "SUCCEEDED":
-            default_task_runner.job_repository.mark_succeeded(job.job_id, worker_id="constraint-worker")
-            save_task(task)
 
     try:
         client = TestClient(app)
@@ -1640,6 +1622,84 @@ def test_review_api_accepts_comment_at_limit_and_rejects_longer_comment(tmp_path
     assert accepted.json()["audit_item"]["review_comment"] == allowed_comment
     assert rejected.status_code == 422
     assert rejected.json()["detail"][0]["type"] == "string_too_long"
+
+
+def test_review_state_updates_preserve_oversized_legacy_comments_when_omitted_and_allow_explicit_clear(
+    tmp_path: Path,
+) -> None:
+    configure_storage(tmp_path)
+    legacy_comment = "旧" * 80_000
+    save_task(
+        CompareTask(
+            task_id="TLEGACYLONGCOMMENT",
+            status="COMPLETED",
+            diffs=[_mixed_review_diff()],
+            audit_item_reviews={
+                "DREVIEW:ADD": AuditItemReview(review_status="CONFIRMED", review_comment=legacy_comment),
+                "DREVIEW:DELETE": AuditItemReview(review_status="CONFIRMED", review_comment="delete comment"),
+                "DREVIEW:MODIFY": AuditItemReview(review_status="CONFIRMED", review_comment="modify comment"),
+            },
+            audit_item_reviews_normalized=True,
+        )
+    )
+    client = TestClient(app)
+
+    omitted = client.patch(
+        "/api/compare/TLEGACYLONGCOMMENT/audit-items/DREVIEW:ADD/review",
+        json={"review_status": "IGNORED"},
+    )
+    bulk_omitted = client.patch(
+        "/api/compare/TLEGACYLONGCOMMENT/diffs/DREVIEW/review",
+        json={"review_status": "NEEDS_REVIEW"},
+    )
+
+    assert omitted.status_code == 200, omitted.text
+    assert omitted.json()["audit_item"]["review_comment"] == legacy_comment
+    assert bulk_omitted.status_code == 200, bulk_omitted.text
+    persisted = load_task("TLEGACYLONGCOMMENT")
+    assert persisted.audit_item_reviews["DREVIEW:ADD"].review_comment == legacy_comment
+    assert persisted.audit_item_reviews["DREVIEW:DELETE"].review_comment == "delete comment"
+    assert persisted.audit_item_reviews["DREVIEW:MODIFY"].review_comment == "modify comment"
+
+    cleared = client.patch(
+        "/api/compare/TLEGACYLONGCOMMENT/audit-items/DREVIEW:ADD/review",
+        json={"review_status": "CONFIRMED", "review_comment": ""},
+    )
+
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["audit_item"]["review_comment"] == ""
+    assert load_task("TLEGACYLONGCOMMENT").audit_item_reviews["DREVIEW:ADD"].review_comment == ""
+
+
+def test_compare_api_projects_legacy_nonfinite_match_values_without_mutating_storage(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    diff = DiffItem(diff_id="DNONFINITE", diff_type="ADD", compare_text="added")
+    diff.match_score = float("nan")
+    diff.match_confidence = float("inf")  # type: ignore[assignment]
+    save_task(CompareTask(task_id="TNONFINITEMATCH", status="COMPLETED", diffs=[diff]))
+    client = TestClient(app, raise_server_exceptions=False)
+
+    task_response = client.get("/api/compare/TNONFINITEMATCH")
+    diffs_response = client.get("/api/compare/TNONFINITEMATCH/diffs")
+    review_response = client.patch(
+        "/api/compare/TNONFINITEMATCH/diffs/DNONFINITE/review",
+        json={"review_status": "CONFIRMED"},
+    )
+
+    for response in (task_response, diffs_response, review_response):
+        assert response.status_code == 200, response.text
+        json.loads(
+            response.content,
+            parse_constant=lambda value: (_ for _ in ()).throw(AssertionError(f"invalid JSON number: {value}")),
+        )
+    assert task_response.json()["audit_items"][0]["match_confidence"] is None
+    assert diffs_response.json()["diffs"][0]["match_score"] is None
+    assert diffs_response.json()["diffs"][0]["match_confidence"] is None
+    assert review_response.json()["diff"]["match_score"] is None
+    assert review_response.json()["diff"]["match_confidence"] is None
+    persisted = load_task("TNONFINITEMATCH")
+    assert math.isnan(persisted.diffs[0].match_score)
+    assert math.isinf(persisted.diffs[0].match_confidence)
 
 
 def test_diff_and_audit_api_responses_filter_invalid_historical_evidence_without_mutation(tmp_path: Path) -> None:

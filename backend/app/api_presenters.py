@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
+import math
+from numbers import Real
 from pathlib import Path
 
 from app.api_schemas import (
@@ -132,6 +134,8 @@ def compare_record_list_response(
 
 def diff_response(diff) -> CompareDiffResponse:
     data = to_jsonable(diff)
+    data["match_score"] = _finite_number_or_none(diff.match_score)
+    data["match_confidence"] = _match_confidence_or_none(diff.match_confidence)
     data["original_evidence"] = [to_jsonable(item) for item in valid_evidence_copies(diff.original_evidence)]
     data["compare_evidence"] = [to_jsonable(item) for item in valid_evidence_copies(diff.compare_evidence)]
     return CompareDiffResponse(**data)
@@ -201,7 +205,7 @@ def audit_item_response(item: AuditItem) -> AuditItemResponse:
         structural_flags=item.structural_flags,
         review_flags=item.review_flags,
         text_confidence=item.text_confidence,
-        match_confidence=item.match_confidence,
+        match_confidence=_match_confidence_or_none(item.match_confidence),
         ocr_context={
             "scope": item.ocr_context.scope,
             "affected": item.ocr_context.affected,
@@ -242,3 +246,16 @@ def task_execution_response(job: TaskJob) -> TaskExecutionResponse:
         error_code=job.error_code,
         last_error=job.last_error,
     )
+
+
+def _finite_number_or_none(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(float(value)):
+        return None
+    return float(value)
+
+
+def _match_confidence_or_none(value: object) -> str | None:
+    if isinstance(value, str):
+        return value
+    finite_value = _finite_number_or_none(value)
+    return str(finite_value) if finite_value is not None else None

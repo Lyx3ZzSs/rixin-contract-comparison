@@ -325,7 +325,7 @@ class DiffItem(BaseModel):
     match_method: str = ""
     match_score_details: dict[str, Any] = Field(default_factory=dict)
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
-    match_confidence: str = ""
+    match_confidence: str | float | None = ""
     structural_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     quality_status: DiffQualityStatus = "NORMAL"

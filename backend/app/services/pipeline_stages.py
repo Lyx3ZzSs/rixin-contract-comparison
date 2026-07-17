@@ -33,6 +33,7 @@ from app.services.document_profiler import DocumentProfiler
 from app.services.document_preparation import DocumentPreparer
 from app.services.document_understanding import DocumentUnderstandingService
 from app.services.evidence_locator import EvidenceLocator
+from app.services.evidence_validity import comparable_bbox_coordinates, is_located_evidence
 from app.services.extractors import build_compare_document_extractor, build_document_extractor
 from app.services.extractors.base import (
     DocumentExtractionError,
@@ -2451,7 +2452,10 @@ def _matching_located_evidence(left: DiffItem, right: DiffItem) -> bool:
 
 
 def coverage(left: BBox, right: BBox) -> float:
-    left_coords, right_coords = _comparable_bbox_coordinates(left, right)
+    comparable_coordinates = comparable_bbox_coordinates(left, right)
+    if comparable_coordinates is None:
+        return 0.0
+    left_coords, right_coords = comparable_coordinates
     left_area = _bbox_area(left_coords)
     right_area = _bbox_area(right_coords)
     minimum_area = min(left_area, right_area)
@@ -2462,28 +2466,8 @@ def coverage(left: BBox, right: BBox) -> float:
     return (intersection_width * intersection_height) / minimum_area
 
 
-def _comparable_bbox_coordinates(
-    left: BBox,
-    right: BBox,
-) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
-    if left.normalized is not None and right.normalized is not None:
-        left_normalized = (left.normalized.x0, left.normalized.y0, left.normalized.x1, left.normalized.y1)
-        right_normalized = (right.normalized.x0, right.normalized.y0, right.normalized.x1, right.normalized.y1)
-        if _bbox_area(left_normalized) > 0 and _bbox_area(right_normalized) > 0:
-            return left_normalized, right_normalized
-    return (left.x0, left.y0, left.x1, left.y1), (right.x0, right.y0, right.x1, right.y1)
-
-
 def _evidence_is_located(evidence: EvidenceBox) -> bool:
-    if evidence.page_no <= 0 or evidence.bbox is None:
-        return False
-    raw = evidence.bbox
-    raw_area = _bbox_area((raw.x0, raw.y0, raw.x1, raw.y1))
-    if evidence.bbox.normalized is None:
-        return raw_area > 0
-    normalized = evidence.bbox.normalized
-    normalized_area = _bbox_area((normalized.x0, normalized.y0, normalized.x1, normalized.y1))
-    return normalized_area > 0 or raw_area > 0
+    return is_located_evidence(evidence)
 
 
 def _bbox_area(coords: tuple[float, float, float, float]) -> float:
@@ -2659,7 +2643,9 @@ def _remap_audit_item_reviews_after_final_dedupe(
 
     grouped_reviews: dict[str, list[AuditItemReview]] = {}
     for item_id, review in sorted(task.audit_item_reviews.items()):
-        diff_id, separator, suffix = item_id.partition(":")
+        diff_id, separator, suffix = item_id.rpartition(":")
+        if suffix not in {"ADD", "DELETE", "MODIFY"}:
+            diff_id, separator, suffix = item_id, "", ""
         if not diff_id and "" not in dedupe_remap:
             continue
         canonical_diff_id = dedupe_remap.get(diff_id, diff_id)

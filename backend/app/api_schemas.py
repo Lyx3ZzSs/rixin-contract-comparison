@@ -155,7 +155,7 @@ class AuditItemResponse(BaseModel):
     structural_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     text_confidence: float | None = None
-    match_confidence: str = ""
+    match_confidence: str | None = ""
     ocr_context: AuditItemOcrContextResponse = Field(default_factory=AuditItemOcrContextResponse)
     remediation_context: AuditItemRemediationContextResponse = Field(
         default_factory=AuditItemRemediationContextResponse
@@ -266,7 +266,7 @@ class CompareDiffResponse(BaseModel):
     match_method: str = ""
     match_score_details: dict[str, Any] = Field(default_factory=dict)
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
-    match_confidence: str = ""
+    match_confidence: str | None = ""
     structural_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     quality_status: DiffQualityStatus = "NORMAL"
@@ -289,7 +289,7 @@ class CompareDiffListResponse(BaseModel):
 
 class DiffReviewRequest(BaseModel):
     review_status: ReviewStatus
-    review_comment: str = Field(default="", max_length=MAX_REVIEW_COMMENT_LENGTH)
+    review_comment: str | None = Field(default=None, max_length=MAX_REVIEW_COMMENT_LENGTH)
     reviewed_by: str = ""
 
 

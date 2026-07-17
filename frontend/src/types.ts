@@ -285,7 +285,7 @@ export interface AuditItem {
   structural_flags: string[];
   review_flags: string[];
   text_confidence?: number | null;
-  match_confidence: string;
+  match_confidence: string | null;
   ocr_context: {
     scope?: "ITEM" | "DIFF" | "NONE";
     affected: boolean;

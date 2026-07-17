@@ -531,6 +531,48 @@ def test_fallback_item_accepts_diff_scoped_ocr_and_remediation_context() -> None
     assert item.remediation_context.action_ids == ("DDIFFCONTEXT:UNSCOPED",)
 
 
+def test_malformed_typed_evidence_fallback_accepts_diff_scoped_context() -> None:
+    task = CompareTask(
+        task_id="TMALFORMEDTYPED",
+        diffs=[
+            DiffItem(
+                diff_id="DMALFORMEDTYPED",
+                diff_type="ADD",
+                original_evidence=[evidence("wrong side", "ADD", 2)],
+            )
+        ],
+        ocr_quality_summary=TaskOcrQualitySummary(
+            profiles=[
+                PageOcrQualityProfile(
+                    side="compare",
+                    page_no=9,
+                    status="UNRELIABLE",
+                    reasons=["DIFF_LEVEL"],
+                    affected_diff_ids=["DMALFORMEDTYPED"],
+                )
+            ]
+        ),
+        ocr_remediation_summary=TaskOcrRemediationSummary(
+            actions=[
+                OcrRemediationAction(
+                    action_id="DMALFORMEDTYPED:UNSCOPED",
+                    action_type="MARK_REVIEW",
+                    reason="DIFF_LEVEL",
+                    diff_id="DMALFORMEDTYPED",
+                )
+            ]
+        ),
+    )
+
+    item = build_task_audit_items(task)[0]
+
+    assert item.is_fallback is True
+    assert item.ocr_context.scope == "DIFF"
+    assert item.ocr_context.reasons == ("DIFF_LEVEL",)
+    assert item.remediation_context.scope == "DIFF"
+    assert item.remediation_context.action_ids == ("DMALFORMEDTYPED:UNSCOPED",)
+
+
 def test_task_audit_item_context_defaults_are_conservative_for_legacy_fallback() -> None:
     task = CompareTask(
         task_id="TLEGACYCONTEXT",

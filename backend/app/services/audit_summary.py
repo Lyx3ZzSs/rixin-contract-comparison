@@ -54,7 +54,7 @@ class AuditItem:
     structural_flags: list[str]
     review_flags: list[str]
     text_confidence: float | None
-    match_confidence: str
+    match_confidence: str | float | None
     ocr_context: AuditItemOcrContext = AuditItemOcrContext()
     remediation_context: AuditItemRemediationContext = AuditItemRemediationContext()
     review_status: ReviewStatus = "UNREVIEWED"
@@ -175,6 +175,7 @@ def _audit_items_for_diff(diff: DiffItem) -> list[AuditItem]:
                 _diff_summary(diff),
                 original_evidence,
                 compare_evidence,
+                is_fallback=True,
             )
         ]
 
@@ -185,16 +186,36 @@ def _audit_items_for_diff(diff: DiffItem) -> list[AuditItem]:
     compare_modify_evidence = _typed_evidence(compare_evidence, "MODIFY")
 
     if add_evidence:
-        items.append(_audit_item(diff, "ADD", _evidence_text(add_evidence), [], add_evidence))
+        items.append(_audit_item(diff, "ADD", _evidence_text(add_evidence), [], add_evidence, is_fallback=False))
     if delete_evidence:
-        items.append(_audit_item(diff, "DELETE", _evidence_text(delete_evidence), delete_evidence, []))
+        items.append(
+            _audit_item(diff, "DELETE", _evidence_text(delete_evidence), delete_evidence, [], is_fallback=False)
+        )
     if original_modify_evidence or compare_modify_evidence:
         summary = _modify_summary(
             _evidence_text(original_modify_evidence),
             _evidence_text(compare_modify_evidence),
         )
-        items.append(_audit_item(diff, "MODIFY", summary, original_modify_evidence, compare_modify_evidence))
-    return items or [_audit_item(diff, diff.diff_type, _diff_summary(diff), original_evidence, compare_evidence)]
+        items.append(
+            _audit_item(
+                diff,
+                "MODIFY",
+                summary,
+                original_modify_evidence,
+                compare_modify_evidence,
+                is_fallback=False,
+            )
+        )
+    return items or [
+        _audit_item(
+            diff,
+            diff.diff_type,
+            _diff_summary(diff),
+            original_evidence,
+            compare_evidence,
+            is_fallback=True,
+        )
+    ]
 
 
 def _audit_item(
@@ -203,6 +224,8 @@ def _audit_item(
     summary: str,
     original_evidence: list[EvidenceBox],
     compare_evidence: list[EvidenceBox],
+    *,
+    is_fallback: bool,
 ) -> AuditItem:
     raw_original_evidence = list(original_evidence)
     raw_compare_evidence = list(compare_evidence)
@@ -260,9 +283,7 @@ def _audit_item(
             raw_compare_evidence,
             compare_text,
         ),
-        is_fallback=not any(
-            evidence.highlight_type is not None for evidence in [*raw_original_evidence, *raw_compare_evidence]
-        ),
+        is_fallback=is_fallback,
         evidence_state=evidence_state,
         quality_status=quality_status,
         structural_flags=list(diff.structural_flags),

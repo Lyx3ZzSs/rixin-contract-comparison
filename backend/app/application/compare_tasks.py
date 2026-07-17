@@ -192,7 +192,7 @@ class CompareTaskApplication:
         task: CompareTask,
         diff_id: str,
         review_status: ReviewStatus,
-        review_comment: str = "",
+        review_comment: str | None = None,
         reviewed_by: str = "",
     ) -> tuple[CompareTask, DiffItem]:
         return CompareReviewService(repository=self.repository).update_diff_review(
@@ -208,7 +208,7 @@ class CompareTaskApplication:
         task: CompareTask,
         audit_item_id: str,
         review_status: ReviewStatus,
-        review_comment: str = "",
+        review_comment: str | None = None,
         reviewed_by: str = "",
     ) -> tuple[CompareTask, AuditItem]:
         return CompareReviewService(repository=self.repository).update_audit_item_review(

@@ -1240,7 +1240,6 @@ describe("ResultPage", () => {
     await waitFor(() => expect(updateAuditItemReview).toHaveBeenCalled());
     expect(updateAuditItemReview).toHaveBeenCalledWith("task-1", "diff-1:ADD", {
       review_status: "IGNORED",
-      review_comment: "",
     });
     await waitFor(() => expect(auditCard).toHaveClass("ignored"));
     expect(within(auditCard as HTMLElement).getByText("已忽略")).toBeInTheDocument();
@@ -1254,11 +1253,33 @@ describe("ResultPage", () => {
     await waitFor(() =>
       expect(updateAuditItemReview).toHaveBeenLastCalledWith("task-1", "diff-1:ADD", {
         review_status: "UNREVIEWED",
-        review_comment: "",
       }),
     );
     await waitFor(() => expect(auditCard).not.toHaveClass("ignored"));
     expect(screen.getByRole("button", { name: "忽略 diff-1:ADD" })).toBeInTheDocument();
+  });
+
+  it("does not resend an oversized historical comment for a state-only review action", async () => {
+    const originalItems = mockTask.audit_items;
+    mockTask.audit_items = originalItems?.map((item) =>
+      item.audit_item_id === "diff-1:ADD" ? { ...item, review_comment: "旧".repeat(80_000) } : item
+    );
+    try {
+      const user = userEvent.setup();
+      render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+      await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+      await user.click(screen.getByRole("button", { name: "忽略 diff-1:ADD" }));
+
+      await waitFor(() =>
+        expect(updateAuditItemReview).toHaveBeenCalledWith("task-1", "diff-1:ADD", {
+          review_status: "IGNORED",
+        }),
+      );
+    } finally {
+      mockTask.audit_items = originalItems;
+    }
   });
 
   it("keeps concurrent item saves independent and rejects stale stats revisions", async () => {

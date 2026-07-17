@@ -94,7 +94,6 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
     try {
       const payload = await updateAuditItemReview(taskId, item.id, {
         review_status: status,
-        review_comment: item.reviewComment ?? "",
       });
       setTask((currentTask) => {
         if (!currentTask) {

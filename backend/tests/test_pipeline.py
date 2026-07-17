@@ -1322,6 +1322,18 @@ class TestSummaryStage:
 
         assert [diff.diff_id for diff in ctx.task.diffs] == ["D010"]
 
+    def test_final_dedupe_prefers_normalized_bbox_when_both_are_valid(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        first = self._located_diff("D010", compare_evidence=False)
+        second = self._located_diff("D020", original_x0=30, compare_evidence=False)
+        first.original_evidence[0].bbox.normalized = NormalizedBBox(x0=0, y0=0, x1=1, y1=1)
+        second.original_evidence[0].bbox.normalized = NormalizedBBox(x0=0.2, y0=0, x1=1.2, y1=1)
+        ctx.diffs = [first, second]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010"]
+
     def test_final_dedupe_does_not_locate_zero_area_raw_or_normalized_bbox(self, tmp_path: Path) -> None:
         zero_bbox = BBox(
             x0=10,
@@ -1335,6 +1347,43 @@ class TestSummaryStage:
         second = self._located_diff("D020", compare_evidence=False)
         first.original_evidence[0].bbox = zero_bbox
         second.original_evidence[0].bbox = zero_bbox.model_copy(deep=True)
+        ctx.diffs = [first, second]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"]
+
+    @pytest.mark.parametrize("invalid_coordinate", [float("nan"), float("inf")])
+    @pytest.mark.parametrize("coordinate_space", ["raw", "normalized"])
+    def test_final_dedupe_never_merges_nonfinite_evidence_coordinates(
+        self,
+        tmp_path: Path,
+        invalid_coordinate: float,
+        coordinate_space: str,
+    ) -> None:
+        ctx = make_ctx(tmp_path)
+        first = self._located_diff("D010", compare_evidence=False)
+        second = self._located_diff("D020", original_x0=20, compare_evidence=False)
+        if coordinate_space == "raw":
+            first.original_evidence[0].bbox.x1 = invalid_coordinate
+            second.original_evidence[0].bbox.x1 = invalid_coordinate
+            first.original_evidence[0].bbox.normalized = NormalizedBBox(x0=0, y0=0, x1=1, y1=1)
+            second.original_evidence[0].bbox.normalized = NormalizedBBox(x0=0.2, y0=0, x1=1.2, y1=1)
+        else:
+            first.original_evidence[0].bbox.x1 = 0
+            second.original_evidence[0].bbox.x1 = 20
+            first.original_evidence[0].bbox.normalized = NormalizedBBox(
+                x0=0,
+                y0=0,
+                x1=invalid_coordinate,
+                y1=1,
+            )
+            second.original_evidence[0].bbox.normalized = NormalizedBBox(
+                x0=0.2,
+                y0=0,
+                x1=invalid_coordinate,
+                y1=1,
+            )
         ctx.diffs = [first, second]
 
         SummaryStage().execute(ctx)
@@ -1502,6 +1551,32 @@ class TestSummaryStage:
         review = ctx.task.audit_item_reviews["D010:MODIFY"]
         assert review.review_status == "NEEDS_REVIEW"
         assert review.review_comment == "已确认"
+
+    def test_final_dedupe_remaps_colon_diff_id_audit_reviews_by_known_type_suffix(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.task.audit_item_reviews = {
+            "A:2:DELETE": AuditItemReview(
+                review_status="CONFIRMED",
+                review_comment="canonical",
+                reviewed_at="2026-07-17T02:00:00+00:00",
+            ),
+            "B:1:DELETE": AuditItemReview(
+                review_status="FALSE_POSITIVE",
+                review_comment="duplicate",
+                reviewed_at="2026-07-17T01:00:00+00:00",
+            ),
+        }
+        ctx.diffs = [
+            self._located_diff("A:2"),
+            self._located_diff("B:1", original_x0=20, compare_x0=20),
+        ]
+
+        SummaryStage().execute(ctx)
+
+        assert set(ctx.task.audit_item_reviews) == {"A:2:DELETE"}
+        review = ctx.task.audit_item_reviews["A:2:DELETE"]
+        assert review.review_status == "NEEDS_REVIEW"
+        assert review.review_comment == "canonical"
 
     def test_final_dedupe_drops_ambiguous_blank_audit_review_before_stats(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)

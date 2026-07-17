@@ -38,7 +38,7 @@ class CompareReviewService:
         task: CompareTask,
         diff_id: str,
         review_status: ReviewStatus,
-        review_comment: str = "",
+        review_comment: str | None = None,
         reviewed_by: str = "",
     ) -> tuple[CompareTask, DiffItem]:
         updated_diff: DiffItem | None = None
@@ -53,13 +53,12 @@ class CompareReviewService:
                     continue
                 child_ids = {item.item_id for item in build_audit_items(persisted.diffs) if item.diff_id == diff_id}
                 normalized = self._normalized_reviews(persisted)
-                review = self._review(
-                    review_status,
-                    review_comment,
-                    reviewed_by,
-                )
                 for item_id in child_ids:
-                    self._set_review(normalized, item_id, review)
+                    self._set_review(
+                        normalized,
+                        item_id,
+                        self._review(review_status, review_comment, reviewed_by, existing=normalized.get(item_id)),
+                    )
                 persisted.audit_item_reviews = normalized
                 persisted.audit_item_reviews_normalized = True
                 self._project_diff_reviews(persisted)
@@ -79,7 +78,7 @@ class CompareReviewService:
         task: CompareTask,
         audit_item_id: str,
         review_status: ReviewStatus,
-        review_comment: str = "",
+        review_comment: str | None = None,
         reviewed_by: str = "",
     ) -> tuple[CompareTask, AuditItem]:
         updated_item: AuditItem | None = None
@@ -95,7 +94,12 @@ class CompareReviewService:
             self._set_review(
                 normalized,
                 audit_item_id,
-                self._review(review_status, review_comment, reviewed_by),
+                self._review(
+                    review_status,
+                    review_comment,
+                    reviewed_by,
+                    existing=normalized.get(audit_item_id),
+                ),
             )
             persisted.audit_item_reviews = normalized
             persisted.audit_item_reviews_normalized = True
@@ -132,12 +136,16 @@ class CompareReviewService:
     @staticmethod
     def _review(
         review_status: ReviewStatus,
-        review_comment: str,
+        review_comment: str | None,
         reviewed_by: str,
+        *,
+        existing: AuditItemReview | None,
     ) -> AuditItemReview:
         return AuditItemReview(
             review_status=review_status,
-            review_comment=review_comment.strip(),
+            review_comment=existing.review_comment
+            if review_comment is None and existing is not None
+            else (review_comment or "").strip(),
             reviewed_by=reviewed_by.strip(),
             reviewed_at=datetime.now(UTC).isoformat(),
         )
@@ -148,7 +156,7 @@ class CompareReviewService:
         item_id: str,
         review: AuditItemReview,
     ) -> None:
-        if review.review_status == "UNREVIEWED":
+        if review.review_status == "UNREVIEWED" and not review.review_comment:
             reviews.pop(item_id, None)
             return
         reviews[item_id] = review
