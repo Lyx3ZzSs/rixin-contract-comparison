@@ -136,6 +136,7 @@ export interface CompareResponse {
   manual_review_count?: number;
   ignored_count?: number;
   audit_item_reviews?: Record<string, AuditItemReview>;
+  audit_items?: AuditItem[];
   extractor_used?: string;
   parse_warnings?: string[];
   parse_warning_details?: ParseWarningDetail[];
@@ -266,23 +267,49 @@ export interface AuditItemReview {
   reviewed_at?: string;
 }
 
+export interface AuditItem {
+  audit_item_id: string;
+  diff_id: string;
+  diff_type: DiffType;
+  source_type: string;
+  section_type: string;
+  section_path: string[];
+  title: string;
+  summary: string;
+  original_text: string;
+  compare_text: string;
+  original_evidence: EvidenceBox[];
+  compare_evidence: EvidenceBox[];
+  evidence_state: "LOCATED" | "UNLOCATED";
+  quality_status: DiffQualityStatus;
+  review_flags: string[];
+  text_confidence?: number | null;
+  match_confidence: string;
+  review_status: ReviewStatus;
+  review_comment: string;
+  reviewed_by: string;
+  reviewed_at: string;
+}
+
 export interface DiffReviewResponse {
   task_id: string;
   diff: DiffItem;
   review_stats: {
+    total_count: number;
     reviewed_count: number;
     confirmed_count: number;
     false_positive_count: number;
     manual_review_count: number;
     ignored_count: number;
+    review_unit: "audit_item";
   };
 }
 
 export interface AuditItemReviewResponse {
   task_id: string;
-  audit_item_id: string;
-  audit_item_review: AuditItemReview;
+  audit_item: AuditItem;
   review_stats: DiffReviewResponse["review_stats"];
+  report_revision: number;
 }
 
 export interface QualityDiffItem {

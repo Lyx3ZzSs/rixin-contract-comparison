@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from app.models import BBox, DiffItem, EvidenceBox
-from app.services.audit_summary import audit_stats_summary, build_audit_items, build_audit_stats
+from app.models import AuditItemReview, BBox, DiffItem, EvidenceBox
+from app.services.audit_summary import (
+    audit_stats_summary,
+    build_audit_items,
+    build_audit_stats,
+    normalized_audit_item_reviews,
+)
 
 
 def evidence(text: str, highlight_type: str | None, page_no: int = 1) -> EvidenceBox:
@@ -13,7 +18,7 @@ def evidence(text: str, highlight_type: str | None, page_no: int = 1) -> Evidenc
     )
 
 
-def test_audit_items_skip_diff_without_typed_evidence() -> None:
+def test_audit_items_create_stable_fallback_without_typed_evidence() -> None:
     diff = DiffItem(
         diff_id="D001",
         diff_type="MODIFY",
@@ -23,9 +28,27 @@ def test_audit_items_skip_diff_without_typed_evidence() -> None:
         compare_evidence=[evidence("45 days", None)],
     )
 
-    items = build_audit_items([diff])
+    first = build_audit_items([diff])
+    second = build_audit_items([diff.model_copy(deep=True)])
 
-    assert items == []
+    assert len(first) == 1
+    assert first[0].item_id == second[0].item_id == "D001:MODIFY"
+    assert first[0].evidence_state == "LOCATED"
+
+
+def test_audit_items_mark_fallback_without_coordinates_for_review() -> None:
+    diff = DiffItem(
+        diff_id="DUNLOCATED",
+        diff_type="DELETE",
+        original_text="removed without coordinates",
+    )
+
+    item = build_audit_items([diff])[0]
+
+    assert item.item_id == "DUNLOCATED:DELETE"
+    assert item.quality_status == "NEEDS_REVIEW"
+    assert item.evidence_state == "UNLOCATED"
+    assert "EVIDENCE_UNLOCATED" in item.review_flags
 
 
 def test_audit_items_split_mixed_evidence_by_highlight_type() -> None:
@@ -52,6 +75,26 @@ def test_audit_items_split_mixed_evidence_by_highlight_type() -> None:
     assert items[2].summary == "原文：30 days 修改后：45 days"
     assert items[0].compare_evidence[0].text == "新增付款说明"
     assert items[1].original_evidence[0].text == "旧付款说明"
+
+
+def test_audit_item_ids_do_not_depend_on_evidence_order() -> None:
+    diff = DiffItem(
+        diff_id="DORDER",
+        diff_type="MODIFY",
+        original_evidence=[evidence("old", "MODIFY", 2), evidence("removed", "DELETE", 1)],
+        compare_evidence=[evidence("new", "MODIFY", 2), evidence("added", "ADD", 1)],
+    )
+
+    forward = build_audit_items([diff])
+    reversed_evidence = diff.model_copy(
+        update={
+            "original_evidence": list(reversed(diff.original_evidence)),
+            "compare_evidence": list(reversed(diff.compare_evidence)),
+        }
+    )
+    reverse = build_audit_items([reversed_evidence])
+
+    assert {item.item_id for item in forward} == {item.item_id for item in reverse}
 
 
 def test_audit_items_follow_diff_type() -> None:
@@ -109,10 +152,64 @@ def test_audit_stats_count_each_audit_item() -> None:
 
     stats = build_audit_stats(diffs)
 
-    assert stats.total == 4
+    assert stats.total == 5
     assert stats.add == 2
-    assert stats.delete == 1
+    assert stats.delete == 2
     assert stats.modify == 1
     assert stats.raw_diff_count == 4
-    expected_summary = "本次共识别 4 个审计点，其中新增 2 个、删除 1 个、修改 1 个；对应原始差异记录 4 条。"
+    expected_summary = "本次共识别 5 个审计点，其中新增 2 个、删除 2 个、修改 1 个；对应原始差异记录 4 条。"
     assert audit_stats_summary(stats) == expected_summary
+
+
+def test_normalization_broadcasts_legacy_review_to_every_child() -> None:
+    diff = DiffItem(
+        diff_id="DLEGACY",
+        diff_type="MODIFY",
+        review_status="CONFIRMED",
+        review_comment="legacy",
+        reviewed_by="legacy-user",
+        reviewed_at="2026-01-01T00:00:00Z",
+        original_evidence=[evidence("old", "MODIFY"), evidence("removed", "DELETE")],
+        compare_evidence=[evidence("new", "MODIFY"), evidence("added", "ADD")],
+    )
+
+    reviews = normalized_audit_item_reviews([diff], {})
+
+    assert set(reviews) == {"DLEGACY:ADD", "DLEGACY:DELETE", "DLEGACY:MODIFY"}
+    assert {review.review_status for review in reviews.values()} == {"CONFIRMED"}
+    assert {review.review_comment for review in reviews.values()} == {"legacy"}
+
+
+def test_normalization_prefers_canonical_review_and_only_fills_missing_children() -> None:
+    diff = DiffItem(
+        diff_id="DPARTIAL",
+        diff_type="MODIFY",
+        review_status="CONFIRMED",
+        review_comment="legacy",
+        original_evidence=[evidence("old", "MODIFY"), evidence("removed", "DELETE")],
+        compare_evidence=[evidence("new", "MODIFY"), evidence("added", "ADD")],
+    )
+    canonical = {"DPARTIAL:ADD": AuditItemReview(review_status="FALSE_POSITIVE", review_comment="item")}
+
+    reviews = normalized_audit_item_reviews([diff], canonical)
+
+    assert reviews["DPARTIAL:ADD"].review_status == "FALSE_POSITIVE"
+    assert reviews["DPARTIAL:ADD"].review_comment == "item"
+    assert reviews["DPARTIAL:DELETE"].review_status == "CONFIRMED"
+    assert reviews["DPARTIAL:MODIFY"].review_status == "CONFIRMED"
+
+
+def test_normalization_omits_unreviewed_entries() -> None:
+    diff = DiffItem(
+        diff_id="DUNREVIEWED",
+        diff_type="ADD",
+        review_status="UNREVIEWED",
+        compare_evidence=[evidence("added", "ADD")],
+    )
+
+    reviews = normalized_audit_item_reviews(
+        [diff],
+        {"DUNREVIEWED:ADD": AuditItemReview(review_status="UNREVIEWED")},
+    )
+
+    assert reviews == {}

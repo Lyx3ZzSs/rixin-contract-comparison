@@ -55,12 +55,15 @@ def build_report_filename(task: CompareTask) -> str:
 
 
 def _visible_audit_items(task: CompareTask) -> list[AuditItem]:
-    visible_items: list[AuditItem] = []
-    for item in build_audit_items(task.diffs):
-        review = task.audit_item_reviews.get(item.item_id)
-        if review is None or review.review_status != "IGNORED":
-            visible_items.append(item)
-    return visible_items
+    return [
+        item
+        for item in build_audit_items(
+            task.diffs,
+            task.audit_item_reviews,
+            broadcast_legacy=not task.audit_item_reviews_normalized,
+        )
+        if item.review_status != "IGNORED"
+    ]
 
 
 class ReportGenerator:
@@ -226,7 +229,10 @@ class ReportGenerator:
             [Paragraph("任务编号", styles["MetaLabel"]), Paragraph(escape(task.task_id), styles["Normal"])],
             [Paragraph("原合同", styles["MetaLabel"]), Paragraph(escape(task.original_filename), styles["Normal"])],
             [Paragraph("对比合同", styles["MetaLabel"]), Paragraph(escape(task.compare_filename), styles["Normal"])],
-            [Paragraph("生成时间", styles["MetaLabel"]), Paragraph(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), styles["Normal"])],
+            [
+                Paragraph("生成时间", styles["MetaLabel"]),
+                Paragraph(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), styles["Normal"]),
+            ],
         ]
         table = Table(rows, colWidths=[2.0 * cm, 15.0 * cm])
         table.setStyle(
@@ -366,20 +372,30 @@ class ReportGenerator:
             compare_text = self._side_text(item, "compare")
 
             orig_rich = self._highlighted_cell_text(
-                original_text, diff.original_change_ranges, item.diff_type, "original", 200,
+                original_text,
+                diff.original_change_ranges,
+                item.diff_type,
+                "original",
+                200,
             )
             comp_rich = self._highlighted_cell_text(
-                compare_text, diff.compare_change_ranges, item.diff_type, "compare", 200,
+                compare_text,
+                diff.compare_change_ranges,
+                item.diff_type,
+                "compare",
+                200,
             )
 
-            rows.append([
-                Paragraph(f"{index:02d}", styles["IndexCell"]),
-                Paragraph(f'<font color="{type_color}"><b>{escape(type_label)}</b></font>', styles["IndexCell"]),
-                Paragraph(escape(page_label), styles["IndexCell"]),
-                Paragraph(escape(_clean_report_text(title_text, 40)), styles["IndexCell"]),
-                Paragraph(orig_rich, styles["DiffText"]),
-                Paragraph(comp_rich, styles["DiffText"]),
-            ])
+            rows.append(
+                [
+                    Paragraph(f"{index:02d}", styles["IndexCell"]),
+                    Paragraph(f'<font color="{type_color}"><b>{escape(type_label)}</b></font>', styles["IndexCell"]),
+                    Paragraph(escape(page_label), styles["IndexCell"]),
+                    Paragraph(escape(_clean_report_text(title_text, 40)), styles["IndexCell"]),
+                    Paragraph(orig_rich, styles["DiffText"]),
+                    Paragraph(comp_rich, styles["DiffText"]),
+                ]
+            )
 
         table = Table(rows, colWidths=col_widths, repeatRows=1)
         style_commands = [

@@ -8,7 +8,7 @@ import { downloadAuthenticatedFile } from "../lib/authFetch";
 import { useTaskProgress } from "../lib/hooks";
 import { navigateToComparisonRecords } from "../lib/routes";
 import { canRetryTask, taskStatusLabel } from "../lib/taskStatus";
-import type { CompareTask, DiffItem, DiffType, ReviewStatus, TaskOcrRemediationSummary } from "../types";
+import type { AuditItem, DiffItem, DiffType, ReviewStatus, TaskOcrRemediationSummary } from "../types";
 
 interface ResultPageProps {
   taskId: string;
@@ -33,8 +33,8 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
   const compareViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
 
   const auditItems = useMemo(
-    () => buildAuditItems(diffs, task?.audit_item_reviews ?? {}, task?.ocr_remediation_summary ?? null),
-    [diffs, task?.audit_item_reviews, task?.ocr_remediation_summary],
+    () => (task?.audit_items ?? []).map((item) => toAuditChangeItem(item, task?.ocr_remediation_summary ?? null)),
+    [task?.audit_items, task?.ocr_remediation_summary],
   );
   const axisMarkers = useMemo(() => buildAxisMarkers(auditItems), [auditItems]);
   const auditStats = useMemo(() => buildAuditStats(auditItems), [auditItems]);
@@ -100,15 +100,15 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
         currentTask
           ? {
               ...currentTask,
-              audit_item_reviews: {
-                ...(currentTask.audit_item_reviews ?? {}),
-                [payload.audit_item_id]: payload.audit_item_review,
-              },
+              audit_items: (currentTask.audit_items ?? []).map((auditItem) =>
+                auditItem.audit_item_id === payload.audit_item.audit_item_id ? payload.audit_item : auditItem
+              ),
               reviewed_count: payload.review_stats.reviewed_count,
               confirmed_count: payload.review_stats.confirmed_count,
               false_positive_count: payload.review_stats.false_positive_count,
               manual_review_count: payload.review_stats.manual_review_count,
               ignored_count: payload.review_stats.ignored_count,
+              report_revision: payload.report_revision,
             }
           : currentTask,
       );
@@ -469,85 +469,25 @@ function clampAxisPercent(value: number): number {
   return Math.min(AXIS_MAX_TOP, Math.max(AXIS_MIN_TOP, Number(value.toFixed(2))));
 }
 
-function buildAuditItems(
-  diffs: DiffItem[],
-  auditItemReviews: NonNullable<CompareTask["audit_item_reviews"]>,
+function toAuditChangeItem(
+  item: AuditItem,
   remediationSummary: TaskOcrRemediationSummary | null,
-): AuditChangeItem[] {
-  return diffs.flatMap((diff) => auditItemsForDiff(diff, auditItemReviews, remediationSummary));
-}
-
-function auditItemsForDiff(
-  diff: DiffItem,
-  auditItemReviews: NonNullable<CompareTask["audit_item_reviews"]>,
-  remediationSummary: TaskOcrRemediationSummary | null,
-): AuditChangeItem[] {
-  const originalEvidence = diff.original_evidence ?? [];
-  const compareEvidence = diff.compare_evidence ?? [];
-  const hasTypedEvidence = [...originalEvidence, ...compareEvidence].some((evidence) => Boolean(evidence.highlight_type));
-
-  if (!hasTypedEvidence) {
-    return [];
-  }
-
-  const items: AuditChangeItem[] = [];
-  const addEvidence = typedEvidence(compareEvidence, "ADD");
-  const deleteEvidence = typedEvidence(originalEvidence, "DELETE");
-  const originalModifyEvidence = typedEvidence(originalEvidence, "MODIFY");
-  const compareModifyEvidence = typedEvidence(compareEvidence, "MODIFY");
-  const addText = evidenceText(addEvidence);
-  const deleteText = evidenceText(deleteEvidence);
-  const originalModifyText = evidenceText(originalModifyEvidence);
-  const compareModifyText = evidenceText(compareModifyEvidence);
-  const remediationBadge = remediationBadgeForDiff(diff.diff_id, remediationSummary);
-  if (addEvidence.length > 0) {
-    items.push(auditItem(diff, "ADD", addText, addEvidence, auditItemReviews, remediationBadge));
-  }
-  if (deleteEvidence.length > 0) {
-    items.push(auditItem(diff, "DELETE", deleteText, deleteEvidence, auditItemReviews, remediationBadge));
-  }
-  if (originalModifyEvidence.length > 0 || compareModifyEvidence.length > 0) {
-    items.push(
-      auditItem(
-        diff,
-        "MODIFY",
-        modifySummary(originalModifyText, compareModifyText),
-        [...originalModifyEvidence, ...compareModifyEvidence],
-        auditItemReviews,
-        remediationBadge,
-      ),
-    );
-  }
-  return items.length > 0
-    ? items
-    : [auditItem(diff, diff.diff_type, diffSummary(diff), [...originalEvidence, ...compareEvidence], auditItemReviews, remediationBadge)];
-}
-
-function auditItem(
-  diff: DiffItem,
-  type: DiffType,
-  summary: string,
-  evidenceList: NonNullable<DiffItem["compare_evidence"]>,
-  auditItemReviews: NonNullable<CompareTask["audit_item_reviews"]>,
-  remediationBadge: AuditChangeItem["remediationBadge"],
 ): AuditChangeItem {
-  const location = evidenceLocation(evidenceList);
-  const id = `${diff.diff_id}:${type}`;
-  const review = auditItemReviews[id];
+  const location = evidenceLocation([...item.original_evidence, ...item.compare_evidence]);
   return {
-    id,
-    diffId: diff.diff_id,
-    type,
-    group: auditGroup(diff),
-    title: diff.title || diff.clause_no || diff.diff_id,
-    summary: compactText(summary || diffSummary(diff)),
+    id: item.audit_item_id,
+    diffId: item.diff_id,
+    type: item.diff_type,
+    group: auditGroup(item),
+    title: item.title || item.diff_id,
+    summary: compactText(item.summary),
     pageNo: location?.pageNo ?? null,
     y0: location?.y0 ?? null,
-    reviewStatus: review?.review_status ?? "UNREVIEWED",
-    reviewComment: review?.review_comment ?? "",
-    qualityStatus: diff.quality_status ?? "NORMAL",
-    reviewFlags: diff.review_flags ?? [],
-    remediationBadge,
+    reviewStatus: item.review_status,
+    reviewComment: item.review_comment,
+    qualityStatus: item.quality_status,
+    reviewFlags: item.review_flags,
+    remediationBadge: remediationBadgeForDiff(item.diff_id, remediationSummary),
   };
 }
 
@@ -577,14 +517,14 @@ function auditQualityPriority(item: AuditChangeItem): number {
   return 4;
 }
 
-function auditGroup(diff: DiffItem): AuditGroup {
-  const flags = diff.review_flags ?? [];
-  if (diff.source_type === "signing_region" || flags.some((flag) => flag.startsWith("SIGNING_"))) {
+function auditGroup(item: Pick<AuditItem, "source_type" | "section_type" | "review_flags">): AuditGroup {
+  const flags = item.review_flags ?? [];
+  if (item.source_type === "signing_region" || flags.some((flag) => flag.startsWith("SIGNING_"))) {
     return "SIGNING";
   }
   if (
-    diff.source_type === "header_footer"
-    || diff.source_type === "seal"
+    item.source_type === "header_footer"
+    || item.source_type === "seal"
     || flags.includes("HEADER_FOOTER_REVIEW")
     || flags.includes("SEAL_REVIEW")
     || flags.includes("POSSIBLE_OCR_NOISE")
@@ -593,7 +533,7 @@ function auditGroup(diff: DiffItem): AuditGroup {
   ) {
     return "STRUCTURAL";
   }
-  if ((diff.source_type ?? "clause") === "clause" && (!diff.section_type || diff.section_type === "main_contract")) {
+  if ((item.source_type ?? "clause") === "clause" && (!item.section_type || item.section_type === "main_contract")) {
     return "MAIN";
   }
   return "OTHER";
@@ -629,14 +569,6 @@ function groupedAuditItems(items: AuditChangeItem[]): Array<{ group: AuditGroup;
   return groups;
 }
 
-function typedEvidence(evidenceList: NonNullable<DiffItem["compare_evidence"]>, type: DiffType): NonNullable<DiffItem["compare_evidence"]> {
-  return evidenceList.filter((evidence) => evidence.highlight_type === type);
-}
-
-function evidenceText(evidenceList: NonNullable<DiffItem["compare_evidence"]>): string {
-  return compactText(evidenceList.map((evidence) => evidence.text).join(" "));
-}
-
 function evidenceLocation(evidenceList: NonNullable<DiffItem["compare_evidence"]>): EvidenceLocation | null {
   const evidence = evidenceList
     .filter((item) => item.page_no && item.bbox)
@@ -648,13 +580,6 @@ function evidenceLocation(evidenceList: NonNullable<DiffItem["compare_evidence"]
     pageNo: evidence.page_no,
     y0: evidence.bbox.y0,
   };
-}
-
-function modifySummary(originalText: string, compareText: string): string {
-  if (originalText && compareText) {
-    return `原文：${originalText} 修改后：${compareText}`;
-  }
-  return originalText || compareText;
 }
 
 function AuditPanel({
@@ -795,6 +720,9 @@ function AuditDiffCard({
         <span className="audit-card-badges">
           <span className={`audit-type-badge ${item.type.toLowerCase()}`}>{diffTypeLabel(item.type)}</span>
           <span className={`audit-group-badge ${item.group.toLowerCase()}`}>{auditGroupLabels[item.group]}</span>
+          <span className={`audit-review-badge ${item.reviewStatus.toLowerCase()}`}>
+            {reviewStatusLabel(item.reviewStatus)}
+          </span>
           {qualityBadges.map((badge) => (
             <span key={badge.label} className={`audit-quality-badge ${badge.className}`}>
               {badge.label}
@@ -826,6 +754,16 @@ function AuditDiffCard({
   );
 }
 
+function reviewStatusLabel(status: ReviewStatus): string {
+  return {
+    UNREVIEWED: "未审核",
+    CONFIRMED: "已确认",
+    FALSE_POSITIVE: "误报",
+    NEEDS_REVIEW: "需复核",
+    IGNORED: "已忽略",
+  }[status];
+}
+
 function auditQualityBadges(item: AuditChangeItem): Array<{ className: string; label: string }> {
   const badges: Array<{ className: string; label: string }> = [];
   if (item.reviewFlags.includes("CRITICAL_VALUE_CHANGE")) {
@@ -833,6 +771,9 @@ function auditQualityBadges(item: AuditChangeItem): Array<{ className: string; l
   }
   if (item.qualityStatus === "NEEDS_REVIEW") {
     badges.push({ className: "needs-review", label: "待复核" });
+  }
+  if (item.reviewFlags.includes("EVIDENCE_UNLOCATED")) {
+    badges.push({ className: "needs-review", label: "证据未定位" });
   }
   if (item.reviewFlags.includes("OCR_LOW_CONFIDENCE")) {
     badges.push({ className: "needs-review", label: "低置信 OCR" });

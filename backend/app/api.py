@@ -229,7 +229,7 @@ def update_audit_item_review(
 ) -> AuditItemReviewUpdateResponse:
     task = _load_accessible_or_404(task_id, user, mutate=True)
     try:
-        task, review = default_compare_task_application.update_audit_item_review(
+        task, item = default_compare_task_application.update_audit_item_review(
             task,
             audit_item_id,
             payload.review_status,
@@ -239,7 +239,7 @@ def update_audit_item_review(
     except (InvalidReviewStateError, AuditItemNotFoundError) as exc:
         raise http_error(exc) from exc
 
-    return audit_item_review_response(task, audit_item_id, review)
+    return audit_item_review_response(task, item)
 
 
 @router.get("/{task_id}/execution", response_model=TaskExecutionResponse)

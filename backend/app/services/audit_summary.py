@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from app.models import DiffItem, DiffType, EvidenceBox
+from app.models import AuditItemReview, DiffItem, DiffType, EvidenceBox
 
 
 @dataclass(frozen=True)
@@ -11,10 +11,25 @@ class AuditItem:
     item_id: str
     diff: DiffItem
     diff_type: DiffType
+    diff_id: str
+    source_type: str
+    section_type: str
+    section_path: list[str]
     title: str
     summary: str
+    original_text: str
+    compare_text: str
     original_evidence: list[EvidenceBox]
     compare_evidence: list[EvidenceBox]
+    evidence_state: str
+    quality_status: str
+    review_flags: list[str]
+    text_confidence: float | None
+    match_confidence: str
+    review_status: str = "UNREVIEWED"
+    review_comment: str = ""
+    reviewed_by: str = ""
+    reviewed_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -26,11 +41,57 @@ class AuditStats:
     raw_diff_count: int
 
 
-def build_audit_items(diffs: list[DiffItem]) -> list[AuditItem]:
+def build_audit_items(
+    diffs: list[DiffItem],
+    reviews: dict[str, AuditItemReview] | None = None,
+    *,
+    broadcast_legacy: bool = True,
+) -> list[AuditItem]:
     items: list[AuditItem] = []
     for diff in diffs:
         items.extend(_audit_items_for_diff(diff))
+    normalized_reviews = normalized_audit_item_reviews(
+        diffs,
+        reviews or {},
+        items=items,
+        broadcast_legacy=broadcast_legacy,
+    )
+    if normalized_reviews:
+        items = [_apply_review(item, normalized_reviews.get(item.item_id)) for item in items]
     return items
+
+
+def normalized_audit_item_reviews(
+    diffs: list[DiffItem],
+    reviews: dict[str, AuditItemReview],
+    *,
+    items: list[AuditItem] | None = None,
+    broadcast_legacy: bool = True,
+) -> dict[str, AuditItemReview]:
+    generated_items = items if items is not None else [item for diff in diffs for item in _audit_items_for_diff(diff)]
+    valid_ids = {item.item_id for item in generated_items}
+    normalized = {
+        item_id: review.model_copy(deep=True)
+        for item_id, review in reviews.items()
+        if item_id in valid_ids and review.review_status != "UNREVIEWED"
+    }
+    items_by_diff: dict[str, list[AuditItem]] = {}
+    for item in generated_items:
+        items_by_diff.setdefault(item.diff_id, []).append(item)
+    if not broadcast_legacy:
+        return normalized
+    for diff in diffs:
+        if diff.review_status == "UNREVIEWED":
+            continue
+        legacy_review = AuditItemReview(
+            review_status=diff.review_status,
+            review_comment=diff.review_comment,
+            reviewed_by=diff.reviewed_by,
+            reviewed_at=diff.reviewed_at,
+        )
+        for item in items_by_diff.get(diff.diff_id, []):
+            normalized.setdefault(item.item_id, legacy_review.model_copy(deep=True))
+    return normalized
 
 
 def build_audit_stats(diffs: list[DiffItem]) -> AuditStats:
@@ -57,11 +118,18 @@ def _audit_items_for_diff(diff: DiffItem) -> list[AuditItem]:
     original_evidence = diff.original_evidence or []
     compare_evidence = diff.compare_evidence or []
     has_typed_evidence = any(
-        evidence.highlight_type is not None
-        for evidence in [*original_evidence, *compare_evidence]
+        evidence.highlight_type is not None for evidence in [*original_evidence, *compare_evidence]
     )
     if not has_typed_evidence:
-        return []
+        return [
+            _audit_item(
+                diff,
+                diff.diff_type,
+                _diff_summary(diff),
+                original_evidence,
+                compare_evidence,
+            )
+        ]
 
     items: list[AuditItem] = []
     add_evidence = _typed_evidence(compare_evidence, "ADD")
@@ -79,7 +147,7 @@ def _audit_items_for_diff(diff: DiffItem) -> list[AuditItem]:
             _evidence_text(compare_modify_evidence),
         )
         items.append(_audit_item(diff, "MODIFY", summary, original_modify_evidence, compare_modify_evidence))
-    return items
+    return items or [_audit_item(diff, diff.diff_type, _diff_summary(diff), original_evidence, compare_evidence)]
 
 
 def _audit_item(
@@ -89,15 +157,51 @@ def _audit_item(
     original_evidence: list[EvidenceBox],
     compare_evidence: list[EvidenceBox],
 ) -> AuditItem:
+    evidence_state = (
+        "LOCATED" if any(_is_located(evidence) for evidence in [*original_evidence, *compare_evidence]) else "UNLOCATED"
+    )
+    review_flags = list(dict.fromkeys(diff.review_flags))
+    quality_status = diff.quality_status
+    if evidence_state == "UNLOCATED":
+        quality_status = "NEEDS_REVIEW"
+        if "EVIDENCE_UNLOCATED" not in review_flags:
+            review_flags.append("EVIDENCE_UNLOCATED")
     return AuditItem(
         item_id=f"{diff.diff_id}:{diff_type}",
         diff=diff,
         diff_type=diff_type,
+        diff_id=diff.diff_id,
+        source_type=diff.source_type,
+        section_type=diff.section_type,
+        section_path=list(diff.section_path),
         title=diff.title or diff.clause_no or diff.diff_id,
         summary=summary or _diff_summary(diff),
+        original_text=diff.original_text or diff.original_snippet,
+        compare_text=diff.compare_text or diff.compare_snippet,
         original_evidence=original_evidence,
         compare_evidence=compare_evidence,
+        evidence_state=evidence_state,
+        quality_status=quality_status,
+        review_flags=review_flags,
+        text_confidence=diff.text_confidence,
+        match_confidence=diff.match_confidence,
     )
+
+
+def _apply_review(item: AuditItem, review: AuditItemReview | None) -> AuditItem:
+    if review is None:
+        return item
+    return replace(
+        item,
+        review_status=review.review_status,
+        review_comment=review.review_comment,
+        reviewed_by=review.reviewed_by,
+        reviewed_at=review.reviewed_at,
+    )
+
+
+def _is_located(evidence: EvidenceBox) -> bool:
+    return evidence.page_no > 0 and evidence.bbox.x1 > evidence.bbox.x0 and evidence.bbox.y1 > evidence.bbox.y0
 
 
 def _typed_evidence(evidence_list: list[EvidenceBox], diff_type: DiffType) -> list[EvidenceBox]:
@@ -115,12 +219,7 @@ def _modify_summary(original_text: str, compare_text: str) -> str:
 
 
 def _diff_summary(diff: DiffItem) -> str:
-    return _compact_text(
-        diff.readable_change
-        or diff.compare_snippet
-        or diff.original_snippet
-        or "暂无摘要"
-    )
+    return _compact_text(diff.readable_change or diff.compare_snippet or diff.original_snippet or "暂无摘要")
 
 
 def _compact_text(value: str, limit: int = 180) -> str:

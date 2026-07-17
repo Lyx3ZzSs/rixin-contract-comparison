@@ -2466,6 +2466,32 @@ h2 {
   color: #526978;
 }
 
+.audit-review-badge {
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: #f2f4f7;
+  color: #475467;
+  font-size: 0.78rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.audit-review-badge.confirmed {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.audit-review-badge.false_positive,
+.audit-review-badge.ignored {
+  background: #fff4ed;
+  color: #b54708;
+}
+
+.audit-review-badge.needs_review {
+  background: #eef2ff;
+  color: #444ce7;
+}
+
 .audit-quality-badge {
   padding: 4px 8px;
   border-radius: 5px;

@@ -5,7 +5,12 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from app.models import AuditItemReview, BBox, CompareTask, DiffItem, EvidenceBox, TextRange
-from app.services.report_generator import ReportGenerator, _SOURCE_TYPE_LABELS, _SOURCE_TYPE_ORDER
+from app.services.report_generator import (
+    ReportGenerator,
+    _SOURCE_TYPE_LABELS,
+    _SOURCE_TYPE_ORDER,
+    _visible_audit_items,
+)
 
 
 def _make_pdf(path, page_count: int = 6) -> None:
@@ -63,7 +68,9 @@ def test_report_generator_produces_grouped_tables_with_diff_content(tmp_path) ->
                 title="发票",
                 compare_snippet="新增发票条款",
                 compare_evidence=[
-                    EvidenceBox(page_no=3, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="新增发票条款", highlight_type="ADD"),
+                    EvidenceBox(
+                        page_no=3, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="新增发票条款", highlight_type="ADD"
+                    ),
                 ],
             ),
             DiffItem(
@@ -73,7 +80,9 @@ def test_report_generator_produces_grouped_tables_with_diff_content(tmp_path) ->
                 title="旧质保",
                 original_snippet="旧质保条款",
                 original_evidence=[
-                    EvidenceBox(page_no=4, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="旧质保条款", highlight_type="DELETE"),
+                    EvidenceBox(
+                        page_no=4, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="旧质保条款", highlight_type="DELETE"
+                    ),
                 ],
             ),
             DiffItem(
@@ -105,11 +114,15 @@ def test_report_generator_produces_grouped_tables_with_diff_content(tmp_path) ->
                 clause_no="6",
                 title="忽略混合改动",
                 original_evidence=[
-                    EvidenceBox(page_no=5, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="忽略旧说明", highlight_type="DELETE"),
+                    EvidenceBox(
+                        page_no=5, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="忽略旧说明", highlight_type="DELETE"
+                    ),
                     EvidenceBox(page_no=5, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="10 days", highlight_type="MODIFY"),
                 ],
                 compare_evidence=[
-                    EvidenceBox(page_no=6, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="忽略新增说明", highlight_type="ADD"),
+                    EvidenceBox(
+                        page_no=6, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="忽略新增说明", highlight_type="ADD"
+                    ),
                     EvidenceBox(page_no=6, bbox=BBox(x0=1, y0=2, x1=3, y1=4), text="20 days", highlight_type="MODIFY"),
                 ],
             ),
@@ -139,14 +152,40 @@ def test_report_generator_produces_grouped_tables_with_diff_content(tmp_path) ->
     assert "3 旧质保" in report_text
     assert "旧质保条款" in report_text
     assert "差异类型与证据说明" in report_text
-    assert "D004" not in report_text
-    assert "无定位表格项" not in report_text
+    assert "无定位表格项" in report_text
+    assert "短期模型" in report_text
     assert "D006:DELETE" not in report_text
     assert "忽略混合改动" in report_text
     assert "忽略旧说明" not in report_text
     assert "忽略新增说明" in report_text
     assert "新增说明" in report_text
     assert "旧说明" in report_text
+
+
+def test_report_visibility_uses_normalized_legacy_audit_item_reviews() -> None:
+    ignored_diff = DiffItem(
+        diff_id="DLEGACYIGNORED",
+        diff_type="MODIFY",
+        review_status="IGNORED",
+        original_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=1, y0=2, x1=3, y1=4),
+                text="old",
+                highlight_type="MODIFY",
+            )
+        ],
+        compare_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=1, y0=2, x1=3, y1=4),
+                text="new",
+                highlight_type="MODIFY",
+            )
+        ],
+    )
+
+    assert _visible_audit_items(CompareTask(task_id="TLEGACYREPORT", diffs=[ignored_diff])) == []
 
 
 def test_report_generator_handles_truncated_highlighted_text(tmp_path) -> None:

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getDiffs, getTask, updateAuditItemReview } from "../lib/api";
 import { createProgressEventSource } from "../lib/api_sse";
-import type { CompareTask, DiffItem } from "../types";
+import type { AuditItem, CompareTask, DiffItem, DiffType } from "../types";
 import { ResultPage } from "./ResultPage";
 
 const { downloadAuthenticatedFile } = vi.hoisted(() => ({
@@ -54,9 +54,22 @@ vi.mock("../lib/api", () => ({
     payload: { review_status: string; review_comment?: string },
   ) => ({
     task_id: "task-1",
-    audit_item_id: auditItemId,
-    audit_item_review: {
+    audit_item: {
       audit_item_id: auditItemId,
+      diff_id: auditItemId.split(":")[0],
+      diff_type: auditItemId.split(":")[1],
+      source_type: "clause",
+      section_type: "main_contract",
+      section_path: [],
+      title: "付款",
+      summary: "新增付款说明",
+      original_text: "",
+      compare_text: "新增付款说明",
+      original_evidence: [],
+      compare_evidence: [],
+      evidence_state: "LOCATED",
+      quality_status: "NORMAL",
+      review_flags: [],
       review_status: payload.review_status,
       review_comment: payload.review_comment ?? "",
       reviewed_by: "keycloak-user",
@@ -68,7 +81,10 @@ vi.mock("../lib/api", () => ({
       false_positive_count: payload.review_status === "FALSE_POSITIVE" ? 1 : 0,
       manual_review_count: payload.review_status === "NEEDS_REVIEW" ? 1 : 0,
       ignored_count: payload.review_status === "IGNORED" ? 1 : 0,
+      total_count: 5,
+      review_unit: "audit_item",
     },
+    report_revision: 2,
   })),
   toApiUrl: (path: string) => `http://api.test${path}`,
 }));
@@ -262,6 +278,53 @@ const mockDiffs: DiffItem[] = [
     compare_evidence: [],
   },
 ];
+
+function backendAuditItems(diffs: DiffItem[]): AuditItem[] {
+  return diffs.flatMap((diff) => {
+    const originalEvidence = diff.original_evidence ?? [];
+    const compareEvidence = diff.compare_evidence ?? [];
+    const presentTypes = (["ADD", "DELETE", "MODIFY"] as DiffType[]).filter((type) =>
+      [...originalEvidence, ...compareEvidence].some((evidence) => evidence.highlight_type === type)
+    );
+    const types = presentTypes.length > 0 ? presentTypes : [diff.diff_type];
+    return types.map((type) => {
+      const original = originalEvidence.filter((evidence) => evidence.highlight_type === type || presentTypes.length === 0);
+      const compare = compareEvidence.filter((evidence) => evidence.highlight_type === type || presentTypes.length === 0);
+      const originalSummary = original.map((evidence) => evidence.text).filter(Boolean).join(" ");
+      const compareSummary = compare.map((evidence) => evidence.text).filter(Boolean).join(" ");
+      const summary = type === "MODIFY" && originalSummary && compareSummary
+        ? `原文：${originalSummary} 修改后：${compareSummary}`
+        : compareSummary || originalSummary || diff.readable_change || diff.compare_snippet || diff.original_snippet || "暂无摘要";
+      const located = [...original, ...compare].some((evidence) => evidence.page_no > 0 && evidence.bbox);
+      const review = mockTask.audit_item_reviews?.[`${diff.diff_id}:${type}`];
+      return {
+        audit_item_id: `${diff.diff_id}:${type}`,
+        diff_id: diff.diff_id,
+        diff_type: type,
+        source_type: diff.source_type ?? "clause",
+        section_type: diff.section_type ?? "",
+        section_path: [],
+        title: diff.title || diff.clause_no || diff.diff_id,
+        summary,
+        original_text: diff.original_text,
+        compare_text: diff.compare_text,
+        original_evidence: original,
+        compare_evidence: compare,
+        evidence_state: located ? "LOCATED" as const : "UNLOCATED" as const,
+        quality_status: located ? (diff.quality_status ?? "NORMAL") : "NEEDS_REVIEW" as const,
+        review_flags: located ? (diff.review_flags ?? []) : [...(diff.review_flags ?? []), "EVIDENCE_UNLOCATED"],
+        text_confidence: diff.text_confidence,
+        match_confidence: "",
+        review_status: review?.review_status ?? diff.review_status ?? "UNREVIEWED",
+        review_comment: review?.review_comment ?? diff.review_comment ?? "",
+        reviewed_by: review?.reviewed_by ?? diff.reviewed_by ?? "",
+        reviewed_at: review?.reviewed_at ?? diff.reviewed_at ?? "",
+      };
+    });
+  });
+}
+
+mockTask.audit_items = backendAuditItems(mockDiffs);
 
 const preambleReplacementDiff: DiffItem = {
   diff_id: "diff-preamble-title",
@@ -849,7 +912,9 @@ describe("ResultPage", () => {
   });
 
   it("spreads clustered comparison axis markers away from the bottom boundary", async () => {
-    vi.mocked(getDiffs).mockResolvedValueOnce(Array.from({ length: 6 }, (_, index) => makeBottomAxisDiff(index)));
+    const bottomDiffs = Array.from({ length: 6 }, (_, index) => makeBottomAxisDiff(index));
+    vi.mocked(getTask).mockResolvedValueOnce({ ...mockTask, audit_items: backendAuditItems(bottomDiffs) });
+    vi.mocked(getDiffs).mockResolvedValueOnce(bottomDiffs);
     const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByRole("button", { name: "定位新增改动 bottom-0:ADD" })).toBeInTheDocument());
@@ -872,8 +937,8 @@ describe("ResultPage", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
 
-    expect(screen.getByRole("button", { name: "筛选全部差异" })).toHaveTextContent("4");
-    expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "筛选全部差异" })).toHaveTextContent("5");
+    expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("2");
     expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("2");
     expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
     expect(screen.getByLabelText("正文差异")).toBeInTheDocument();
@@ -886,7 +951,7 @@ describe("ResultPage", () => {
     expect(screen.getAllByText("签章识别风险")).not.toHaveLength(0);
     expect(screen.getAllByText("证据不可靠")).not.toHaveLength(0);
     expect(await screen.findAllByText("处置规划")).toHaveLength(2);
-    expect(screen.queryByRole("button", { name: "审计定位改动 diff-4:DELETE" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "审计定位改动 diff-4:DELETE" })).toHaveTextContent("证据未定位");
     await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
 
     expect(screen.getByRole("button", { name: "审计定位改动 diff-1:ADD" })).toBeInTheDocument();
@@ -910,8 +975,23 @@ describe("ResultPage", () => {
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
   });
 
+  it("does not reconstruct audit items when a legacy task response omits them", async () => {
+    const user = userEvent.setup();
+    const { audit_items: _auditItems, ...legacyTask } = mockTask;
+    vi.mocked(getTask).mockResolvedValueOnce(legacyTask);
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    expect(screen.getByText("未发现改动点。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
+  });
+
   it("shows a whole metadata replacement as one modify audit item", async () => {
     const user = userEvent.setup();
+    vi.mocked(getTask).mockResolvedValueOnce({ ...mockTask, audit_items: backendAuditItems([preambleReplacementDiff]) });
     vi.mocked(getDiffs).mockResolvedValueOnce([preambleReplacementDiff]);
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
@@ -935,7 +1015,9 @@ describe("ResultPage", () => {
 
   it("groups signing region differences between main and structural audit groups", async () => {
     const user = userEvent.setup();
-    vi.mocked(getDiffs).mockResolvedValueOnce([mockDiffs[0], signingRegionDiff, mockDiffs[1]]);
+    const signingDiffs = [mockDiffs[0], signingRegionDiff, mockDiffs[1]];
+    vi.mocked(getTask).mockResolvedValueOnce({ ...mockTask, audit_items: backendAuditItems(signingDiffs) });
+    vi.mocked(getDiffs).mockResolvedValueOnce(signingDiffs);
     const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
@@ -955,6 +1037,7 @@ describe("ResultPage", () => {
 
   it("shows a wrapped signing party replacement as one complete modify item", async () => {
     const user = userEvent.setup();
+    vi.mocked(getTask).mockResolvedValueOnce({ ...mockTask, audit_items: backendAuditItems([signingPartyModifyDiff]) });
     vi.mocked(getDiffs).mockResolvedValueOnce([signingPartyModifyDiff]);
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
@@ -972,7 +1055,9 @@ describe("ResultPage", () => {
 
   it("groups signing review flags as signing region differences", async () => {
     const user = userEvent.setup();
-    vi.mocked(getDiffs).mockResolvedValueOnce([mockDiffs[0], signingFlagOnlyDiff, mockDiffs[1]]);
+    const signingDiffs = [mockDiffs[0], signingFlagOnlyDiff, mockDiffs[1]];
+    vi.mocked(getTask).mockResolvedValueOnce({ ...mockTask, audit_items: backendAuditItems(signingDiffs) });
+    vi.mocked(getDiffs).mockResolvedValueOnce(signingDiffs);
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
@@ -1123,7 +1208,11 @@ describe("ResultPage", () => {
       review_comment: "",
     });
     await waitFor(() => expect(auditCard).toHaveClass("ignored"));
+    expect(within(auditCard as HTMLElement).getByText("已忽略")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "恢复 diff-1:ADD" })).toBeInTheDocument();
+    const siblingCard = screen.getByRole("button", { name: "审计定位改动 diff-1:MODIFY" }).closest(".audit-diff-card");
+    expect(siblingCard).not.toHaveClass("ignored");
+    expect(within(siblingCard as HTMLElement).getByText("未审核")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "恢复 diff-1:ADD" }));
 

@@ -115,6 +115,30 @@ class TextRangeResponse(BaseModel):
     highlight_type: DiffType = "MODIFY"
 
 
+class AuditItemResponse(BaseModel):
+    audit_item_id: str
+    diff_id: str
+    diff_type: DiffType
+    source_type: str = "clause"
+    section_type: str = ""
+    section_path: list[str] = Field(default_factory=list)
+    title: str = ""
+    summary: str = ""
+    original_text: str = ""
+    compare_text: str = ""
+    original_evidence: list[EvidenceBoxResponse] = Field(default_factory=list)
+    compare_evidence: list[EvidenceBoxResponse] = Field(default_factory=list)
+    evidence_state: Literal["LOCATED", "UNLOCATED"] = "UNLOCATED"
+    quality_status: DiffQualityStatus = "NORMAL"
+    review_flags: list[str] = Field(default_factory=list)
+    text_confidence: float | None = None
+    match_confidence: str = ""
+    review_status: ReviewStatus = "UNREVIEWED"
+    review_comment: str = ""
+    reviewed_by: str = ""
+    reviewed_at: str = ""
+
+
 class CompareTaskResponse(BaseModel):
     task_id: str
     status: TaskStatus
@@ -131,6 +155,7 @@ class CompareTaskResponse(BaseModel):
     manual_review_count: int = 0
     ignored_count: int = 0
     audit_item_reviews: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    audit_items: list[AuditItemResponse] = Field(default_factory=list)
     extractor_used: str = ""
     parse_warnings: list[str] = Field(default_factory=list)
     parse_warning_details: list[dict[str, Any]] = Field(default_factory=list)
@@ -237,20 +262,14 @@ class DiffReviewRequest(BaseModel):
     reviewed_by: str = ""
 
 
-class AuditItemReviewResponse(BaseModel):
-    audit_item_id: str
-    review_status: ReviewStatus = "UNREVIEWED"
-    review_comment: str = ""
-    reviewed_by: str = ""
-    reviewed_at: str = ""
-
-
 class ReviewStatsResponse(BaseModel):
+    total_count: int
     reviewed_count: int
     confirmed_count: int
     false_positive_count: int
     manual_review_count: int
     ignored_count: int
+    review_unit: Literal["audit_item"] = "audit_item"
 
 
 class DiffReviewResponse(BaseModel):
@@ -261,6 +280,6 @@ class DiffReviewResponse(BaseModel):
 
 class AuditItemReviewUpdateResponse(BaseModel):
     task_id: str
-    audit_item_id: str
-    audit_item_review: AuditItemReviewResponse
+    audit_item: AuditItemResponse
     review_stats: ReviewStatsResponse
+    report_revision: int

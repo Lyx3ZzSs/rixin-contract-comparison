@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -26,6 +27,7 @@ from app.infrastructure.task_runner import (
 )
 from app.main import app
 from app.models import (
+    AuditItemReview,
     BBox,
     CompareTask,
     DiffItem,
@@ -35,7 +37,7 @@ from app.models import (
     TaskOcrRemediationSummary,
     TaskOcrQualitySummary,
 )
-from app.services.review_service import CompareQualityService
+from app.services.review_service import CompareQualityService, CompareReviewService
 from app.utils.json_utils import load_task, save_task as persist_task, task_json_path, to_jsonable
 
 from auth_helpers import ADMIN
@@ -1075,9 +1077,300 @@ def test_api_updates_diff_review_and_quality_summary(tmp_path: Path) -> None:
     assert quality.status_code == 200
     quality_payload = quality.json()
     assert quality_payload["review_stats"]["confirmed_count"] == 1
+    assert quality_payload["review_stats"]["total_count"] == 1
+    assert quality_payload["review_stats"]["review_unit"] == "audit_item"
     assert quality_payload["evidence_quality_counts"]["LOW"] == 1
     assert quality_payload["low_confidence_diffs"][0]["diff_id"] == "D001"
     assert quality_payload["low_similarity_diffs"][0]["diff_id"] == "D001"
+
+
+def _mixed_review_diff(diff_id: str = "DREVIEW") -> DiffItem:
+    return DiffItem(
+        diff_id=diff_id,
+        diff_type="MODIFY",
+        title="混合差异",
+        original_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=1, y0=2, x1=3, y1=4),
+                text="old",
+                highlight_type="MODIFY",
+            ),
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=5, y0=6, x1=7, y1=8),
+                text="removed",
+                highlight_type="DELETE",
+            ),
+        ],
+        compare_evidence=[
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=1, y0=2, x1=3, y1=4),
+                text="new",
+                highlight_type="MODIFY",
+            ),
+            EvidenceBox(
+                page_no=1,
+                bbox=BBox(x0=9, y0=10, x1=11, y1=12),
+                text="added",
+                highlight_type="ADD",
+            ),
+        ],
+    )
+
+
+def test_task_read_returns_normalized_audit_items_without_persisting_legacy_projection(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    diff = _mixed_review_diff()
+    diff.review_status = "CONFIRMED"
+    diff.review_comment = "legacy"
+    diff.reviewed_by = "legacy-user"
+    save_task(CompareTask(task_id="TLEGACYAUDIT", status="COMPLETED", diffs=[diff]))
+
+    response = TestClient(app).get("/api/compare/TLEGACYAUDIT")
+
+    assert response.status_code == 200, response.text
+    audit_items = response.json()["audit_items"]
+    assert {item["audit_item_id"] for item in audit_items} == {
+        "DREVIEW:ADD",
+        "DREVIEW:DELETE",
+        "DREVIEW:MODIFY",
+    }
+    assert {item["review_status"] for item in audit_items} == {"CONFIRMED"}
+    assert response.json()["reviewed_count"] == 3
+    assert response.json()["confirmed_count"] == 3
+    assert load_task("TLEGACYAUDIT").audit_item_reviews == {}
+
+
+def test_single_audit_item_review_persists_normalized_map_and_returns_item_stats_revision(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    diff = _mixed_review_diff()
+    diff.review_status = "CONFIRMED"
+    task = CompareTask(
+        task_id="TITEMREVIEW",
+        status="COMPLETED",
+        report_revision=4,
+        diffs=[diff],
+        audit_item_reviews={"DREVIEW:ADD": AuditItemReview(review_status="FALSE_POSITIVE")},
+    )
+    save_task(task)
+
+    response = TestClient(app).patch(
+        "/api/compare/TITEMREVIEW/audit-items/DREVIEW:DELETE/review",
+        json={"review_status": "IGNORED", "review_comment": " ignore me ", "reviewed_by": "spoof"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert set(payload) == {"task_id", "audit_item", "review_stats", "report_revision"}
+    assert payload["task_id"] == "TITEMREVIEW"
+    assert payload["audit_item"]["audit_item_id"] == "DREVIEW:DELETE"
+    assert payload["audit_item"]["review_status"] == "IGNORED"
+    assert payload["audit_item"]["review_comment"] == "ignore me"
+    assert payload["audit_item"]["reviewed_by"] == ADMIN.sub
+    assert payload["report_revision"] == 5
+    assert payload["review_stats"] == {
+        "total_count": 3,
+        "reviewed_count": 3,
+        "confirmed_count": 1,
+        "false_positive_count": 1,
+        "manual_review_count": 0,
+        "ignored_count": 1,
+        "review_unit": "audit_item",
+    }
+
+    persisted = load_task("TITEMREVIEW")
+    assert set(persisted.audit_item_reviews) == {
+        "DREVIEW:ADD",
+        "DREVIEW:DELETE",
+        "DREVIEW:MODIFY",
+    }
+    assert persisted.audit_item_reviews["DREVIEW:MODIFY"].review_status == "CONFIRMED"
+    assert persisted.diffs[0].review_status == "NEEDS_REVIEW"
+
+
+def test_single_audit_item_review_keeps_siblings_independent_and_unreviewed_omitted(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TSIBLINGREVIEW",
+            status="COMPLETED",
+            diffs=[_mixed_review_diff()],
+            audit_item_reviews={"DREVIEW:ADD": AuditItemReview(review_status="CONFIRMED")},
+        )
+    )
+
+    response = TestClient(app).patch(
+        "/api/compare/TSIBLINGREVIEW/audit-items/DREVIEW:DELETE/review",
+        json={"review_status": "FALSE_POSITIVE"},
+    )
+
+    assert response.status_code == 200, response.text
+    persisted = load_task("TSIBLINGREVIEW")
+    assert persisted.audit_item_reviews["DREVIEW:ADD"].review_status == "CONFIRMED"
+    assert persisted.audit_item_reviews["DREVIEW:DELETE"].review_status == "FALSE_POSITIVE"
+    assert "DREVIEW:MODIFY" not in persisted.audit_item_reviews
+    assert persisted.diffs[0].review_status == "NEEDS_REVIEW"
+
+
+def test_diff_review_bulk_updates_all_children_once_and_projects_equal_status(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TBULKREVIEW",
+            status="COMPLETED",
+            report_revision=8,
+            diffs=[_mixed_review_diff()],
+        )
+    )
+
+    response = TestClient(app).patch(
+        "/api/compare/TBULKREVIEW/diffs/DREVIEW/review",
+        json={"review_status": "CONFIRMED", "review_comment": "bulk"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["diff"]["review_status"] == "CONFIRMED"
+    assert payload["review_stats"]["total_count"] == 3
+    assert payload["review_stats"]["reviewed_count"] == 3
+    persisted = load_task("TBULKREVIEW")
+    assert persisted.report_revision == 9
+    assert len(persisted.audit_item_reviews) == 3
+    assert {review.review_status for review in persisted.audit_item_reviews.values()} == {"CONFIRMED"}
+
+
+def test_repeated_review_requests_each_increment_report_revision_once(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TREPEATREVIEW",
+            status="COMPLETED",
+            report_revision=0,
+            diffs=[_mixed_review_diff()],
+        )
+    )
+    client = TestClient(app)
+
+    first = client.patch(
+        "/api/compare/TREPEATREVIEW/audit-items/DREVIEW:ADD/review",
+        json={"review_status": "CONFIRMED"},
+    )
+    assert first.status_code == 200
+    assert first.json()["report_revision"] == 1
+    second = client.patch(
+        "/api/compare/TREPEATREVIEW/audit-items/DREVIEW:ADD/review",
+        json={"review_status": "CONFIRMED"},
+    )
+
+    assert second.status_code == 200
+    assert second.json()["report_revision"] == 2
+
+
+def test_unknown_audit_item_review_does_not_mutate_task(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(CompareTask(task_id="TUNKNOWNITEM", status="COMPLETED", diffs=[_mixed_review_diff()]))
+    before = load_task("TUNKNOWNITEM")
+
+    response = TestClient(app).patch(
+        "/api/compare/TUNKNOWNITEM/audit-items/unknown:ADD/review",
+        json={"review_status": "CONFIRMED"},
+    )
+
+    assert response.status_code == 404
+    after = load_task("TUNKNOWNITEM")
+    assert after.revision == before.revision
+    assert after.report_revision == before.report_revision
+    assert after.audit_item_reviews == {}
+
+
+def test_concurrent_audit_item_reviews_do_not_lose_sibling_updates(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TCONCURRENTREVIEW",
+            status="COMPLETED",
+            report_revision=0,
+            diffs=[_mixed_review_diff()],
+        )
+    )
+
+    def submit(item_id: str, status: str) -> int:
+        with TestClient(app) as client:
+            return client.patch(
+                f"/api/compare/TCONCURRENTREVIEW/audit-items/{item_id}/review",
+                json={"review_status": status},
+            ).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(
+            pool.map(
+                lambda args: submit(*args),
+                [("DREVIEW:ADD", "CONFIRMED"), ("DREVIEW:DELETE", "FALSE_POSITIVE")],
+            )
+        )
+
+    assert statuses == [200, 200]
+    persisted = load_task("TCONCURRENTREVIEW")
+    assert persisted.audit_item_reviews["DREVIEW:ADD"].review_status == "CONFIRMED"
+    assert persisted.audit_item_reviews["DREVIEW:DELETE"].review_status == "FALSE_POSITIVE"
+    assert persisted.report_revision == 2
+
+
+def test_review_persistence_failure_does_not_partially_mutate_task(tmp_path: Path, monkeypatch) -> None:
+    configure_storage(tmp_path)
+    repository = LocalJsonTaskRepository(settings)
+    repository.save_compare_task(
+        _owned_task(
+            CompareTask(
+                task_id="TFAILEDREVIEWWRITE",
+                status="COMPLETED",
+                report_revision=2,
+                diffs=[_mixed_review_diff()],
+            )
+        )
+    )
+    service = CompareReviewService(repository=repository)
+    original = repository.load_compare_task("TFAILEDREVIEWWRITE")
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(repository, "_write_task", fail_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        service.update_audit_item_review(original, "DREVIEW:ADD", "CONFIRMED")
+
+    persisted = LocalJsonTaskRepository(settings).load_compare_task("TFAILEDREVIEWWRITE")
+    assert persisted.audit_item_reviews == {}
+    assert persisted.audit_item_reviews_normalized is False
+    assert persisted.report_revision == 2
+    assert persisted.diffs[0].review_status == "UNREVIEWED"
+
+
+def test_unreviewed_review_removes_canonical_entry_but_keeps_normalized_marker(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TRESETREVIEW",
+            status="COMPLETED",
+            diffs=[_mixed_review_diff()],
+            audit_item_reviews={"DREVIEW:ADD": AuditItemReview(review_status="IGNORED")},
+            audit_item_reviews_normalized=True,
+        )
+    )
+
+    response = TestClient(app).patch(
+        "/api/compare/TRESETREVIEW/audit-items/DREVIEW:ADD/review",
+        json={"review_status": "UNREVIEWED"},
+    )
+
+    assert response.status_code == 200, response.text
+    persisted = load_task("TRESETREVIEW")
+    assert persisted.audit_item_reviews == {}
+    assert persisted.audit_item_reviews_normalized is True
+    assert persisted.diffs[0].review_status == "UNREVIEWED"
 
 
 def test_api_exposes_ocr_quality_summary(tmp_path: Path) -> None:

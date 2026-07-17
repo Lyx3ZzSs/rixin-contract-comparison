@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
 from app.api_schemas import (
-    AuditItemReviewResponse,
+    AuditItemResponse,
     AuditItemReviewUpdateResponse,
     CompareDiffListResponse,
     CompareDiffResponse,
@@ -17,12 +18,19 @@ from app.api_schemas import (
     TaskExecutionResponse,
 )
 from app.infrastructure.task_runner import TaskJob
-from app.models import AuditItemReview, CompareTask
+from app.models import CompareTask
+from app.services.audit_summary import AuditItem, build_audit_items
 from app.services.report_generator import build_report_filename
 from app.utils.json_utils import to_jsonable
 
 
 def compare_task_response(task: CompareTask, *, retry_eligible: bool = False) -> CompareTaskResponse:
+    audit_items = build_audit_items(
+        task.diffs,
+        task.audit_item_reviews,
+        broadcast_legacy=not task.audit_item_reviews_normalized,
+    )
+    review_counts = Counter(item.review_status for item in audit_items)
     data = {
         "task_id": task.task_id,
         "status": task.status,
@@ -33,12 +41,13 @@ def compare_task_response(task: CompareTask, *, retry_eligible: bool = False) ->
         "stage": task.stage,
         "progress_percent": task.progress_percent,
         "diff_count": task.diff_count,
-        "reviewed_count": task.reviewed_count,
-        "confirmed_count": task.confirmed_count,
-        "false_positive_count": task.false_positive_count,
-        "manual_review_count": task.manual_review_count,
-        "ignored_count": task.ignored_count,
+        "reviewed_count": len([item for item in audit_items if item.review_status != "UNREVIEWED"]),
+        "confirmed_count": review_counts["CONFIRMED"],
+        "false_positive_count": review_counts["FALSE_POSITIVE"],
+        "manual_review_count": review_counts["NEEDS_REVIEW"],
+        "ignored_count": review_counts["IGNORED"],
         "audit_item_reviews": {item_id: to_jsonable(review) for item_id, review in task.audit_item_reviews.items()},
+        "audit_items": [audit_item_response(item) for item in audit_items],
         "extractor_used": task.extractor_used,
         "parse_warnings": task.parse_warnings,
         "parse_warning_details": [to_jsonable(item) for item in task.parse_warning_details],
@@ -141,12 +150,19 @@ def artifact_filenames(paths: dict[str, str]) -> dict[str, str]:
 
 
 def review_stats(task: CompareTask) -> ReviewStatsResponse:
+    items = build_audit_items(
+        task.diffs,
+        task.audit_item_reviews,
+        broadcast_legacy=not task.audit_item_reviews_normalized,
+    )
     return ReviewStatsResponse(
+        total_count=len(items),
         reviewed_count=task.reviewed_count,
         confirmed_count=task.confirmed_count,
         false_positive_count=task.false_positive_count,
         manual_review_count=task.manual_review_count,
         ignored_count=task.ignored_count,
+        review_unit="audit_item",
     )
 
 
@@ -160,20 +176,39 @@ def diff_review_response(task: CompareTask, diff) -> DiffReviewResponse:
 
 def audit_item_review_response(
     task: CompareTask,
-    audit_item_id: str,
-    review: AuditItemReview,
+    item: AuditItem,
 ) -> AuditItemReviewUpdateResponse:
     return AuditItemReviewUpdateResponse(
         task_id=task.task_id,
-        audit_item_id=audit_item_id,
-        audit_item_review=AuditItemReviewResponse(
-            audit_item_id=audit_item_id,
-            review_status=review.review_status,
-            review_comment=review.review_comment,
-            reviewed_by=review.reviewed_by,
-            reviewed_at=review.reviewed_at,
-        ),
+        audit_item=audit_item_response(item),
         review_stats=review_stats(task),
+        report_revision=task.report_revision,
+    )
+
+
+def audit_item_response(item: AuditItem) -> AuditItemResponse:
+    return AuditItemResponse(
+        audit_item_id=item.item_id,
+        diff_id=item.diff_id,
+        diff_type=item.diff_type,
+        source_type=item.source_type,
+        section_type=item.section_type,
+        section_path=item.section_path,
+        title=item.title,
+        summary=item.summary,
+        original_text=item.original_text,
+        compare_text=item.compare_text,
+        original_evidence=[to_jsonable(evidence) for evidence in item.original_evidence],
+        compare_evidence=[to_jsonable(evidence) for evidence in item.compare_evidence],
+        evidence_state=item.evidence_state,
+        quality_status=item.quality_status,
+        review_flags=item.review_flags,
+        text_confidence=item.text_confidence,
+        match_confidence=item.match_confidence,
+        review_status=item.review_status,
+        review_comment=item.review_comment,
+        reviewed_by=item.reviewed_by,
+        reviewed_at=item.reviewed_at,
     )
 
 

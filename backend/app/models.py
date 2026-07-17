@@ -452,6 +452,7 @@ class CompareTask(BaseModel):
     manual_review_count: int = 0
     ignored_count: int = 0
     audit_item_reviews: dict[str, AuditItemReview] = Field(default_factory=dict)
+    audit_item_reviews_normalized: bool = False
     compare_options: CompareOptions = Field(default_factory=CompareOptions)
     diffs: list[DiffItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

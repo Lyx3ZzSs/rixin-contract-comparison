@@ -9,7 +9,8 @@ from app.errors import NotFoundError, TaskStaleLeaseError, TaskTransitionConflic
 from app.infrastructure.execution_state import TaskExecutionContext
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.infrastructure.task_runner import QueuedTaskRunner, TaskJob, default_task_runner
-from app.models import AuditItemReview, CompareOptions, CompareTask, DiffItem, ReviewStatus
+from app.models import CompareOptions, CompareTask, DiffItem, ReviewStatus
+from app.services.audit_summary import AuditItem
 from app.services.compare_service import CompareService
 from app.services.review_service import CompareReviewService
 
@@ -203,7 +204,7 @@ class CompareTaskApplication:
         review_status: ReviewStatus,
         review_comment: str = "",
         reviewed_by: str = "",
-    ) -> tuple[CompareTask, AuditItemReview]:
+    ) -> tuple[CompareTask, AuditItem]:
         return CompareReviewService(repository=self.repository).update_audit_item_review(
             task,
             audit_item_id,
