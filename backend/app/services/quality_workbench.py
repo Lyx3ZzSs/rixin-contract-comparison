@@ -5,14 +5,17 @@ import errno
 import json
 import os
 import re
+import secrets
 import shutil
+import stat
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.infrastructure.atomic_files import atomic_write_json, atomic_write_text
-from app.models import DiffItem
+from app.models import CompareTask, DiffItem
 from app.services.diff_quality import DiffQualityProcessor
 from scripts.export_ocr_compare_gold_case import export_gold_case
 from scripts.evaluate_ocr_compare_quality import evaluate_case_root
@@ -37,6 +40,21 @@ EXPECTED_DIFF_ALLOWED_FIELDS = {
     "source_actual_diff_id",
     "expected_evidence",
 }
+EXPECTED_DIFF_TYPES = {"ADD", "DELETE", "MODIFY"}
+EXPECTED_SOURCE_TYPES = {
+    "clause",
+    "header_footer",
+    "table",
+    "metadata",
+    "seal",
+    "page",
+    "signing_region",
+}
+EXPECTED_REVIEW_STATUSES = {"", "APPROVED", "DRAFT", "REJECTED"}
+EXPECTED_STRING_FIELDS = EXPECTED_DIFF_ALLOWED_FIELDS - {
+    "should_not_match_again",
+    "expected_evidence",
+}
 
 
 class QualityWorkbenchError(Exception):
@@ -45,6 +63,8 @@ class QualityWorkbenchError(Exception):
 
 class InvalidQualityWorkbenchIdError(QualityWorkbenchError):
     """Raised when a case id is not safe to use as a path segment."""
+
+    error_code = "QUALITY_PATH_INVALID"
 
 
 class QualityCaseNotFoundError(QualityWorkbenchError):
@@ -69,6 +89,60 @@ class QualityCasesPathConflictError(QualityWorkbenchError):
     """Raised when seed and target paths overlap after resolution."""
 
     error_code = "QUALITY_CASES_PATH_CONFLICT"
+
+
+class _VerifiedDirectory:
+    """Keep writes anchored to the directory that passed the path guard.
+
+    A resolved path check alone is vulnerable if the directory is renamed and
+    replaced with a symlink between the check and a later write.  The open file
+    descriptor below is the authority for staging paths; a fresh no-follow open
+    before each externally visible write also makes the operation fail closed
+    when its configured directory has changed identity.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.descriptor = _open_directory_no_follow(path)
+        self.identity = _directory_identity(self.descriptor)
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+    def assert_stable(self) -> None:
+        descriptor = _open_directory_no_follow(self.path)
+        try:
+            if _directory_identity(descriptor) != self.identity:
+                raise QualityCasesPathConflictError(
+                    "QUALITY_CASES_PATH_CONFLICT: quality case directory changed during operation"
+                )
+        finally:
+            os.close(descriptor)
+
+    def child_path(self, name: str) -> Path:
+        if sys.platform.startswith("linux"):
+            return _directory_fd_path(self.descriptor) / name
+        # Docker production uses the descriptor-backed Linux path above.  macOS
+        # does not permit directory traversal through /dev/fd, so retain the
+        # identity checks around each write on the local development platform.
+        return self.path / name
+
+    def entry_exists(self, name: str) -> bool:
+        try:
+            os.stat(name, dir_fd=self.descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        return True
+
+    def make_staging_directory(self, case_id: str) -> Path:
+        for _ in range(100):
+            name = f".{case_id}.{secrets.token_hex(8)}.staging"
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=self.descriptor)
+            except FileExistsError:
+                continue
+            return self.child_path(name)
+        raise FileExistsError("Unable to allocate quality case staging directory")
 
 
 class QualityWorkbenchService:
@@ -123,33 +197,78 @@ class QualityWorkbenchService:
         case_id: str,
         force: bool = False,
     ) -> dict[str, Any]:
+        operation_case_root = _resolve_path(self.case_root)
+        operation_seed_root = (
+            _resolve_path(self.seed_root) if self.seed_root is not None else None
+        )
         if self.seed_root is not None:
-            ensure_quality_paths_separated(self.case_root, self.seed_root)
+            operation_case_root, operation_seed_root = (
+                ensure_quality_paths_separated(self.case_root, self.seed_root)
+            )
+        # Validate case_id before looking up the source task.  This retains the
+        # stable path-invalid contract even when task_id does not exist.
+        self._case_dir(case_id)
         task_dir = self._task_dir(task_id)
-        case_dir = self._case_dir(case_id)
         if not (task_dir / "task.json").exists():
             raise QualityTaskNotFoundError(f"Quality task not found: {task_id}")
-        if case_dir.exists():
-            raise FileExistsError(f"Quality case already exists: {case_id}")
 
-        self.case_root.mkdir(parents=True, exist_ok=True)
-        staging_root = Path(
-            tempfile.mkdtemp(
-                prefix=f".{case_id}.",
-                suffix=".staging",
-                dir=self.case_root,
+        if operation_seed_root is not None:
+            operation_case_root, operation_seed_root = _ensure_quality_paths_stable(
+                self.case_root,
+                self.seed_root,
+                operation_case_root,
+                operation_seed_root,
             )
+        operation_case_root.mkdir(parents=True, exist_ok=True)
+        target_directory = _VerifiedDirectory(operation_case_root)
+        seed_directory = (
+            _VerifiedDirectory(operation_seed_root)
+            if operation_seed_root is not None
+            else None
         )
-        staging_case = staging_root / case_id
         try:
+            _assert_quality_operation_stable(
+                target_directory,
+                seed_directory,
+                self.case_root,
+                self.seed_root,
+                operation_case_root,
+                operation_seed_root,
+            )
+            if target_directory.entry_exists(case_id):
+                raise FileExistsError(f"Quality case already exists: {case_id}")
+            staging_root = target_directory.make_staging_directory(case_id)
+            staging_case = staging_root / case_id
             summary = export_gold_case(task_dir, staging_case, force=False)
             _read_expected_json(staging_case / "expected.json")
+            _read_actual_task(staging_case / "actual.json", case_id)
             _fsync_tree(staging_case)
+            _assert_quality_operation_stable(
+                target_directory,
+                seed_directory,
+                self.case_root,
+                self.seed_root,
+                operation_case_root,
+                operation_seed_root,
+            )
+            case_dir = target_directory.child_path(case_id)
             publish_directory_without_overwrite(staging_case, case_dir)
-            _fsync_directory(self.case_root)
+            _fsync_descriptor(target_directory.descriptor)
+            _assert_quality_operation_stable(
+                target_directory,
+                seed_directory,
+                self.case_root,
+                self.seed_root,
+                operation_case_root,
+                operation_seed_root,
+            )
             return summary
         finally:
-            shutil.rmtree(staging_root, ignore_errors=True)
+            if "staging_root" in locals():
+                shutil.rmtree(staging_root, ignore_errors=True)
+            if seed_directory is not None:
+                seed_directory.close()
+            target_directory.close()
 
     def review_task(self, task_id: str) -> dict[str, Any]:
         task_dir = self._task_dir(task_id)
@@ -247,6 +366,7 @@ class QualityWorkbenchService:
         run_id: str = "local-eval",
     ) -> dict[str, Any]:
         _safe_child_dir(self.output_root, run_id, "quality run")
+        self._preflight_evaluation_cases()
         report = evaluate_case_root(self.case_root, dataset_splits=dataset_splits)
         return {
             "run_id": run_id,
@@ -271,6 +391,8 @@ class QualityWorkbenchService:
             )
             if candidate.exists():
                 baseline_path = candidate
+
+        self._preflight_evaluation_cases()
 
         summary = run_regression(
             case_root=self.case_root,
@@ -301,6 +423,14 @@ class QualityWorkbenchService:
         if not expected_path.exists():
             raise QualityCaseNotFoundError(f"Quality case not found: {case_id}")
         return case_dir, _read_expected_json(expected_path)
+
+    def _preflight_evaluation_cases(self) -> None:
+        if not self.case_root.exists():
+            return
+        for case_dir in sorted(self.case_root.iterdir()):
+            if not case_dir.is_dir() or not (case_dir / "expected.json").exists():
+                continue
+            _validate_evaluation_case(case_dir, case_dir.name)
 
     def _build_summary(
         self,
@@ -341,9 +471,128 @@ def _read_expected_json(path: Path) -> dict[str, Any]:
         payload = _read_json(path)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise QualityCaseInvalidError(f"Invalid quality case expected.json: {path.parent.name}") from exc
-    if not isinstance(payload.get("expected_diffs", []), list):
+    try:
+        _validate_expected_payload(payload)
+    except (TypeError, ValueError):
         raise QualityCaseInvalidError(f"Invalid quality case expected.json: {path.parent.name}")
     return payload
+
+
+def _validate_expected_payload(payload: dict[str, Any]) -> None:
+    if "expected_diffs" not in payload or not isinstance(
+        payload["expected_diffs"], list
+    ):
+        raise ValueError("expected_diffs must be a list")
+    if "case_id" in payload and not isinstance(payload["case_id"], str):
+        raise ValueError("case_id must be a string")
+    if "dataset_split" in payload and not isinstance(payload["dataset_split"], str):
+        raise ValueError("dataset_split must be a string")
+    for field in ("case_tags", "tags"):
+        if field in payload and (
+            not isinstance(payload[field], list)
+            or not all(isinstance(item, str) for item in payload[field])
+        ):
+            raise ValueError(f"{field} must be a string list")
+    if "baseline_required" in payload and not isinstance(
+        payload["baseline_required"], bool
+    ):
+        raise ValueError("baseline_required must be a boolean")
+    if "source_files" in payload and not isinstance(payload["source_files"], dict):
+        raise ValueError("source_files must be an object")
+
+    for index, item in enumerate(payload["expected_diffs"]):
+        if not isinstance(item, dict):
+            raise ValueError(f"expected_diffs[{index}] must be an object")
+        if item.get("diff_type") not in (None, *EXPECTED_DIFF_TYPES):
+            raise ValueError(f"expected_diffs[{index}].diff_type is invalid")
+        if item.get("source_type") not in (None, "", *EXPECTED_SOURCE_TYPES):
+            raise ValueError(f"expected_diffs[{index}].source_type is invalid")
+        if item.get("review_status") not in (None, *EXPECTED_REVIEW_STATUSES):
+            raise ValueError(f"expected_diffs[{index}].review_status is invalid")
+        for field in EXPECTED_STRING_FIELDS:
+            if field in item and not isinstance(item[field], str):
+                raise ValueError(f"expected_diffs[{index}].{field} must be a string")
+        if "should_not_match_again" in item and not isinstance(
+            item["should_not_match_again"], bool
+        ):
+            raise ValueError(
+                f"expected_diffs[{index}].should_not_match_again must be a boolean"
+            )
+        if "expected_evidence" in item and (
+            not isinstance(item["expected_evidence"], list)
+            or not all(
+                isinstance(evidence, dict) for evidence in item["expected_evidence"]
+            )
+        ):
+            raise ValueError(
+                f"expected_diffs[{index}].expected_evidence must be an object list"
+            )
+        # The evaluator deliberately avoids matching only on type/source: that
+        # would turn every same-kind diff into a false positive.  A seed entry
+        # must therefore carry at least one usable textual signal, or complete
+        # positional evidence that the evaluator can compare on both sides.
+        has_text_signal = any(
+            isinstance(item.get(field), str) and bool(item[field].strip())
+            for field in ("title_contains", "original_contains", "compare_contains")
+        )
+        has_evidence_signal = bool(item.get("expected_evidence")) and all(
+            _is_evaluation_evidence(evidence)
+            for evidence in item.get("expected_evidence", [])
+        )
+        if not has_text_signal and not has_evidence_signal:
+            raise ValueError(
+                f"expected_diffs[{index}] requires a usable matching signal"
+            )
+
+
+def _is_evaluation_evidence(evidence: dict[str, Any]) -> bool:
+    if evidence.get("side") not in {"original", "compare"}:
+        return False
+    if not isinstance(evidence.get("page_no"), int) or evidence["page_no"] < 1:
+        return False
+    bbox = evidence.get("bbox")
+    if not isinstance(bbox, dict):
+        return False
+    return all(
+        isinstance(bbox.get(field), (int, float)) and not isinstance(bbox[field], bool)
+        for field in ("x0", "y0", "x1", "y1")
+    )
+
+
+def _read_actual_task(path: Path, case_id: str) -> dict[str, Any]:
+    try:
+        payload = _read_json(path)
+        CompareTask.model_validate(payload)
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        ValueError,
+        ValidationError,
+    ) as exc:
+        raise QualityCaseInvalidError(
+            f"Invalid quality case actual.json: {case_id}"
+        ) from exc
+    return payload
+
+
+def _validate_evaluation_case(case_dir: Path, case_id: str) -> None:
+    expected = _read_expected_json(case_dir / "expected.json")
+    if expected.get("case_id") not in (None, case_id):
+        raise QualityCaseInvalidError(
+            f"Quality case expected.json case_id mismatch: {case_id}"
+        )
+    actual_json = case_dir / "actual.json"
+    if actual_json.is_file():
+        _read_actual_task(actual_json, case_id)
+        return
+    if not (
+        (case_dir / "original.pdf").is_file()
+        and (case_dir / "compare.pdf").is_file()
+    ):
+        raise QualityCaseInvalidError(
+            f"Quality case has no evaluation source: {case_id}"
+        )
 
 
 def _write_expected_json(path: Path, payload: dict[str, Any]) -> None:
@@ -371,56 +620,172 @@ def ensure_quality_paths_separated(
     return target, seed
 
 
+def _ensure_quality_paths_stable(
+    target_reference: Path,
+    seed_reference: Path,
+    expected_target: Path,
+    expected_seed: Path,
+) -> tuple[Path, Path]:
+    target, seed = ensure_quality_paths_separated(target_reference, seed_reference)
+    if target != expected_target or seed != expected_seed:
+        raise QualityCasesPathConflictError(
+            "QUALITY_CASES_PATH_CONFLICT: quality case paths changed during operation"
+        )
+    return target, seed
+
+
+def _open_directory_no_follow(path: Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise QualityCasesPathConflictError(
+                "QUALITY_CASES_PATH_CONFLICT: quality case directory became a symlink or non-directory"
+            ) from exc
+        raise
+    try:
+        path_stat = os.lstat(path)
+        descriptor_stat = os.fstat(descriptor)
+        if (
+            stat.S_ISLNK(path_stat.st_mode)
+            or not stat.S_ISDIR(descriptor_stat.st_mode)
+            or (path_stat.st_dev, path_stat.st_ino)
+            != (descriptor_stat.st_dev, descriptor_stat.st_ino)
+        ):
+            raise QualityCasesPathConflictError(
+                "QUALITY_CASES_PATH_CONFLICT: quality case directory identity changed"
+            )
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _directory_identity(descriptor: int) -> tuple[int, int]:
+    directory_stat = os.fstat(descriptor)
+    return directory_stat.st_dev, directory_stat.st_ino
+
+
+def _directory_fd_path(descriptor: int) -> Path:
+    # Both supported deployment platforms expose an open directory through this
+    # descriptor-backed path.  It keeps shutil/atomic helpers on the original
+    # directory even if the configured pathname is replaced concurrently.
+    return Path(f"/dev/fd/{descriptor}")
+
+
+def _fsync_descriptor(descriptor: int) -> None:
+    os.fsync(descriptor)
+
+
+def _assert_quality_operation_stable(
+    target_directory: _VerifiedDirectory,
+    seed_directory: _VerifiedDirectory | None,
+    target_reference: Path,
+    seed_reference: Path | None,
+    expected_target: Path,
+    expected_seed: Path | None,
+) -> None:
+    target_directory.assert_stable()
+    if seed_directory is not None:
+        seed_directory.assert_stable()
+        if seed_reference is None or expected_seed is None:
+            raise AssertionError("Seed reference must accompany seed directory")
+        _ensure_quality_paths_stable(
+            target_reference,
+            seed_reference,
+            expected_target,
+            expected_seed,
+        )
+
+
 def initialize_quality_cases(target_root: Path, seed_root: Path) -> dict[str, Any]:
     target, seed = ensure_quality_paths_separated(target_root, seed_root)
     manifest, seed_cases = _validate_seed_repository(seed)
-    target.mkdir(parents=True, exist_ok=True)
-
-    created_case_ids: list[str] = []
-    preserved_case_ids: list[str] = []
-    for case_id, source_case in seed_cases:
-        target_case = target / case_id
-        if target_case.exists():
-            preserved_case_ids.append(case_id)
-            continue
-
-        staging_root = Path(
-            tempfile.mkdtemp(
-                prefix=f".{case_id}.",
-                suffix=".staging",
-                dir=target,
-            )
-        )
-        staging_case = staging_root / case_id
-        try:
-            shutil.copytree(source_case, staging_case)
-            _validate_seed_case(staging_case, case_id)
-            _fsync_tree(staging_case)
-            try:
-                publish_directory_without_overwrite(staging_case, target_case)
-            except FileExistsError:
-                if not target_case.exists():
-                    raise
-                preserved_case_ids.append(case_id)
-            else:
-                _fsync_directory(target)
-                created_case_ids.append(case_id)
-        finally:
-            shutil.rmtree(staging_root, ignore_errors=True)
-
-    atomic_write_json(
-        target / "seed-manifest.json",
-        {
-            "schema_version": "1.0",
-            "seed_version": manifest["seed_version"],
-            "case_ids": [case_id for case_id, _ in seed_cases],
-        },
+    target, seed = _ensure_quality_paths_stable(
+        target_root,
+        seed_root,
+        target,
+        seed,
     )
-    return {
-        "seed_version": manifest["seed_version"],
-        "created_case_ids": created_case_ids,
-        "preserved_case_ids": preserved_case_ids,
-    }
+    target.mkdir(parents=True, exist_ok=True)
+    target_directory = _VerifiedDirectory(target)
+    seed_directory = _VerifiedDirectory(seed)
+    try:
+        created_case_ids: list[str] = []
+        preserved_case_ids: list[str] = []
+        for case_id, _source_case in seed_cases:
+            _assert_quality_operation_stable(
+                target_directory,
+                seed_directory,
+                target_root,
+                seed_root,
+                target,
+                seed,
+            )
+            if target_directory.entry_exists(case_id):
+                preserved_case_ids.append(case_id)
+                continue
+
+            staging_root = target_directory.make_staging_directory(case_id)
+            staging_case = staging_root / case_id
+            try:
+                shutil.copytree(seed_directory.child_path(case_id), staging_case)
+                _validate_seed_case(staging_case, case_id)
+                _fsync_tree(staging_case)
+                _assert_quality_operation_stable(
+                    target_directory,
+                    seed_directory,
+                    target_root,
+                    seed_root,
+                    target,
+                    seed,
+                )
+                target_case = target_directory.child_path(case_id)
+                try:
+                    publish_directory_without_overwrite(staging_case, target_case)
+                except FileExistsError:
+                    if not target_directory.entry_exists(case_id):
+                        raise
+                    preserved_case_ids.append(case_id)
+                else:
+                    _fsync_descriptor(target_directory.descriptor)
+                    created_case_ids.append(case_id)
+            finally:
+                shutil.rmtree(staging_root, ignore_errors=True)
+
+        _assert_quality_operation_stable(
+            target_directory,
+            seed_directory,
+            target_root,
+            seed_root,
+            target,
+            seed,
+        )
+        atomic_write_json(
+            target_directory.child_path("seed-manifest.json"),
+            {
+                "schema_version": "1.0",
+                "seed_version": manifest["seed_version"],
+                "case_ids": [case_id for case_id, _ in seed_cases],
+            },
+        )
+        _assert_quality_operation_stable(
+            target_directory,
+            seed_directory,
+            target_root,
+            seed_root,
+            target,
+            seed,
+        )
+        return {
+            "seed_version": manifest["seed_version"],
+            "created_case_ids": created_case_ids,
+            "preserved_case_ids": preserved_case_ids,
+        }
+    finally:
+        seed_directory.close()
+        target_directory.close()
 
 
 def _validate_seed_repository(
@@ -470,10 +835,7 @@ def _validate_seed_case(case_dir: Path, case_id: str) -> None:
     actual_json = case_dir / "actual.json"
     has_pdfs = (case_dir / "original.pdf").is_file() and (case_dir / "compare.pdf").is_file()
     if actual_json.is_file():
-        try:
-            _read_json(actual_json)
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-            raise QualityCaseInvalidError(f"Invalid quality seed actual.json: {case_id}") from exc
+        _read_actual_task(actual_json, case_id)
     elif not has_pdfs:
         raise QualityCaseInvalidError(f"Quality seed case has no evaluation source: {case_id}")
 

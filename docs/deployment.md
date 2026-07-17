@@ -209,6 +209,11 @@ docker compose exec backend python scripts/init_quality_cases.py
 命令成功或失败都会输出结构化 JSON，并以非零退出码报告失败。`QUALITY_CASES_DIR` 与
 `QUALITY_CASES_SEED_DIR` 的解析结果必须彼此分离，不能相同或互为父子目录（包括符号链接解析后的
 关系）；违反时命令以 `QUALITY_CASES_PATH_CONFLICT` 失败，防止递归复制或修改只读种子。
+API 中不安全的 case、task、run 或 baseline 标识统一返回 HTTP 400 和 `QUALITY_PATH_INVALID`。
+
+初始化和管理员导出会在创建 staging 前、原子发布前以及 seed manifest 写入前重新解析并校验路径，
+从而关闭应用流程内可确定复现的符号链接切换窗口。此机制不承诺抵御已拥有 volume 文件系统写权限的
+恶意并发进程；生产环境仍必须限制 `/data/storage` 和镜像 seed 目录的操作系统写权限。
 
 ### 备份存储卷
 

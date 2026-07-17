@@ -174,6 +174,62 @@ def test_invalid_expected_json_prevents_all_seed_publication(tmp_path: Path) -> 
     assert not list(target_root.glob(".*.staging")) if target_root.exists() else True
 
 
+@pytest.mark.parametrize(
+    "invalid_expected_diffs",
+    [
+        ["not-an-object"],
+        [{"diff_type": "UNKNOWN", "review_status": "APPROVED"}],
+        [{"diff_type": "MODIFY", "review_status": "APPROVED"}],
+    ],
+)
+def test_semantically_invalid_expected_diff_prevents_all_seed_publication(
+    tmp_path: Path,
+    invalid_expected_diffs: list,
+) -> None:
+    seed_root = tmp_path / "app/resources/quality_cases"
+    target_root = tmp_path / "data/storage/quality/cases"
+    _make_seed(seed_root, ("valid-case", "invalid-case"))
+    invalid_path = seed_root / "invalid-case" / "expected.json"
+    invalid = json.loads(invalid_path.read_text(encoding="utf-8"))
+    invalid["expected_diffs"] = invalid_expected_diffs
+    _write_json(invalid_path, invalid)
+
+    with pytest.raises(quality_workbench.QualityCaseInvalidError) as captured:
+        _initialize(target_root, seed_root)
+
+    assert captured.value.error_code == "QUALITY_CASE_INVALID"
+    assert not (target_root / "valid-case").exists()
+
+
+def test_missing_expected_diffs_prevents_seed_publication(tmp_path: Path) -> None:
+    seed_root = tmp_path / "app/resources/quality_cases"
+    target_root = tmp_path / "data/storage/quality/cases"
+    _make_seed(seed_root)
+    expected_path = seed_root / "baseline-contract-001" / "expected.json"
+    expected = json.loads(expected_path.read_text(encoding="utf-8"))
+    del expected["expected_diffs"]
+    _write_json(expected_path, expected)
+
+    with pytest.raises(quality_workbench.QualityCaseInvalidError) as captured:
+        _initialize(target_root, seed_root)
+
+    assert captured.value.error_code == "QUALITY_CASE_INVALID"
+    assert not (target_root / "baseline-contract-001").exists()
+
+
+def test_unevaluable_actual_json_prevents_all_seed_publication(tmp_path: Path) -> None:
+    seed_root = tmp_path / "app/resources/quality_cases"
+    target_root = tmp_path / "data/storage/quality/cases"
+    _make_seed(seed_root, ("valid-case", "invalid-case"))
+    _write_json(seed_root / "invalid-case" / "actual.json", {"diffs": []})
+
+    with pytest.raises(quality_workbench.QualityCaseInvalidError) as captured:
+        _initialize(target_root, seed_root)
+
+    assert captured.value.error_code == "QUALITY_CASE_INVALID"
+    assert not (target_root / "valid-case").exists()
+
+
 def test_invalid_seed_manifest_schema_prevents_publication(tmp_path: Path) -> None:
     seed_root = tmp_path / "app/resources/quality_cases"
     target_root = tmp_path / "data/storage/quality/cases"
@@ -273,6 +329,76 @@ def test_symlink_resolved_ancestor_quality_path_conflict_is_rejected(
     assert captured.value.error_code == "QUALITY_CASES_PATH_CONFLICT"
 
 
+def test_initializer_rejects_target_swapped_to_seed_after_initial_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_root = tmp_path / "app/resources/quality_cases"
+    target_root = tmp_path / "data/storage/quality/cases"
+    _make_seed(seed_root)
+    target_root.mkdir(parents=True)
+    seed_before = {
+        path.relative_to(seed_root): path.read_bytes()
+        for path in seed_root.rglob("*")
+        if path.is_file()
+    }
+    real_validate = quality_workbench._validate_seed_repository
+
+    def validate_then_swap(seed: Path):
+        result = real_validate(seed)
+        target_root.rmdir()
+        target_root.symlink_to(seed_root, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(
+        quality_workbench,
+        "_validate_seed_repository",
+        validate_then_swap,
+    )
+
+    with pytest.raises(quality_workbench.QualityCasesPathConflictError):
+        _initialize(target_root, seed_root)
+
+    seed_after = {
+        path.relative_to(seed_root): path.read_bytes()
+        for path in seed_root.rglob("*")
+        if path.is_file()
+    }
+    assert seed_after == seed_before
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="descriptor-backed path anchoring is exercised in Linux deployment",
+)
+def test_initializer_never_writes_to_redirect_after_staging_root_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_root = tmp_path / "seed"
+    target_root = tmp_path / "cases"
+    redirect_root = tmp_path / "redirect"
+    original_target = tmp_path / "cases-original"
+    _make_seed(seed_root)
+    target_root.mkdir()
+    redirect_root.mkdir()
+    real_copytree = quality_workbench.shutil.copytree
+
+    def copy_then_swap(source: Path, target: Path, *args, **kwargs):
+        result = real_copytree(source, target, *args, **kwargs)
+        target_root.rename(original_target)
+        target_root.symlink_to(redirect_root, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(quality_workbench.shutil, "copytree", copy_then_swap)
+
+    with pytest.raises(quality_workbench.QualityCasesPathConflictError):
+        _initialize(target_root, seed_root)
+
+    assert not list(redirect_root.iterdir())
+    assert not (seed_root / "baseline-contract-001" / "seed-manifest.json").exists()
+
+
 def test_service_construction_and_export_recheck_path_conflicts(tmp_path: Path) -> None:
     seed_root = tmp_path / "seed"
     target_root = tmp_path / "cases"
@@ -287,6 +413,51 @@ def test_service_construction_and_export_recheck_path_conflicts(tmp_path: Path) 
 
     with pytest.raises(quality_workbench.QualityCasesPathConflictError):
         service.export_case("task-001", "case-001")
+
+
+def test_export_rejects_target_swapped_to_seed_before_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_root = tmp_path / "seed"
+    target_root = tmp_path / "cases"
+    task_root = tmp_path / "tasks"
+    _make_seed(seed_root)
+    target_root.mkdir()
+    _write_json(
+        task_root / "task-001" / "task.json",
+        {"task_id": "task-001", "status": "COMPLETED", "diffs": []},
+    )
+    service = quality_workbench.QualityWorkbenchService(
+        case_root=target_root,
+        task_root=task_root,
+        output_root=tmp_path / "runs",
+        seed_root=seed_root,
+    )
+    seed_before = {
+        path.relative_to(seed_root): path.read_bytes()
+        for path in seed_root.rglob("*")
+        if path.is_file()
+    }
+    real_case_dir = service._case_dir
+
+    def case_dir_then_swap(case_id: str) -> Path:
+        result = real_case_dir(case_id)
+        target_root.rmdir()
+        target_root.symlink_to(seed_root, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(service, "_case_dir", case_dir_then_swap)
+
+    with pytest.raises(quality_workbench.QualityCasesPathConflictError):
+        service.export_case("task-001", "administrator-case")
+
+    seed_after = {
+        path.relative_to(seed_root): path.read_bytes()
+        for path in seed_root.rglob("*")
+        if path.is_file()
+    }
+    assert seed_after == seed_before
 
 
 def test_export_appends_to_target_and_later_initialization_preserves_it(
@@ -415,6 +586,46 @@ def test_directory_publication_fails_closed_on_unsupported_platform(
     assert existing_case.is_dir()
     assert not list(existing_case.iterdir())
     assert (staged_case / "expected.json").exists()
+
+
+def test_directory_publication_uses_linux_renameat2_no_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staged_case = tmp_path / "staged-case"
+    staged_case.mkdir()
+    target_case = tmp_path / "target-case"
+    calls: list[tuple] = []
+
+    class FakeRenameAt2:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *args):
+            calls.append(args)
+            return 0
+
+    class FakeLibC:
+        renameat2 = FakeRenameAt2()
+
+    monkeypatch.setattr(quality_workbench.sys, "platform", "linux")
+    monkeypatch.setattr(
+        quality_workbench.ctypes,
+        "CDLL",
+        lambda *_args, **_kwargs: FakeLibC(),
+    )
+
+    quality_workbench.publish_directory_without_overwrite(staged_case, target_case)
+
+    assert calls == [
+        (
+            -100,
+            os.fsencode(staged_case),
+            -100,
+            os.fsencode(target_case),
+            0x00000001,
+        )
+    ]
 
 
 def test_export_and_initializer_race_publishes_one_complete_case(

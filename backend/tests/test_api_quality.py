@@ -190,6 +190,7 @@ def test_quality_case_path_traversal_returns_400(
     response = client.get("/api/quality/cases/..%2Fsecret")
 
     assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "QUALITY_PATH_INVALID"
 
 
 def test_quality_case_dot_segment_returns_400(
@@ -388,6 +389,7 @@ def test_review_quality_task_rejects_unsafe_task_id(
     response = client.get("/api/quality/tasks/..%2Fsecret/review")
 
     assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "QUALITY_PATH_INVALID"
 
 
 def test_review_quality_task_missing_task_returns_404(
@@ -442,6 +444,26 @@ def test_evaluate_quality_rejects_unsafe_run_id(
     )
 
     assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "QUALITY_PATH_INVALID"
+
+
+def test_evaluate_quality_rejects_semantically_invalid_expected_json(
+    quality_service: QualityWorkbenchService,
+) -> None:
+    case_dir = _make_case(quality_service.case_root)
+    expected_path = case_dir / "expected.json"
+    expected = json.loads(expected_path.read_text(encoding="utf-8"))
+    expected["expected_diffs"] = ["not-an-object"]
+    _write_json(expected_path, expected)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/quality/evaluate",
+        json={"run_id": "invalid-case-eval"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "QUALITY_CASE_INVALID"
 
 
 def test_quality_regression_endpoint(quality_service: QualityWorkbenchService) -> None:
@@ -489,6 +511,7 @@ def test_quality_regression_rejects_unsafe_run_id(
     )
 
     assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "QUALITY_PATH_INVALID"
 
 
 def test_quality_regression_rejects_unsafe_baseline_name(
@@ -502,6 +525,26 @@ def test_quality_regression_rejects_unsafe_baseline_name(
     )
 
     assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "QUALITY_PATH_INVALID"
+
+
+def test_quality_regression_rejects_semantically_invalid_expected_json(
+    quality_service: QualityWorkbenchService,
+) -> None:
+    case_dir = _make_case(quality_service.case_root)
+    expected_path = case_dir / "expected.json"
+    expected = json.loads(expected_path.read_text(encoding="utf-8"))
+    expected["expected_diffs"] = [{"diff_type": "UNKNOWN"}]
+    _write_json(expected_path, expected)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/quality/regression",
+        json={"run_id": "invalid-case-regression"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "QUALITY_CASE_INVALID"
 
 
 def test_create_and_delete_quality_expected_diff(

@@ -97,7 +97,7 @@ def evaluate_quality(
             dataset_splits=(set(request.dataset_splits) if request.dataset_splits is not None else None),
             run_id=request.run_id,
         )
-    except InvalidQualityWorkbenchIdError as exc:
+    except (InvalidQualityWorkbenchIdError, QualityCaseInvalidError) as exc:
         raise _quality_http_error(exc) from exc
 
 
@@ -112,7 +112,7 @@ def run_quality_regression(
             baseline_name=request.baseline_name,
             run_id=request.run_id,
         )
-    except InvalidQualityWorkbenchIdError as exc:
+    except (InvalidQualityWorkbenchIdError, QualityCaseInvalidError) as exc:
         raise _quality_http_error(exc) from exc
 
 
@@ -210,7 +210,10 @@ def _quality_http_error(exc: Exception) -> HTTPException:
             detail={"code": exc.error_code, "message": str(exc)},
         )
     if isinstance(exc, InvalidQualityWorkbenchIdError):
-        return HTTPException(status_code=400, detail=str(exc))
+        return HTTPException(
+            status_code=400,
+            detail={"code": exc.error_code, "message": str(exc)},
+        )
     if isinstance(
         exc,
         (
