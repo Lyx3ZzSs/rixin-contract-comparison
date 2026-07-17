@@ -12,6 +12,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from app.config import Settings, settings
 from app.errors import TaskRepositoryReadError
+from app.infrastructure.atomic_files import atomic_write_json, update_task_manifest
 from app.models import CompareTask, OcrRawResultPaths
 
 logger = logging.getLogger(__name__)
@@ -103,10 +104,8 @@ class LocalJsonTaskRepository:
             self.settings.tasks_dir.mkdir(parents=True, exist_ok=True)
             path = self.task_json_path(task_id)
             path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = path.with_suffix(path.suffix + ".tmp")
-            temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             # task.json is authoritative; manifest.json is a derived index.
-            temp_path.replace(path)
+            atomic_write_json(path, data)
             try:
                 self._write_manifest(task_id, data)
             except OSError:
@@ -258,37 +257,22 @@ class LocalJsonTaskRepository:
 
     def _write_manifest(self, task_id: str, data: dict[str, Any]) -> None:
         task_dir = self.task_dir(task_id)
-        manifest_path = task_dir / "manifest.json"
         now = datetime.now(UTC).isoformat()
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError):
-                manifest = {}
-        else:
-            manifest = {}
-        artifacts = {
-            str(item.get("path")): item
-            for item in manifest.get("artifacts", [])
-            if isinstance(item, dict) and item.get("path")
-        }
-        artifacts["task.json"] = {
-            "path": "task.json",
-            "area": "metadata",
-            "kind": "json",
-            "updated_at": now,
-        }
-        manifest.update(
-            {
-                "task_id": self._safe_task_id(task_id),
+        update_task_manifest(
+            task_dir / "manifest.json",
+            task_id=self._safe_task_id(task_id),
+            fields={
                 "task_type": data.get("task_type") or "compare",
                 "status": data.get("status", ""),
                 "stage": data.get("stage", ""),
+            },
+            artifact={
+                "path": "task.json",
+                "area": "metadata",
+                "kind": "json",
                 "updated_at": now,
-                "artifacts": sorted(artifacts.values(), key=lambda item: str(item["path"])),
-            }
+            },
         )
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _safe_task_id(self, task_id: str) -> str:
         sanitized = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in task_id)

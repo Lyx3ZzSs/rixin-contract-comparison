@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Protocol
 
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
-from app.infrastructure.atomic_files import atomic_write_json
+from app.infrastructure.atomic_files import atomic_publish_file, atomic_write_json
 from app.models import CompareTask
 from app.services.report_generator import ReportGenerator
 
@@ -126,10 +126,7 @@ class ReportStore:
             self.generator.generate(task, temp_path)
             if not _is_valid_report(temp_path):
                 raise ValueError("报告生成器未生成有效的非空普通文件。")
-            _flush_file(temp_path)
-            _fsync_file(temp_path)
-            _replace_file(temp_path, final_path)
-            _fsync_directory(final_path.parent)
+            atomic_publish_file(temp_path, final_path)
             atomic_write_json(manifest_path, _report_manifest(task, final_path))
             return final_path
         finally:
@@ -162,31 +159,6 @@ def _manifest_matches(path: Path, expected: dict[str, object]) -> bool:
     except (OSError, ValueError, TypeError, UnicodeError):
         return False
     return isinstance(payload, dict) and all(payload.get(key) == value for key, value in expected.items())
-
-
-def _flush_file(path: Path) -> None:
-    with path.open("r+b") as stream:
-        stream.flush()
-
-
-def _fsync_file(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _replace_file(source: Path, destination: Path) -> None:
-    os.replace(source, destination)
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 default_report_store = ReportStore()

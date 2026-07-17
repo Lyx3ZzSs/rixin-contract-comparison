@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import UTC, datetime
@@ -8,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
 
 from app.config import Settings, settings
+from app.infrastructure.atomic_files import atomic_write_json, update_task_manifest
 from app.utils.file_utils import FileValidationError
 
 logger = logging.getLogger(__name__)
@@ -190,7 +190,7 @@ class LocalArtifactStore:
     def write_json(self, path: Path, payload: Any) -> Path:
         self.assert_inside_storage(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(path, payload)
         self._record_manifest(path, "json")
         return path
 
@@ -209,36 +209,18 @@ class LocalArtifactStore:
         if relative_path.name == "manifest.json":
             return
 
-        manifest_path = task_root / "manifest.json"
         now = datetime.now(UTC).isoformat()
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError):
-                manifest = {}
-        else:
-            manifest = {}
-
-        artifacts = {
-            str(item.get("path")): item
-            for item in manifest.get("artifacts", [])
-            if isinstance(item, dict) and item.get("path")
-        }
         relative = relative_path.as_posix()
-        artifacts[relative] = {
-            "path": relative,
-            "area": relative_path.parts[0] if relative_path.parts else "",
-            "kind": kind,
-            "updated_at": now,
-        }
-        manifest.update(
-            {
-                "task_id": task_root.name,
+        update_task_manifest(
+            task_root / "manifest.json",
+            task_id=task_root.name,
+            artifact={
+                "path": relative,
+                "area": relative_path.parts[0] if relative_path.parts else "",
+                "kind": kind,
                 "updated_at": now,
-                "artifacts": sorted(artifacts.values(), key=lambda item: str(item["path"])),
-            }
+            },
         )
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _task_root_and_relative_path(self, path: Path) -> tuple[Path, Path]:
         resolved = path.resolve()

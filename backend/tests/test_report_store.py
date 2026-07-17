@@ -212,7 +212,7 @@ def test_valid_manifest_with_missing_or_empty_final_regenerates(tmp_path: Path, 
 
 @pytest.mark.parametrize(
     "failure_stage",
-    ["generation", "flush", "file_fsync", "replace", "parent_fsync", "manifest"],
+    ["generation", "publish", "manifest"],
 )
 def test_publish_failure_preserves_prior_revision_and_cleans_unique_temp(
     tmp_path: Path,
@@ -235,16 +235,10 @@ def test_publish_failure_preserves_prior_revision_and_cleans_unique_temp(
             module, "atomic_write_json", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("manifest failed"))
         )
     else:
-        function_name = {
-            "flush": "_flush_file",
-            "file_fsync": "_fsync_file",
-            "replace": "_replace_file",
-            "parent_fsync": "_fsync_directory",
-        }[failure_stage]
         monkeypatch.setattr(
             module,
-            function_name,
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(f"{failure_stage} failed")),
+            "atomic_publish_file",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("publish failed")),
         )
 
     next_task = prior_task.model_copy(update={"report_revision": 2})

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,20 @@ def test_local_artifact_store_writes_json_inside_storage(tmp_path: Path) -> None
     assert written == path
     assert path.read_text(encoding="utf-8").strip().startswith("{")
     assert (path.parents[1] / "manifest.json").exists()
+
+
+def test_local_artifact_store_recovers_from_corrupt_unified_manifest(tmp_path: Path) -> None:
+    store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    path = store.debug_json_path("TRECOVER_MANIFEST", "debug.json")
+    manifest_path = path.parents[1] / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text("{not-json", encoding="utf-8")
+
+    store.write_json(path, {"ok": True})
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["task_id"] == "TRECOVER_MANIFEST"
+    assert manifest["artifacts"][0]["path"] == "debug/debug.json"
 
 
 def test_local_artifact_store_publishes_staged_upload_without_overwriting_existing(tmp_path: Path) -> None:

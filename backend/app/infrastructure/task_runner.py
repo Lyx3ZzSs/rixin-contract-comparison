@@ -20,6 +20,7 @@ from app.errors import (
     TaskStaleLeaseError,
     TaskTransitionConflict,
 )
+from app.infrastructure.atomic_files import atomic_write_json, update_task_manifest
 from app.infrastructure.execution_state import (
     CancellationToken,
     ExecutionStateCoordinator,
@@ -129,16 +130,8 @@ class LocalJsonTaskJobRepository:
         path = Path(job.source_path) if job.source_path else self._new_job_path(job)
         job.source_path = str(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-        try:
-            temp_path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
-            # jobs/{execution_no}.json is authoritative; manifest.json is a derived index.
-            temp_path.replace(path)
-        finally:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        # jobs/{execution_no}.json is authoritative; manifest.json is a derived index.
+        atomic_write_json(path, job.model_dump(mode="json"))
         try:
             self._write_manifest(job, path)
         except OSError:
@@ -179,36 +172,19 @@ class LocalJsonTaskJobRepository:
     def _write_manifest(self, job: TaskJob, job_path: Path) -> None:
         task_dir = self._task_dir(job.task_id)
         task_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = task_dir / "manifest.json"
         now = _utc_now()
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError):
-                manifest = {}
-        else:
-            manifest = {}
-        artifacts = {
-            str(item.get("path")): item
-            for item in manifest.get("artifacts", [])
-            if isinstance(item, dict) and item.get("path")
-        }
         artifact_path = job_path.relative_to(task_dir).as_posix()
-        artifacts[artifact_path] = {
-            "path": artifact_path,
-            "area": "metadata",
-            "kind": "json",
-            "updated_at": now,
-        }
-        manifest.update(
-            {
-                "task_id": task_dir.name,
-                "job_status": job.status,
+        update_task_manifest(
+            task_dir / "manifest.json",
+            task_id=task_dir.name,
+            fields={"job_status": job.status},
+            artifact={
+                "path": artifact_path,
+                "area": "metadata",
+                "kind": "json",
                 "updated_at": now,
-                "artifacts": sorted(artifacts.values(), key=lambda item: str(item["path"])),
-            }
+            },
         )
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class LazyDefaultTaskJobRepository:
