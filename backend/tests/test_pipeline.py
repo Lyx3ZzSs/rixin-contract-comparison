@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import itertools
 import threading
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from app.models import (
     Document,
     EvidenceBox,
     LayoutQualityReport,
+    NormalizedBBox,
     OcrRemediationAction,
     Page,
     PageLayoutQualityReport,
@@ -1071,6 +1073,298 @@ class TestSummaryStage:
         assert len(forward[0]["original_evidence"]) == 2
         assert len(forward[1]["original_evidence"]) == 1
 
+    def test_final_dedupe_bridge_partition_is_independent_of_id_labels_and_input_order(self, tmp_path: Path) -> None:
+        def partition(order: tuple[DiffItem, ...], suffix: str) -> list[tuple[float, ...]]:
+            ctx = make_ctx(tmp_path / suffix)
+            ctx.diffs = [item.model_copy(deep=True) for item in order]
+            SummaryStage().execute(ctx)
+            return sorted(
+                tuple(sorted(evidence.bbox.x0 for evidence in diff.original_evidence)) for diff in ctx.task.diffs
+            )
+
+        spatially_labeled = [
+            self._located_diff("D100", original_x0=0, compare_evidence=False),
+            self._located_diff("D200", original_x0=20, compare_evidence=False),
+            self._located_diff("D300", original_x0=40, compare_evidence=False),
+        ]
+        reverse_labeled = [
+            self._located_diff("D300", original_x0=0, compare_evidence=False),
+            self._located_diff("D200", original_x0=20, compare_evidence=False),
+            self._located_diff("D100", original_x0=40, compare_evidence=False),
+        ]
+
+        expected = [(0, 20), (40,)]
+        for index, order in enumerate(itertools.permutations(spatially_labeled)):
+            assert partition(order, f"spatial-{index}") == expected
+        for index, order in enumerate(itertools.permutations(reverse_labeled)):
+            assert partition(order, f"reverse-{index}") == expected
+
+    def test_final_dedupe_assigns_distinct_stable_ids_to_unrelated_empty_id_diffs(self, tmp_path: Path) -> None:
+        def run(order: list[DiffItem], suffix: str) -> list[dict[str, object]]:
+            ctx = make_ctx(tmp_path / suffix)
+            ctx.diffs = [item.model_copy(deep=True) for item in order]
+            SummaryStage().execute(ctx)
+            return [item.model_dump(mode="json") for item in ctx.task.diffs]
+
+        first = self._located_diff("").model_copy(update={"original_text": "付款30日", "compare_text": "付款45日"})
+        second = self._located_diff("").model_copy(update={"original_text": "交付10日", "compare_text": "交付20日"})
+
+        forward = run([first, second], "empty-distinct-forward")
+        reverse = run([second, first], "empty-distinct-reverse")
+
+        assert forward == reverse
+        assert len(forward) == 2
+        assert len({item["diff_id"] for item in forward}) == 2
+        assert all(str(item["diff_id"]).startswith("AUTO-") for item in forward)
+
+    def test_final_dedupe_merges_matching_empty_id_into_existing_nonempty_id(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.diffs = [
+            self._located_diff("", original_x0=20, compare_x0=20),
+            self._located_diff("D010"),
+        ]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010"]
+        assert len(ctx.task.diffs[0].original_evidence) == 2
+
+    def test_final_dedupe_empty_id_candidates_partition_stably(self, tmp_path: Path) -> None:
+        def run(order: list[DiffItem], suffix: str) -> list[tuple[str, tuple[float, ...]]]:
+            ctx = make_ctx(tmp_path / suffix)
+            ctx.diffs = [item.model_copy(deep=True) for item in order]
+            SummaryStage().execute(ctx)
+            return sorted(
+                (diff.diff_id, tuple(sorted(item.bbox.x0 for item in diff.original_evidence)))
+                for diff in ctx.task.diffs
+            )
+
+        candidates = [
+            self._located_diff("", original_x0=0, compare_evidence=False),
+            self._located_diff("", original_x0=20, compare_evidence=False),
+            self._located_diff("", original_x0=40, compare_evidence=False),
+        ]
+
+        forward = run(candidates, "empty-candidates-forward")
+        reverse = run(list(reversed(candidates)), "empty-candidates-reverse")
+
+        assert forward == reverse
+        assert sorted(positions for _, positions in forward) == [(0, 20), (40,)]
+        assert all(diff_id.startswith("AUTO-") for diff_id, _ in forward)
+
+    def test_final_dedupe_keeps_identical_unlocated_empty_id_occurrences_distinct(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        empty = self._located_diff("").model_copy(update={"original_evidence": [], "compare_evidence": []})
+        ctx.diffs = [empty, empty.model_copy(deep=True)]
+
+        SummaryStage().execute(ctx)
+
+        assert len(ctx.task.diffs) == 2
+        assert len({diff.diff_id for diff in ctx.task.diffs}) == 2
+        assert all(diff.diff_id.startswith("AUTO-") for diff in ctx.task.diffs)
+
+    def test_final_dedupe_auto_id_is_stable_across_review_projection_changes(self, tmp_path: Path) -> None:
+        def generated_id(diff: DiffItem, suffix: str) -> str:
+            ctx = make_ctx(tmp_path / suffix)
+            ctx.diffs = [diff]
+            SummaryStage().execute(ctx)
+            return ctx.task.diffs[0].diff_id
+
+        empty = self._located_diff("")
+        reviewed = empty.model_copy(
+            deep=True,
+            update={
+                "review_status": "CONFIRMED",
+                "review_comment": "已核验",
+                "reviewed_by": "reviewer",
+                "reviewed_at": "2026-07-17T00:00:00+00:00",
+            },
+        )
+
+        assert generated_id(empty, "auto-unreviewed") == generated_id(reviewed, "auto-reviewed")
+
+    @pytest.mark.parametrize("duplicate_id", ["D010", "D020"])
+    def test_final_dedupe_preserves_rich_fields_independent_of_canonical_id_and_input_order(
+        self,
+        tmp_path: Path,
+        duplicate_id: str,
+    ) -> None:
+        def run(order: list[DiffItem], suffix: str) -> dict[str, object]:
+            ctx = make_ctx(tmp_path / suffix)
+            ctx.diffs = [item.model_copy(deep=True) for item in order]
+            SummaryStage().execute(ctx)
+            assert len(ctx.task.diffs) == 1
+            return ctx.task.diffs[0].model_dump(mode="json")
+
+        sparse = self._located_diff("D010").model_copy(
+            update={"title": "", "original_snippet": "", "compare_snippet": ""}
+        )
+        rich = self._located_diff(duplicate_id, original_x0=20, compare_x0=20).model_copy(
+            update={
+                "clause_no": "8.1",
+                "title": "付款期限",
+                "original_snippet": "原付款期限为30日",
+                "compare_snippet": "现付款期限为45日",
+                "readable_change": "付款期限由30日延长为45日",
+                "match_score": 96.5,
+                "match_method": "stable_path",
+                "match_score_details": {"semantic": 0.96, "layout": {"page": 1}},
+                "match_candidates": [{"clause_id": "C001", "score": 96.5}],
+                "match_confidence": "HIGH",
+                "text_confidence": 0.98,
+            }
+        )
+
+        forward = run([sparse, rich], f"rich-{duplicate_id}-forward")
+        reverse = run([rich, sparse], f"rich-{duplicate_id}-reverse")
+
+        assert forward == reverse
+        assert forward["title"] == "付款期限"
+        assert forward["clause_no"] == "8.1"
+        assert forward["original_snippet"] == "原付款期限为30日"
+        assert forward["compare_snippet"] == "现付款期限为45日"
+        assert forward["readable_change"] == "付款期限由30日延长为45日"
+        assert forward["match_score"] == 96.5
+        assert forward["match_method"] == "stable_path"
+        assert forward["match_score_details"] == {"layout": {"page": 1}, "semantic": 0.96}
+        assert forward["match_candidates"] == [{"clause_id": "C001", "score": 96.5}]
+        assert forward["match_confidence"] == "HIGH"
+        assert forward["text_confidence"] == 0.98
+
+    def test_final_dedupe_marks_conflicting_rich_fields_for_review_deterministically(self, tmp_path: Path) -> None:
+        def run(order: list[DiffItem], suffix: str) -> DiffItem:
+            ctx = make_ctx(tmp_path / suffix)
+            ctx.diffs = [item.model_copy(deep=True) for item in order]
+            SummaryStage().execute(ctx)
+            return ctx.task.diffs[0]
+
+        first = self._located_diff("D010").model_copy(update={"title": "付款期限", "match_method": "method-a"})
+        second = self._located_diff("D020", original_x0=20, compare_x0=20).model_copy(
+            update={"title": "合同付款期限", "match_method": "method-b"}
+        )
+
+        forward = run([first, second], "conflict-forward")
+        reverse = run([second, first], "conflict-reverse")
+
+        assert forward == reverse
+        assert forward.title == "合同付款期限"
+        assert "FINAL_DEDUPE_FIELD_CONFLICT" in forward.review_flags
+        assert forward.quality_status == "NEEDS_REVIEW"
+
+    def test_final_dedupe_preserves_none_for_missing_optional_clause_ids(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        first = self._located_diff("D010").model_copy(update={"original_clause_id": None, "compare_clause_id": None})
+        second = self._located_diff("D020", original_x0=20, compare_x0=20).model_copy(
+            update={"original_clause_id": None, "compare_clause_id": None}
+        )
+        ctx.diffs = [first, second]
+
+        SummaryStage().execute(ctx)
+
+        assert len(ctx.task.diffs) == 1
+        assert ctx.task.diffs[0].original_clause_id is None
+        assert ctx.task.diffs[0].compare_clause_id is None
+
+    def test_final_dedupe_treats_page_zero_as_a_valid_same_page_location(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.diffs = [
+            self._located_diff("D010", page_no=0, compare_evidence=False),
+            self._located_diff("D020", page_no=0, original_x0=20, compare_evidence=False),
+        ]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010"]
+
+    def test_final_dedupe_falls_back_to_raw_bbox_when_normalized_bbox_is_invalid(self, tmp_path: Path) -> None:
+        invalid_normalized = NormalizedBBox(x0=0, y0=0, x1=0, y1=0)
+        ctx = make_ctx(tmp_path)
+        first = self._located_diff("D010", compare_evidence=False)
+        second = self._located_diff("D020", original_x0=20, compare_evidence=False)
+        first.original_evidence[0].bbox.normalized = invalid_normalized
+        second.original_evidence[0].bbox.normalized = invalid_normalized
+        ctx.diffs = [first, second]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010"]
+
+    def test_final_dedupe_does_not_locate_zero_area_raw_or_normalized_bbox(self, tmp_path: Path) -> None:
+        zero_bbox = BBox(
+            x0=10,
+            y0=10,
+            x1=10,
+            y1=10,
+            normalized=NormalizedBBox(x0=20, y0=20, x1=20, y1=20),
+        )
+        ctx = make_ctx(tmp_path)
+        first = self._located_diff("D010", compare_evidence=False)
+        second = self._located_diff("D020", compare_evidence=False)
+        first.original_evidence[0].bbox = zero_bbox
+        second.original_evidence[0].bbox = zero_bbox.model_copy(deep=True)
+        ctx.diffs = [first, second]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"]
+
+    def test_final_dedupe_merges_colliding_remediation_actions_conservatively(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.task.ocr_remediation_summary = TaskOcrRemediationSummary(
+            status="ACTIONS_PLANNED",
+            attempted_action_count=2,
+            successful_action_count=1,
+            unresolved_action_count=1,
+            actions=[
+                OcrRemediationAction(
+                    action_id="original:1:D010:RELOCATE_EVIDENCE",
+                    action_type="RELOCATE_EVIDENCE",
+                    reason="LOW_TEXT_CONFIDENCE",
+                    status="SUCCEEDED",
+                    side="original",
+                    page_no=1,
+                    diff_id="D010",
+                    before_quality={"score": 0.3},
+                    after_quality={"score": 0.9, "source": "relocated"},
+                    changed_evidence=True,
+                    review_flags_added=["OCR_REMEDIATION_EVIDENCE_RELOCATED"],
+                    notes=["relocated"],
+                ),
+                OcrRemediationAction(
+                    action_id="original:1:D020:RELOCATE_EVIDENCE",
+                    action_type="RELOCATE_EVIDENCE",
+                    reason="EVIDENCE_UNRELIABLE",
+                    status="FAILED",
+                    side="original",
+                    page_no=1,
+                    diff_id="D020",
+                    before_quality={"method": "block_fallback"},
+                    after_quality={"error": "not-found"},
+                    review_flags_added=["OCR_REMEDIATION_UNRESOLVED"],
+                    notes=["not-found"],
+                ),
+            ],
+        )
+        ctx.diffs = [self._located_diff("D010"), self._located_diff("D020", original_x0=20, compare_x0=20)]
+
+        SummaryStage().execute(ctx)
+
+        summary = ctx.task.ocr_remediation_summary
+        assert summary is not None
+        assert len(summary.actions) == 1
+        action = summary.actions[0]
+        assert action.action_id == "original:1:D010:RELOCATE_EVIDENCE"
+        assert action.diff_id == "D010"
+        assert action.status == "FAILED"
+        assert action.changed_evidence is False
+        assert action.before_quality == {"method": "block_fallback", "score": 0.3}
+        assert action.after_quality == {"error": "not-found", "score": 0.9, "source": "relocated"}
+        assert action.review_flags_added == ["OCR_REMEDIATION_EVIDENCE_RELOCATED", "OCR_REMEDIATION_UNRESOLVED"]
+        assert action.notes == ["not-found", "relocated"]
+        assert summary.attempted_action_count == 1
+        assert summary.successful_action_count == 0
+        assert summary.unresolved_action_count == 1
+
     def test_final_dedupe_uses_canonical_id_and_merged_content_independent_of_input_order(self, tmp_path: Path) -> None:
         def run(order: list[DiffItem], suffix: str) -> tuple[list[dict[str, object]], CompareTask]:
             ctx = make_ctx(tmp_path / suffix)
@@ -1104,6 +1398,69 @@ class TestSummaryStage:
         assert [item["diff_id"] for item in forward_diffs] == ["D010"]
         assert forward_task.audit_item_reviews == reverse_task.audit_item_reviews
         assert set(forward_task.audit_item_reviews) == {"D010:MODIFY"}
+
+    def test_final_dedupe_projects_conflicting_audit_item_reviews_conservatively(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.task.audit_item_reviews = {
+            "D010:MODIFY": AuditItemReview(
+                review_status="CONFIRMED",
+                review_comment="已确认",
+                reviewed_at="2026-07-17T02:00:00+00:00",
+            ),
+            "D020:MODIFY": AuditItemReview(
+                review_status="FALSE_POSITIVE",
+                review_comment="误报",
+                reviewed_at="2026-07-17T01:00:00+00:00",
+            ),
+        }
+        ctx.diffs = [self._located_diff("D010"), self._located_diff("D020", original_x0=20, compare_x0=20)]
+
+        SummaryStage().execute(ctx)
+
+        assert set(ctx.task.audit_item_reviews) == {"D010:MODIFY"}
+        review = ctx.task.audit_item_reviews["D010:MODIFY"]
+        assert review.review_status == "NEEDS_REVIEW"
+        assert review.review_comment == "已确认"
+
+    def test_final_dedupe_remaps_unique_empty_id_references_to_generated_id(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.task.ocr_quality_summary = TaskOcrQualitySummary(
+            status="LOW_TEXT_CONFIDENCE",
+            profiles=[
+                PageOcrQualityProfile(
+                    side="original",
+                    page_no=1,
+                    status="LOW_TEXT_CONFIDENCE",
+                    affected_diff_ids=[""],
+                )
+            ],
+        )
+        ctx.task.ocr_remediation_summary = TaskOcrRemediationSummary(
+            status="ACTIONS_PLANNED",
+            actions=[
+                OcrRemediationAction(
+                    action_id="original:1::RELOCATE_EVIDENCE",
+                    action_type="RELOCATE_EVIDENCE",
+                    reason="LOW_TEXT_CONFIDENCE",
+                    side="original",
+                    page_no=1,
+                    diff_id="",
+                )
+            ],
+        )
+        ctx.task.audit_item_reviews = {":MODIFY": AuditItemReview(review_status="CONFIRMED")}
+        ctx.diffs = [self._located_diff("")]
+
+        SummaryStage().execute(ctx)
+
+        generated_id = ctx.task.diffs[0].diff_id
+        assert generated_id.startswith("AUTO-")
+        assert ctx.task.ocr_quality_summary is not None
+        assert ctx.task.ocr_quality_summary.profiles[0].affected_diff_ids == [generated_id]
+        assert ctx.task.ocr_remediation_summary is not None
+        assert ctx.task.ocr_remediation_summary.actions[0].diff_id == generated_id
+        assert generated_id in ctx.task.ocr_remediation_summary.actions[0].action_id
+        assert set(ctx.task.audit_item_reviews) == {f"{generated_id}:MODIFY"}
 
     @staticmethod
     def _located_diff(

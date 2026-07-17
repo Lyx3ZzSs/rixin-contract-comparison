@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from pathlib import Path
@@ -2155,7 +2157,7 @@ class DiffQualityStage:
         final_ids = {diff.diff_id for diff in ctx.diffs}
         remaining_actions: list[OcrRemediationAction] = []
         for action in summary.actions:
-            if not action.diff_id:
+            if action.diff_id is None:
                 remaining_actions.append(action)
                 continue
             original_diff_id = action.diff_id
@@ -2169,7 +2171,12 @@ class DiffQualityStage:
                 )
             if remapped_diff_id in final_ids:
                 remaining_actions.append(action)
-        summary.actions = remaining_actions
+        actions_by_id: dict[str, list[OcrRemediationAction]] = {}
+        for action in remaining_actions:
+            actions_by_id.setdefault(action.action_id, []).append(action)
+        summary.actions = [
+            _merge_ocr_remediation_actions(actions_by_id[action_id]) for action_id in sorted(actions_by_id)
+        ]
         OcrRemediationStage._refresh_summary_counts(summary)
 
     @staticmethod
@@ -2265,12 +2272,19 @@ def _dedupe_final_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str
     if not diffs:
         return [], {}
 
+    original_ids = {diff.diff_id for diff in diffs if diff.diff_id}
+    working_diffs, generated_ids = _with_stable_missing_diff_ids(diffs)
+
     members_by_id: dict[str, list[DiffItem]] = {}
-    for diff in sorted(diffs, key=lambda item: (item.diff_id, item.model_dump_json())):
+    for diff in sorted(working_diffs, key=_diff_partition_key):
         members_by_id.setdefault(diff.diff_id, []).append(diff)
 
     groups: list[list[DiffItem]] = []
-    for same_id_members in members_by_id.values():
+    same_id_groups = sorted(
+        members_by_id.values(),
+        key=lambda members: min(_diff_partition_key(member) for member in members),
+    )
+    for same_id_members in same_id_groups:
         target = next(
             (
                 group
@@ -2290,20 +2304,91 @@ def _dedupe_final_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str
 
     remap: dict[str, str] = {}
     result: list[DiffItem] = []
+    empty_id_targets: set[str] = set()
     for members in groups:
-        nonempty_ids = sorted({member.diff_id for member in members if member.diff_id})
-        canonical_id = nonempty_ids[0] if nonempty_ids else ""
-        for old_id in nonempty_ids:
+        member_ids = {member.diff_id for member in members}
+        original_member_ids = sorted(member_ids & original_ids)
+        canonical_id = original_member_ids[0] if original_member_ids else sorted(member_ids)[0]
+        for old_id in original_member_ids:
             if old_id != canonical_id:
                 remap[old_id] = canonical_id
+        if member_ids & generated_ids:
+            empty_id_targets.add(canonical_id)
         result.append(_merge_final_dedupe_group(members, canonical_id))
 
+    if len(empty_id_targets) == 1:
+        remap[""] = next(iter(empty_id_targets))
     result.sort(key=lambda diff: (diff.diff_id, diff.model_dump_json()))
     return result, remap
 
 
+def _with_stable_missing_diff_ids(diffs: list[DiffItem]) -> tuple[list[DiffItem], set[str]]:
+    working = [diff.model_copy(deep=True) for diff in diffs if diff.diff_id]
+    missing: list[tuple[str, str, DiffItem]] = []
+    for diff in diffs:
+        if diff.diff_id:
+            continue
+        stable_payload = _stable_missing_id_payload(diff)
+        stable_json = json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        full_json = json.dumps(
+            diff.model_dump(mode="json", exclude={"diff_id"}),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        missing.append((stable_json, full_json, diff))
+
+    generated_ids: set[str] = set()
+    digest_counts: dict[str, int] = {}
+    for stable_json, _, diff in sorted(missing, key=lambda item: (item[0], item[1])):
+        digest = hashlib.sha256(stable_json.encode("utf-8")).hexdigest()
+        digest_counts[digest] = digest_counts.get(digest, 0) + 1
+        generated_id = f"AUTO-{digest}-{digest_counts[digest]:04d}"
+        generated_ids.add(generated_id)
+        working.append(diff.model_copy(deep=True, update={"diff_id": generated_id}))
+    return working, generated_ids
+
+
+def _stable_missing_id_payload(diff: DiffItem) -> dict[str, Any]:
+    return diff.model_dump(
+        mode="json",
+        exclude={
+            "diff_id",
+            "quality_status",
+            "review_flags",
+            "structural_flags",
+            "text_confidence",
+            "merged_sources",
+            "review_status",
+            "review_comment",
+            "reviewed_by",
+            "reviewed_at",
+        },
+    )
+
+
+def _diff_partition_key(diff: DiffItem) -> tuple[str, str]:
+    semantic_and_location = {
+        "source_type": diff.source_type,
+        "section_type": diff.section_type,
+        "section_path": diff.section_path,
+        "original_clause_id": diff.original_clause_id,
+        "compare_clause_id": diff.compare_clause_id,
+        "diff_type": diff.diff_type,
+        "original_text": diff.original_text,
+        "compare_text": diff.compare_text,
+        "original_evidence": [item.model_dump(mode="json") for item in diff.original_evidence],
+        "compare_evidence": [item.model_dump(mode="json") for item in diff.compare_evidence],
+    }
+    full_without_id = diff.model_dump(mode="json", exclude={"diff_id"})
+    return (
+        json.dumps(semantic_and_location, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        json.dumps(full_without_id, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    )
+
+
 def _different_id_diffs_are_spatial_duplicates(left: DiffItem, right: DiffItem) -> bool:
-    if left.diff_id == right.diff_id:
+    if left.diff_id and left.diff_id == right.diff_id:
         return True
     if (
         left.source_type != right.source_type
@@ -2366,18 +2451,23 @@ def _comparable_bbox_coordinates(
     right: BBox,
 ) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
     if left.normalized is not None and right.normalized is not None:
-        return (
-            (left.normalized.x0, left.normalized.y0, left.normalized.x1, left.normalized.y1),
-            (right.normalized.x0, right.normalized.y0, right.normalized.x1, right.normalized.y1),
-        )
+        left_normalized = (left.normalized.x0, left.normalized.y0, left.normalized.x1, left.normalized.y1)
+        right_normalized = (right.normalized.x0, right.normalized.y0, right.normalized.x1, right.normalized.y1)
+        if _bbox_area(left_normalized) > 0 and _bbox_area(right_normalized) > 0:
+            return left_normalized, right_normalized
     return (left.x0, left.y0, left.x1, left.y1), (right.x0, right.y0, right.x1, right.y1)
 
 
 def _evidence_is_located(evidence: EvidenceBox) -> bool:
-    if evidence.page_no <= 0 or evidence.bbox is None:
+    if evidence.page_no < 0 or evidence.bbox is None:
         return False
-    bbox = evidence.bbox.normalized or evidence.bbox
-    return _bbox_area((bbox.x0, bbox.y0, bbox.x1, bbox.y1)) > 0
+    raw = evidence.bbox
+    raw_area = _bbox_area((raw.x0, raw.y0, raw.x1, raw.y1))
+    if evidence.bbox.normalized is None:
+        return raw_area > 0
+    normalized = evidence.bbox.normalized
+    normalized_area = _bbox_area((normalized.x0, normalized.y0, normalized.x1, normalized.y1))
+    return normalized_area > 0 or raw_area > 0
 
 
 def _bbox_area(coords: tuple[float, float, float, float]) -> float:
@@ -2387,8 +2477,42 @@ def _bbox_area(coords: tuple[float, float, float, float]) -> float:
 def _merge_final_dedupe_group(members: list[DiffItem], canonical_id: str) -> DiffItem:
     if len(members) == 1:
         return members[0].model_copy(deep=True, update={"diff_id": canonical_id})
-    ordered = sorted(members, key=lambda diff: (diff.diff_id != canonical_id, diff.model_dump_json()))
+    ordered = sorted(members, key=_diff_partition_key)
     survivor = ordered[0].model_copy(deep=True, update={"diff_id": canonical_id})
+    field_conflict = False
+    for field_name in (
+        "diff_type",
+        "original_clause_id",
+        "compare_clause_id",
+        "clause_no",
+        "title",
+        "original_text",
+        "compare_text",
+        "original_snippet",
+        "compare_snippet",
+        "readable_change",
+        "source_type",
+        "section_type",
+        "match_method",
+        "match_confidence",
+    ):
+        empty_value = None if field_name in {"original_clause_id", "compare_clause_id"} else ""
+        value, conflict = _merge_informative_scalar(
+            (getattr(member, field_name) for member in members),
+            empty_value=empty_value,
+        )
+        setattr(survivor, field_name, value)
+        if field_name != "source_type":
+            field_conflict = field_conflict or conflict
+    survivor.section_path, conflict = _merge_informative_list(member.section_path for member in members)
+    field_conflict = field_conflict or conflict
+    survivor.match_score = _maximum_optional_number(member.match_score for member in members)
+    survivor.text_confidence = _maximum_optional_number(member.text_confidence for member in members)
+    survivor.match_score_details, conflict = _deep_merge_dicts(member.match_score_details for member in members)
+    field_conflict = field_conflict or conflict
+    survivor.match_candidates = _merge_plain_model_list(
+        candidate for member in members for candidate in member.match_candidates
+    )
     survivor.original_evidence = _merge_model_list(item for member in members for item in member.original_evidence)
     survivor.compare_evidence = _merge_model_list(item for member in members for item in member.compare_evidence)
     survivor.original_change_ranges = _merge_model_list(
@@ -2404,6 +2528,9 @@ def _merge_final_dedupe_group(members: list[DiffItem], canonical_id: str) -> Dif
     )
     if any(member.quality_status == "NEEDS_REVIEW" for member in members):
         survivor.quality_status = "NEEDS_REVIEW"
+    if field_conflict:
+        survivor.quality_status = "NEEDS_REVIEW"
+        survivor.review_flags = sorted({*survivor.review_flags, "FINAL_DEDUPE_FIELD_CONFLICT"})
     _merge_diff_review_projection(survivor, members)
     return survivor
 
@@ -2411,6 +2538,81 @@ def _merge_final_dedupe_group(members: list[DiffItem], canonical_id: str) -> Dif
 def _merge_model_list(items: Any) -> list[Any]:
     by_payload = {item.model_dump_json(): item for item in items}
     return [by_payload[key].model_copy(deep=True) for key in sorted(by_payload)]
+
+
+def _merge_plain_model_list(items: Any) -> list[Any]:
+    by_payload = {json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")): item for item in items}
+    return [by_payload[key] for key in sorted(by_payload)]
+
+
+def _merge_informative_scalar(values: Any, *, empty_value: Any = "") -> tuple[Any, bool]:
+    informative = {value for value in values if value is not None and (not isinstance(value, str) or value.strip())}
+    if not informative:
+        return empty_value, False
+    chosen = max(informative, key=lambda value: (len(str(value).strip()), str(value)))
+    return chosen, len(informative) > 1
+
+
+def _merge_informative_list(values: Any) -> tuple[list[Any], bool]:
+    informative = {
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")): value for value in values if value
+    }
+    if not informative:
+        return [], False
+    chosen_key = max(informative, key=lambda key: (len(informative[key]), key))
+    return list(informative[chosen_key]), len(informative) > 1
+
+
+def _maximum_optional_number(values: Any) -> Any:
+    present = [value for value in values if value is not None]
+    return max(present) if present else None
+
+
+def _deep_merge_dicts(values: Any) -> tuple[dict[str, Any], bool]:
+    dictionaries = [value for value in values if value]
+    if not dictionaries:
+        return {}, False
+    merged: dict[str, Any] = {}
+    conflict = False
+    for key in sorted({key for value in dictionaries for key in value}):
+        candidates = [value[key] for value in dictionaries if key in value]
+        if all(isinstance(candidate, dict) for candidate in candidates):
+            merged[key], nested_conflict = _deep_merge_dicts(candidates)
+            conflict = conflict or nested_conflict
+            continue
+        payloads = {
+            json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":")): candidate
+            for candidate in candidates
+        }
+        chosen_payload = max(payloads, key=lambda payload: (len(payload), payload))
+        merged[key] = payloads[chosen_payload]
+        conflict = conflict or len(payloads) > 1
+    return merged, conflict
+
+
+def _merge_ocr_remediation_actions(actions: list[OcrRemediationAction]) -> OcrRemediationAction:
+    status_priority = {
+        "SUCCEEDED": 0,
+        "SKIPPED": 1,
+        "PLANNED": 2,
+        "FAILED": 3,
+        "MANUAL_REVIEW_REQUIRED": 4,
+    }
+    chosen = max(
+        actions,
+        key=lambda action: (
+            status_priority[action.status],
+            action.model_dump_json(),
+        ),
+    ).model_copy(deep=True)
+    chosen.before_quality, _ = _deep_merge_dicts(action.before_quality for action in actions)
+    chosen.after_quality, _ = _deep_merge_dicts(action.after_quality for action in actions)
+    chosen.review_flags_added = sorted({flag for action in actions for flag in action.review_flags_added})
+    chosen.notes = sorted({note for action in actions for note in action.notes})
+    chosen.reason, _ = _merge_informative_scalar(action.reason for action in actions)
+    chosen.changed_evidence = chosen.status == "SUCCEEDED" and any(action.changed_evidence for action in actions)
+    chosen.changed_diff_text = chosen.status == "SUCCEEDED" and any(action.changed_diff_text for action in actions)
+    return chosen
 
 
 def _merge_diff_review_projection(survivor: DiffItem, members: list[DiffItem]) -> None:
