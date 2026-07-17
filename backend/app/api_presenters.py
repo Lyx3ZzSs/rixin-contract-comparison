@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from app.api_schemas import (
@@ -21,14 +22,14 @@ from app.services.report_generator import build_report_filename
 from app.utils.json_utils import to_jsonable
 
 
-def compare_task_response(task: CompareTask) -> CompareTaskResponse:
+def compare_task_response(task: CompareTask, *, retry_eligible: bool = False) -> CompareTaskResponse:
     data = {
         "task_id": task.task_id,
         "status": task.status,
         "terminal_reason": task.terminal_reason,
         "revision": task.revision,
         "report_revision": task.report_revision,
-        "retry_eligible": task.is_retry_eligible(),
+        "retry_eligible": retry_eligible,
         "stage": task.stage,
         "progress_percent": task.progress_percent,
         "diff_count": task.diff_count,
@@ -53,8 +54,8 @@ def compare_task_response(task: CompareTask) -> CompareTaskResponse:
     return CompareTaskResponse(**data)
 
 
-def compare_task_detail_response(task: CompareTask) -> CompareTaskDetailResponse:
-    data = compare_task_response(task).model_dump()
+def compare_task_detail_response(task: CompareTask, *, retry_eligible: bool = False) -> CompareTaskDetailResponse:
+    data = compare_task_response(task, retry_eligible=retry_eligible).model_dump()
     data.update(
         {
             "created_at": task.created_at,
@@ -77,14 +78,14 @@ def compare_task_artifact_urls(task: CompareTask) -> dict[str, str]:
     }
 
 
-def compare_record_summary(task: CompareTask) -> CompareRecordResponse:
+def compare_record_summary(task: CompareTask, *, retry_eligible: bool = False) -> CompareRecordResponse:
     return CompareRecordResponse(
         task_id=task.task_id,
         status=task.status,
         terminal_reason=task.terminal_reason,
         revision=task.revision,
         report_revision=task.report_revision,
-        retry_eligible=task.is_retry_eligible(),
+        retry_eligible=retry_eligible,
         stage=task.stage,
         progress_percent=task.progress_percent,
         created_at=task.created_at,
@@ -103,12 +104,19 @@ def compare_record_list_response(
     page: int = 1,
     page_size: int | None = None,
     total_pages: int | None = None,
+    retry_eligibility: Callable[[CompareTask], bool] | None = None,
 ) -> CompareRecordListResponse:
     resolved_total = len(tasks) if total is None else total
     resolved_page_size = len(tasks) if page_size is None else page_size
     resolved_total_pages = total_pages if total_pages is not None else (1 if resolved_total else 0)
     return CompareRecordListResponse(
-        records=[compare_record_summary(task) for task in tasks],
+        records=[
+            compare_record_summary(
+                task,
+                retry_eligible=retry_eligibility(task) if retry_eligibility is not None else False,
+            )
+            for task in tasks
+        ],
         total=resolved_total,
         page=page,
         page_size=resolved_page_size,

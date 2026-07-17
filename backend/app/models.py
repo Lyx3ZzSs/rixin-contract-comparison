@@ -537,17 +537,3 @@ class CompareTask(BaseModel):
             f"任务 {self.task_id} 不允许从 {self.status}/{self.terminal_reason} "
             f"转换为 {target_status}/{terminal_reason}。"
         )
-
-    def is_retry_eligible(self) -> bool:
-        validated_inputs_exist = Path(self.original_pdf_path).is_file() and Path(self.compare_pdf_path).is_file()
-        return self.is_transition_allowed(
-            "PROCESSING",
-            validated_inputs_exist=validated_inputs_exist,
-        )
-
-    def ensure_retry_eligible(self) -> None:
-        if self.is_retry_eligible():
-            return
-        raise TaskTransitionConflict(
-            f"任务 {self.task_id} 不允许从 {self.status}/{self.terminal_reason} 重试。"
-        )

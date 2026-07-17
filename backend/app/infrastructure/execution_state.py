@@ -101,6 +101,7 @@ class ExecutionStateCoordinator:
         job: TaskJob,
         *,
         task_mutation: TaskEnqueueMutation | None = None,
+        reject_existing: bool = False,
     ) -> TaskJob:
         with self._process_lock:
             self._ensure_repository_namespace()
@@ -110,6 +111,8 @@ class ExecutionStateCoordinator:
                 if len(job_id_matches) != 1 or not self._has_same_identity(job_id_matches[0], job):
                     raise TaskTransitionConflict(f"执行记录 ID {job.job_id} 与已有执行身份冲突。")
                 existing = job_id_matches[0]
+                if reject_existing:
+                    raise TaskTransitionConflict(f"执行记录 {existing.job_id} 已存在，不能重复创建。")
                 if existing.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
                     raise TaskTransitionConflict(
                         f"执行记录 {existing.job_id} 已为终态 {existing.status}，不能重新入队。"

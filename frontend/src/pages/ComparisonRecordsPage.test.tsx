@@ -269,9 +269,11 @@ describe("ComparisonRecordsPage", () => {
     const pollingSignal = vi.mocked(getTask).mock.calls[0]?.[1];
 
     unmount();
+    await act(async () => { vi.advanceTimersByTime(20_000); await Promise.resolve(); });
 
     expect(mockEventSource.close).toHaveBeenCalled();
     expect(pollingSignal?.aborted).toBe(true);
+    expect(getTask).toHaveBeenCalledTimes(1);
   });
 
   it("applies updated date filters from the toolbar", async () => {

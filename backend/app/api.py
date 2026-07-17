@@ -90,7 +90,10 @@ async def compare_contracts(
         compare_filename=compare_file.filename,
         compare_options=compare_options,
     )
-    return compare_task_response(task)
+    return compare_task_response(
+        task,
+        retry_eligible=default_compare_task_application.is_retry_eligible(task),
+    )
 
 
 @router.get("/records", response_model=CompareRecordListResponse)
@@ -106,9 +109,7 @@ def list_records(
 
     tasks = task_access_policy.filter_visible(default_compare_task_application.list_compare_tasks(), user)
     filtered_tasks = [
-        task
-        for task in tasks
-        if _is_task_in_created_date_range(task, start_date=start_date, end_date=end_date)
+        task for task in tasks if _is_task_in_created_date_range(task, start_date=start_date, end_date=end_date)
     ]
     total = len(filtered_tasks)
     start_index = (page - 1) * page_size
@@ -121,13 +122,17 @@ def list_records(
         page=page,
         page_size=page_size,
         total_pages=total_pages,
+        retry_eligibility=default_compare_task_application.is_retry_eligible,
     )
 
 
 @router.get("/{task_id}", response_model=CompareTaskDetailResponse)
 def get_task(task_id: str, user: CurrentUser = Depends(get_current_user)) -> CompareTaskDetailResponse:
     task = _load_accessible_or_404(task_id, user)
-    return compare_task_detail_response(task)
+    return compare_task_detail_response(
+        task,
+        retry_eligible=default_compare_task_application.is_retry_eligible(task),
+    )
 
 
 @router.get("/{task_id}/progress")

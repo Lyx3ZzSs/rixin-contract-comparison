@@ -1512,3 +1512,61 @@ def test_task_control_flow_errors_share_execution_error_base() -> None:
     assert isinstance(TaskCancelled("cancelled"), TaskExecutionError)
     assert isinstance(TaskTransitionConflict("conflict"), TaskExecutionError)
     assert error.status_code == 409
+
+
+def test_concurrent_submission_failure_recovery_creates_only_one_first_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+    original_path = tmp_path / "original.pdf"
+    compare_path = tmp_path / "compare.pdf"
+    original_path.write_bytes(b"original")
+    compare_path.write_bytes(b"compare")
+    task_id = "TCONCURRENT_SUBMISSION_RECOVERY"
+    task_repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            status="FAILED",
+            terminal_reason="SUBMISSION_FAILED",
+            original_pdf_path=str(original_path),
+            compare_pdf_path=str(compare_path),
+        )
+    )
+    initial_policy_barrier = threading.Barrier(2)
+    call_counts: dict[int, int] = {}
+    count_lock = threading.Lock()
+    original_ensure = application._ensure_retry_eligible
+
+    def synchronize_initial_policy(task: CompareTask):
+        mode = original_ensure(task)
+        thread_id = threading.get_ident()
+        with count_lock:
+            call_counts[thread_id] = call_counts.get(thread_id, 0) + 1
+            first_call = call_counts[thread_id] == 1
+        if first_call:
+            initial_policy_barrier.wait(timeout=5)
+        return mode
+
+    monkeypatch.setattr(application, "_ensure_retry_eligible", synchronize_initial_policy)
+    successes: list[TaskJob] = []
+    conflicts: list[TaskTransitionConflict] = []
+
+    def recover() -> None:
+        try:
+            successes.append(application.retry_compare(task_id))
+        except TaskTransitionConflict as exc:
+            conflicts.append(exc)
+
+    threads = [threading.Thread(target=recover) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert [job.job_id for job in successes] == [f"compare:{task_id}:1"]
+    assert len(conflicts) == 1
+    assert [job.job_id for job in runner.jobs_for_task(task_id, task_type="compare")] == [f"compare:{task_id}:1"]

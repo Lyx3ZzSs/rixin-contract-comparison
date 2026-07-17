@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from app.auth.models import CurrentUser
-from app.errors import NotFoundError, TaskStaleLeaseError
+from app.errors import NotFoundError, TaskStaleLeaseError, TaskTransitionConflict
 from app.infrastructure.execution_state import TaskExecutionContext
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.infrastructure.task_runner import QueuedTaskRunner, TaskJob, default_task_runner
@@ -68,18 +68,17 @@ class CompareTaskApplication:
         compare_filename: str | None,
         compare_options: CompareOptions | None = None,
     ) -> TaskJob:
-        options = compare_options or CompareOptions()
         job = self.runner.submit(
             task_type="compare",
             task_id=task_id,
-            payload={
-                "task_id": task_id,
-                "original_path": str(original_path),
-                "compare_path": str(compare_path),
-                "original_filename": original_filename or "",
-                "compare_filename": compare_filename or "",
-                "compare_options": options.model_dump(),
-            },
+            payload=self._build_compare_payload(
+                task_id=task_id,
+                original_path=original_path,
+                compare_path=compare_path,
+                original_filename=original_filename or "",
+                compare_filename=compare_filename or "",
+                compare_options=compare_options or CompareOptions(),
+            ),
             task_mutation=self._mark_active_job,
         )
         return job
@@ -103,10 +102,10 @@ class CompareTaskApplication:
 
     def retry_compare(self, task_id: str) -> TaskJob:
         task = self.load_compare_task(task_id)
-        task.ensure_retry_eligible()
+        retry_mode = self._ensure_retry_eligible(task)
 
         def mark_retry_queued(persisted: CompareTask, job: TaskJob) -> None:
-            persisted.ensure_retry_eligible()
+            self._ensure_retry_eligible(persisted)
             persisted.status = "PROCESSING"
             persisted.terminal_reason = "NONE"
             persisted.active_job_id = job.job_id
@@ -114,12 +113,69 @@ class CompareTaskApplication:
             persisted.progress_percent = 3
             persisted.errors = []
 
-        job = self.runner.retry(
-            task_id,
-            task_type="compare",
-            task_mutation=mark_retry_queued,
-        )
+        if retry_mode == "REBUILD_SUBMISSION":
+            job = self.runner.submit(
+                task_type="compare",
+                task_id=task_id,
+                payload=self._build_compare_payload(
+                    task_id=task.task_id,
+                    original_path=Path(task.original_pdf_path),
+                    compare_path=Path(task.compare_pdf_path),
+                    original_filename=task.original_filename,
+                    compare_filename=task.compare_filename,
+                    compare_options=task.compare_options,
+                ),
+                task_mutation=mark_retry_queued,
+                reject_existing=True,
+            )
+        else:
+            job = self.runner.retry(
+                task_id,
+                task_type="compare",
+                task_mutation=mark_retry_queued,
+            )
         return job
+
+    def is_retry_eligible(self, task: CompareTask) -> bool:
+        return self._retry_mode(task) is not None
+
+    def _ensure_retry_eligible(self, task: CompareTask) -> Literal["RETRY_FAILED_JOB", "REBUILD_SUBMISSION"]:
+        retry_mode = self._retry_mode(task)
+        if retry_mode is None:
+            raise TaskTransitionConflict(f"任务 {task.task_id} 不允许从 {task.status}/{task.terminal_reason} 重试。")
+        return retry_mode
+
+    def _retry_mode(self, task: CompareTask) -> Literal["RETRY_FAILED_JOB", "REBUILD_SUBMISSION"] | None:
+        if not (Path(task.original_pdf_path).is_file() and Path(task.compare_pdf_path).is_file()):
+            return None
+        if task.status != "FAILED" or task.terminal_reason not in {"EXECUTION_FAILED", "SUBMISSION_FAILED"}:
+            return None
+        jobs = self.runner.jobs_for_task(task.task_id, task_type="compare")
+        if any(job.status not in {"SUCCEEDED", "FAILED", "CANCELLED"} for job in jobs):
+            return None
+        if not jobs:
+            return "REBUILD_SUBMISSION" if task.terminal_reason == "SUBMISSION_FAILED" else None
+        latest = max(jobs, key=lambda job: job.execution_no)
+        return "RETRY_FAILED_JOB" if latest.status == "FAILED" else None
+
+    @staticmethod
+    def _build_compare_payload(
+        *,
+        task_id: str,
+        original_path: Path,
+        compare_path: Path,
+        original_filename: str,
+        compare_filename: str,
+        compare_options: CompareOptions,
+    ) -> dict[str, Any]:
+        return {
+            "task_id": task_id,
+            "original_path": str(original_path),
+            "compare_path": str(compare_path),
+            "original_filename": original_filename,
+            "compare_filename": compare_filename,
+            "compare_options": compare_options.model_dump(),
+        }
 
     def ensure_report(self, task: CompareTask) -> CompareTask:
         return CompareService(repository=self.repository).ensure_report(task)

@@ -288,6 +288,7 @@ class QueuedTaskRunner:
         payload: Mapping[str, Any],
         max_attempts: int | None = None,
         task_mutation: TaskEnqueueMutation | None = None,
+        reject_existing: bool = False,
     ) -> TaskJob:
         if task_type not in self._handlers:
             raise RuntimeError(f"未注册任务执行器: {task_type}")
@@ -299,7 +300,11 @@ class QueuedTaskRunner:
             payload=dict(payload),
             max_attempts=max_attempts or self.max_attempts,
         )
-        queued = self.job_repository.enqueue(job, task_mutation=task_mutation)
+        queued = self.job_repository.enqueue(
+            job,
+            task_mutation=task_mutation,
+            reject_existing=reject_existing,
+        )
         if self.autostart:
             self.start()
         self._wake_event.set()
@@ -352,7 +357,11 @@ class QueuedTaskRunner:
             payload=dict(job.payload),
             max_attempts=job.max_attempts,
         )
-        queued = self.job_repository.enqueue(retried, task_mutation=task_mutation)
+        queued = self.job_repository.enqueue(
+            retried,
+            task_mutation=task_mutation,
+            reject_existing=True,
+        )
         if self.autostart:
             self.start()
         self._wake_event.set()

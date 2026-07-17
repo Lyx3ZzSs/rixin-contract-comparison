@@ -667,6 +667,40 @@ describe("ResultPage", () => {
     expect(diffSignal?.aborted).toBe(true);
   });
 
+  it("clears the first-event fallback timer when unmounted", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getTask).mockResolvedValueOnce({ ...mockTask, status: "PROCESSING", report_url: "" });
+    const { unmount } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    unmount();
+    await act(async () => { vi.advanceTimersByTime(20_000); await Promise.resolve(); });
+
+    expect(getTask).toHaveBeenCalledTimes(1);
+    expect(mockEventSource.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the completion animation timer without late reads when unmounted", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getTask)
+      .mockResolvedValueOnce({ ...mockTask, status: "PROCESSING", revision: 4, report_url: "" })
+      .mockResolvedValueOnce({ ...mockTask, revision: 5 });
+    vi.mocked(getDiffs).mockResolvedValueOnce(mockDiffs);
+    const { unmount } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      mockEventSource.onmessage?.({ data: JSON.stringify({ task_id: "task-1", status: "COMPLETED", stage: "已完成", progress_percent: 100, revision: 5 }) } as MessageEvent);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    unmount();
+    await act(async () => { vi.advanceTimersByTime(20_000); await Promise.resolve(); });
+
+    expect(getTask).toHaveBeenCalledTimes(2);
+    expect(getDiffs).toHaveBeenCalledTimes(1);
+  });
+
   it("closes the stream and aborts in-flight task reads on unmount", async () => {
     vi.mocked(getTask).mockResolvedValueOnce({ ...mockTask, status: "PROCESSING", terminal_reason: "NONE" });
     const { unmount } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);

@@ -488,14 +488,18 @@ def test_compare_execution_api_retries_failed_job(tmp_path: Path) -> None:
     original_autostart = default_task_runner.autostart
     default_task_runner.autostart = False
     task_id = "TEXEC_RETRY"
+    original = tmp_path / "a.pdf"
+    compare = tmp_path / "b.pdf"
+    original.write_bytes(b"original")
+    compare.write_bytes(b"compare")
     save_task(
         CompareTask(
             task_id=task_id,
             status="FAILED",
             stage="失败",
             progress_percent=100,
-            original_pdf_path=str(tmp_path / "a.pdf"),
-            compare_pdf_path=str(tmp_path / "b.pdf"),
+            original_pdf_path=str(original),
+            compare_pdf_path=str(compare),
             errors=["failed"],
         )
     )
@@ -522,6 +526,9 @@ def test_compare_execution_api_retries_failed_job(tmp_path: Path) -> None:
 
     try:
         client = TestClient(app)
+        assert client.get(f"/api/compare/{task_id}").json()["retry_eligible"] is True
+        records = client.get("/api/compare/records").json()["records"]
+        assert next(item for item in records if item["task_id"] == task_id)["retry_eligible"] is True
         retry_response = client.post(f"/api/compare/{task_id}/retry")
     finally:
         default_task_runner.autostart = original_autostart
@@ -591,7 +598,7 @@ def test_compare_task_application_rejects_ineligible_retry_transition(
 
 @pytest.mark.parametrize(
     ("terminal_reason", "create_inputs"),
-    [("EXECUTION_FAILED", False), ("SUBMISSION_FAILED", True)],
+    [("EXECUTION_FAILED", True), ("SUBMISSION_FAILED", True)],
 )
 def test_compare_task_application_allows_eligible_retry_transition(
     tmp_path: Path,
@@ -715,6 +722,143 @@ def test_compare_execution_api_retries_eligible_submission_failure(tmp_path: Pat
     assert load_task(task_id).status == "PROCESSING"
 
 
+def test_compare_execution_api_rebuilds_first_job_for_submission_failure_without_job(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    default_task_runner.stop(wait=True)
+    original_autostart = default_task_runner.autostart
+    default_task_runner.autostart = False
+    original = tmp_path / "original.pdf"
+    compare = tmp_path / "compare.pdf"
+    original.write_bytes(b"original")
+    compare.write_bytes(b"compare")
+    task_id = "TAPI_RETRY_SUBMISSION_NO_JOB"
+    save_task(
+        CompareTask(
+            task_id=task_id,
+            status="FAILED",
+            terminal_reason="SUBMISSION_FAILED",
+            original_pdf_path=str(original),
+            compare_pdf_path=str(compare),
+            original_filename="original-name.pdf",
+            compare_filename="compare-name.pdf",
+            compare_options={"ignore_stamps": True, "ignore_headers_footers": True},
+        )
+    )
+
+    try:
+        client = TestClient(app)
+        assert client.get(f"/api/compare/{task_id}").json()["retry_eligible"] is True
+        records = client.get("/api/compare/records").json()["records"]
+        assert next(item for item in records if item["task_id"] == task_id)["retry_eligible"] is True
+        response = client.post(f"/api/compare/{task_id}/retry")
+        repeated = client.post(f"/api/compare/{task_id}/retry")
+    finally:
+        default_task_runner.autostart = original_autostart
+
+    assert response.status_code == 200
+    assert response.json()["job_id"] == f"compare:{task_id}:1"
+    assert response.json()["execution_no"] == 1
+    assert repeated.status_code == 409
+    jobs = default_task_runner.jobs_for_task(task_id, task_type="compare")
+    assert len(jobs) == 1
+    assert jobs[0].payload == {
+        "task_id": task_id,
+        "original_path": str(original),
+        "compare_path": str(compare),
+        "original_filename": "original-name.pdf",
+        "compare_filename": "compare-name.pdf",
+        "compare_options": {
+            "ignore_punctuation": False,
+            "ignore_stamps": True,
+            "ignore_headers_footers": True,
+            "signing_region_mode": "full",
+        },
+    }
+    retried_task = load_task(task_id)
+    assert (retried_task.status, retried_task.terminal_reason) == ("PROCESSING", "NONE")
+    assert retried_task.active_job_id == f"compare:{task_id}:1"
+
+
+@pytest.mark.parametrize("job_status", [None, "SUCCEEDED", "RUNNING"])
+def test_execution_failure_retry_projection_matches_job_constraints(
+    tmp_path: Path,
+    job_status: str | None,
+) -> None:
+    configure_storage(tmp_path)
+    default_task_runner.stop(wait=True)
+    original_autostart = default_task_runner.autostart
+    default_task_runner.autostart = False
+    original = tmp_path / "original.pdf"
+    compare = tmp_path / "compare.pdf"
+    original.write_bytes(b"original")
+    compare.write_bytes(b"compare")
+    task_id = f"TAPI_EXEC_JOB_{job_status or 'NONE'}"
+    task = CompareTask(
+        task_id=task_id,
+        status="FAILED",
+        terminal_reason="EXECUTION_FAILED",
+        original_pdf_path=str(original),
+        compare_pdf_path=str(compare),
+    )
+    save_task(task)
+    if job_status is not None:
+        job = default_task_runner.job_repository.enqueue(
+            TaskJob(
+                job_id=f"compare:{task_id}:1",
+                task_id=task_id,
+                task_type="compare",
+                execution_no=1,
+                payload={"task_id": task_id},
+            )
+        )
+        claimed = default_task_runner.job_repository.claim_next(worker_id="constraint-worker", lease_seconds=30)
+        assert claimed is not None
+        if job_status == "SUCCEEDED":
+            default_task_runner.job_repository.mark_succeeded(job.job_id, worker_id="constraint-worker")
+            save_task(task)
+
+    try:
+        client = TestClient(app)
+        detail = client.get(f"/api/compare/{task_id}").json()
+        records = client.get("/api/compare/records").json()["records"]
+        response = client.post(f"/api/compare/{task_id}/retry")
+    finally:
+        default_task_runner.autostart = original_autostart
+
+    assert detail["retry_eligible"] is False
+    assert next(item for item in records if item["task_id"] == task_id)["retry_eligible"] is False
+    assert response.status_code == 409
+
+
+def test_execution_failure_with_missing_input_is_not_retryable_even_with_failed_job(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    default_task_runner.stop(wait=True)
+    original_autostart = default_task_runner.autostart
+    default_task_runner.autostart = False
+    original = tmp_path / "original.pdf"
+    original.write_bytes(b"original")
+    task_id = "TAPI_EXEC_MISSING_INPUT"
+    save_task(
+        CompareTask(
+            task_id=task_id,
+            status="FAILED",
+            terminal_reason="EXECUTION_FAILED",
+            original_pdf_path=str(original),
+            compare_pdf_path=str(tmp_path / "missing.pdf"),
+        )
+    )
+    failed_compare_job(default_task_runner, task_id)
+
+    try:
+        client = TestClient(app)
+        assert client.get(f"/api/compare/{task_id}").json()["retry_eligible"] is False
+        response = client.post(f"/api/compare/{task_id}/retry")
+    finally:
+        default_task_runner.autostart = original_autostart
+
+    assert response.status_code == 409
+
+
 def test_compare_execution_api_rejects_retry_for_processing_task(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     default_task_runner.stop(wait=True)
@@ -747,9 +891,9 @@ def test_compare_task_api_projects_terminal_reason_and_revisions(tmp_path: Path)
     assert payload["terminal_reason"] == "EXECUTION_FAILED"
     assert payload["revision"] >= 1
     assert payload["report_revision"] == 3
-    assert payload["retry_eligible"] is True
+    assert payload["retry_eligible"] is False
     records = client.get("/api/compare/records").json()["records"]
-    assert next(item for item in records if item["task_id"] == "TSTATE_FIELDS")["retry_eligible"] is True
+    assert next(item for item in records if item["task_id"] == "TSTATE_FIELDS")["retry_eligible"] is False
 
 
 def test_task_execution_presenter_includes_execution_identity_and_error_code() -> None:
