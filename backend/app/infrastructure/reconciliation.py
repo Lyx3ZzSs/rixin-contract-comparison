@@ -4,6 +4,7 @@ import logging
 
 from app.infrastructure.execution_state import ExecutionStateCoordinator
 from app.infrastructure.recovery_store import RecoveryStore
+from app.infrastructure.task_runner import TERMINAL_JOB_STATUSES
 from app.infrastructure.task_repository import TaskRepository
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,14 @@ def reconcile_startup(
             active = coordinator.load(task.active_job_id) if task.active_job_id else None
         except FileNotFoundError:
             active = None
-        if active is not None and active.task_id == task.task_id and active.task_type == "compare":
+        if (
+            active is not None
+            and active.task_id == task.task_id
+            and active.task_type == "compare"
+            and active.status not in TERMINAL_JOB_STATUSES
+            and not active.duplicate_execution
+            and active.error_code != "DUPLICATE_JOB_EXECUTION"
+        ):
             continue
         error = "活动执行记录缺失或身份不匹配。"
         if coordinator.reconcile_submission_failure(task.task_id, error=error):

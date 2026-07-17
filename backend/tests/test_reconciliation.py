@@ -188,6 +188,31 @@ def test_startup_reconciliation_fails_processing_task_with_missing_active_job(tm
     assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
 
 
+def test_startup_reconciliation_fails_processing_task_with_terminal_active_job(tmp_path: Path) -> None:
+    task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
+    task_id = "TTERMINAL_ACTIVE"
+    job = LocalJsonTaskJobRepository(Settings(storage_dir=tmp_path / "storage"))._persist(
+        TaskJob(
+            job_id=f"compare:{task_id}:1",
+            task_id=task_id,
+            task_type="compare",
+            status="SUCCEEDED",
+        )
+    )
+    task_repository.save_compare_task(CompareTask(task_id=task_id, active_job_id=job.job_id))
+
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 1
+
+    repaired = task_repository.load_compare_task(task_id)
+    assert (repaired.status, repaired.terminal_reason, repaired.active_job_id) == (
+        "FAILED",
+        "SUBMISSION_FAILED",
+        "",
+    )
+    assert coordinator.load(job.job_id).status == "SUCCEEDED"
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
+
+
 def test_startup_reconciliation_requeues_prestart_running_job_with_attempts_remaining(tmp_path: Path) -> None:
     task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
     task_id = "TSTALE_RETRY"
@@ -261,6 +286,39 @@ def test_startup_reconciliation_deduplicates_agreeing_legacy_and_new_execution(t
     persisted = coordinator.load(legacy.job_id)
     assert persisted.source_path == str(legacy_path)
     assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
+
+
+def test_terminal_repair_keeps_agreeing_legacy_execution_copies_synchronized(tmp_path: Path) -> None:
+    task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
+    task_id = "TLEGACY_TERMINAL"
+    job = TaskJob(
+        job_id=f"compare:{task_id}:1",
+        task_id=task_id,
+        task_type="compare",
+        status="RUNNING",
+        attempt=1,
+    )
+    task_repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            status="COMPLETED",
+            active_job_id=job.job_id,
+            terminal_job_id=job.job_id,
+            terminal_attempt=job.attempt,
+        )
+    )
+    legacy_path = tmp_path / "storage" / "tasks" / task_id / "job.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
+    new_path = legacy_path.parent / "jobs" / "1.json"
+    new_path.parent.mkdir()
+    new_path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
+
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 1
+    assert coordinator.load(job.job_id).status == "SUCCEEDED"
+    assert legacy_path.read_text(encoding="utf-8") == new_path.read_text(encoding="utf-8")
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
+    assert coordinator.load(job.job_id).error_code == ""
 
 
 def test_startup_reconciliation_marks_conflicting_duplicate_execution_unclaimable(tmp_path: Path) -> None:

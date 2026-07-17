@@ -129,9 +129,11 @@ class LocalJsonTaskJobRepository:
     def _write_job(self, job: TaskJob) -> None:
         path = Path(job.source_path) if job.source_path else self._new_job_path(job)
         job.source_path = str(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # jobs/{execution_no}.json is authoritative; manifest.json is a derived index.
-        atomic_write_json(path, job.model_dump(mode="json"))
+        # A legacy job.json may coexist with jobs/1.json for the same execution.
+        # Keep agreeing physical copies in sync before refreshing the derived manifest.
+        for copy_path in self._agreeing_execution_paths(job, path):
+            copy_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(copy_path, job.model_dump(mode="json"))
         try:
             self._write_manifest(job, path)
         except OSError:
@@ -145,6 +147,38 @@ class LocalJsonTaskJobRepository:
         job = TaskJob(**json.loads(path.read_text(encoding="utf-8")))
         job.source_path = str(path)
         return job
+
+    def _agreeing_execution_paths(self, job: TaskJob, primary_path: Path) -> list[Path]:
+        candidates = [
+            self._task_dir(job.task_id) / "job.json",
+            self._new_job_path(job),
+        ]
+        copies: list[tuple[Path, TaskJob]] = []
+        for candidate_path in candidates:
+            if not candidate_path.exists():
+                continue
+            try:
+                candidate = self._load_job_path(candidate_path)
+            except (OSError, ValueError, TypeError):
+                continue
+            if self._same_execution(candidate, job):
+                copies.append((candidate_path, candidate))
+
+        if len(copies) < 2:
+            return [primary_path]
+        baseline = copies[0][1].model_dump(mode="json")
+        if any(copy.model_dump(mode="json") != baseline for _, copy in copies[1:]):
+            return [primary_path]
+        return [path for path, _ in copies]
+
+    @staticmethod
+    def _same_execution(existing: TaskJob, candidate: TaskJob) -> bool:
+        return bool(
+            existing.job_id == candidate.job_id
+            and existing.task_id == candidate.task_id
+            and existing.task_type == candidate.task_type
+            and existing.execution_no == candidate.execution_no
+        )
 
     def _find_job_path(self, job_id: str) -> Path | None:
         match = next((job for job in self.list_jobs() if job.job_id == job_id), None)
