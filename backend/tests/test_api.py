@@ -6,6 +6,8 @@ import importlib
 import io
 import json
 import math
+import multiprocessing
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -23,10 +25,11 @@ from app import api_schemas
 from app.api_errors import http_error
 from app.api_presenters import compare_task_response, task_execution_response
 from app.application.compare_tasks import CompareTaskApplication, default_compare_task_application
+from app.application.submission_recovery import SubmissionRecoveryService
 from app.config import settings
 from app.errors import TaskStaleLeaseError, TaskTransitionConflict
 from app.infrastructure.artifact_store import ArtifactPublishCommittedError, LocalArtifactStore
-from app.infrastructure.recovery_store import RecoveryAction, RecoveryStore
+from app.infrastructure.recovery_store import RecoveryAction, RecoveryMarkerLockTimeout, RecoveryStore
 from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.infrastructure.task_runner import (
     LocalJsonTaskJobRepository,
@@ -172,6 +175,21 @@ def _hold_recovery_marker_lock(store: RecoveryStore, task_id: str):
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+def _hold_recovery_marker_lock_in_process(
+    storage_dir: str,
+    task_id: str,
+    ready: multiprocessing.synchronize.Event,
+    release: multiprocessing.synchronize.Event,
+) -> None:
+    from app.config import Settings
+
+    store = RecoveryStore(Settings(storage_dir=Path(storage_dir)))
+    with store._task_marker_lock(task_id):
+        ready.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test did not release recovery marker lock")
+
+
 def test_lifespan_recovers_submissions_before_reconciliation_and_workers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -180,7 +198,11 @@ def test_lifespan_recovers_submissions_before_reconciliation_and_workers(
     main_module = importlib.import_module("app.main")
     events: list[str] = []
     monkeypatch.setattr(main_module.default_task_repository, "resolve", lambda: events.append("repository"))
-    monkeypatch.setattr(main_module.default_recovery_store, "recover_all", lambda: events.append("recovery") or True)
+    monkeypatch.setattr(
+        main_module.default_recovery_store,
+        "recover_all",
+        lambda *_args: events.append("recovery") or True,
+    )
     monkeypatch.setattr(
         main_module,
         "reconcile_terminal_jobs",
@@ -198,6 +220,55 @@ def test_lifespan_recovers_submissions_before_reconciliation_and_workers(
         assert client.get("/health").status_code == 200
 
     assert events[:4] == ["repository", "recovery", "reconciliation", "workers"]
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork and fcntl locking")
+def test_lifespan_defers_locked_recovery_marker_and_starts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    configure_storage(tmp_path)
+    main_module = importlib.import_module("app.main")
+    recovery_store = main_module.default_recovery_store
+    recovery_store.create_marker(
+        task_id="TSTARTUP_LOCKED_MARKER",
+        attempt_id="attempt-a",
+        primary_error="crashed after upload publish",
+        actions=[],
+    )
+    recovery_store._lock_timeout_seconds = 0.05
+    context = multiprocessing.get_context("fork")
+    ready = context.Event()
+    release = context.Event()
+    holder = context.Process(
+        target=_hold_recovery_marker_lock_in_process,
+        args=(str(settings.storage_dir), "TSTARTUP_LOCKED_MARKER", ready, release),
+    )
+    holder.start()
+    assert ready.wait(timeout=2)
+    monkeypatch.setattr(main_module.default_task_repository, "resolve", lambda: None)
+    monkeypatch.setattr(main_module.default_task_runner, "start", lambda: None)
+    monkeypatch.setattr(main_module.default_task_runner, "stop", lambda **_kwargs: None)
+    monkeypatch.setattr(main_module, "reconcile_terminal_jobs", lambda *_args: 0)
+    monkeypatch.setattr(main_module, "register_default_models", lambda: None)
+    monkeypatch.setattr(main_module, "teardown_models", lambda: None)
+    monkeypatch.setattr(main_module, "close_clients", lambda: None)
+    monkeypatch.setattr(main_module.auth_runtime, "prewarm", lambda: None)
+    monkeypatch.setattr(main_module.auth_runtime, "close", lambda: None)
+    caplog.set_level("WARNING", logger="app.infrastructure.recovery_store")
+
+    try:
+        with TestClient(main_module.app) as client:
+            assert client.get("/health").status_code == 200
+    finally:
+        release.set()
+        holder.join(timeout=2)
+
+    assert holder.exitcode == 0
+    assert recovery_store.marker_path("TSTARTUP_LOCKED_MARKER").exists()
+    assert "event=recovery_marker_deferred" in caplog.text
+    assert "task_id=TSTARTUP_LOCKED_MARKER" in caplog.text
 
 
 def failed_compare_job(runner: QueuedTaskRunner, task_id: str) -> TaskJob:
@@ -448,8 +519,87 @@ def test_submission_publish_post_commit_failure_does_not_orphan_final_input(
             )
         )
 
-    assert any(action.scope == "final_input" and action.owner_token for action in captured_actions)
     assert list(artifact_store.task_root("TPUBLISH_POST_COMMIT").rglob("*.pdf")) == []
+
+
+def test_submission_crash_after_final_publish_is_recovered_on_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, _repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    publish = artifact_store.publish_staged
+    task_id = "TPUBLISH_CRASH_BOUNDARY"
+
+    def publish_then_terminate(source: Path, destination: Path, **kwargs) -> Path:
+        publish(source, destination, **kwargs)
+        raise SystemExit("simulated process termination after final upload publish")
+
+    monkeypatch.setattr(artifact_store, "publish_staged", publish_then_terminate)
+
+    with pytest.raises(SystemExit, match="simulated process termination"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id=task_id,
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    final_inputs = list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))
+    assert len(final_inputs) == 1
+    journal = recovery_store.load_marker(task_id)
+    assert journal.attempt_id
+    assert journal.actions == [
+        RecoveryAction(
+            action="unlink",
+            path=str(final_inputs[0]),
+            scope="final_input",
+            owner_token=journal.actions[0].owner_token,
+        )
+    ]
+
+    restarted_store = RecoveryStore(recovery_store.settings)
+    assert restarted_store.recover_all() is True
+    assert final_inputs[0].exists() is False
+    assert not restarted_store.marker_path(task_id).exists()
+
+
+def test_startup_recovery_keeps_final_inputs_after_task_commit_before_journal_finalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    task_id = "TPUBLISH_COMMITTED_BOUNDARY"
+    monkeypatch.setattr(
+        recovery_store,
+        "finalize_final_inputs",
+        lambda _marker: (_ for _ in ()).throw(SystemExit("simulated crash after task commit")),
+    )
+
+    with pytest.raises(SystemExit, match="after task commit"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id=task_id,
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+    monkeypatch.undo()
+
+    task = repository.load_compare_task(task_id)
+    assert Path(task.original_pdf_path).is_file()
+    assert Path(task.compare_pdf_path).is_file()
+    assert recovery_store.marker_path(task_id).exists()
+
+    restarted_service = SubmissionRecoveryService(recovery_store=recovery_store, repository=repository)
+    assert restarted_service.recover_all() is True
+    assert Path(task.original_pdf_path).is_file()
+    assert Path(task.compare_pdf_path).is_file()
+    assert not recovery_store.marker_path(task_id).exists()
 
 
 def test_submission_precomputes_owner_token_before_publishing(
@@ -1258,7 +1408,7 @@ def test_submission_recovery_lock_double_failure_preserves_unpersisted_primary_a
     caplog.set_level("CRITICAL", logger="app.application.compare_tasks")
 
     with _hold_recovery_marker_lock(recovery_store, task_id):
-        with pytest.raises(OSError, match="task save primary"):
+        with pytest.raises(RecoveryMarkerLockTimeout):
             asyncio.run(
                 application.submit_uploads(
                     task_id=task_id,
@@ -1270,13 +1420,12 @@ def test_submission_recovery_lock_double_failure_preserves_unpersisted_primary_a
             )
 
     assert outcomes == [False]
-    assert len(list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))) == 2
+    assert len(list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))) == 0
     assert not recovery_store.marker_path(task_id).exists()
     assert "Submission recovery marker creation failed" in caplog.text
     assert "Submission recovery fallback cleanup failed" in caplog.text
-    assert "task save primary" in caplog.text
+    assert "Recovery marker lock timed out" in caplog.text
     assert "actions=" in caplog.text
-    assert "final_input" in caplog.text
 
 
 def test_submission_recovery_lock_double_failure_marks_persisted_task_with_unavailable_marker(
@@ -1304,7 +1453,7 @@ def test_submission_recovery_lock_double_failure_marks_persisted_task_with_unava
     caplog.set_level("CRITICAL", logger="app.application.compare_tasks")
 
     with _hold_recovery_marker_lock(recovery_store, task_id):
-        with pytest.raises(OSError, match="enqueue primary"):
+        with pytest.raises(RecoveryMarkerLockTimeout):
             asyncio.run(
                 application.submit_uploads(
                     task_id=task_id,
@@ -1316,17 +1465,9 @@ def test_submission_recovery_lock_double_failure_marks_persisted_task_with_unava
             )
 
     assert outcomes == [False]
-    task = repository.load_compare_task(task_id)
-    assert (task.status, task.terminal_reason, task.stage) == (
-        "FAILED",
-        "SUBMISSION_FAILED",
-        "提交失败",
-    )
-    assert len(list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))) == 2
-    summary = next(error for error in task.errors if "COMPENSATION_INCOMPLETE" in error)
-    assert "enqueue primary" in summary
-    assert "marker_status=unavailable" in summary
-    assert str(recovery_store.marker_path(task_id)) in summary
+    with pytest.raises(FileNotFoundError):
+        repository.load_compare_task(task_id)
+    assert len(list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))) == 0
     assert not recovery_store.marker_path(task_id).exists()
     assert "Submission recovery marker creation failed" in caplog.text
     assert "Submission recovery fallback cleanup failed" in caplog.text

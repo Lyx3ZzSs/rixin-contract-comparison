@@ -100,12 +100,14 @@ class CompareTaskApplication:
             self._ensure_publish_destinations_absent(original_path, compare_path)
 
             self._publish_with_ledger(
+                task_id,
                 staged_original,
                 original_path,
                 attempt_id=attempt_id,
                 final_actions=final_actions,
             )
             self._publish_with_ledger(
+                task_id,
                 staged_compare,
                 compare_path,
                 attempt_id=attempt_id,
@@ -128,8 +130,11 @@ class CompareTaskApplication:
                     original_path=original_path,
                     compare_path=compare_path,
                 )
+                if task_persisted:
+                    self._finalize_submission_journal(task_id, attempt_id)
                 raise
             task_persisted = True
+            self._finalize_submission_journal(task_id, attempt_id)
             try:
                 self.submit_compare(
                     original_path=original_path,
@@ -207,6 +212,7 @@ class CompareTaskApplication:
 
     def _publish_with_ledger(
         self,
+        task_id: str,
         source: Path,
         destination: Path,
         *,
@@ -214,17 +220,20 @@ class CompareTaskApplication:
         final_actions: list[RecoveryAction],
     ) -> None:
         owner_token = self.recovery_store.ownership_token(source, attempt_id)
+        action = RecoveryAction(
+            action="unlink",
+            path=str(destination),
+            scope="final_input",
+            owner_token=owner_token,
+        )
         try:
-            self.artifact_store.publish_staged(
-                source,
-                destination,
-                owner_token=owner_token,
-                on_created=lambda created: self._append_final_action(
-                    created,
-                    owner_token,
-                    final_actions,
-                ),
-            )
+            with self.recovery_store.journal_final_publish(
+                task_id=task_id,
+                attempt_id=attempt_id,
+                action=action,
+            ):
+                self.artifact_store.publish_staged(source, destination, owner_token=owner_token)
+            self._append_final_action(destination, owner_token, final_actions)
         except ArtifactPublishCommittedError as committed_error:
             self._append_final_action(
                 committed_error.destination,
@@ -232,6 +241,21 @@ class CompareTaskApplication:
                 final_actions,
             )
             raise
+
+    def _finalize_submission_journal(self, task_id: str, attempt_id: str) -> None:
+        try:
+            marker = self.recovery_store.load_marker(task_id, attempt_id)
+            self.recovery_store.finalize_final_inputs(marker)
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            logger.critical(
+                "Published input recovery journal finalization failed after Task commit: task_id=%s attempt_id=%s error=%s",
+                task_id,
+                attempt_id,
+                self._error_text(exc),
+                exc_info=True,
+            )
 
     def _append_final_action(
         self,
@@ -356,7 +380,7 @@ class CompareTaskApplication:
     ) -> bool:
         primary_error = self._error_text(primary)
         try:
-            marker = self.recovery_store.create_marker(
+            marker = self.recovery_store.merge_marker(
                 task_id=task_id,
                 attempt_id=attempt_id,
                 primary_error=primary_error,

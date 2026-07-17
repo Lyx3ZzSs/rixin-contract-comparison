@@ -738,6 +738,43 @@ def test_marker_lock_timeout_is_bounded_and_identifies_lock(tmp_path: Path) -> N
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork and fcntl locking")
+def test_recover_all_defers_locked_marker_without_removing_it(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = Settings(storage_dir=tmp_path / "storage")
+    store = RecoveryStore(settings)
+    store.create_marker(
+        task_id="TLOCK_TIMEOUT",
+        attempt_id="attempt-a",
+        primary_error="interrupted submission",
+        actions=[],
+    )
+    context = multiprocessing.get_context("fork")
+    ready = context.Event()
+    release = context.Event()
+    holder = context.Process(
+        target=_hold_task_marker_lock,
+        args=(str(settings.storage_dir), ready, release),
+    )
+    holder.start()
+    assert ready.wait(timeout=2)
+    store._lock_timeout_seconds = 0.05
+    caplog.set_level("WARNING", logger="app.infrastructure.recovery_store")
+
+    try:
+        assert store.recover_all() is False
+    finally:
+        release.set()
+        holder.join(timeout=2)
+
+    assert holder.exitcode == 0
+    assert store.marker_path("TLOCK_TIMEOUT").exists()
+    assert "event=recovery_marker_deferred" in caplog.text
+    assert "task_id=TLOCK_TIMEOUT" in caplog.text
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork and fcntl locking")
 def test_multiprocess_same_marker_final_recovery_is_idempotent(tmp_path: Path) -> None:
     settings = Settings(storage_dir=tmp_path / "storage")
     store = RecoveryStore(settings)

@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Callable, Iterator, Literal
 
 try:
     import fcntl
@@ -57,6 +57,10 @@ class RecoveryMarkerLockTimeout(RuntimeError):
         self.task_id = task_id
         self.lock_path = lock_path
         self.timeout_seconds = timeout_seconds
+
+
+class RecoveryMarkerDeferred(RuntimeError):
+    """Keep a marker for a later recovery attempt without treating it as repaired."""
 
 
 class RecoveryStore:
@@ -116,23 +120,153 @@ class RecoveryStore:
             return [entry.model_copy(deep=True) for entry in entries]
 
     def list_markers(self) -> list[RecoveryMarker]:
+        markers, _deferred = self._list_markers_with_status()
+        return markers
+
+    def _list_markers_with_status(self) -> tuple[list[RecoveryMarker], bool]:
         if not self.recovery_dir.exists():
-            return []
+            return [], False
         markers: list[RecoveryMarker] = []
+        deferred = False
         for path in sorted(self.recovery_dir.glob("*.json")):
             try:
                 with self._task_marker_lock(path.stem):
                     markers.extend(self._load_marker_file(path))
+            except RecoveryMarkerLockTimeout as exc:
+                deferred = True
+                self._log_deferred(exc, marker=path.name)
             except (OSError, ValueError, json.JSONDecodeError):
                 logger.error("Invalid recovery marker ignored: marker=%s", path.name, exc_info=True)
-        return markers
+        return markers, deferred
 
-    def recover_all(self) -> bool:
-        recovered_all = True
-        for marker in self.list_markers():
-            if not self.recover_marker(marker):
+    def recover_all(
+        self,
+        prepare_marker: Callable[[RecoveryMarker], RecoveryMarker | None] | None = None,
+    ) -> bool:
+        markers, deferred = self._list_markers_with_status()
+        recovered_all = not deferred
+        for marker in markers:
+            try:
+                candidate = prepare_marker(marker) if prepare_marker is not None else marker
+                if candidate is not None and not self.recover_marker(candidate):
+                    recovered_all = False
+            except RecoveryMarkerLockTimeout as exc:
                 recovered_all = False
+                self._log_deferred(exc, marker=self.marker_path(marker.task_id).name)
+            except RecoveryMarkerDeferred as exc:
+                recovered_all = False
+                self._log_deferred(exc, marker=self.marker_path(marker.task_id).name)
         return recovered_all
+
+    @contextmanager
+    def journal_final_publish(
+        self,
+        *,
+        task_id: str,
+        attempt_id: str,
+        action: RecoveryAction,
+    ) -> Iterator[RecoveryMarker]:
+        """Durably record a final-input rollback before publishing it.
+
+        The marker lock deliberately spans the irreversible link publication so
+        a concurrent recovery cannot consume a pre-publication journal entry.
+        """
+        marker = RecoveryMarker(
+            task_id=task_id,
+            attempt_id=attempt_id,
+            primary_error="submission final input pending task persistence",
+            actions=[action],
+        )
+        self._validate_actions(marker)
+        with self._task_marker_lock(task_id):
+            entries = self._load_marker_entries_unlocked(task_id)
+            existing = next((entry for entry in entries if entry.attempt_id == attempt_id), None)
+            if existing is None:
+                entries.append(marker)
+                self._write_marker_entries_unlocked(task_id, entries)
+            else:
+                merged_actions = self._merge_actions(existing.actions, [action])
+                if merged_actions != existing.actions:
+                    existing.actions = merged_actions
+                    existing.updated_at = datetime.now(UTC).isoformat()
+                    self._write_marker_entries_unlocked(task_id, entries)
+                marker = existing
+            yield marker.model_copy(deep=True)
+
+    def merge_marker(
+        self,
+        *,
+        task_id: str,
+        attempt_id: str,
+        primary_error: str,
+        actions: list[RecoveryAction],
+    ) -> RecoveryMarker:
+        """Add this attempt's compensation actions without touching other attempts."""
+        self.create_marker(
+            task_id=task_id,
+            attempt_id=attempt_id,
+            primary_error=primary_error,
+            actions=actions,
+        )
+        with self._task_marker_lock(task_id):
+            entries = self._load_marker_entries_unlocked(task_id)
+            existing = next(entry for entry in entries if entry.attempt_id == attempt_id)
+            merged_actions = self._merge_actions(existing.actions, actions)
+            if existing.primary_error != primary_error or merged_actions != existing.actions:
+                existing.primary_error = primary_error
+                existing.actions = merged_actions
+                existing.updated_at = datetime.now(UTC).isoformat()
+                self._write_marker_entries_unlocked(task_id, entries)
+            return existing.model_copy(deep=True)
+
+    def finalize_final_inputs(self, marker: RecoveryMarker) -> RecoveryMarker | None:
+        """Remove only final-input recovery actions after the Task commit boundary."""
+        with self._task_marker_lock(marker.task_id):
+            entries = self._load_marker_entries_unlocked(marker.task_id)
+            current = next((entry for entry in entries if entry.attempt_id == marker.attempt_id), None)
+            if current is None:
+                return None
+            remaining_actions = [action for action in current.actions if action.scope != "final_input"]
+            if len(remaining_actions) == len(current.actions):
+                return current.model_copy(deep=True)
+            if remaining_actions:
+                current.actions = remaining_actions
+                current.updated_at = datetime.now(UTC).isoformat()
+                self._write_marker_entries_unlocked(marker.task_id, entries)
+                return current.model_copy(deep=True)
+            entries = [entry for entry in entries if entry.attempt_id != marker.attempt_id]
+            if entries:
+                self._write_marker_entries_unlocked(marker.task_id, entries)
+            else:
+                self.marker_path(marker.task_id).unlink(missing_ok=True)
+            return None
+
+    @staticmethod
+    def _merge_actions(
+        current: list[RecoveryAction],
+        additions: list[RecoveryAction],
+    ) -> list[RecoveryAction]:
+        merged = list(current)
+        known = {
+            (action.action, action.path, action.scope, action.owner_token)
+            for action in current
+        }
+        for action in additions:
+            identity = (action.action, action.path, action.scope, action.owner_token)
+            if identity not in known:
+                merged.append(action)
+                known.add(identity)
+        return merged
+
+    @staticmethod
+    def _log_deferred(exc: RecoveryMarkerLockTimeout | RecoveryMarkerDeferred, *, marker: str) -> None:
+        logger.warning(
+            "event=recovery_marker_deferred marker=%s task_id=%s reason=%s detail=%s",
+            marker,
+            getattr(exc, "task_id", ""),
+            "lock_timeout" if isinstance(exc, RecoveryMarkerLockTimeout) else "precondition_unavailable",
+            exc,
+        )
 
     def recover_marker(self, marker: RecoveryMarker) -> bool:
         with self._task_marker_lock(marker.task_id):

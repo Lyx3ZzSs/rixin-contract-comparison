@@ -17,6 +17,7 @@ from app.api import router as compare_router
 from app.api_quality import router as quality_router
 from app.auth.errors import IdentityProviderUnavailable
 from app.auth.runtime import AuthRuntime
+from app.application.submission_recovery import SubmissionRecoveryService
 from app.clients import close_clients
 from app.config import settings
 from app.infrastructure.reconciliation import reconcile_terminal_jobs
@@ -29,13 +30,17 @@ from app.services.models.setup import register_default_models, teardown_models
 setup_logging()
 logger = logging.getLogger(__name__)
 auth_runtime = AuthRuntime(settings.auth)
+submission_recovery_service = SubmissionRecoveryService(
+    recovery_store=default_recovery_store,
+    repository=default_task_repository,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.ensure_storage()
     default_task_repository.resolve()
-    if not default_recovery_store.recover_all():
+    if not submission_recovery_service.recover_all():
         logger.error("Some pending submission compensation actions remain after startup recovery")
     reconcile_terminal_jobs(default_task_repository, default_task_runner.coordinator)
     default_task_runner.start()
