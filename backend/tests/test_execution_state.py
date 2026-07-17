@@ -360,6 +360,35 @@ def test_claim_recovers_after_task_primary_read_failure(
     assert (claimed.job_id, claimed.status) == (job.job_id, "RUNNING")
 
 
+def test_claim_continues_scanning_after_one_task_primary_read_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    coordinator, _job_repository, task_repository, _publisher, _calls = build_terminal_coordinator(tmp_path)
+    corrupt_job = enqueue_job(coordinator, "TREAD_CORRUPT_FIRST")
+    healthy_job = enqueue_job(coordinator, "TREAD_HEALTHY_SECOND")
+    task_repository.save_compare_task(CompareTask(task_id=corrupt_job.task_id, active_job_id=corrupt_job.job_id))
+    task_repository.save_compare_task(CompareTask(task_id=healthy_job.task_id, active_job_id=healthy_job.job_id))
+    load_task = task_repository.load_compare_task
+
+    def fail_corrupt_task(task_id: str) -> CompareTask:
+        if task_id == corrupt_job.task_id:
+            raise TaskRepositoryReadError("corrupt first task primary")
+        return load_task(task_id)
+
+    monkeypatch.setattr(task_repository, "load_compare_task", fail_corrupt_task)
+    caplog.set_level("WARNING", logger="app.infrastructure.execution_state")
+
+    claimed = coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
+
+    assert claimed is not None
+    assert (claimed.job_id, claimed.status) == (healthy_job.job_id, "RUNNING")
+    assert coordinator.load(corrupt_job.job_id).status == "QUEUED"
+    assert corrupt_job.task_id in caplog.text
+    assert corrupt_job.job_id in caplog.text
+
+
 def test_claim_does_not_swallow_programming_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

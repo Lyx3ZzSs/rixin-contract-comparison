@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from app.auth.models import CurrentUser
-from app.errors import NotFoundError, TaskStaleLeaseError, TaskTransitionConflict
+from app.errors import TaskStaleLeaseError, TaskTransitionConflict
 from app.infrastructure.execution_state import TaskExecutionContext
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.infrastructure.task_runner import QueuedTaskRunner, TaskJob, default_task_runner
@@ -91,28 +91,24 @@ class CompareTaskApplication:
         return self.repository.list_compare_tasks()
 
     def load_execution(self, task_id: str) -> TaskJob:
-        task = self.load_compare_task(task_id)
-        return self._load_active_job(task)
+        return self.runner.load_active_job(task_id, task_type="compare")
 
     def cancel_compare(self, task_id: str) -> TaskJob:
-        task = self.load_compare_task(task_id)
-        job = self._load_active_job(task)
-        return self.runner.cancel_job(job.job_id)
-
-    def _load_active_job(self, task: CompareTask) -> TaskJob:
-        if not task.active_job_id:
-            raise NotFoundError(f"任务 {task.task_id} 的活动执行记录不存在。")
-        job = self.runner.load_job(task.active_job_id)
-        if job.task_id != task.task_id or job.task_type != "compare":
-            raise TaskTransitionConflict(f"任务 {task.task_id} 的活动执行记录身份不匹配。")
-        return job
+        return self.runner.cancel_active_task(task_id, task_type="compare")
 
     def retry_compare(self, task_id: str) -> TaskJob:
         task = self.load_compare_task(task_id)
         retry_mode = self._ensure_retry_eligible(task)
+        source_job = self._retry_source_job(task) if retry_mode == "RETRY_FAILED_JOB" else None
+        if retry_mode == "RETRY_FAILED_JOB" and source_job is None:
+            raise TaskTransitionConflict(f"任务 {task.task_id} 的失败执行记录与终态绑定不一致。")
 
         def mark_retry_queued(persisted: CompareTask, job: TaskJob) -> None:
             self._ensure_retry_eligible(persisted)
+            if source_job is not None:
+                persisted_source = self._retry_source_job(persisted)
+                if persisted_source is None or persisted_source.job_id != source_job.job_id:
+                    raise TaskTransitionConflict(f"任务 {persisted.task_id} 的失败执行记录已发生变化。")
             persisted.status = "PROCESSING"
             persisted.terminal_reason = "NONE"
             persisted.active_job_id = job.job_id
@@ -139,6 +135,7 @@ class CompareTaskApplication:
             job = self.runner.retry(
                 task_id,
                 task_type="compare",
+                source_job_id=source_job.job_id if source_job is not None else None,
                 task_mutation=mark_retry_queued,
             )
         return job
@@ -162,8 +159,28 @@ class CompareTaskApplication:
             return None
         if not jobs:
             return "REBUILD_SUBMISSION" if task.terminal_reason == "SUBMISSION_FAILED" else None
-        latest = max(jobs, key=lambda job: job.execution_no)
-        return "RETRY_FAILED_JOB" if latest.status == "FAILED" else None
+        return "RETRY_FAILED_JOB" if self._retry_source_job(task, jobs=jobs) is not None else None
+
+    def _retry_source_job(self, task: CompareTask, *, jobs: list[TaskJob] | None = None) -> TaskJob | None:
+        task_jobs = jobs if jobs is not None else self.runner.jobs_for_task(task.task_id, task_type="compare")
+        if not task_jobs:
+            return None
+        if task.terminal_job_id:
+            source = next((job for job in task_jobs if job.job_id == task.terminal_job_id), None)
+            if source is None:
+                return None
+            if (
+                source.task_id != task.task_id
+                or source.task_type != "compare"
+                or source.attempt != task.terminal_attempt
+                or source.status != "FAILED"
+            ):
+                return None
+            return source
+        if task.terminal_attempt:
+            return None
+        latest = max(task_jobs, key=lambda job: job.execution_no)
+        return latest if latest.status == "FAILED" else None
 
     @staticmethod
     def _build_compare_payload(

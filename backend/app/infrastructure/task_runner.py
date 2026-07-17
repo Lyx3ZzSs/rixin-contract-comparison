@@ -319,8 +319,16 @@ class QueuedTaskRunner:
     def load_job(self, job_id: str) -> TaskJob:
         return self.coordinator.load(job_id)
 
+    def load_active_job(self, task_id: str, *, task_type: TaskJobType) -> TaskJob:
+        return self.coordinator.load_active_job(task_id, task_type=task_type)
+
     def cancel_job(self, job_id: str) -> TaskJob:
         job = self.coordinator.request_cancel_job(job_id)
+        self._wake_event.set()
+        return job
+
+    def cancel_active_task(self, task_id: str, *, task_type: TaskJobType) -> TaskJob:
+        job = self.coordinator.request_cancel_active_task(task_id, task_type=task_type)
         self._wake_event.set()
         return job
 
@@ -347,6 +355,7 @@ class QueuedTaskRunner:
         task_id: str,
         *,
         task_type: TaskJobType,
+        source_job_id: str | None = None,
         task_mutation: TaskEnqueueMutation | None = None,
     ) -> TaskJob:
         jobs = self.jobs_for_task(task_id, task_type=task_type)
@@ -354,7 +363,14 @@ class QueuedTaskRunner:
             raise NotFoundError(f"任务执行记录不存在: {task_id}")
         if any(job.status not in TERMINAL_JOB_STATUSES for job in jobs):
             raise ConflictError("任务已有活动执行，不能重试。")
-        job = max(jobs, key=lambda item: item.execution_no)
+        if source_job_id is None:
+            job = max(jobs, key=lambda item: item.execution_no)
+        else:
+            job = next((item for item in jobs if item.job_id == source_job_id), None)
+            if job is None:
+                raise ConflictError(f"任务绑定的失败执行记录不存在: {source_job_id}")
+            if job.task_id != task_id or job.task_type != task_type:
+                raise ConflictError(f"任务绑定的失败执行记录身份不匹配: {source_job_id}")
         if job.status != "FAILED":
             raise ConflictError("只有执行失败的任务可以重试。")
         execution_no = max(existing.execution_no for existing in jobs) + 1

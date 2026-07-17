@@ -43,6 +43,44 @@ def build_runner(tmp_path: Path, *, max_workers: int = 1, autostart: bool = True
     )
 
 
+def _build_failed_retry_task(
+    tmp_path: Path,
+    task_id: str,
+) -> tuple[QueuedTaskRunner, LocalJsonTaskRepository, CompareTaskApplication, str, TaskJob]:
+    runner = build_runner(tmp_path, autostart=False)
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+    original_path = tmp_path / f"{task_id}-original.pdf"
+    compare_path = tmp_path / f"{task_id}-compare.pdf"
+    original_path.touch()
+    compare_path.touch()
+    first_job = TaskJob(
+        job_id=f"compare:{task_id}:1",
+        task_id=task_id,
+        task_type="compare",
+        execution_no=1,
+        payload={"source": "first-failure"},
+    )
+    task_repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            active_job_id=first_job.job_id,
+            original_pdf_path=str(original_path),
+            compare_pdf_path=str(compare_path),
+        )
+    )
+    runner.coordinator.enqueue(first_job)
+    claimed = runner.coordinator.claim_next(worker_id="seed-worker", lease_seconds=30)
+    assert claimed is not None
+    runner.coordinator.commit_failure(
+        first_job.job_id,
+        worker_id="seed-worker",
+        error="first failure",
+        retry_delay_seconds=0,
+    )
+    return runner, task_repository, application, task_id, first_job
+
+
 def wait_until(predicate, timeout: float = 2.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -665,6 +703,225 @@ def test_application_execution_without_active_job_is_not_found(tmp_path: Path) -
 
     with pytest.raises(Exception, match="活动执行记录不存在"):
         application.cancel_compare("TNO_ACTIVE_CONTROL")
+
+
+def test_retry_uses_task_bound_terminal_job_when_higher_orphan_exists(tmp_path: Path) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    task_id = "TRETRY_BOUND_SOURCE"
+    original_path = tmp_path / "original.pdf"
+    compare_path = tmp_path / "compare.pdf"
+    original_path.touch()
+    compare_path.touch()
+    bound_job = TaskJob(
+        job_id=f"compare:{task_id}:1",
+        task_id=task_id,
+        task_type="compare",
+        execution_no=1,
+        status="FAILED",
+        attempt=1,
+        max_attempts=3,
+        payload={"source": "task-terminal-binding"},
+    )
+    orphan_job = TaskJob(
+        job_id=f"compare:{task_id}:3",
+        task_id=task_id,
+        task_type="compare",
+        execution_no=3,
+        status="SUCCEEDED",
+        attempt=1,
+        max_attempts=9,
+        payload={"source": "higher-orphan"},
+    )
+    job_repository = runner.coordinator._repository
+    job_repository._persist(bound_job)
+    job_repository._persist(orphan_job)
+    task_repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            status="FAILED",
+            terminal_reason="EXECUTION_FAILED",
+            active_job_id=bound_job.job_id,
+            terminal_job_id=bound_job.job_id,
+            terminal_attempt=bound_job.attempt,
+            original_pdf_path=str(original_path),
+            compare_pdf_path=str(compare_path),
+        )
+    )
+    runner.coordinator = ExecutionStateCoordinator(job_repository)
+    runner.job_repository = runner.coordinator
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+
+    retried = application.retry_compare(task_id)
+
+    assert (retried.job_id, retried.execution_no) == (f"compare:{task_id}:4", 4)
+    assert retried.payload == bound_job.payload
+    assert retried.max_attempts == bound_job.max_attempts
+
+
+def test_retry_legacy_task_without_terminal_binding_falls_back_to_latest_failed_job(tmp_path: Path) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    task_id = "TRETRY_LEGACY_SOURCE"
+    original_path = tmp_path / "original.pdf"
+    compare_path = tmp_path / "compare.pdf"
+    original_path.touch()
+    compare_path.touch()
+    job_repository = runner.coordinator._repository
+    job_repository._persist(
+        TaskJob(
+            job_id=f"compare:{task_id}:1",
+            task_id=task_id,
+            task_type="compare",
+            execution_no=1,
+            status="FAILED",
+            attempt=1,
+            payload={"source": "older"},
+        )
+    )
+    latest = job_repository._persist(
+        TaskJob(
+            job_id=f"compare:{task_id}:2",
+            task_id=task_id,
+            task_type="compare",
+            execution_no=2,
+            status="FAILED",
+            attempt=1,
+            max_attempts=4,
+            payload={"source": "legacy-latest"},
+        )
+    )
+    task_repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            status="FAILED",
+            terminal_reason="EXECUTION_FAILED",
+            active_job_id=latest.job_id,
+            original_pdf_path=str(original_path),
+            compare_pdf_path=str(compare_path),
+        )
+    )
+    runner.coordinator = ExecutionStateCoordinator(job_repository)
+    runner.job_repository = runner.coordinator
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+
+    retried = application.retry_compare(task_id)
+
+    assert (retried.job_id, retried.execution_no) == (f"compare:{task_id}:3", 3)
+    assert retried.payload == latest.payload
+    assert retried.max_attempts == latest.max_attempts
+
+
+def test_retry_first_then_cancel_targets_new_active_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner, task_repository, application, task_id, first_job = _build_failed_retry_task(
+        tmp_path, "TRETRY_CANCEL_RETRY_FIRST"
+    )
+    persist_job = runner.coordinator._repository._persist
+    retry_holds_lock = threading.Event()
+    release_retry = threading.Event()
+
+    def pause_retry_persist(candidate: TaskJob) -> TaskJob:
+        if candidate.execution_no == 2 and candidate.status == "QUEUED":
+            retry_holds_lock.set()
+            assert release_retry.wait(5)
+        return persist_job(candidate)
+
+    monkeypatch.setattr(runner.coordinator._repository, "_persist", pause_retry_persist)
+    retried: list[TaskJob] = []
+    cancelled: list[TaskJob] = []
+    errors: list[BaseException] = []
+
+    def retry() -> None:
+        try:
+            retried.append(application.retry_compare(task_id))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    def cancel() -> None:
+        try:
+            cancelled.append(application.cancel_compare(task_id))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    retry_thread = threading.Thread(target=retry)
+    retry_thread.start()
+    assert retry_holds_lock.wait(5)
+    cancel_thread = threading.Thread(target=cancel)
+    cancel_thread.start()
+    release_retry.set()
+    retry_thread.join(5)
+    cancel_thread.join(5)
+
+    assert not retry_thread.is_alive() and not cancel_thread.is_alive()
+    assert errors == []
+    assert [job.job_id for job in retried] == [f"compare:{task_id}:2"]
+    assert [(job.job_id, job.status) for job in cancelled] == [(f"compare:{task_id}:2", "CANCELLED")]
+    assert runner.coordinator.load(first_job.job_id).status == "FAILED"
+    assert (
+        task_repository.load_compare_task(task_id).status,
+        task_repository.load_compare_task(task_id).terminal_reason,
+    ) == (
+        "FAILED",
+        "CANCELLED",
+    )
+
+
+def test_cancel_first_conflicts_before_retry_can_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner, task_repository, application, task_id, first_job = _build_failed_retry_task(
+        tmp_path, "TRETRY_CANCEL_CANCEL_FIRST"
+    )
+    load_task = task_repository.load_compare_task
+    cancel_holds_read = threading.Event()
+    release_cancel = threading.Event()
+    cancel_thread_id: list[int] = []
+
+    def pause_cancel_task_read(load_task_id: str) -> CompareTask:
+        task = load_task(load_task_id)
+        if cancel_thread_id and threading.get_ident() == cancel_thread_id[0]:
+            cancel_holds_read.set()
+            assert release_cancel.wait(5)
+        return task
+
+    monkeypatch.setattr(task_repository, "load_compare_task", pause_cancel_task_read)
+    retried: list[TaskJob] = []
+    cancel_conflicts: list[TaskTransitionConflict] = []
+    unexpected: list[BaseException] = []
+
+    def cancel() -> None:
+        cancel_thread_id.append(threading.get_ident())
+        try:
+            application.cancel_compare(task_id)
+        except TaskTransitionConflict as exc:
+            cancel_conflicts.append(exc)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            unexpected.append(exc)
+
+    retry_started = threading.Barrier(2)
+
+    def retry() -> None:
+        retry_started.wait(timeout=5)
+        try:
+            retried.append(application.retry_compare(task_id))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            unexpected.append(exc)
+
+    cancel_thread = threading.Thread(target=cancel)
+    cancel_thread.start()
+    assert cancel_holds_read.wait(5)
+    retry_thread = threading.Thread(target=retry)
+    retry_thread.start()
+    retry_started.wait(timeout=5)
+    time.sleep(0.05)
+    release_cancel.set()
+    cancel_thread.join(5)
+    retry_thread.join(5)
+
+    assert not cancel_thread.is_alive() and not retry_thread.is_alive()
+    assert unexpected == []
+    assert len(cancel_conflicts) == 1
+    assert [job.job_id for job in retried] == [f"compare:{task_id}:2"]
+    assert runner.coordinator.load(first_job.job_id).status == "FAILED"
+    assert task_repository.load_compare_task(task_id).active_job_id == f"compare:{task_id}:2"
 
 
 def test_single_worker_recovers_from_claim_persistence_error(

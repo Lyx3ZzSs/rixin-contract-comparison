@@ -9,7 +9,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar, Protocol
 
-from app.errors import TaskCancelled, TaskRepositoryReadError, TaskStaleLeaseError, TaskTransitionConflict
+from app.errors import (
+    NotFoundError,
+    TaskCancelled,
+    TaskRepositoryReadError,
+    TaskStaleLeaseError,
+    TaskTransitionConflict,
+)
 from app.models import CompareTask, DiffItem, TaskStatus, TaskTerminalReason
 
 if TYPE_CHECKING:
@@ -171,7 +177,7 @@ class ExecutionStateCoordinator:
                         job.job_id,
                         exc_info=True,
                     )
-                    return None
+                    continue
                 if self._is_expired_cancel_request(job, now):
                     try:
                         self._commit_cancel_terminal(job)
@@ -229,6 +235,20 @@ class ExecutionStateCoordinator:
         with self._process_lock:
             return self._request_cancel_job_locked(self._get(job_id))
 
+    def load_active_job(self, task_id: str, *, task_type: TaskJobType) -> TaskJob:
+        with self._process_lock:
+            _task, job = self._load_active_task_job_locked(task_id, task_type=task_type)
+            return job.model_copy(deep=True)
+
+    def request_cancel_active_task(self, task_id: str, *, task_type: TaskJobType) -> TaskJob:
+        with self._process_lock:
+            task, job = self._load_active_task_job_locked(task_id, task_type=task_type)
+            if task.status != "PROCESSING":
+                raise TaskTransitionConflict(
+                    f"任务 {task.task_id} 已为 {task.status}/{task.terminal_reason}，不能请求取消。"
+                )
+            return self._request_cancel_job_locked(job)
+
     def _request_cancel_job_locked(self, job: TaskJob) -> TaskJob:
         if job.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
             return job.model_copy(deep=True)
@@ -253,6 +273,22 @@ class ExecutionStateCoordinator:
             raise TaskTransitionConflict(f"执行记录 {candidate.job_id} 不能从 {candidate.status} 请求取消。")
         candidate.updated_at = now
         return self._persist_then_replace(candidate)
+
+    def _load_active_task_job_locked(
+        self,
+        task_id: str,
+        *,
+        task_type: TaskJobType,
+    ) -> tuple[CompareTask, TaskJob]:
+        if self._task_repository is None:
+            raise RuntimeError("ExecutionStateCoordinator 未配置 Task persistence。")
+        task = self._task_repository.load_compare_task(task_id)
+        if not task.active_job_id:
+            raise NotFoundError(f"任务 {task.task_id} 的活动执行记录不存在。")
+        job = self._get(task.active_job_id)
+        if job.task_id != task.task_id or job.task_type != task_type:
+            raise TaskTransitionConflict(f"任务 {task.task_id} 的活动执行记录身份不匹配。")
+        return task, job
 
     def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
         with self._process_lock:
