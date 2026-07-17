@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 import threading
 from contextlib import AbstractContextManager
@@ -12,6 +13,93 @@ import pytest
 from app.config import Settings
 from app.infrastructure.atomic_files import atomic_write_json, atomic_write_text
 from app.infrastructure.recovery_store import RecoveryAction, RecoveryMarker, RecoveryStore
+
+
+def _multiprocess_create_marker(
+    storage_dir: str,
+    attempt_id: str,
+    barrier: multiprocessing.synchronize.Barrier,
+) -> None:
+    import app.infrastructure.recovery_store as recovery_module
+
+    write_json = recovery_module.atomic_write_json
+
+    def synchronized_write(path: Path, payload: object) -> None:
+        try:
+            barrier.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            pass
+        write_json(path, payload)
+
+    recovery_module.atomic_write_json = synchronized_write
+    process_settings = Settings(storage_dir=Path(storage_dir))
+    store = RecoveryStore(process_settings)
+    action_path = process_settings.tasks_dir / "TMP_CREATE" / "staging" / attempt_id / "upload.pdf"
+    store.create_marker(
+        task_id="TMP_CREATE",
+        attempt_id=attempt_id,
+        primary_error=f"{attempt_id} primary",
+        actions=[RecoveryAction(action="unlink", path=str(action_path))],
+    )
+
+
+def _multiprocess_recover_marker(
+    storage_dir: str,
+    attempt_id: str,
+    barrier: multiprocessing.synchronize.Barrier,
+) -> None:
+    import app.infrastructure.recovery_store as recovery_module
+
+    write_json = recovery_module.atomic_write_json
+
+    def synchronized_write(path: Path, payload: object) -> None:
+        try:
+            barrier.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            pass
+        write_json(path, payload)
+
+    recovery_module.atomic_write_json = synchronized_write
+    store = RecoveryStore(Settings(storage_dir=Path(storage_dir)))
+    marker = store.load_marker("TMP_RECOVER", attempt_id)
+    store._execute_action = lambda *_args: (_ for _ in ()).throw(OSError(f"{attempt_id} cleanup"))
+    if store.recover_marker(marker):
+        raise AssertionError("recovery fault injection must fail")
+
+
+def _hold_task_marker_lock(
+    storage_dir: str,
+    ready: multiprocessing.synchronize.Event,
+    release: multiprocessing.synchronize.Event,
+) -> None:
+    store = RecoveryStore(Settings(storage_dir=Path(storage_dir)))
+    with store._task_marker_lock("TLOCK_TIMEOUT"):
+        ready.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test did not release marker lock")
+
+
+def _multiprocess_recover_same_final_marker(
+    storage_dir: str,
+    start_barrier: multiprocessing.synchronize.Barrier,
+    token_barrier: multiprocessing.synchronize.Barrier,
+) -> None:
+    store = RecoveryStore(Settings(storage_dir=Path(storage_dir)))
+    marker = store.load_marker("TSAME_RECOVER", "attempt-a")
+    ownership_token = store.ownership_token
+
+    def synchronized_token(path: Path, attempt_id: str) -> str:
+        token = ownership_token(path, attempt_id)
+        try:
+            token_barrier.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            pass
+        return token
+
+    store.ownership_token = synchronized_token
+    start_barrier.wait(timeout=2)
+    if not store.recover_marker(marker):
+        raise AssertionError("same-marker recovery must remain idempotent")
 
 
 def test_atomic_write_text_uses_unique_temps_and_survives_concurrent_writers(tmp_path: Path) -> None:
@@ -233,6 +321,100 @@ def test_recovery_final_input_owner_mismatch_preserves_replacement_and_marker(tm
     assert updated.attempts == 1
     assert "ownership" in updated.last_error.lower()
     assert store.marker_path("TOWNER").exists()
+
+
+def test_recovery_final_input_replace_during_token_check_never_deletes_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(storage_dir=tmp_path / "storage")
+    store = RecoveryStore(settings)
+    final_path = settings.tasks_dir / "TOWNER_WINDOW" / "uploads" / "original_contract.pdf"
+    final_path.parent.mkdir(parents=True)
+    final_path.write_bytes(b"attempt-a")
+    action = RecoveryAction(
+        action="unlink",
+        path=str(final_path),
+        scope="final_input",
+        owner_token=store.ownership_token(final_path, "attempt-a"),
+    )
+    marker = store.create_marker(
+        task_id="TOWNER_WINDOW",
+        attempt_id="attempt-a",
+        primary_error="attempt-a failed",
+        actions=[action],
+    )
+    ownership_token = store.ownership_token
+    injected = False
+
+    def replace_after_hash(path: Path, attempt_id: str) -> str:
+        nonlocal injected
+        token = ownership_token(path, attempt_id)
+        if not injected:
+            injected = True
+            final_path.unlink(missing_ok=True)
+            final_path.write_bytes(b"attempt-b replacement")
+        return token
+
+    monkeypatch.setattr(store, "ownership_token", replace_after_hash)
+
+    assert store.recover_marker(marker) is True
+    assert final_path.read_bytes() == b"attempt-b replacement"
+    assert not store.marker_path("TOWNER_WINDOW").exists()
+
+
+def test_recovery_owner_mismatch_and_concurrent_replacement_retains_quarantine_and_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = Settings(storage_dir=tmp_path / "storage")
+    store = RecoveryStore(settings)
+    final_path = settings.tasks_dir / "TOWNER_CONFLICT" / "uploads" / "original_contract.pdf"
+    final_path.parent.mkdir(parents=True)
+    final_path.write_bytes(b"attempt-a")
+    expected_token = store.ownership_token(final_path, "attempt-a")
+    final_path.write_bytes(b"captured foreign file")
+    marker = store.create_marker(
+        task_id="TOWNER_CONFLICT",
+        attempt_id="attempt-a",
+        primary_error="attempt-a failed",
+        actions=[
+            RecoveryAction(
+                action="unlink",
+                path=str(final_path),
+                scope="final_input",
+                owner_token=expected_token,
+            )
+        ],
+    )
+    ownership_token = store.ownership_token
+    injected = False
+
+    def replace_after_hash(path: Path, attempt_id: str) -> str:
+        nonlocal injected
+        token = ownership_token(path, attempt_id)
+        if not injected:
+            injected = True
+            final_path.write_bytes(b"new replacement")
+        return token
+
+    monkeypatch.setattr(store, "ownership_token", replace_after_hash)
+    caplog.set_level("ERROR", logger="app.infrastructure.recovery_store")
+
+    assert store.recover_marker(marker) is False
+    assert final_path.read_bytes() == b"new replacement"
+    quarantines = list(final_path.parent.glob("*.recovery-quarantine"))
+    assert len(quarantines) == 1
+    assert quarantines[0].read_bytes() == b"captured foreign file"
+    assert store.marker_path("TOWNER_CONFLICT").exists()
+    assert "quarantine" in caplog.text.lower()
+
+    final_path.unlink()
+    retained = store.load_marker("TOWNER_CONFLICT", "attempt-a")
+    assert store.recover_marker(retained) is False
+    assert final_path.read_bytes() == b"captured foreign file"
+    assert not quarantines[0].exists()
 
 
 def test_recovery_rejects_outside_and_traversal_actions(tmp_path: Path) -> None:
@@ -461,6 +643,140 @@ def test_concurrent_marker_create_preserves_every_attempt(tmp_path: Path) -> Non
         "attempt-a",
         "attempt-b",
     }
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork and fcntl locking")
+def test_multiprocess_marker_create_preserves_both_attempts(tmp_path: Path) -> None:
+    settings = Settings(storage_dir=tmp_path / "storage")
+    context = multiprocessing.get_context("fork")
+    barrier = context.Barrier(2)
+    processes = [
+        context.Process(
+            target=_multiprocess_create_marker,
+            args=(str(settings.storage_dir), attempt_id, barrier),
+        )
+        for attempt_id in ("attempt-a", "attempt-b")
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=5)
+
+    assert [process.exitcode for process in processes] == [0, 0]
+    assert {entry.attempt_id for entry in RecoveryStore(settings).load_marker_entries("TMP_CREATE")} == {
+        "attempt-a",
+        "attempt-b",
+    }
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork and fcntl locking")
+def test_multiprocess_recovery_updates_do_not_lose_an_attempt(tmp_path: Path) -> None:
+    settings = Settings(storage_dir=tmp_path / "storage")
+    store = RecoveryStore(settings)
+    for attempt_id in ("attempt-a", "attempt-b"):
+        action_path = settings.tasks_dir / "TMP_RECOVER" / "staging" / attempt_id / "upload.pdf"
+        store.create_marker(
+            task_id="TMP_RECOVER",
+            attempt_id=attempt_id,
+            primary_error=f"{attempt_id} primary",
+            actions=[RecoveryAction(action="unlink", path=str(action_path))],
+        )
+    context = multiprocessing.get_context("fork")
+    barrier = context.Barrier(2)
+    processes = [
+        context.Process(
+            target=_multiprocess_recover_marker,
+            args=(str(settings.storage_dir), attempt_id, barrier),
+        )
+        for attempt_id in ("attempt-a", "attempt-b")
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=5)
+
+    assert [process.exitcode for process in processes] == [0, 0]
+    entries = RecoveryStore(settings).load_marker_entries("TMP_RECOVER")
+    assert {entry.attempt_id: entry.attempts for entry in entries} == {
+        "attempt-a": 1,
+        "attempt-b": 1,
+    }
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork and fcntl locking")
+def test_marker_lock_timeout_is_bounded_and_identifies_lock(tmp_path: Path) -> None:
+    settings = Settings(storage_dir=tmp_path / "storage")
+    context = multiprocessing.get_context("fork")
+    ready = context.Event()
+    release = context.Event()
+    holder = context.Process(
+        target=_hold_task_marker_lock,
+        args=(str(settings.storage_dir), ready, release),
+    )
+    holder.start()
+    assert ready.wait(timeout=2)
+    store = RecoveryStore(settings)
+    store._lock_timeout_seconds = 0.05
+    delayed_release = threading.Timer(0.2, release.set)
+    delayed_release.start()
+
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            store.load_marker_entries("TLOCK_TIMEOUT")
+    finally:
+        release.set()
+        delayed_release.join(timeout=1)
+        holder.join(timeout=2)
+
+    assert holder.exitcode == 0
+    message = str(raised.value)
+    assert "TLOCK_TIMEOUT" in message
+    assert str(store.recovery_dir / ".locks" / "TLOCK_TIMEOUT.lock") in message
+    assert "0.05" in message
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork and fcntl locking")
+def test_multiprocess_same_marker_final_recovery_is_idempotent(tmp_path: Path) -> None:
+    settings = Settings(storage_dir=tmp_path / "storage")
+    store = RecoveryStore(settings)
+    final_path = settings.tasks_dir / "TSAME_RECOVER" / "uploads" / "original_contract.pdf"
+    final_path.parent.mkdir(parents=True)
+    final_path.write_bytes(b"attempt-a")
+    marker = store.create_marker(
+        task_id="TSAME_RECOVER",
+        attempt_id="attempt-a",
+        primary_error="attempt-a failed",
+        actions=[
+            RecoveryAction(
+                action="unlink",
+                path=str(final_path),
+                scope="final_input",
+                owner_token=store.ownership_token(final_path, "attempt-a"),
+            )
+        ],
+    )
+    context = multiprocessing.get_context("fork")
+    start_barrier = context.Barrier(2)
+    token_barrier = context.Barrier(2)
+    processes = [
+        context.Process(
+            target=_multiprocess_recover_same_final_marker,
+            args=(str(settings.storage_dir), start_barrier, token_barrier),
+        )
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=5)
+
+    assert [process.exitcode for process in processes] == [0, 0]
+    assert not final_path.exists()
+    assert not store.marker_path(marker.task_id).exists()
+    assert list(final_path.parent.glob("*.recovery-quarantine")) == []
 
 
 def test_recovery_attempt_update_failure_logs_critical_and_keeps_primary_marker(

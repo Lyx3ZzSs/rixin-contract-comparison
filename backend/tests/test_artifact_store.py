@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.config import Settings
-from app.infrastructure.artifact_store import LocalArtifactStore
+from app.infrastructure.artifact_store import ArtifactPublishCommittedError, LocalArtifactStore
 from app.utils.file_utils import FileValidationError
 
 
@@ -114,3 +114,36 @@ def test_publish_created_callback_failure_rolls_back_destination_and_preserves_p
 
     assert staged.read_bytes() == b"new"
     assert not destination.exists()
+
+
+def test_publish_callback_and_rollback_failure_reports_committed_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    staged = store.staging_path("T001", "attempt-1", "original", "contract.pdf")
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"new")
+    destination = store.upload_path("T001", "original", "contract.pdf")
+    unlink = Path.unlink
+
+    def fail_destination_rollback(path: Path, *args, **kwargs) -> None:
+        if path == destination:
+            raise OSError("rollback secondary")
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_destination_rollback)
+
+    with pytest.raises(ArtifactPublishCommittedError) as raised:
+        store.publish_staged(
+            staged,
+            destination,
+            owner_token="owned-token",
+            on_created=lambda _path: (_ for _ in ()).throw(OSError("callback primary")),
+        )
+
+    assert raised.value.destination == destination
+    assert raised.value.owner_token == "owned-token"
+    assert str(raised.value.primary_error) == "callback primary"
+    assert str(raised.value.rollback_error) == "rollback secondary"
+    assert destination.read_bytes() == b"new"

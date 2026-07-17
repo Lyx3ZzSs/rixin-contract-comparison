@@ -23,7 +23,7 @@ from app.api_presenters import compare_task_response, task_execution_response
 from app.application.compare_tasks import CompareTaskApplication
 from app.config import settings
 from app.errors import TaskStaleLeaseError, TaskTransitionConflict
-from app.infrastructure.artifact_store import LocalArtifactStore
+from app.infrastructure.artifact_store import ArtifactPublishCommittedError, LocalArtifactStore
 from app.infrastructure.recovery_store import RecoveryAction, RecoveryStore
 from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.infrastructure.task_runner import (
@@ -397,6 +397,89 @@ def test_submission_publish_post_commit_failure_does_not_orphan_final_input(
 
     assert any(action.scope == "final_input" and action.owner_token for action in captured_actions)
     assert list(artifact_store.task_root("TPUBLISH_POST_COMMIT").rglob("*.pdf")) == []
+
+
+def test_submission_precomputes_owner_token_before_publishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, _repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    publish = artifact_store.publish_staged
+    publish_calls = 0
+
+    def record_publish(*args, **kwargs):
+        nonlocal publish_calls
+        publish_calls += 1
+        return publish(*args, **kwargs)
+
+    monkeypatch.setattr(artifact_store, "publish_staged", record_publish)
+    monkeypatch.setattr(
+        recovery_store,
+        "ownership_token",
+        lambda *_args: (_ for _ in ()).throw(OSError("token precompute failed")),
+    )
+
+    with pytest.raises(OSError, match="token precompute failed"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id="TTOKEN_PRECOMPUTE",
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    assert publish_calls == 0
+    assert list((artifact_store.task_root("TTOKEN_PRECOMPUTE") / "uploads").glob("*.pdf")) == []
+
+
+def test_submission_committed_publish_error_registers_typed_destination_before_compensation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, _repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    publish = artifact_store.publish_staged
+    captured_actions: list[RecoveryAction] = []
+    create_marker = recovery_store.create_marker
+    unlink = Path.unlink
+
+    def callback_then_rollback_failure(source: Path, destination: Path, **kwargs) -> Path:
+        kwargs["on_created"] = lambda _path: (_ for _ in ()).throw(OSError("callback primary"))
+        return publish(source, destination, **kwargs)
+
+    def fail_upload_rollback(path: Path, *args, **kwargs) -> None:
+        if path.parent.name == "uploads":
+            raise OSError("rollback secondary")
+        unlink(path, *args, **kwargs)
+
+    def record_marker(**kwargs):
+        captured_actions.extend(kwargs["actions"])
+        return create_marker(**kwargs)
+
+    monkeypatch.setattr(artifact_store, "publish_staged", callback_then_rollback_failure)
+    monkeypatch.setattr(Path, "unlink", fail_upload_rollback)
+    monkeypatch.setattr(recovery_store, "create_marker", record_marker)
+
+    with pytest.raises(ArtifactPublishCommittedError) as raised:
+        asyncio.run(
+            application.submit_uploads(
+                task_id="TPUBLISH_TYPED_COMMITTED",
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    assert raised.value.owner_token
+    assert any(
+        action.scope == "final_input"
+        and Path(action.path) == raised.value.destination
+        and action.owner_token == raised.value.owner_token
+        for action in captured_actions
+    )
+    assert recovery_store.marker_path("TPUBLISH_TYPED_COMMITTED").exists()
 
 
 def test_submission_publish_file_exists_race_never_claims_or_deletes_other_file(
@@ -837,6 +920,52 @@ def test_submission_compensation_failure_marks_existing_task_incomplete(
     summary = next(error for error in task.errors if "COMPENSATION_INCOMPLETE" in error)
     assert "enqueue primary" in summary
     assert str(recovery_store.marker_path(task_id)) in summary
+    assert recovery_store.marker_path(task_id).exists()
+
+
+def test_submission_compensation_summary_repairs_failed_state_after_initial_update_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, repository, runner, _artifact_store, recovery_store = _submission_application(tmp_path)
+    monkeypatch.setattr(
+        runner.job_repository,
+        "enqueue",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("enqueue primary")),
+    )
+    monkeypatch.setattr(recovery_store, "recover_marker", lambda _marker: False)
+    update = repository.update_compare_task
+    updates = 0
+
+    def fail_first_update(*args, **kwargs):
+        nonlocal updates
+        updates += 1
+        if updates == 1:
+            raise OSError("initial status update transient")
+        return update(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "update_compare_task", fail_first_update)
+    task_id = "TCOMPENSATION_REPAIRS_STATUS"
+
+    with pytest.raises(OSError, match="enqueue primary"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id=task_id,
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    task = repository.load_compare_task(task_id)
+    assert (task.status, task.terminal_reason, task.stage) == (
+        "FAILED",
+        "SUBMISSION_FAILED",
+        "提交失败",
+    )
+    assert "enqueue primary" in task.errors
+    assert any("COMPENSATION_INCOMPLETE" in error and "enqueue primary" in error for error in task.errors)
     assert recovery_store.marker_path(task_id).exists()
 
 

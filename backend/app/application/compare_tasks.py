@@ -10,7 +10,11 @@ from app.auth.models import CurrentUser
 from app.errors import TaskStaleLeaseError, TaskTransitionConflict
 from fastapi import UploadFile
 
-from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
+from app.infrastructure.artifact_store import (
+    ArtifactPublishCommittedError,
+    ArtifactStore,
+    default_artifact_store,
+)
 from app.infrastructure.execution_state import TaskExecutionContext
 from app.infrastructure.recovery_store import (
     RecoveryAction,
@@ -206,16 +210,30 @@ class CompareTaskApplication:
         attempt_id: str,
         final_actions: list[RecoveryAction],
     ) -> None:
-        self.artifact_store.publish_staged(
-            source,
-            destination,
-            on_created=lambda created: self._append_final_action(created, attempt_id, final_actions),
-        )
+        owner_token = self.recovery_store.ownership_token(source, attempt_id)
+        try:
+            self.artifact_store.publish_staged(
+                source,
+                destination,
+                owner_token=owner_token,
+                on_created=lambda created: self._append_final_action(
+                    created,
+                    owner_token,
+                    final_actions,
+                ),
+            )
+        except ArtifactPublishCommittedError as committed_error:
+            self._append_final_action(
+                committed_error.destination,
+                committed_error.owner_token,
+                final_actions,
+            )
+            raise
 
     def _append_final_action(
         self,
         path: Path,
-        attempt_id: str,
+        owner_token: str,
         final_actions: list[RecoveryAction],
     ) -> None:
         if any(Path(action.path) == path for action in final_actions):
@@ -225,7 +243,7 @@ class CompareTaskApplication:
                 action="unlink",
                 path=str(path),
                 scope="final_input",
-                owner_token=self.recovery_store.ownership_token(path, attempt_id),
+                owner_token=owner_token,
             )
         )
 
@@ -278,8 +296,22 @@ class CompareTaskApplication:
         primary_error = self._error_text(primary)
 
         def mutate(task: CompareTask) -> None:
-            if task.status != "PROCESSING":
-                return
+            self._transition_submission_failed(task, primary_error)
+
+        try:
+            self.repository.update_compare_task(task_id, mutate)
+        except Exception as secondary:
+            logger.error(
+                "Submission failure state persistence failed: task_id=%s primary_error=%s secondary_error=%s",
+                task_id,
+                primary_error,
+                self._error_text(secondary),
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _transition_submission_failed(task: CompareTask, primary_error: str) -> None:
+        if task.status == "PROCESSING":
             task.ensure_transition_allowed(
                 "FAILED",
                 terminal_reason="SUBMISSION_FAILED",
@@ -292,19 +324,8 @@ class CompareTaskApplication:
             task.terminal_attempt = 0
             task.stage = "提交失败"
             task.progress_percent = 100
-            if primary_error not in task.errors:
-                task.errors.append(primary_error)
-
-        try:
-            self.repository.update_compare_task(task_id, mutate)
-        except Exception as secondary:
-            logger.error(
-                "Submission failure state persistence failed: task_id=%s primary_error=%s secondary_error=%s",
-                task_id,
-                primary_error,
-                self._error_text(secondary),
-                exc_info=True,
-            )
+        if primary_error not in task.errors:
+            task.errors.append(primary_error)
 
     def _has_durable_job(self, task_id: str) -> bool:
         try:
@@ -364,13 +385,14 @@ class CompareTaskApplication:
         summary = f"COMPENSATION_INCOMPLETE marker={marker_path} primary_error={primary_error}"
 
         def mutate(task: CompareTask) -> None:
+            self._transition_submission_failed(task, primary_error)
             if summary not in task.errors:
                 task.errors.append(summary)
 
         try:
             self.repository.update_compare_task(task_id, mutate)
         except Exception as secondary:
-            logger.error(
+            logger.critical(
                 "Compensation summary persistence failed: task_id=%s marker=%s primary_error=%s secondary_error=%s",
                 task_id,
                 marker_path,

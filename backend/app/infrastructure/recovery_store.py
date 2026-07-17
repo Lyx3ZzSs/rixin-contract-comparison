@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import logging
+import os
 import re
 import threading
+import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised only on unsupported platforms
+    fcntl = None
 
 from pydantic import BaseModel, Field
 
@@ -41,11 +49,24 @@ class RecoveryMarkerFile(BaseModel):
     entries: list[RecoveryMarker] = Field(default_factory=list)
 
 
+class RecoveryMarkerLockTimeout(RuntimeError):
+    def __init__(self, *, task_id: str, lock_path: Path, timeout_seconds: float) -> None:
+        super().__init__(
+            f"Recovery marker lock timed out: task_id={task_id} lock_path={lock_path} timeout_seconds={timeout_seconds}"
+        )
+        self.task_id = task_id
+        self.lock_path = lock_path
+        self.timeout_seconds = timeout_seconds
+
+
 class RecoveryStore:
     _process_lock = threading.RLock()
+    _lock_timeout_seconds = 5.0
+    _lock_poll_seconds = 0.05
 
     def __init__(self, app_settings: Settings = settings) -> None:
         self.settings = app_settings
+        self._lock_state = threading.local()
 
     @property
     def recovery_dir(self) -> Path:
@@ -69,7 +90,7 @@ class RecoveryStore:
             actions=actions,
         )
         self._validate_actions(marker)
-        with self._process_lock:
+        with self._task_marker_lock(task_id):
             entries = self._load_marker_entries_unlocked(task_id)
             existing = next((entry for entry in entries if entry.attempt_id == attempt_id), None)
             if existing is not None:
@@ -88,7 +109,7 @@ class RecoveryStore:
         return marker
 
     def load_marker_entries(self, task_id: str) -> list[RecoveryMarker]:
-        with self._process_lock:
+        with self._task_marker_lock(task_id):
             entries = self._load_marker_entries_unlocked(task_id)
             if not entries:
                 raise FileNotFoundError(f"恢复标记不存在: {task_id}")
@@ -100,7 +121,7 @@ class RecoveryStore:
         markers: list[RecoveryMarker] = []
         for path in sorted(self.recovery_dir.glob("*.json")):
             try:
-                with self._process_lock:
+                with self._task_marker_lock(path.stem):
                     markers.extend(self._load_marker_file(path))
             except (OSError, ValueError, json.JSONDecodeError):
                 logger.error("Invalid recovery marker ignored: marker=%s", path.name, exc_info=True)
@@ -114,11 +135,13 @@ class RecoveryStore:
         return recovered_all
 
     def recover_marker(self, marker: RecoveryMarker) -> bool:
-        return self._execute_marker(marker, remove_owned_marker=True)
+        with self._task_marker_lock(marker.task_id):
+            return self._execute_marker(marker, remove_owned_marker=True)
 
     def cleanup_attempt(self, marker: RecoveryMarker) -> bool:
         """Execute ephemeral cleanup without deleting or overwriting another attempt's marker."""
-        return self._execute_marker(marker, remove_owned_marker=False)
+        with self._task_marker_lock(marker.task_id):
+            return self._execute_marker(marker, remove_owned_marker=False)
 
     def _execute_marker(
         self,
@@ -169,7 +192,7 @@ class RecoveryStore:
             return False
 
     def _remove_marker_entry(self, marker: RecoveryMarker) -> None:
-        with self._process_lock:
+        with self._task_marker_lock(marker.task_id):
             entries = self._load_marker_entries_unlocked(marker.task_id)
             remaining = [entry for entry in entries if entry.attempt_id != marker.attempt_id]
             if len(remaining) == len(entries):
@@ -180,7 +203,7 @@ class RecoveryStore:
                 self.marker_path(marker.task_id).unlink(missing_ok=True)
 
     def _upsert_marker_entry(self, marker: RecoveryMarker) -> None:
-        with self._process_lock:
+        with self._task_marker_lock(marker.task_id):
             entries = self._load_marker_entries_unlocked(marker.task_id)
             for index, entry in enumerate(entries):
                 if entry.attempt_id == marker.attempt_id:
@@ -193,11 +216,10 @@ class RecoveryStore:
     def _execute_action(self, marker: RecoveryMarker, action: RecoveryAction) -> None:
         path = self._validated_action_path(marker, action)
         if action.action == "unlink":
-            if action.scope == "final_input" and (path.exists() or path.is_symlink()):
-                actual_token = self.ownership_token(path, marker.attempt_id)
-                if actual_token != action.owner_token:
-                    raise RuntimeError(f"Final input ownership mismatch: {path}")
-            path.unlink(missing_ok=True)
+            if action.scope == "final_input":
+                self._unlink_owned_final_input(marker, action, path)
+            else:
+                path.unlink(missing_ok=True)
             return
         try:
             path.rmdir()
@@ -245,6 +267,106 @@ class RecoveryStore:
             while chunk := stream.read(64 * 1024):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    def _unlink_owned_final_input(
+        self,
+        marker: RecoveryMarker,
+        action: RecoveryAction,
+        path: Path,
+    ) -> None:
+        quarantine = self._quarantine_path(marker, path)
+        if quarantine.exists() or quarantine.is_symlink():
+            self._resolve_final_input_quarantine(marker, action, path, quarantine)
+            return
+        if not path.exists() and not path.is_symlink():
+            return
+
+        os.rename(path, quarantine)
+        self._resolve_final_input_quarantine(marker, action, path, quarantine)
+
+    def _resolve_final_input_quarantine(
+        self,
+        marker: RecoveryMarker,
+        action: RecoveryAction,
+        path: Path,
+        quarantine: Path,
+    ) -> None:
+        actual_token = self.ownership_token(quarantine, marker.attempt_id)
+        if actual_token == action.owner_token:
+            quarantine.unlink()
+            if path.exists() or path.is_symlink():
+                logger.warning(
+                    "Final input was replaced during recovery; replacement preserved: task_id=%s attempt_id=%s path=%s",
+                    marker.task_id,
+                    marker.attempt_id,
+                    path,
+                )
+            return
+
+        try:
+            path.hardlink_to(quarantine)
+        except FileExistsError as restore_error:
+            logger.critical(
+                "Final input ownership mismatch and quarantine restore was blocked by a replacement: "
+                "task_id=%s attempt_id=%s path=%s quarantine=%s",
+                marker.task_id,
+                marker.attempt_id,
+                path,
+                quarantine,
+            )
+            raise RuntimeError(
+                f"Final input ownership mismatch; quarantine retained because replacement exists: {quarantine}"
+            ) from restore_error
+        quarantine.unlink()
+        raise RuntimeError(f"Final input ownership mismatch: {path}")
+
+    def _quarantine_path(self, marker: RecoveryMarker, path: Path) -> Path:
+        attempt = self._safe_path_part(marker.attempt_id)
+        return path.with_name(f".{path.name}.{attempt}.recovery-quarantine")
+
+    @contextmanager
+    def _task_marker_lock(self, task_id: str) -> Iterator[None]:
+        with self._process_lock:
+            if fcntl is None:
+                raise RuntimeError("Recovery marker operations require POSIX fcntl advisory locks")
+            lock_dir = self.recovery_dir / ".locks"
+            lock_dir.mkdir(parents=True, exist_ok=True)
+            lock_path = lock_dir / f"{self._safe_task_id(task_id)}.lock"
+            lock_key = str(lock_path.resolve())
+            state_pid = getattr(self._lock_state, "pid", None)
+            if state_pid != os.getpid():
+                self._lock_state.pid = os.getpid()
+                self._lock_state.held = {}
+            held: dict[str, int] = self._lock_state.held
+            if lock_key in held:
+                held[lock_key] += 1
+                try:
+                    yield
+                finally:
+                    held[lock_key] -= 1
+                return
+
+            with lock_path.open("a+b") as lock_file:
+                deadline = time.monotonic() + self._lock_timeout_seconds
+                while True:
+                    try:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError as lock_error:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise RecoveryMarkerLockTimeout(
+                                task_id=task_id,
+                                lock_path=lock_path,
+                                timeout_seconds=self._lock_timeout_seconds,
+                            ) from lock_error
+                        time.sleep(min(self._lock_poll_seconds, remaining))
+                held[lock_key] = 1
+                try:
+                    yield
+                finally:
+                    held.pop(lock_key, None)
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _load_marker_entries_unlocked(self, task_id: str) -> list[RecoveryMarker]:
         path = self.marker_path(task_id)

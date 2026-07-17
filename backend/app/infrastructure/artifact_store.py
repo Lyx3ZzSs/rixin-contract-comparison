@@ -22,6 +22,26 @@ ArtifactArea = Literal[
 ]
 
 
+class ArtifactPublishCommittedError(RuntimeError):
+    """Report a publish whose destination could not be rolled back."""
+
+    def __init__(
+        self,
+        *,
+        destination: Path,
+        owner_token: str,
+        primary_error: Exception,
+        rollback_error: Exception,
+    ) -> None:
+        super().__init__(
+            f"Artifact publish committed at {destination}: primary={primary_error}; rollback={rollback_error}"
+        )
+        self.destination = destination
+        self.owner_token = owner_token
+        self.primary_error = primary_error
+        self.rollback_error = rollback_error
+
+
 class ArtifactStore(Protocol):
     def assert_inside_storage(self, path: Path) -> None:
         raise NotImplementedError
@@ -40,6 +60,7 @@ class ArtifactStore(Protocol):
         source: Path,
         destination: Path,
         *,
+        owner_token: str = "",
         on_created: Callable[[Path], None] | None = None,
     ) -> Path:
         raise NotImplementedError
@@ -97,6 +118,7 @@ class LocalArtifactStore:
         source: Path,
         destination: Path,
         *,
+        owner_token: str = "",
         on_created: Callable[[Path], None] | None = None,
     ) -> Path:
         self.assert_inside_storage(source)
@@ -106,15 +128,21 @@ class LocalArtifactStore:
         if on_created is not None:
             try:
                 on_created(destination)
-            except Exception:
+            except Exception as callback_error:
                 try:
                     destination.unlink(missing_ok=True)
-                except OSError:
+                except OSError as rollback_error:
                     logger.critical(
                         "Published upload callback failed and destination rollback also failed: destination=%s",
                         destination,
                         exc_info=True,
                     )
+                    raise ArtifactPublishCommittedError(
+                        destination=destination,
+                        owner_token=owner_token,
+                        primary_error=callback_error,
+                        rollback_error=rollback_error,
+                    ) from callback_error
                 raise
         try:
             source.unlink()
