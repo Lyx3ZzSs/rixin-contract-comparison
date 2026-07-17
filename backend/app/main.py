@@ -20,6 +20,7 @@ from app.auth.runtime import AuthRuntime
 from app.clients import close_clients
 from app.config import settings
 from app.infrastructure.reconciliation import reconcile_terminal_jobs
+from app.infrastructure.recovery_store import default_recovery_store
 from app.infrastructure.task_repository import default_task_repository
 from app.infrastructure.task_runner import default_task_runner
 from app.logging_config import setup_logging
@@ -34,6 +35,8 @@ auth_runtime = AuthRuntime(settings.auth)
 async def lifespan(app: FastAPI):
     settings.ensure_storage()
     default_task_repository.resolve()
+    if not default_recovery_store.recover_all():
+        logger.error("Some pending submission compensation actions remain after startup recovery")
     reconcile_terminal_jobs(default_task_repository, default_task_runner.coordinator)
     default_task_runner.start()
     register_default_models()
@@ -44,6 +47,7 @@ async def lifespan(app: FastAPI):
         logger.warning("OIDC signing keys are unavailable; authenticated requests will return 503 until recovery")
 
     from app.services.progress_bus import ProgressBus
+
     ProgressBus.get_instance().bind_loop(asyncio.get_running_loop())
 
     try:

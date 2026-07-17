@@ -42,7 +42,7 @@ from app.services.review_service import (
     InvalidReviewStateError,
 )
 from app.services.report_generator import build_report_filename
-from app.utils.file_utils import FileValidationError, assert_path_inside_storage, save_upload_file
+from app.utils.file_utils import FileValidationError, assert_path_inside_storage
 from app.utils.id_utils import generate_task_id
 
 router = APIRouter(prefix="/api/compare", tags=["compare"])
@@ -66,14 +66,10 @@ async def compare_contracts(
         signing_region_mode=signing_region_mode,
     )
     try:
-        original_path = await save_upload_file(original_file, task_id, "original")
-        compare_path = await save_upload_file(compare_file, task_id, "compare")
-        task = default_compare_task_application.create_queued_task(
+        task = await default_compare_task_application.submit_uploads(
             task_id=task_id,
-            original_path=original_path,
-            compare_path=compare_path,
-            original_filename=original_file.filename or original_path.name,
-            compare_filename=compare_file.filename or compare_path.name,
+            original_file=original_file,
+            compare_file=compare_file,
             compare_options=compare_options,
             owner=user,
         )
@@ -81,15 +77,6 @@ async def compare_contracts(
         raise http_error(exc) from exc
     except Exception as exc:
         raise http_error(exc, fallback_prefix="合同对比任务创建失败") from exc
-
-    default_compare_task_application.submit_compare(
-        original_path=original_path,
-        compare_path=compare_path,
-        task_id=task_id,
-        original_filename=original_file.filename,
-        compare_filename=compare_file.filename,
-        compare_options=compare_options,
-    )
     return compare_task_response(
         task,
         retry_eligible=default_compare_task_application.is_retry_eligible(task),

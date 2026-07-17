@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,6 +9,8 @@ from typing import Any, Literal, Protocol
 
 from app.config import Settings, settings
 from app.utils.file_utils import FileValidationError
+
+logger = logging.getLogger(__name__)
 
 ArtifactArea = Literal[
     "uploads",
@@ -27,6 +30,12 @@ class ArtifactStore(Protocol):
         raise NotImplementedError
 
     def upload_path(self, task_id: str, label: str, filename: str) -> Path:
+        raise NotImplementedError
+
+    def staging_path(self, task_id: str, attempt_id: str, label: str, filename: str) -> Path:
+        raise NotImplementedError
+
+    def publish_staged(self, source: Path, destination: Path) -> Path:
         raise NotImplementedError
 
     def report_pdf_path(self, task_id: str) -> Path:
@@ -68,6 +77,38 @@ class LocalArtifactStore:
 
     def upload_path(self, task_id: str, label: str, filename: str) -> Path:
         return self.task_dir("uploads", task_id) / f"{self._safe_path_part(label)}_{Path(filename).name}"
+
+    def staging_path(self, task_id: str, attempt_id: str, label: str, filename: str) -> Path:
+        return (
+            self.task_root(task_id)
+            / "staging"
+            / self._safe_path_part(attempt_id)
+            / (f"{self._safe_path_part(label)}_{Path(filename).name}")
+        )
+
+    def publish_staged(self, source: Path, destination: Path) -> Path:
+        self.assert_inside_storage(source)
+        self.assert_inside_storage(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.hardlink_to(source)
+        try:
+            source.unlink()
+        except OSError:
+            logger.error(
+                "Published upload but staging cleanup failed: source=%s destination=%s",
+                source,
+                destination,
+                exc_info=True,
+            )
+        try:
+            self._record_manifest(destination, "bytes")
+        except OSError:
+            logger.warning(
+                "Published upload but derived manifest refresh failed: destination=%s",
+                destination,
+                exc_info=True,
+            )
+        return destination
 
     def report_pdf_path(self, task_id: str) -> Path:
         return self.task_dir("reports", task_id) / "contract_compare_report.pdf"

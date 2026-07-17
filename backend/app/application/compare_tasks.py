@@ -1,18 +1,29 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from app.auth.models import CurrentUser
 from app.errors import TaskStaleLeaseError, TaskTransitionConflict
+from fastapi import UploadFile
+
+from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.infrastructure.execution_state import TaskExecutionContext
+from app.infrastructure.recovery_store import (
+    RecoveryAction,
+    RecoveryMarker,
+    RecoveryStore,
+    default_recovery_store,
+)
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.infrastructure.task_runner import QueuedTaskRunner, TaskJob, default_task_runner
 from app.models import CompareOptions, CompareTask, DiffItem, ReviewStatus
 from app.services.audit_summary import AuditItem
 from app.services.compare_service import CompareService
 from app.services.review_service import CompareReviewService
+from app.utils.file_utils import safe_filename, stream_upload_to_path, validate_pdf_path
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +33,235 @@ class CompareTaskApplication:
         self,
         repository: TaskRepository = default_task_repository,
         runner: QueuedTaskRunner = default_task_runner,
+        artifact_store: ArtifactStore = default_artifact_store,
+        recovery_store: RecoveryStore = default_recovery_store,
     ) -> None:
         self.repository = repository
         self.runner = runner
+        self.artifact_store = artifact_store
+        self.recovery_store = recovery_store
         from app.services.progress_bus import ProgressBus
 
         self.runner.coordinator.configure_terminal_commits(repository, ProgressBus.get_instance())
         self.runner.register_handler("compare", self._run_compare_job)
+
+    async def submit_uploads(
+        self,
+        *,
+        task_id: str,
+        original_file: UploadFile,
+        compare_file: UploadFile,
+        compare_options: CompareOptions | None,
+        owner: CurrentUser,
+    ) -> CompareTask:
+        attempt_id = uuid.uuid4().hex
+        original_filename = safe_filename(original_file.filename or "original.pdf")
+        compare_filename = safe_filename(compare_file.filename or "compare.pdf")
+        staged_original = self.artifact_store.staging_path(
+            task_id,
+            attempt_id,
+            "original",
+            original_filename,
+        )
+        staged_compare = self.artifact_store.staging_path(
+            task_id,
+            attempt_id,
+            "compare",
+            compare_filename,
+        )
+        attempt_dir = staged_original.parent
+        staged_actions = [
+            RecoveryAction(action="unlink", path=str(staged_original)),
+            RecoveryAction(action="unlink", path=str(staged_compare)),
+            RecoveryAction(action="rmdir", path=str(attempt_dir)),
+        ]
+        final_actions: list[RecoveryAction] = []
+        task_persisted = False
+
+        try:
+            await stream_upload_to_path(original_file, staged_original)
+            await stream_upload_to_path(compare_file, staged_compare)
+            validate_pdf_path(staged_original, original_file.filename or "")
+            validate_pdf_path(staged_compare, compare_file.filename or "")
+
+            original_path = self.artifact_store.upload_path(
+                task_id,
+                "original",
+                original_filename,
+            )
+            compare_path = self.artifact_store.upload_path(
+                task_id,
+                "compare",
+                compare_filename,
+            )
+            self._ensure_publish_destinations_absent(original_path, compare_path)
+
+            self.artifact_store.publish_staged(staged_original, original_path)
+            final_actions.append(RecoveryAction(action="unlink", path=str(original_path), scope="final_input"))
+            self.artifact_store.publish_staged(staged_compare, compare_path)
+            final_actions.append(RecoveryAction(action="unlink", path=str(compare_path), scope="final_input"))
+
+            task = self.create_queued_task(
+                task_id=task_id,
+                original_path=original_path,
+                compare_path=compare_path,
+                original_filename=original_file.filename or original_filename,
+                compare_filename=compare_file.filename or compare_filename,
+                compare_options=compare_options,
+                owner=owner,
+            )
+            task_persisted = True
+            try:
+                self.submit_compare(
+                    original_path=original_path,
+                    compare_path=compare_path,
+                    task_id=task_id,
+                    original_filename=original_file.filename,
+                    compare_filename=compare_file.filename,
+                    compare_options=compare_options,
+                )
+            except BaseException as launch_error:
+                if not self._has_durable_active_job(task_id):
+                    raise
+                logger.critical(
+                    "Worker launch failed after durable submission; queued Job retained: task_id=%s launch_error=%s",
+                    task_id,
+                    self._error_text(launch_error),
+                    exc_info=True,
+                )
+        except BaseException as primary:
+            if task_persisted:
+                self._record_submission_failure(task_id, primary)
+                actions = staged_actions
+            else:
+                actions = [*reversed(final_actions), *staged_actions]
+            self._compensate_submission(
+                task_id=task_id,
+                attempt_id=attempt_id,
+                primary=primary,
+                actions=actions,
+            )
+            raise
+
+        self._cleanup_successful_submission(
+            task_id=task_id,
+            attempt_id=attempt_id,
+            actions=staged_actions,
+        )
+        return task
+
+    @staticmethod
+    def _ensure_publish_destinations_absent(*paths: Path) -> None:
+        existing = next((path for path in paths if path.exists()), None)
+        if existing is not None:
+            raise FileExistsError(f"任务输入文件已存在: {existing.name}")
+
+    def _record_submission_failure(self, task_id: str, primary: BaseException) -> None:
+        primary_error = self._error_text(primary)
+
+        def mutate(task: CompareTask) -> None:
+            if task.status != "PROCESSING":
+                return
+            task.ensure_transition_allowed(
+                "FAILED",
+                terminal_reason="SUBMISSION_FAILED",
+                job_id=task.active_job_id,
+            )
+            task.status = "FAILED"
+            task.terminal_reason = "SUBMISSION_FAILED"
+            task.active_job_id = ""
+            task.terminal_job_id = ""
+            task.terminal_attempt = 0
+            task.stage = "提交失败"
+            task.progress_percent = 100
+            if primary_error not in task.errors:
+                task.errors.append(primary_error)
+
+        try:
+            self.repository.update_compare_task(task_id, mutate)
+        except BaseException as secondary:
+            logger.error(
+                "Submission failure state persistence failed: task_id=%s primary_error=%s secondary_error=%s",
+                task_id,
+                primary_error,
+                self._error_text(secondary),
+                exc_info=True,
+            )
+
+    def _has_durable_active_job(self, task_id: str) -> bool:
+        try:
+            task = self.repository.load_compare_task(task_id)
+            if task.status != "PROCESSING" or not task.active_job_id:
+                return False
+            job = self.runner.load_job(task.active_job_id)
+        except Exception:
+            return False
+        return (
+            job.task_id == task_id
+            and job.task_type == "compare"
+            and job.status
+            not in {
+                "SUCCEEDED",
+                "FAILED",
+                "CANCELLED",
+            }
+        )
+
+    def _compensate_submission(
+        self,
+        *,
+        task_id: str,
+        attempt_id: str,
+        primary: BaseException,
+        actions: list[RecoveryAction],
+    ) -> None:
+        primary_error = self._error_text(primary)
+        try:
+            marker = self.recovery_store.create_marker(
+                task_id=task_id,
+                attempt_id=attempt_id,
+                primary_error=primary_error,
+                actions=actions,
+            )
+        except BaseException as marker_error:
+            logger.critical(
+                "Submission recovery marker creation failed: task_id=%s attempt_id=%s "
+                "primary_error=%s actions=%s marker_error=%s",
+                task_id,
+                attempt_id,
+                primary_error,
+                [action.model_dump(mode="json") for action in actions],
+                self._error_text(marker_error),
+                exc_info=True,
+            )
+            marker = RecoveryMarker(
+                task_id=task_id,
+                attempt_id=attempt_id,
+                primary_error=primary_error,
+                actions=actions,
+            )
+            self.recovery_store.cleanup_attempt(marker)
+            return
+        self.recovery_store.recover_marker(marker)
+
+    def _cleanup_successful_submission(
+        self,
+        *,
+        task_id: str,
+        attempt_id: str,
+        actions: list[RecoveryAction],
+    ) -> None:
+        marker = RecoveryMarker(
+            task_id=task_id,
+            attempt_id=attempt_id,
+            primary_error="post-submit staging cleanup",
+            actions=actions,
+        )
+        self.recovery_store.cleanup_attempt(marker)
+
+    @staticmethod
+    def _error_text(exc: BaseException) -> str:
+        return str(exc) or type(exc).__name__
 
     def create_queued_task(
         self,

@@ -38,3 +38,61 @@ def test_local_artifact_store_writes_json_inside_storage(tmp_path: Path) -> None
     assert written == path
     assert path.read_text(encoding="utf-8").strip().startswith("{")
     assert (path.parents[1] / "manifest.json").exists()
+
+
+def test_local_artifact_store_publishes_staged_upload_without_overwriting_existing(tmp_path: Path) -> None:
+    store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    staged = store.staging_path("T001", "attempt-1", "original", "contract.pdf")
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"new")
+    destination = store.upload_path("T001", "original", "contract.pdf")
+
+    published = store.publish_staged(staged, destination)
+
+    assert published == destination
+    assert destination.read_bytes() == b"new"
+    assert not staged.exists()
+
+    staged.write_bytes(b"replacement")
+    with pytest.raises(FileExistsError):
+        store.publish_staged(staged, destination)
+    assert destination.read_bytes() == b"new"
+
+
+def test_publish_reports_success_after_destination_commit_when_derived_manifest_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    staged = store.staging_path("T001", "attempt-1", "original", "contract.pdf")
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"new")
+    destination = store.upload_path("T001", "original", "contract.pdf")
+    monkeypatch.setattr(store, "_record_manifest", lambda *_args: (_ for _ in ()).throw(OSError("manifest")))
+
+    assert store.publish_staged(staged, destination) == destination
+    assert destination.read_bytes() == b"new"
+    assert not staged.exists()
+
+
+def test_publish_reports_success_and_leaves_staging_for_compensation_when_unlink_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    staged = store.staging_path("T001", "attempt-1", "original", "contract.pdf")
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"new")
+    destination = store.upload_path("T001", "original", "contract.pdf")
+    unlink = Path.unlink
+
+    def fail_staged_unlink(path: Path, *args, **kwargs) -> None:
+        if path == staged:
+            raise OSError("staging unlink")
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_staged_unlink)
+
+    assert store.publish_staged(staged, destination) == destination
+    assert destination.read_bytes() == b"new"
+    assert staged.exists()

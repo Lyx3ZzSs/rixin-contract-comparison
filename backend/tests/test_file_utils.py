@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import io
+from pathlib import Path
 from types import SimpleNamespace
 
 import fitz
 import pytest
+from fastapi import UploadFile
 
 from app.config import settings
 from app.utils.file_utils import (
     FileValidationError,
+    stream_upload_to_path,
+    validate_pdf_path,
     validate_pdf_bytes,
     validate_pdf_structure,
 )
@@ -87,3 +93,43 @@ def test_validate_pdf_bytes_checks_size_before_structure(monkeypatch: pytest.Mon
 
     with pytest.raises(FileValidationError, match="超过 1MB"):
         validate_pdf_bytes(b"%PDF" + b"x" * (1024 * 1024), "large.pdf")
+
+
+def test_stream_upload_stops_at_limit_without_reading_entire_body(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "max_upload_size_mb", 1)
+
+    class RecordingFile(io.BytesIO):
+        read_sizes: list[int]
+
+        def __init__(self, content: bytes) -> None:
+            super().__init__(content)
+            self.read_sizes = []
+
+        def read(self, size: int = -1) -> bytes:
+            self.read_sizes.append(size)
+            return super().read(size)
+
+    source = RecordingFile(b"%PDF" + b"x" * (3 * 1024 * 1024))
+    upload = UploadFile(filename="large.pdf", file=source)
+    destination = tmp_path / "staging" / "large.pdf"
+
+    with pytest.raises(FileValidationError, match="超过 1MB"):
+        asyncio.run(stream_upload_to_path(upload, destination))
+
+    assert source.tell() < 2 * 1024 * 1024
+    assert all(0 < size <= 64 * 1024 for size in source.read_sizes)
+    assert not destination.exists()
+
+
+def test_stream_then_validate_pdf_path(tmp_path: Path) -> None:
+    upload = UploadFile(filename="contract.pdf", file=io.BytesIO(make_pdf_bytes()))
+    destination = tmp_path / "staging" / "contract.pdf"
+
+    written = asyncio.run(stream_upload_to_path(upload, destination))
+    validate_pdf_path(written, "contract.pdf")
+
+    assert written == destination
+    assert destination.stat().st_size > 0
