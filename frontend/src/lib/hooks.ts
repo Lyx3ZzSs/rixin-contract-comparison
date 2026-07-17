@@ -1,18 +1,186 @@
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { getDiffs, getTask } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { getDiffs, getTask, retryCompareTask } from "./api";
 import { createProgressEventSource, type ProgressEvent, type ProgressEventStream } from "./api_sse";
-import type { CompareRecordSummary, CompareTask, DiffItem, TaskStatus } from "../types";
+import type { CompareRecordSummary, CompareTask, DiffItem } from "../types";
 
-const POLL_INTERVAL_MS = 1200;
-const SSE_FALLBACK_DELAY_MS = 3000;
+export type ProgressMode = "INITIAL_LOAD" | "SSE" | "POLLING" | "TERMINAL";
+
+const FIRST_EVENT_TIMEOUT_MS = 3000;
+const POLL_INITIAL_DELAY_MS = 1200;
+const POLL_MAX_DELAY_MS = 4800;
 const RESULT_COMPLETION_ANIMATION_MS = 1200;
 const RECORD_COMPLETION_ANIMATION_MS = 900;
+
+interface ProgressSynchronizationOptions {
+  taskId: string;
+  skipInitialLoad?: boolean;
+  onModeChange?: (mode: ProgressMode) => void;
+  onTask: (task: CompareTask) => void;
+  onProgress: (event: ProgressEvent) => void;
+  onTerminalHint?: (event: ProgressEvent) => void;
+  onTerminal: (task: CompareTask, source: "initial" | "poll", signal: AbortSignal) => void | Promise<void>;
+  onError?: (error: unknown) => void;
+}
+
+interface ProgressSynchronization {
+  stop(): void;
+}
+
+function startProgressSynchronization(options: ProgressSynchronizationOptions): ProgressSynchronization {
+  const controller = new AbortController();
+  const timers = new Set<number>();
+  let stream: ProgressEventStream | null = null;
+  let stopped = false;
+  let mode: ProgressMode = "INITIAL_LOAD";
+  let terminalHintRevision: number | null = null;
+  let pollDelay = POLL_INITIAL_DELAY_MS;
+
+  const transition = (next: ProgressMode) => {
+    if (stopped || mode === next) return;
+    mode = next;
+    options.onModeChange?.(next);
+  };
+
+  const clearTimers = () => {
+    for (const timer of timers) window.clearTimeout(timer);
+    timers.clear();
+  };
+
+  const schedule = (callback: () => void, delay: number) => {
+    if (stopped) return;
+    const timer = window.setTimeout(() => {
+      timers.delete(timer);
+      if (!stopped) callback();
+    }, delay);
+    timers.add(timer);
+  };
+
+  const closeStream = () => {
+    stream?.close();
+    stream = null;
+  };
+
+  const schedulePoll = (delay = pollDelay) => {
+    transition("POLLING");
+    schedule(() => void loadTask("poll"), delay);
+  };
+
+  const fallBackToPolling = (immediate = false) => {
+    closeStream();
+    clearTimers();
+    pollDelay = POLL_INITIAL_DELAY_MS;
+    transition("POLLING");
+    if (immediate) {
+      void loadTask("poll");
+    } else {
+      schedulePoll(pollDelay);
+    }
+  };
+
+  const openStream = () => {
+    if (stopped) return;
+    transition("SSE");
+    stream = createProgressEventSource(options.taskId);
+    schedule(() => fallBackToPolling(), FIRST_EVENT_TIMEOUT_MS);
+
+    stream.onmessage = (message) => {
+      if (stopped) return;
+      clearTimers();
+      try {
+        const event = JSON.parse(message.data) as ProgressEvent;
+        if (event.status === "COMPLETED" || event.status === "FAILED") {
+          terminalHintRevision = Math.max(terminalHintRevision ?? 0, Number(event.revision) || 0);
+          options.onTerminalHint?.(event);
+          fallBackToPolling(true);
+          return;
+        }
+        options.onProgress(event);
+      } catch {
+        // Keepalives and malformed non-data frames do not change the state.
+      }
+    };
+
+    stream.onerror = () => {
+      if (!stopped) fallBackToPolling();
+    };
+  };
+
+  async function loadTask(source: "initial" | "poll") {
+    try {
+      const task = await getTask(options.taskId, controller.signal);
+      if (stopped) return;
+      pollDelay = POLL_INITIAL_DELAY_MS;
+      const terminal = task.status === "COMPLETED" || task.status === "FAILED";
+      const revisionConfirmed = terminalHintRevision === null || task.revision >= terminalHintRevision;
+      if (terminal && revisionConfirmed) {
+        clearTimers();
+        closeStream();
+        await options.onTerminal(task, source, controller.signal);
+        if (stopped) return;
+        transition("TERMINAL");
+        return;
+      }
+
+      if (terminal) {
+        // A terminal event is only a hint until the persisted revision catches up.
+        schedulePoll();
+        return;
+      }
+
+      options.onTask(task);
+      if (source === "initial") {
+        openStream();
+      } else {
+        schedulePoll();
+      }
+    } catch (error) {
+      if (stopped || controller.signal.aborted) return;
+      options.onError?.(error);
+      pollDelay = Math.min(POLL_MAX_DELAY_MS, Math.max(POLL_INITIAL_DELAY_MS, pollDelay * 2));
+      schedulePoll(pollDelay);
+    }
+  }
+
+  if (options.skipInitialLoad) {
+    openStream();
+  } else {
+    void loadTask("initial");
+  }
+
+  return {
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      clearTimers();
+      closeStream();
+      controller.abort();
+    },
+  };
+}
+
+function abortableDelay(delay: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(done, delay);
+    function done() {
+      signal.removeEventListener("abort", cancel);
+      resolve();
+    }
+    function cancel() {
+      window.clearTimeout(timer);
+      done();
+    }
+    signal.addEventListener("abort", cancel, { once: true });
+  });
+}
 
 interface UseTaskProgressResult {
   task: CompareTask | null;
   diffs: DiffItem[];
   isLoading: boolean;
   error: string;
+  progressMode: ProgressMode;
+  isRetrying: boolean;
+  retry: () => Promise<void>;
   setTask: Dispatch<SetStateAction<CompareTask | null>>;
   setDiffs: Dispatch<SetStateAction<DiffItem[]>>;
 }
@@ -22,259 +190,127 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
   const [diffs, setDiffs] = useState<DiffItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
-  const sseFailedRef = useRef(false);
+  const [progressMode, setProgressMode] = useState<ProgressMode>("INITIAL_LOAD");
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [synchronizationGeneration, setSynchronizationGeneration] = useState(0);
 
-  // Initial load + polling fallback
   useEffect(() => {
-    let isMounted = true;
-    let timeoutId: number | undefined;
+    setTask(null);
+    setDiffs([]);
+    setIsLoading(true);
+    setError("");
+    setProgressMode("INITIAL_LOAD");
 
-    async function loadTask() {
-      try {
-        const taskPayload = await getTask(taskId);
-        if (!isMounted) return;
-        setTask(taskPayload);
-        if (taskPayload.status === "COMPLETED") {
-          const diffPayload = await getDiffs(taskId);
-          if (!isMounted) return;
-          setDiffs(diffPayload);
-        } else {
-          setDiffs([]);
-          if (taskPayload.status === "PROCESSING" && sseFailedRef.current) {
-            timeoutId = window.setTimeout(loadTask, POLL_INTERVAL_MS);
-          }
+    const synchronization = startProgressSynchronization({
+      taskId,
+      onModeChange: setProgressMode,
+      onTask(nextTask) {
+        setTask(nextTask);
+        setError("");
+        setIsLoading(false);
+      },
+      onProgress(progress) {
+        setTask((current) => current ? {
+          ...current,
+          stage: progress.stage,
+          progress_percent: progress.progress_percent,
+          revision: Math.max(current.revision, Number(progress.revision) || 0),
+        } : current);
+      },
+      onTerminalHint(progress) {
+        setTask((current) => current ? {
+          ...current,
+          stage: "收尾完成中",
+          progress_percent: progress.status === "COMPLETED" ? 100 : current.progress_percent,
+        } : current);
+      },
+      async onTerminal(terminalTask, source, signal) {
+        const terminalDiffs = terminalTask.status === "COMPLETED" ? await getDiffs(taskId, signal) : [];
+        if (source === "poll" && terminalTask.status === "COMPLETED") {
+          await abortableDelay(RESULT_COMPLETION_ANIMATION_MS, signal);
         }
-      } catch (err) {
-        if (isMounted) {
-          setError(err instanceof Error ? err.message : "读取任务失败。");
-        }
-      } finally {
-        if (isMounted) setIsLoading(false);
-      }
+        if (signal.aborted) return;
+        setTask(terminalTask);
+        setDiffs(terminalDiffs);
+        setError("");
+        setIsLoading(false);
+      },
+      onError(nextError) {
+        setError(nextError instanceof Error ? nextError.message : "读取任务失败。");
+        setIsLoading(false);
+      },
+    });
+
+    return () => synchronization.stop();
+  }, [taskId, synchronizationGeneration]);
+
+  const retry = useCallback(async () => {
+    setIsRetrying(true);
+    setError("");
+    try {
+      await retryCompareTask(taskId);
+      setSynchronizationGeneration((generation) => generation + 1);
+    } catch (retryError) {
+      setError(retryError instanceof Error ? retryError.message : "重试失败。");
+    } finally {
+      setIsRetrying(false);
     }
-
-    void loadTask();
-
-    return () => {
-      isMounted = false;
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-    };
   }, [taskId]);
 
-  // SSE stream — only when processing
-  useEffect(() => {
-    if (!task || task.status !== "PROCESSING") return;
-
-    let isMounted = true;
-    let fallbackTimer: number | undefined;
-    let completionTimer: number | undefined;
-
-    const eventSource = createProgressEventSource(taskId);
-
-    fallbackTimer = window.setTimeout(() => {
-      if (isMounted) {
-        sseFailedRef.current = true;
-        eventSource.close();
-        // Trigger polling by reloading task
-        void getTask(taskId).then((t) => {
-          if (isMounted) setTask(t);
-        });
-      }
-    }, SSE_FALLBACK_DELAY_MS);
-
-    eventSource.onmessage = (event) => {
-      if (fallbackTimer !== undefined) {
-        window.clearTimeout(fallbackTimer);
-        fallbackTimer = undefined;
-      }
-      if (!isMounted) return;
-
-      try {
-        const progress: ProgressEvent = JSON.parse(event.data);
-        sseFailedRef.current = false;
-
-        if (progress.status === "COMPLETED") {
-          setTask((prev) =>
-            prev ? { ...prev, status: "PROCESSING", stage: "收尾完成中", progress_percent: 100 } : prev,
-          );
-          const fullTaskPromise = getTask(taskId);
-          const diffDataPromise = getDiffs(taskId);
-          completionTimer = window.setTimeout(() => {
-            void Promise.all([fullTaskPromise, diffDataPromise]).then(([fullTask, diffData]) => {
-              if (!isMounted) return;
-              setTask(fullTask);
-              setDiffs(diffData);
-            });
-          }, RESULT_COMPLETION_ANIMATION_MS);
-          eventSource.close();
-        } else if (progress.status === "FAILED") {
-          void getTask(taskId).then((fullTask) => {
-            if (isMounted) setTask(fullTask);
-          });
-          eventSource.close();
-        } else {
-          setTask((prev) =>
-            prev
-              ? { ...prev, stage: progress.stage, progress_percent: progress.progress_percent }
-              : prev,
-          );
-        }
-      } catch {
-        // Ignore parse errors for keepalive/comments
-      }
-    };
-
-    eventSource.onerror = () => {
-      if (fallbackTimer !== undefined) {
-        window.clearTimeout(fallbackTimer);
-      }
-      if (isMounted) {
-        sseFailedRef.current = true;
-      }
-      eventSource.close();
-    };
-
-    return () => {
-      isMounted = false;
-      if (fallbackTimer !== undefined) window.clearTimeout(fallbackTimer);
-      if (completionTimer !== undefined) window.clearTimeout(completionTimer);
-      eventSource.close();
-    };
-  }, [taskId, task?.status]);
-
-  return { task, diffs, isLoading, error, setTask, setDiffs };
+  return { task, diffs, isLoading, error, progressMode, isRetrying, retry, setTask, setDiffs };
 }
 
-const SSE_FALLBACK_POLL_MS = 1800;
-
-/**
- * 为 records 列表中 PROCESSING 状态的记录建立 SSE 连接，
- * 实时更新 progress_percent 和 stage。
- * SSE 不可用时回退到轮询。
- */
 export function useRecordProgressSSE(
   records: CompareRecordSummary[],
-  onUpdate: (taskId: string, progress: number, stage: string, status: TaskStatus) => void,
+  onUpdate: (task: CompareTask | ProgressEvent) => void,
   onCompleted: () => void,
 ): void {
-  const connectionsRef = useRef<Map<string, ProgressEventStream>>(new Map());
-  const fallbackRef = useRef<Map<string, number>>(new Map());
-  const completionRef = useRef<Map<string, number>>(new Map());
+  const synchronizationsRef = useRef<Map<string, ProgressSynchronization>>(new Map());
   const onUpdateRef = useRef(onUpdate);
   const onCompletedRef = useRef(onCompleted);
   onUpdateRef.current = onUpdate;
   onCompletedRef.current = onCompleted;
 
-  // Stable key: only changes when the set of PROCESSING task IDs changes.
-  // Progress updates (percent, stage) don't change this key, so SSE
-  // connections survive across progress events.
-  const processingKey = records
-    .filter((r) => r.status === "PROCESSING")
-    .map((r) => r.task_id)
+  const processingKey = useMemo(() => records
+    .filter((record) => record.status === "PROCESSING")
+    .map((record) => record.task_id)
     .sort()
-    .join(",");
+    .join(","), [records]);
 
   useEffect(() => {
-    const activeConnections = connectionsRef.current;
-    const activeFallbacks = fallbackRef.current;
-    const activeCompletions = completionRef.current;
+    const active = synchronizationsRef.current;
     const processingIds = new Set(processingKey.split(",").filter(Boolean));
 
-    // Close SSE for records that are no longer PROCESSING
-    for (const [taskId, es] of activeConnections) {
+    for (const [taskId, synchronization] of active) {
       if (!processingIds.has(taskId)) {
-        es.close();
-        activeConnections.delete(taskId);
-      }
-    }
-    // Clear fallback timers for records that are no longer PROCESSING
-    for (const [taskId, timerId] of activeFallbacks) {
-      if (!processingIds.has(taskId)) {
-        window.clearTimeout(timerId);
-        activeFallbacks.delete(taskId);
-      }
-    }
-    for (const [taskId, timerId] of activeCompletions) {
-      if (!processingIds.has(taskId)) {
-        window.clearTimeout(timerId);
-        activeCompletions.delete(taskId);
+        synchronization.stop();
+        active.delete(taskId);
       }
     }
 
-    const completeAfterRingAnimation = (taskId: string) => {
-      const existingTimer = activeCompletions.get(taskId);
-      if (existingTimer !== undefined) {
-        window.clearTimeout(existingTimer);
-      }
-      const timerId = window.setTimeout(() => {
-        activeCompletions.delete(taskId);
-        onCompletedRef.current();
-      }, RECORD_COMPLETION_ANIMATION_MS);
-      activeCompletions.set(taskId, timerId);
-    };
-
-    // Open SSE for new PROCESSING records
     for (const taskId of processingIds) {
-      if (activeConnections.has(taskId)) continue;
-
-      const eventSource = createProgressEventSource(taskId);
-      activeConnections.set(taskId, eventSource);
-
-      const scheduleFallback = () => {
-        const fallbackTimer = window.setTimeout(function poll() {
-          void getTask(taskId).then((rec) => {
-            onUpdateRef.current(taskId, rec.progress_percent, rec.stage, rec.status);
-            if (rec.status === "PROCESSING") {
-              const next = window.setTimeout(poll, SSE_FALLBACK_POLL_MS);
-              activeFallbacks.set(taskId, next);
-            } else {
-              onUpdateRef.current(taskId, 100, "收尾完成中", "PROCESSING");
-              completeAfterRingAnimation(taskId);
-              activeFallbacks.delete(taskId);
-            }
-          });
-        }, SSE_FALLBACK_POLL_MS);
-        activeFallbacks.set(taskId, fallbackTimer);
-      };
-
-      eventSource.onmessage = (event) => {
-        try {
-          const progress: ProgressEvent = JSON.parse(event.data);
-          if (progress.status === "COMPLETED") {
-            onUpdateRef.current(taskId, 100, "收尾完成中", "PROCESSING");
-            eventSource.close();
-            activeConnections.delete(taskId);
-            completeAfterRingAnimation(taskId);
-          } else if (progress.status === "FAILED") {
-            onUpdateRef.current(taskId, progress.progress_percent, progress.stage, progress.status);
-            eventSource.close();
-            activeConnections.delete(taskId);
-            onCompletedRef.current();
-          } else {
-            onUpdateRef.current(taskId, progress.progress_percent, progress.stage, progress.status);
-          }
-        } catch {
-          // keepalive comments — ignore
-        }
-      };
-
-      eventSource.onerror = () => {
-        eventSource.close();
-        activeConnections.delete(taskId);
-        scheduleFallback();
-      };
+      if (active.has(taskId)) continue;
+      const synchronization = startProgressSynchronization({
+        taskId,
+        skipInitialLoad: true,
+        onTask: (task) => onUpdateRef.current(task),
+        onProgress: (progress) => onUpdateRef.current(progress),
+        onTerminalHint(progress) {
+          onUpdateRef.current({ ...progress, status: "PROCESSING", stage: "收尾完成中" });
+        },
+        async onTerminal(task, _source, signal) {
+          if (task.status === "COMPLETED") await abortableDelay(RECORD_COMPLETION_ANIMATION_MS, signal);
+          if (signal.aborted) return;
+          onUpdateRef.current(task);
+          onCompletedRef.current();
+        },
+      });
+      active.set(taskId, synchronization);
     }
   }, [processingKey]);
 
-  // Unmount cleanup: close all connections
-  useEffect(() => {
-    return () => {
-      for (const es of connectionsRef.current.values()) es.close();
-      connectionsRef.current.clear();
-      for (const timerId of fallbackRef.current.values()) window.clearTimeout(timerId);
-      fallbackRef.current.clear();
-      for (const timerId of completionRef.current.values()) window.clearTimeout(timerId);
-      completionRef.current.clear();
-    };
+  useEffect(() => () => {
+    for (const synchronization of synchronizationsRef.current.values()) synchronization.stop();
+    synchronizationsRef.current.clear();
   }, []);
 }

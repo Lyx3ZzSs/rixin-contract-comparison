@@ -1,19 +1,21 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getCompareRecords } from "../lib/api";
+import { getCompareRecords, getTask } from "../lib/api";
 import type { CompareRecordSummary } from "../types";
 import { ComparisonRecordsPage } from "./ComparisonRecordsPage";
 
 vi.mock("../lib/api", () => ({
   getCompareRecords: vi.fn(async () => []),
+  getTask: vi.fn(),
+  retryCompareTask: vi.fn(),
   toApiUrl: (path: string) => `http://api.test${path}`,
 }));
 
 const mockEventSource = {
   onmessage: null as ((e: MessageEvent) => void) | null,
-  onerror: null as (() => void) | null,
+  onerror: null as ((error: unknown) => void) | null,
   close: vi.fn(),
 };
 vi.mock("../lib/api_sse", () => ({
@@ -23,6 +25,9 @@ vi.mock("../lib/api_sse", () => ({
 const processingRecord: CompareRecordSummary = {
   task_id: "task-processing",
   status: "PROCESSING",
+  terminal_reason: "NONE",
+  revision: 1,
+  report_revision: 0,
   stage: "文档解析中",
   progress_percent: 35,
   created_at: "2026-05-12T00:00:00Z",
@@ -58,6 +63,8 @@ describe("ComparisonRecordsPage", () => {
     mockEventSource.onmessage = null;
     mockEventSource.onerror = null;
     mockEventSource.close.mockClear();
+    vi.mocked(getTask).mockReset();
+    vi.mocked(getCompareRecords).mockReset();
   });
 
   it("opens processing records as progress and completed records as results", async () => {
@@ -104,6 +111,15 @@ describe("ComparisonRecordsPage", () => {
     vi.mocked(getCompareRecords)
       .mockResolvedValueOnce(pagePayload([processingRecord]))
       .mockResolvedValueOnce(pagePayload([completedRecord]));
+    vi.mocked(getTask).mockResolvedValueOnce({
+      ...completedRecord,
+      original_pdf_url: "/original",
+      compare_pdf_url: "/compare",
+      original_highlight_pdf_url: "",
+      compare_highlight_pdf_url: "",
+      report_filename: "report.pdf",
+      errors: [],
+    });
 
     render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
 
@@ -133,6 +149,99 @@ describe("ComparisonRecordsPage", () => {
 
     expect(getCompareRecords).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("button", { name: "查看结果" })).toBeInTheDocument();
+  });
+
+  it("confirms a terminal SSE hint by revision and survives polling network errors", async () => {
+    vi.useFakeTimers();
+    const completedTask = {
+      ...completedRecord,
+      created_at: completedRecord.created_at,
+      original_pdf_url: "/api/compare/task-processing/original",
+      compare_pdf_url: "/api/compare/task-processing/compare",
+      original_highlight_pdf_url: "",
+      compare_highlight_pdf_url: "",
+      report_filename: "report.pdf",
+      errors: [],
+    };
+    vi.mocked(getCompareRecords)
+      .mockResolvedValueOnce(pagePayload([processingRecord]))
+      .mockResolvedValueOnce(pagePayload([{ ...completedRecord, task_id: "task-processing", revision: 5 }]));
+    vi.mocked(getTask)
+      .mockRejectedValueOnce(new Error("temporary network error"))
+      .mockResolvedValueOnce({ ...completedTask, task_id: "task-processing", revision: 4 })
+      .mockResolvedValueOnce({ ...completedTask, task_id: "task-processing", revision: 5 });
+
+    render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      mockEventSource.onmessage?.({ data: JSON.stringify({
+        task_id: "task-processing", stage: "已完成", progress_percent: 100, status: "COMPLETED", revision: 5,
+      }) } as MessageEvent);
+      await Promise.resolve();
+    });
+
+    expect(getCompareRecords).toHaveBeenCalledTimes(1);
+    await act(async () => { vi.advanceTimersByTime(2400); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(1200); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(900); await Promise.resolve(); await Promise.resolve(); });
+    expect(getTask).toHaveBeenCalledTimes(3);
+    expect(getCompareRecords).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to polling when the SSE stream errors", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getCompareRecords).mockResolvedValueOnce(pagePayload([processingRecord]));
+    vi.mocked(getTask).mockResolvedValueOnce({
+      ...completedRecord,
+      original_pdf_url: "/original",
+      compare_pdf_url: "/compare",
+      original_highlight_pdf_url: "",
+      compare_highlight_pdf_url: "",
+      report_filename: "report.pdf",
+      errors: [],
+    });
+
+    render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); mockEventSource.onerror?.(new Error("down")); });
+    await act(async () => { vi.advanceTimersByTime(5000); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(mockEventSource.close).toHaveBeenCalled();
+    expect(getTask).toHaveBeenCalled();
+  });
+
+  it("labels cancelled records and only offers retry for retryable failures", async () => {
+    const cancelled = { ...processingRecord, task_id: "cancelled", status: "FAILED" as const, terminal_reason: "CANCELLED" as const };
+    const failed = { ...processingRecord, task_id: "failed", status: "FAILED" as const, terminal_reason: "EXECUTION_FAILED" as const };
+    const submissionFailed = { ...processingRecord, task_id: "submission-failed", status: "FAILED" as const, terminal_reason: "SUBMISSION_FAILED" as const };
+    vi.mocked(getCompareRecords).mockResolvedValueOnce(pagePayload([cancelled, failed, submissionFailed]));
+
+    render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
+
+    await screen.findByText("cancelled");
+    const cancelledRow = screen.getByText("cancelled").closest("article")!;
+    const failedRow = screen.getByText("failed").closest("article")!;
+    const submissionFailedRow = screen.getByText("submission-failed").closest("article")!;
+    expect(within(cancelledRow).getByText("已取消")).toBeInTheDocument();
+    expect(within(cancelledRow).queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+    expect(within(failedRow).getByRole("button", { name: "重试" })).toBeInTheDocument();
+    expect(within(submissionFailedRow).getByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+
+  it("closes streams and aborts polling when unmounted", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getCompareRecords).mockResolvedValueOnce(pagePayload([processingRecord]));
+    vi.mocked(getTask).mockReturnValueOnce(new Promise(() => undefined));
+    const { unmount } = render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getByText("task-processing")).toBeInTheDocument();
+    await act(async () => { mockEventSource.onerror?.(new Error("down")); });
+    await act(async () => { vi.advanceTimersByTime(1200); await Promise.resolve(); });
+    const pollingSignal = vi.mocked(getTask).mock.calls[0]?.[1];
+
+    unmount();
+
+    expect(mockEventSource.close).toHaveBeenCalled();
+    expect(pollingSignal?.aborted).toBe(true);
   });
 
   it("applies updated date filters from the toolbar", async () => {

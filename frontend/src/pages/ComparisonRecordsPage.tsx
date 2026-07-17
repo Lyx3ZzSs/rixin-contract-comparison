@@ -2,21 +2,16 @@ import { ChevronLeft, ChevronRight, RotateCcw, Search } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { ProgressRing } from "../components/ProgressRing";
-import { getCompareRecords, toApiUrl } from "../lib/api";
+import { getCompareRecords, retryCompareTask, toApiUrl } from "../lib/api";
 import { downloadAuthenticatedFile } from "../lib/authFetch";
 import { useRecordProgressSSE } from "../lib/hooks";
-import type { CompareRecordListResponse, CompareRecordQuery, CompareRecordSummary, TaskStatus } from "../types";
+import { canRetryTask, taskStatusLabel } from "../lib/taskStatus";
+import type { CompareRecordListResponse, CompareRecordQuery, CompareRecordSummary } from "../types";
 
 interface ComparisonRecordsPageProps {
   onOpenTask: (taskId: string) => void;
   onCreateComparison: () => void;
 }
-
-const statusLabels: Record<TaskStatus, string> = {
-  PROCESSING: "处理中",
-  COMPLETED: "已完成",
-  FAILED: "失败",
-};
 
 const PAGE_SIZE = 10;
 
@@ -89,9 +84,17 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
   // SSE 实时更新 PROCESSING 记录进度
   useRecordProgressSSE(
     records,
-    (taskId, progress, stage, status) => {
+    (update) => {
       setRecords((prev) =>
-        prev.map((r) => (r.task_id === taskId ? { ...r, progress_percent: progress, stage, status } : r)),
+        prev.map((record) => record.task_id === update.task_id ? {
+          ...record,
+          progress_percent: update.progress_percent,
+          stage: update.stage,
+          status: update.status,
+          revision: Math.max(record.revision, Number(update.revision) || 0),
+          terminal_reason: "terminal_reason" in update ? update.terminal_reason : record.terminal_reason,
+          report_revision: "report_revision" in update ? update.report_revision : record.report_revision,
+        } : record),
       );
     },
     () => {
@@ -99,6 +102,16 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
       refreshCurrentPage();
     },
   );
+
+  const retryRecord = useCallback(async (taskId: string) => {
+    setError("");
+    try {
+      await retryCompareTask(taskId);
+      refreshCurrentPage();
+    } catch (retryError) {
+      setError(retryError instanceof Error ? retryError.message : "重试失败。");
+    }
+  }, [refreshCurrentPage]);
 
   const applyFilters = () => {
     setQuery({ page: 1, startDate, endDate });
@@ -180,7 +193,9 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
                   <div className="record-meta">
                     <span>{record.task_id}</span>
                     <span>{formatDateTime(record.created_at || record.updated_at)}</span>
-                    <span className={`record-status ${record.status.toLowerCase()}`}>{statusLabels[record.status]}</span>
+                    <span className={`record-status ${record.status.toLowerCase()}`}>
+                      {taskStatusLabel(record.status, record.terminal_reason)}
+                    </span>
                   </div>
                 </div>
                 <div className="record-stats" aria-label="差异统计">
@@ -200,6 +215,9 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
                     >
                       报告
                     </button>
+                  )}
+                  {canRetryTask(record.status, record.terminal_reason) && (
+                    <button type="button" onClick={() => void retryRecord(record.task_id)}>重试</button>
                   )}
                   {record.status === "PROCESSING" ? (
                     <RecordProgress record={record} />

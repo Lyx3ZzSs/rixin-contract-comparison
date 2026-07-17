@@ -18,6 +18,7 @@ import type {
   QualityRunRequest,
   QualityRunResponse,
   QualityTaskReviewResponse,
+  TaskExecutionResponse,
 } from "../types";
 import {
   getAppBasePath,
@@ -85,9 +86,14 @@ export async function compareContracts(
   return parseJsonResponse<CompareResponse>(response);
 }
 
-export async function getTask(taskId: string): Promise<CompareTask> {
-  const response = await authorizedFetch(toApiUrl(`/api/compare/${taskId}`));
+export async function getTask(taskId: string, signal?: AbortSignal): Promise<CompareTask> {
+  const response = await authorizedFetch(toApiUrl(`/api/compare/${taskId}`), { signal });
   return parseJsonResponse<CompareTask>(response);
+}
+
+export async function retryCompareTask(taskId: string): Promise<TaskExecutionResponse> {
+  const response = await authorizedFetch(toApiUrl(`/api/compare/${taskId}/retry`), { method: "POST" });
+  return parseJsonResponse<TaskExecutionResponse>(response);
 }
 
 export async function getCompareRecords(query: CompareRecordQuery = {}): Promise<CompareRecordListResponse> {
@@ -101,8 +107,8 @@ export async function getCompareRecords(query: CompareRecordQuery = {}): Promise
   return parseJsonResponse<CompareRecordListResponse>(response);
 }
 
-export async function getDiffs(taskId: string): Promise<DiffItem[]> {
-  const response = await authorizedFetch(toApiUrl(`/api/compare/${taskId}/diffs`));
+export async function getDiffs(taskId: string, signal?: AbortSignal): Promise<DiffItem[]> {
+  const response = await authorizedFetch(toApiUrl(`/api/compare/${taskId}/diffs`), { signal });
   const payload = await parseJsonResponse<{ diffs: DiffItem[] }>(response);
   return payload.diffs;
 }

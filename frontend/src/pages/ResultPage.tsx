@@ -7,6 +7,7 @@ import { toApiUrl, updateAuditItemReview } from "../lib/api";
 import { downloadAuthenticatedFile } from "../lib/authFetch";
 import { useTaskProgress } from "../lib/hooks";
 import { navigateToComparisonRecords } from "../lib/routes";
+import { canRetryTask, taskStatusLabel } from "../lib/taskStatus";
 import type { CompareTask, DiffItem, DiffType, ReviewStatus, TaskOcrRemediationSummary } from "../types";
 
 interface ResultPageProps {
@@ -16,7 +17,7 @@ interface ResultPageProps {
 }
 
 export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps) {
-  const { task, diffs, isLoading, error, setTask } = useTaskProgress(taskId);
+  const { task, diffs, isLoading, error, isRetrying, retry, setTask } = useTaskProgress(taskId);
   const [isOriginalVisible, setIsOriginalVisible] = useState(true);
   const [isSyncScroll, setIsSyncScroll] = useState(true);
   const [isAuditPanelOpen, setIsAuditPanelOpen] = useState(false);
@@ -138,7 +139,7 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
     return <StateScreen title="正在载入审查结果" detail={`任务 ${taskId}`} />;
   }
 
-  if (error || !task) {
+  if (!task) {
     return <StateScreen title="无法打开审查结果" detail={error || "任务不存在。"} onBack={onBack} />;
   }
 
@@ -157,12 +158,19 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
   }
 
   if (task.status === "FAILED") {
+    const retryable = canRetryTask(task.status, task.terminal_reason);
     return (
-      <StateScreen
-        title="合同对比失败"
-        detail={task.errors.length > 0 ? task.errors.join("；") : task.stage || "处理失败。"}
-        onBack={onBack}
-      />
+      <section className="state-screen">
+        <p className="eyebrow">合同审查系统</p>
+        <h1>{taskStatusLabel(task.status, task.terminal_reason)}</h1>
+        <p>{error || (task.errors.length > 0 ? task.errors.join("；") : task.stage || "处理失败。")}</p>
+        {retryable && (
+          <button className="primary-action" type="button" disabled={isRetrying} onClick={() => void retry()}>
+            {isRetrying ? "重试中..." : "重试"}
+          </button>
+        )}
+        <button type="button" onClick={onBack}>返回上传</button>
+      </section>
     );
   }
 

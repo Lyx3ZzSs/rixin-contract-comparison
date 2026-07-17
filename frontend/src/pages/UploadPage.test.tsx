@@ -137,6 +137,9 @@ describe("UploadPage", () => {
         resolveComparison({
           task_id: "task-1",
           status: "PROCESSING",
+          terminal_reason: "NONE",
+          revision: 1,
+          report_revision: 0,
           stage: "文档解析中",
           progress_percent: 8,
           diff_count: 0,

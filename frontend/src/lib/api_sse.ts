@@ -7,6 +7,7 @@ export interface ProgressEvent {
   stage: string;
   progress_percent: number;
   status: TaskStatus;
+  revision: number;
   detail?: Record<string, unknown>;
 }
 
@@ -51,7 +52,7 @@ export function createProgressEventSource(taskId: string): ProgressEventStream {
       }
       buffer += decoder.decode();
       buffer = dispatchCompleteEvents(buffer, stream);
-      if (!closed && buffer.trim()) fail(new Error("进度流意外结束"));
+      if (!closed) fail(new Error(buffer.trim() ? "进度流意外结束" : "进度流已结束"));
     } catch (error) {
       fail(error);
     }

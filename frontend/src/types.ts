@@ -1,4 +1,5 @@
 export type TaskStatus = "PROCESSING" | "COMPLETED" | "FAILED";
+export type TaskTerminalReason = "NONE" | "EXECUTION_FAILED" | "SUBMISSION_FAILED" | "CANCELLED";
 export type DiffType = "ADD" | "DELETE" | "MODIFY";
 export type EvidenceQuality = "LOW" | "MEDIUM" | "HIGH";
 export type DiffQualityStatus = "NORMAL" | "NEEDS_REVIEW";
@@ -122,6 +123,9 @@ export interface DocumentProfile {
 export interface CompareResponse {
   task_id: string;
   status: TaskStatus;
+  terminal_reason: TaskTerminalReason;
+  revision: number;
+  report_revision: number;
   stage: string;
   progress_percent: number;
   diff_count: number;
@@ -165,6 +169,9 @@ export interface CompareTask extends CompareResponse {
 export interface CompareRecordSummary {
   task_id: string;
   status: TaskStatus;
+  terminal_reason: TaskTerminalReason;
+  revision: number;
+  report_revision: number;
   stage: string;
   progress_percent: number;
   created_at: string;
@@ -188,6 +195,14 @@ export interface CompareRecordQuery {
   pageSize?: number;
   startDate?: string;
   endDate?: string;
+}
+
+export interface TaskExecutionResponse {
+  job_id: string;
+  task_id: string;
+  status: string;
+  execution_no: number;
+  attempt: number;
 }
 
 export interface BBox {

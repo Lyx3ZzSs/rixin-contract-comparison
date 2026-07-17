@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getDiffs, getTask, updateAuditItemReview } from "../lib/api";
+import { createProgressEventSource } from "../lib/api_sse";
 import type { CompareTask, DiffItem } from "../types";
 import { ResultPage } from "./ResultPage";
 
@@ -45,6 +46,7 @@ vi.mock("../components/PdfDocumentViewer", async () => {
 vi.mock("../lib/api", () => ({
   getTask: vi.fn(async () => mockTask),
   getDiffs: vi.fn(async () => mockDiffs),
+  retryCompareTask: vi.fn(),
   getCompareQuality: vi.fn(async () => mockQuality),
   updateAuditItemReview: vi.fn(async (
     _taskId: string,
@@ -84,6 +86,9 @@ vi.mock("../lib/api_sse", () => ({
 const mockTask: CompareTask = {
   task_id: "task-1",
   status: "COMPLETED",
+  terminal_reason: "NONE",
+  revision: 2,
+  report_revision: 1,
   stage: "已完成",
   progress_percent: 100,
   created_at: "2026-05-12T00:00:00Z",
@@ -457,6 +462,8 @@ describe("ResultPage", () => {
     mockEventSource.onmessage = null;
     mockEventSource.onerror = null;
     mockEventSource.close.mockClear();
+    vi.mocked(getTask).mockReset().mockResolvedValue(mockTask);
+    vi.mocked(getDiffs).mockReset().mockResolvedValue(mockDiffs);
   });
 
   it("renders processing state as a progress ring without visible percent text", async () => {
@@ -473,6 +480,118 @@ describe("ResultPage", () => {
     await screen.findByText("证据定位中");
     expect(screen.getByRole("progressbar", { name: /证据定位中/ })).toHaveAttribute("aria-valuenow", "66");
     expect(screen.queryByText("66%")).not.toBeInTheDocument();
+  });
+
+  it("finishes the initial load before opening the SSE stream", async () => {
+    let resolveTask!: (task: CompareTask) => void;
+    vi.mocked(getTask).mockReturnValueOnce(new Promise((resolve) => { resolveTask = resolve; }));
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    expect(createProgressEventSource).not.toHaveBeenCalled();
+    await act(async () => resolveTask({ ...mockTask, status: "PROCESSING", terminal_reason: "NONE" }));
+    expect(createProgressEventSource).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back after the first-event timeout and keeps polling after a transient error", async () => {
+    vi.useFakeTimers();
+    const processingTask = {
+      ...mockTask,
+      status: "PROCESSING" as const,
+      terminal_reason: "NONE" as const,
+      stage: "证据定位中",
+      progress_percent: 66,
+      report_url: "",
+    };
+    vi.mocked(getTask)
+      .mockResolvedValueOnce(processingTask)
+      .mockRejectedValueOnce(new Error("temporary network error"))
+      .mockResolvedValueOnce({ ...processingTask, stage: "报告生成中", progress_percent: 88 });
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    await act(async () => { vi.advanceTimersByTime(3000); await Promise.resolve(); });
+    expect(mockEventSource.close).toHaveBeenCalled();
+
+    await act(async () => { vi.advanceTimersByTime(5000); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(2400); await Promise.resolve(); await Promise.resolve(); });
+    expect(getTask).toHaveBeenCalledTimes(3);
+    expect(screen.getByText("报告生成中")).toBeInTheDocument();
+  });
+
+  it("treats a terminal SSE event as a hint until the persisted revision catches up", async () => {
+    vi.useFakeTimers();
+    const processingTask = {
+      ...mockTask,
+      status: "PROCESSING" as const,
+      terminal_reason: "NONE" as const,
+      revision: 4,
+      stage: "证据定位中",
+      progress_percent: 66,
+      report_url: "",
+    };
+    vi.mocked(getTask)
+      .mockResolvedValueOnce(processingTask)
+      .mockResolvedValueOnce({ ...mockTask, revision: 4 })
+      .mockResolvedValueOnce({ ...mockTask, revision: 5 });
+    vi.mocked(getDiffs).mockResolvedValueOnce(mockDiffs);
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      mockEventSource.onmessage?.({ data: JSON.stringify({
+        task_id: "task-1", stage: "已完成", progress_percent: 100, status: "COMPLETED", revision: 5,
+      }) } as MessageEvent);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByLabelText("原版PDF 在线预览")).not.toBeInTheDocument();
+    await act(async () => { vi.advanceTimersByTime(1200); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(1200); await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument();
+  });
+
+  it("renders cancellation distinctly and never offers retry", async () => {
+    vi.mocked(getTask).mockResolvedValueOnce({
+      ...mockTask,
+      status: "FAILED",
+      terminal_reason: "CANCELLED",
+      stage: "已取消",
+      errors: ["任务已取消。"],
+    });
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: "已取消" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+  });
+
+  it.each(["EXECUTION_FAILED", "SUBMISSION_FAILED"] as const)("offers retry for %s", async (terminalReason) => {
+    vi.mocked(getTask).mockResolvedValueOnce({
+      ...mockTask,
+      status: "FAILED",
+      terminal_reason: terminalReason,
+      stage: terminalReason === "EXECUTION_FAILED" ? "执行失败" : "提交失败",
+      errors: [],
+    });
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    expect(await screen.findByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+
+  it("closes the stream and aborts in-flight task reads on unmount", async () => {
+    vi.mocked(getTask).mockResolvedValueOnce({ ...mockTask, status: "PROCESSING", terminal_reason: "NONE" });
+    const { unmount } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    const initialSignal = vi.mocked(getTask).mock.calls[0]?.[1];
+    unmount();
+
+    expect(mockEventSource.close).toHaveBeenCalled();
+    expect(initialSignal?.aborted).toBe(true);
   });
 
   it("keeps the progress ring visible briefly when SSE completes before rendering results", async () => {
