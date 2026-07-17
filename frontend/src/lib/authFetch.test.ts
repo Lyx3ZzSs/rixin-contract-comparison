@@ -7,6 +7,18 @@ const signinSilent = vi.fn();
 const removeUser = vi.fn().mockResolvedValue(undefined);
 const signinRedirect = vi.fn().mockResolvedValue(undefined);
 
+function captureError(promise: Promise<unknown>): { error: unknown } {
+  const result: { error: unknown } = { error: undefined };
+  void promise.catch((reason: unknown) => { result.error = reason; });
+  return result;
+}
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 vi.mock("../auth/userManager", () => ({
   getUserManager: () => ({ getUser, signinSilent, removeUser, signinRedirect }),
 }));
@@ -107,6 +119,85 @@ describe("authorizedFetch", () => {
     expect(requestSignal?.aborted).toBe(true);
     expect(caller.signal.aborted).toBe(false);
     expect(abortCount).toBe(1);
+  });
+
+  it("cancels a pending user lookup when the caller aborts", async () => {
+    vi.useFakeTimers();
+    getUser.mockImplementation(() => new Promise(() => undefined));
+    const caller = new AbortController();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = authorizedFetch("/api/tasks", { signal: caller.signal }, { timeoutMs: 1000 });
+    const result = captureError(request);
+    caller.abort(new DOMException("Request cancelled", "AbortError"));
+    await flushPromises();
+
+    expect(result.error).toMatchObject({ name: "AbortError" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(removeUser).not.toHaveBeenCalled();
+    expect(signinRedirect).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels a pending user lookup when the read timeout expires", async () => {
+    vi.useFakeTimers();
+    getUser.mockImplementation(() => new Promise(() => undefined));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = authorizedFetch("/api/tasks", undefined, { timeoutMs: 1000 });
+    const result = captureError(request);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+
+    expect(result.error).toMatchObject({ name: "AbortError" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(removeUser).not.toHaveBeenCalled();
+    expect(signinRedirect).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels a pending silent sign-in when the caller aborts", async () => {
+    vi.useFakeTimers();
+    getUser.mockResolvedValue({ access_token: "expired-token", expired: true });
+    signinSilent.mockImplementation(() => new Promise(() => undefined));
+    const caller = new AbortController();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = authorizedFetch("/api/tasks", { signal: caller.signal }, { timeoutMs: 1000 });
+    const result = captureError(request);
+    await vi.advanceTimersByTimeAsync(0);
+    caller.abort(new DOMException("Request cancelled", "AbortError"));
+    await flushPromises();
+
+    expect(result.error).toMatchObject({ name: "AbortError" });
+    expect(signinSilent).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(removeUser).not.toHaveBeenCalled();
+    expect(signinRedirect).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels a pending silent sign-in when the read timeout expires", async () => {
+    vi.useFakeTimers();
+    getUser.mockResolvedValue({ access_token: "expired-token", expired: true });
+    signinSilent.mockImplementation(() => new Promise(() => undefined));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = authorizedFetch("/api/tasks", undefined, { timeoutMs: 1000 });
+    const result = captureError(request);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+
+    expect(result.error).toMatchObject({ name: "AbortError" });
+    expect(signinSilent).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(removeUser).not.toHaveBeenCalled();
+    expect(signinRedirect).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("propagates a caller cancellation during silent sign-in without reauthenticating", async () => {

@@ -29,11 +29,11 @@ export async function authorizedFetch(
   try {
     throwIfAborted(cancellation.signal);
     const manager = getUserManager();
-    let user = await manager.getUser();
+    let user = await waitForAbortable(manager.getUser(), cancellation.signal);
     throwIfAborted(cancellation.signal);
     if (!user?.access_token || user.expired) {
       try {
-        user = await manager.signinSilent();
+        user = await waitForAbortable(manager.signinSilent(), cancellation.signal);
       } catch {
         throwIfAborted(cancellation.signal);
         await beginReauthentication();
@@ -123,4 +123,29 @@ function mergeAbortSignals(callerSignal: AbortSignal | undefined, timeoutMs: num
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) return;
   throw signal.reason ?? new DOMException("Request cancelled", "AbortError");
+}
+
+function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  throwIfAborted(signal);
+
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      cleanup();
+      reject(signal.reason ?? new DOMException("Request cancelled", "AbortError"));
+    };
+    const cleanup = () => signal.removeEventListener("abort", abort);
+
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
