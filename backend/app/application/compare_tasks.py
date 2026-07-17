@@ -376,13 +376,33 @@ class CompareTaskApplication:
                 primary_error=primary_error,
                 actions=actions,
             )
-            return self.recovery_store.cleanup_attempt(marker)
+            try:
+                return self.recovery_store.cleanup_attempt(marker)
+            except Exception as cleanup_error:
+                logger.critical(
+                    "Submission recovery fallback cleanup failed: task_id=%s attempt_id=%s "
+                    "primary_error=%s actions=%s marker_error=%s cleanup_error=%s",
+                    task_id,
+                    attempt_id,
+                    primary_error,
+                    [action.model_dump(mode="json") for action in actions],
+                    self._error_text(marker_error),
+                    self._error_text(cleanup_error),
+                    exc_info=True,
+                )
+                return False
         return self.recovery_store.recover_marker(marker)
 
     def _record_compensation_incomplete(self, task_id: str, primary: BaseException) -> None:
         marker_path = self.recovery_store.marker_path(task_id)
         primary_error = self._error_text(primary)
-        summary = f"COMPENSATION_INCOMPLETE marker={marker_path} primary_error={primary_error}"
+        if marker_path.exists():
+            marker_status = "retained"
+            marker_detail = f"marker={marker_path}"
+        else:
+            marker_status = "unavailable"
+            marker_detail = f"marker_path={marker_path}"
+        summary = f"COMPENSATION_INCOMPLETE marker_status={marker_status} {marker_detail} primary_error={primary_error}"
 
         def mutate(task: CompareTask) -> None:
             self._transition_submission_failed(task, primary_error)
@@ -393,8 +413,10 @@ class CompareTaskApplication:
             self.repository.update_compare_task(task_id, mutate)
         except Exception as secondary:
             logger.critical(
-                "Compensation summary persistence failed: task_id=%s marker=%s primary_error=%s secondary_error=%s",
+                "Compensation summary persistence failed: task_id=%s marker_status=%s marker_path=%s "
+                "primary_error=%s secondary_error=%s",
                 task_id,
+                marker_status,
                 marker_path,
                 primary_error,
                 self._error_text(secondary),

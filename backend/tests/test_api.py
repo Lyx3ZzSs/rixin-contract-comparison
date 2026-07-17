@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import io
 import json
@@ -51,6 +52,11 @@ from app.utils.file_utils import FileValidationError
 from app.utils.json_utils import load_task, save_task as persist_task, task_json_path, to_jsonable
 
 from auth_helpers import ADMIN
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - recovery explicitly requires POSIX fcntl
+    fcntl = None
 
 
 def _owned_task(task: CompareTask) -> CompareTask:
@@ -117,6 +123,20 @@ def _pdf_upload(name: str = "contract.pdf") -> UploadFile:
     finally:
         pdf.close()
     return UploadFile(filename=name, file=io.BytesIO(content))
+
+
+@contextlib.contextmanager
+def _hold_recovery_marker_lock(store: RecoveryStore, task_id: str):
+    if fcntl is None:
+        pytest.skip("requires POSIX fcntl")
+    lock_path = store.recovery_dir / ".locks" / f"{task_id}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield lock_path
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def test_lifespan_recovers_submissions_before_reconciliation_and_workers(
@@ -1110,6 +1130,105 @@ def test_submission_marker_write_failure_logs_critical_and_preserves_primary(
     assert "primary save" in caplog.text
     assert "marker unavailable" in caplog.text
     assert "unlink" in caplog.text
+
+
+def test_submission_recovery_lock_double_failure_preserves_unpersisted_primary_and_finals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    application, repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    task_id = "TRECOVERY_LOCK_UNPERSISTED"
+    monkeypatch.setattr(
+        repository,
+        "save_compare_task",
+        lambda _task: (_ for _ in ()).throw(OSError("task save primary")),
+    )
+    recovery_store._lock_timeout_seconds = 0.01
+    compensate = application._compensate_submission
+    outcomes: list[bool] = []
+
+    def record_outcome(**kwargs) -> bool:
+        outcome = compensate(**kwargs)
+        outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(application, "_compensate_submission", record_outcome)
+    caplog.set_level("CRITICAL", logger="app.application.compare_tasks")
+
+    with _hold_recovery_marker_lock(recovery_store, task_id):
+        with pytest.raises(OSError, match="task save primary"):
+            asyncio.run(
+                application.submit_uploads(
+                    task_id=task_id,
+                    original_file=_pdf_upload("original.pdf"),
+                    compare_file=_pdf_upload("compare.pdf"),
+                    compare_options=CompareOptions(),
+                    owner=ADMIN,
+                )
+            )
+
+    assert outcomes == [False]
+    assert len(list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))) == 2
+    assert not recovery_store.marker_path(task_id).exists()
+    assert "Submission recovery marker creation failed" in caplog.text
+    assert "Submission recovery fallback cleanup failed" in caplog.text
+    assert "task save primary" in caplog.text
+    assert "actions=" in caplog.text
+    assert "final_input" in caplog.text
+
+
+def test_submission_recovery_lock_double_failure_marks_persisted_task_with_unavailable_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    application, repository, runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    task_id = "TRECOVERY_LOCK_PERSISTED"
+    monkeypatch.setattr(
+        runner.job_repository,
+        "enqueue",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("enqueue primary")),
+    )
+    recovery_store._lock_timeout_seconds = 0.01
+    compensate = application._compensate_submission
+    outcomes: list[bool] = []
+
+    def record_outcome(**kwargs) -> bool:
+        outcome = compensate(**kwargs)
+        outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(application, "_compensate_submission", record_outcome)
+    caplog.set_level("CRITICAL", logger="app.application.compare_tasks")
+
+    with _hold_recovery_marker_lock(recovery_store, task_id):
+        with pytest.raises(OSError, match="enqueue primary"):
+            asyncio.run(
+                application.submit_uploads(
+                    task_id=task_id,
+                    original_file=_pdf_upload("original.pdf"),
+                    compare_file=_pdf_upload("compare.pdf"),
+                    compare_options=CompareOptions(),
+                    owner=ADMIN,
+                )
+            )
+
+    assert outcomes == [False]
+    task = repository.load_compare_task(task_id)
+    assert (task.status, task.terminal_reason, task.stage) == (
+        "FAILED",
+        "SUBMISSION_FAILED",
+        "提交失败",
+    )
+    assert len(list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))) == 2
+    summary = next(error for error in task.errors if "COMPENSATION_INCOMPLETE" in error)
+    assert "enqueue primary" in summary
+    assert "marker_status=unavailable" in summary
+    assert str(recovery_store.marker_path(task_id)) in summary
+    assert not recovery_store.marker_path(task_id).exists()
+    assert "Submission recovery marker creation failed" in caplog.text
+    assert "Submission recovery fallback cleanup failed" in caplog.text
 
 
 def test_api_compare_rejects_damaged_pdf_before_task_creation(tmp_path: Path) -> None:
