@@ -70,6 +70,15 @@ vi.mock("../lib/api", () => ({
       evidence_state: "LOCATED",
       quality_status: "NORMAL",
       review_flags: [],
+      ocr_context: { affected: false, statuses: [], reasons: [], sides: [], page_numbers: [] },
+      remediation_context: {
+        action_ids: [],
+        action_types: [],
+        statuses: [],
+        changed_evidence: false,
+        changed_diff_text: false,
+        requires_manual_review: false,
+      },
       review_status: payload.review_status,
       review_comment: payload.review_comment ?? "",
       reviewed_by: "keycloak-user",
@@ -315,6 +324,15 @@ function backendAuditItems(diffs: DiffItem[]): AuditItem[] {
         review_flags: located ? (diff.review_flags ?? []) : [...(diff.review_flags ?? []), "EVIDENCE_UNLOCATED"],
         text_confidence: diff.text_confidence,
         match_confidence: "",
+        ocr_context: { affected: false, statuses: [], reasons: [], sides: [], page_numbers: [] },
+        remediation_context: {
+          action_ids: [],
+          action_types: [],
+          statuses: [],
+          changed_evidence: false,
+          changed_diff_text: false,
+          requires_manual_review: false,
+        },
         review_status: review?.review_status ?? diff.review_status ?? "UNREVIEWED",
         review_comment: review?.review_comment ?? diff.review_comment ?? "",
         reviewed_by: review?.reviewed_by ?? diff.reviewed_by ?? "",
@@ -325,6 +343,53 @@ function backendAuditItems(diffs: DiffItem[]): AuditItem[] {
 }
 
 mockTask.audit_items = backendAuditItems(mockDiffs);
+
+function reviewResponse(auditItemId: string, status: "IGNORED" | "CONFIRMED", reportRevision: number, reviewedCount: number) {
+  const item = mockTask.audit_items!.find((candidate) => candidate.audit_item_id === auditItemId)!;
+  return {
+    task_id: "task-1",
+    audit_item: { ...item, review_status: status },
+    review_stats: {
+      total_count: mockTask.audit_items!.length,
+      reviewed_count: reviewedCount,
+      confirmed_count: status === "CONFIRMED" ? reviewedCount : 0,
+      false_positive_count: 0,
+      manual_review_count: 0,
+      ignored_count: status === "IGNORED" ? reviewedCount : 0,
+      review_unit: "audit_item" as const,
+    },
+    report_revision: reportRevision,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function taskWithRemediationStatuses(statuses: Array<"PLANNED" | "SUCCEEDED" | "FAILED" | "MANUAL_REVIEW_REQUIRED">): CompareTask {
+  return {
+    ...mockTask,
+    audit_items: mockTask.audit_items!.map((item) => item.diff_id === "diff-1"
+      ? {
+          ...item,
+          remediation_context: {
+            action_ids: statuses.map((status) => `diff-1:${status}`),
+            action_types: statuses.map(() => "RELOCATE_EVIDENCE" as const),
+            statuses,
+            changed_evidence: statuses.includes("SUCCEEDED"),
+            changed_diff_text: false,
+            requires_manual_review: statuses.includes("MANUAL_REVIEW_REQUIRED"),
+          },
+        }
+      : item),
+  };
+}
 
 const preambleReplacementDiff: DiffItem = {
   diff_id: "diff-preamble-title",
@@ -932,6 +997,7 @@ describe("ResultPage", () => {
 
   it("filters audit panel items and marks the selected diff", async () => {
     const user = userEvent.setup();
+    vi.mocked(getTask).mockResolvedValueOnce(taskWithRemediationStatuses(["PLANNED"]));
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
@@ -1073,44 +1139,7 @@ describe("ResultPage", () => {
 
   it("uses the highest-severity remediation action for every audit card in a diff", async () => {
     const user = userEvent.setup();
-    vi.mocked(getTask).mockResolvedValueOnce({
-      ...mockTask,
-      ocr_remediation_summary: {
-        ...mockTask.ocr_remediation_summary!,
-        actions: [
-          {
-            action_id: "original:1:diff-1:RELOCATE_EVIDENCE:SUCCEEDED",
-            action_type: "RELOCATE_EVIDENCE",
-            reason: "EVIDENCE_UNRELIABLE",
-            status: "SUCCEEDED",
-            side: "original",
-            page_no: 1,
-            diff_id: "diff-1",
-            before_quality: {},
-            after_quality: {},
-            changed_evidence: false,
-            changed_diff_text: false,
-            review_flags_added: [],
-            notes: [],
-          },
-          {
-            action_id: "original:1:diff-1:RELOCATE_EVIDENCE:FAILED",
-            action_type: "RELOCATE_EVIDENCE",
-            reason: "EVIDENCE_UNRELIABLE",
-            status: "FAILED",
-            side: "original",
-            page_no: 1,
-            diff_id: "diff-1",
-            before_quality: {},
-            after_quality: {},
-            changed_evidence: false,
-            changed_diff_text: false,
-            review_flags_added: [],
-            notes: [],
-          },
-        ],
-      },
-    });
+    vi.mocked(getTask).mockResolvedValueOnce(taskWithRemediationStatuses(["SUCCEEDED", "FAILED"]));
 
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
@@ -1123,29 +1152,7 @@ describe("ResultPage", () => {
 
   it("shows successful remediation badges for every audit card in a remediated diff", async () => {
     const user = userEvent.setup();
-    vi.mocked(getTask).mockResolvedValueOnce({
-      ...mockTask,
-      ocr_remediation_summary: {
-        ...mockTask.ocr_remediation_summary!,
-        actions: [
-          {
-            action_id: "original:1:diff-1:RELOCATE_EVIDENCE:SUCCEEDED",
-            action_type: "RELOCATE_EVIDENCE",
-            reason: "EVIDENCE_UNRELIABLE",
-            status: "SUCCEEDED",
-            side: "original",
-            page_no: 1,
-            diff_id: "diff-1",
-            before_quality: { max_confidence: 0.46 },
-            after_quality: { max_confidence: 0.98 },
-            changed_evidence: true,
-            changed_diff_text: false,
-            review_flags_added: ["OCR_REMEDIATION_EVIDENCE_RELOCATED"],
-            notes: [],
-          },
-        ],
-      },
-    });
+    vi.mocked(getTask).mockResolvedValueOnce(taskWithRemediationStatuses(["SUCCEEDED"]));
 
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
@@ -1154,6 +1161,32 @@ describe("ResultPage", () => {
 
     expect(await screen.findAllByText("已自动处置")).toHaveLength(2);
     expect(screen.queryByText("处置规划")).not.toBeInTheDocument();
+  });
+
+  it("renders OCR badges from item context without task-level association", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getTask).mockResolvedValueOnce({
+      ...mockTask,
+      ocr_quality_summary: null,
+      audit_items: mockTask.audit_items!.map((item) => item.diff_id === "diff-1"
+        ? {
+            ...item,
+            ocr_context: {
+              affected: true,
+              statuses: ["LOW_TEXT_CONFIDENCE"],
+              reasons: ["LOW_AVG_CONFIDENCE"],
+              sides: ["original"],
+              page_numbers: [1],
+            },
+          }
+        : item),
+    });
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+
+    expect(screen.getAllByText("OCR 质量风险")).toHaveLength(2);
   });
 
   it.each([
@@ -1224,6 +1257,90 @@ describe("ResultPage", () => {
     );
     await waitFor(() => expect(auditCard).not.toHaveClass("ignored"));
     expect(screen.getByRole("button", { name: "忽略 diff-1:ADD" })).toBeInTheDocument();
+  });
+
+  it("keeps concurrent item saves independent and rejects stale stats revisions", async () => {
+    const user = userEvent.setup();
+    const older = deferred<ReturnType<typeof reviewResponse>>();
+    const newer = deferred<ReturnType<typeof reviewResponse>>();
+    vi.mocked(updateAuditItemReview)
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise);
+    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+    await user.click(screen.getByRole("button", { name: "忽略 diff-1:ADD" }));
+    await user.click(screen.getByRole("button", { name: "忽略 diff-1:MODIFY" }));
+
+    expect(screen.getByRole("button", { name: "忽略 diff-1:ADD" })).toHaveTextContent("保存");
+    expect(screen.getByRole("button", { name: "忽略 diff-1:MODIFY" })).toHaveTextContent("保存");
+
+    await act(async () => newer.resolve(reviewResponse("diff-1:MODIFY", "IGNORED", 3, 2)));
+    await waitFor(() => expect(screen.getByRole("button", { name: "恢复 diff-1:MODIFY" })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "忽略 diff-1:ADD" })).toHaveTextContent("保存");
+
+    await act(async () => older.resolve(reviewResponse("diff-1:ADD", "IGNORED", 2, 1)));
+    await waitFor(() => expect(screen.getByRole("button", { name: "恢复 diff-1:ADD" })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "恢复 diff-1:MODIFY" })).toBeInTheDocument();
+    expect(container.querySelector(".result-console")).toHaveAttribute("data-report-revision", "3");
+    expect(container.querySelector(".result-console")).toHaveAttribute("data-reviewed-count", "2");
+  });
+
+  it("does not clear another item loading state when one concurrent review fails", async () => {
+    const user = userEvent.setup();
+    const failed = deferred<ReturnType<typeof reviewResponse>>();
+    const pending = deferred<ReturnType<typeof reviewResponse>>();
+    vi.mocked(updateAuditItemReview)
+      .mockImplementationOnce(() => failed.promise)
+      .mockImplementationOnce(() => pending.promise);
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+    await user.click(screen.getByRole("button", { name: "忽略 diff-1:ADD" }));
+    await user.click(screen.getByRole("button", { name: "忽略 diff-1:MODIFY" }));
+
+    await act(async () => failed.reject(new Error("first failed")));
+    await waitFor(() => expect(screen.getByText("first failed")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "忽略 diff-1:ADD" })).not.toHaveTextContent("保存");
+    expect(screen.getByRole("button", { name: "忽略 diff-1:MODIFY" })).toHaveTextContent("保存");
+
+    await act(async () => pending.resolve(reviewResponse("diff-1:MODIFY", "IGNORED", 3, 1)));
+  });
+
+  it("keeps unlocated and invalid-box audit cards off the comparison axis", async () => {
+    const user = userEvent.setup();
+    const unlocated = {
+      ...mockTask.audit_items![0],
+      audit_item_id: "diff-1:UNLOCATED" as string,
+      evidence_state: "UNLOCATED" as const,
+      review_flags: ["EVIDENCE_UNLOCATED"],
+    };
+    const zeroArea = {
+      ...mockTask.audit_items![1],
+      audit_item_id: "diff-1:ZERO",
+      evidence_state: "LOCATED" as const,
+      review_flags: ["EVIDENCE_UNLOCATED"],
+      original_evidence: [],
+      compare_evidence: [{
+        page_no: 1,
+        bbox: { x0: 100, y0: 100, x1: 100, y1: 120 },
+        method: "block",
+        text: "invalid",
+        highlight_type: "MODIFY" as const,
+      }],
+    };
+    vi.mocked(getTask).mockResolvedValueOnce({ ...mockTask, audit_items: [unlocated, zeroArea] });
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "定位新增改动 diff-1:UNLOCATED" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "定位修改改动 diff-1:ZERO" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
+    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:UNLOCATED" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:ZERO" })).toBeInTheDocument();
+    expect(screen.getAllByText("证据未定位")).toHaveLength(2);
   });
 
   it("collapses and reopens the audit panel", async () => {

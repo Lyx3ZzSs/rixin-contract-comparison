@@ -285,6 +285,21 @@ export interface AuditItem {
   review_flags: string[];
   text_confidence?: number | null;
   match_confidence: string;
+  ocr_context: {
+    affected: boolean;
+    statuses: OcrQualityStatus[];
+    reasons: string[];
+    sides: OcrQualitySide[];
+    page_numbers: number[];
+  };
+  remediation_context: {
+    action_ids: string[];
+    action_types: OcrRemediationActionType[];
+    statuses: OcrRemediationStatus[];
+    changed_evidence: boolean;
+    changed_diff_text: boolean;
+    requires_manual_review: boolean;
+  };
   review_status: ReviewStatus;
   review_comment: string;
   reviewed_by: string;

@@ -8,7 +8,13 @@ from typing import Any
 from app.errors import ConflictError, NotFoundError
 from app.infrastructure.task_repository import TaskRepository, default_task_repository, to_jsonable
 from app.models import AuditItemReview, CompareTask, DiffItem, EvidenceBox, ReviewStatus
-from app.services.audit_summary import AuditItem, build_audit_items, normalized_audit_item_reviews
+from app.services.audit_summary import (
+    AuditItem,
+    build_audit_items,
+    build_task_audit_items,
+    normalized_audit_item_reviews,
+    project_diff_reviews,
+)
 
 
 class DiffNotFoundError(NotFoundError):
@@ -96,15 +102,7 @@ class CompareReviewService:
             self._project_diff_reviews(persisted)
             self.refresh_review_stats(persisted)
             persisted.report_revision += 1
-            updated_item = next(
-                item
-                for item in build_audit_items(
-                    persisted.diffs,
-                    persisted.audit_item_reviews,
-                    broadcast_legacy=False,
-                )
-                if item.item_id == audit_item_id
-            )
+            updated_item = next(item for item in build_task_audit_items(persisted) if item.item_id == audit_item_id)
 
         updated_task = self.repository.update_compare_task(task.task_id, mutate)
         assert updated_item is not None
@@ -157,45 +155,12 @@ class CompareReviewService:
 
     @staticmethod
     def _project_diff_reviews(task: CompareTask) -> None:
-        item_ids_by_diff: dict[str, list[str]] = {}
-        for item in build_audit_items(task.diffs):
-            item_ids_by_diff.setdefault(item.diff_id, []).append(item.item_id)
-        for index, diff in enumerate(task.diffs):
-            child_reviews = [
-                task.audit_item_reviews.get(item_id, AuditItemReview())
-                for item_id in item_ids_by_diff.get(diff.diff_id, [])
-            ]
-            statuses = {review.review_status for review in child_reviews}
-            projected_status: ReviewStatus
-            if not child_reviews or statuses == {"UNREVIEWED"}:
-                projected_status = "UNREVIEWED"
-            elif len(statuses) == 1:
-                projected_status = child_reviews[0].review_status
-            else:
-                projected_status = "NEEDS_REVIEW"
-            identical_details = (
-                len(
-                    {
-                        (
-                            review.review_status,
-                            review.review_comment,
-                            review.reviewed_by,
-                            review.reviewed_at,
-                        )
-                        for review in child_reviews
-                    }
-                )
-                == 1
-            )
-            projected = child_reviews[0] if identical_details and child_reviews else AuditItemReview()
-            task.diffs[index] = diff.model_copy(
-                update={
-                    "review_status": projected_status,
-                    "review_comment": projected.review_comment if projected_status != "UNREVIEWED" else "",
-                    "reviewed_by": projected.reviewed_by if projected_status != "UNREVIEWED" else "",
-                    "reviewed_at": projected.reviewed_at if projected_status != "UNREVIEWED" else "",
-                }
-            )
+        items = build_audit_items(
+            task.diffs,
+            task.audit_item_reviews,
+            broadcast_legacy=False,
+        )
+        task.diffs = project_diff_reviews(task.diffs, items)
 
 
 class CompareQualityService:
@@ -203,20 +168,16 @@ class CompareQualityService:
     low_match_threshold = 70.0
 
     def build_summary(self, task: CompareTask) -> dict[str, Any]:
-        review_service = CompareReviewService()
-        review_service.refresh_review_stats(task)
-        audit_items = build_audit_items(
-            task.diffs,
-            task.audit_item_reviews,
-            broadcast_legacy=not task.audit_item_reviews_normalized,
-        )
-        source_counts = Counter(diff.source_type or "clause" for diff in task.diffs)
-        review_flag_counts = Counter(flag for diff in task.diffs for flag in diff.review_flags)
+        audit_items = build_task_audit_items(task)
+        projected_diffs = project_diff_reviews(task.diffs, audit_items)
+        review_counts = Counter(item.review_status for item in audit_items)
+        source_counts = Counter(diff.source_type or "clause" for diff in projected_diffs)
+        review_flag_counts = Counter(flag for diff in projected_diffs for flag in diff.review_flags)
         evidence_counts = Counter()
         low_confidence_diffs: list[dict[str, Any]] = []
         low_similarity_diffs: list[dict[str, Any]] = []
 
-        for diff in task.diffs:
+        for diff in projected_diffs:
             evidences = [*diff.original_evidence, *diff.compare_evidence]
             for evidence in evidences:
                 evidence_counts[evidence.evidence_quality] += 1
@@ -228,18 +189,18 @@ class CompareQualityService:
         return {
             "task_id": task.task_id,
             "status": task.status,
-            "diff_count": len(task.diffs),
+            "diff_count": len(projected_diffs),
             "review_stats": {
                 "total_count": len(audit_items),
-                "reviewed_count": task.reviewed_count,
-                "confirmed_count": task.confirmed_count,
-                "false_positive_count": task.false_positive_count,
-                "manual_review_count": task.manual_review_count,
-                "ignored_count": task.ignored_count,
+                "reviewed_count": len([item for item in audit_items if item.review_status != "UNREVIEWED"]),
+                "confirmed_count": review_counts["CONFIRMED"],
+                "false_positive_count": review_counts["FALSE_POSITIVE"],
+                "manual_review_count": review_counts["NEEDS_REVIEW"],
+                "ignored_count": review_counts["IGNORED"],
                 "review_unit": "audit_item",
             },
             "source_counts": dict(source_counts),
-            "needs_review_count": len([diff for diff in task.diffs if diff.quality_status == "NEEDS_REVIEW"]),
+            "needs_review_count": len([diff for diff in projected_diffs if diff.quality_status == "NEEDS_REVIEW"]),
             "review_flag_counts": dict(review_flag_counts),
             "cross_source_merged_count": review_flag_counts["CROSS_SOURCE_MERGED"],
             "evidence_quality_counts": {

@@ -2,8 +2,31 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, replace
+from collections.abc import Iterable
+from typing import Literal, TypeVar
 
-from app.models import AuditItemReview, DiffItem, DiffType, EvidenceBox
+from app.models import AuditItemReview, CompareTask, DiffItem, DiffType, EvidenceBox, ReviewStatus
+
+_T = TypeVar("_T")
+
+
+@dataclass(frozen=True)
+class AuditItemOcrContext:
+    affected: bool = False
+    statuses: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    sides: tuple[str, ...] = ()
+    page_numbers: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class AuditItemRemediationContext:
+    action_ids: tuple[str, ...] = ()
+    action_types: tuple[str, ...] = ()
+    statuses: tuple[str, ...] = ()
+    changed_evidence: bool = False
+    changed_diff_text: bool = False
+    requires_manual_review: bool = False
 
 
 @dataclass(frozen=True)
@@ -21,12 +44,14 @@ class AuditItem:
     compare_text: str
     original_evidence: list[EvidenceBox]
     compare_evidence: list[EvidenceBox]
-    evidence_state: str
+    evidence_state: Literal["LOCATED", "UNLOCATED"]
     quality_status: str
     review_flags: list[str]
     text_confidence: float | None
     match_confidence: str
-    review_status: str = "UNREVIEWED"
+    ocr_context: AuditItemOcrContext = AuditItemOcrContext()
+    remediation_context: AuditItemRemediationContext = AuditItemRemediationContext()
+    review_status: ReviewStatus = "UNREVIEWED"
     review_comment: str = ""
     reviewed_by: str = ""
     reviewed_at: str = ""
@@ -59,6 +84,22 @@ def build_audit_items(
     if normalized_reviews:
         items = [_apply_review(item, normalized_reviews.get(item.item_id)) for item in items]
     return items
+
+
+def build_task_audit_items(task: CompareTask) -> list[AuditItem]:
+    items = build_audit_items(
+        task.diffs,
+        task.audit_item_reviews,
+        broadcast_legacy=not task.audit_item_reviews_normalized,
+    )
+    return [_apply_task_context(item, task) for item in items]
+
+
+def project_diff_reviews(diffs: list[DiffItem], items: list[AuditItem]) -> list[DiffItem]:
+    items_by_diff: dict[str, list[AuditItem]] = {}
+    for item in items:
+        items_by_diff.setdefault(item.diff_id, []).append(item)
+    return [_project_diff_review(diff, items_by_diff.get(diff.diff_id, [])) for diff in diffs]
 
 
 def normalized_audit_item_reviews(
@@ -198,6 +239,70 @@ def _apply_review(item: AuditItem, review: AuditItemReview | None) -> AuditItem:
         reviewed_by=review.reviewed_by,
         reviewed_at=review.reviewed_at,
     )
+
+
+def _apply_task_context(item: AuditItem, task: CompareTask) -> AuditItem:
+    profiles = sorted(
+        [
+            profile
+            for profile in (task.ocr_quality_summary.profiles if task.ocr_quality_summary else [])
+            if item.diff_id in profile.affected_diff_ids
+        ],
+        key=lambda profile: (profile.side, profile.page_no, profile.status),
+    )
+    actions = sorted(
+        [
+            action
+            for action in (task.ocr_remediation_summary.actions if task.ocr_remediation_summary else [])
+            if action.diff_id == item.diff_id
+        ],
+        key=lambda action: action.action_id,
+    )
+    return replace(
+        item,
+        ocr_context=AuditItemOcrContext(
+            affected=bool(profiles),
+            statuses=_ordered_unique(profile.status for profile in profiles),
+            reasons=_ordered_unique(reason for profile in profiles for reason in profile.reasons),
+            sides=_ordered_unique(profile.side for profile in profiles),
+            page_numbers=tuple(sorted({profile.page_no for profile in profiles})),
+        ),
+        remediation_context=AuditItemRemediationContext(
+            action_ids=tuple(action.action_id for action in actions),
+            action_types=_ordered_unique(action.action_type for action in actions),
+            statuses=_ordered_unique(action.status for action in actions),
+            changed_evidence=any(action.changed_evidence for action in actions),
+            changed_diff_text=any(action.changed_diff_text for action in actions),
+            requires_manual_review=any(action.status == "MANUAL_REVIEW_REQUIRED" for action in actions),
+        ),
+    )
+
+
+def _project_diff_review(diff: DiffItem, items: list[AuditItem]) -> DiffItem:
+    statuses = {item.review_status for item in items}
+    projected_status: ReviewStatus
+    if not items or statuses == {"UNREVIEWED"}:
+        projected_status = "UNREVIEWED"
+    elif len(statuses) == 1:
+        projected_status = items[0].review_status
+    else:
+        projected_status = "NEEDS_REVIEW"
+    details = {(item.review_status, item.review_comment, item.reviewed_by, item.reviewed_at) for item in items}
+    identical_details = len(details) == 1
+    source = items[0] if identical_details and items else None
+    return diff.model_copy(
+        update={
+            "review_status": projected_status,
+            "review_comment": source.review_comment if source and projected_status != "UNREVIEWED" else "",
+            "reviewed_by": source.reviewed_by if source and projected_status != "UNREVIEWED" else "",
+            "reviewed_at": source.reviewed_at if source and projected_status != "UNREVIEWED" else "",
+        },
+        deep=True,
+    )
+
+
+def _ordered_unique(values: Iterable[_T]) -> tuple[_T, ...]:
+    return tuple(dict.fromkeys(values))
 
 
 def _is_located(evidence: EvidenceBox) -> bool:

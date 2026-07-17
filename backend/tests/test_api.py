@@ -1143,6 +1143,48 @@ def test_task_read_returns_normalized_audit_items_without_persisting_legacy_proj
     assert load_task("TLEGACYAUDIT").audit_item_reviews == {}
 
 
+def test_read_paths_project_partial_canonical_reviews_without_persisting(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    diff = _mixed_review_diff()
+    diff.review_status = "CONFIRMED"
+    diff.review_comment = "legacy"
+    diff.review_flags = ["SAME_CLAUSE_NO_LOW_SIMILARITY"]
+    diff.match_score = 40
+    save_task(
+        CompareTask(
+            task_id="TPARTIALREAD",
+            status="COMPLETED",
+            revision=7,
+            diffs=[diff],
+            audit_item_reviews={
+                "DREVIEW:ADD": AuditItemReview(review_status="FALSE_POSITIVE", review_comment="canonical")
+            },
+        )
+    )
+    before = load_task("TPARTIALREAD")
+    client = TestClient(app)
+
+    diff_response = client.get("/api/compare/TPARTIALREAD/diffs")
+    task_response = client.get("/api/compare/TPARTIALREAD")
+    quality_response = client.get("/api/compare/TPARTIALREAD/quality")
+
+    assert diff_response.status_code == task_response.status_code == quality_response.status_code == 200
+    assert diff_response.json()["diffs"][0]["review_status"] == "NEEDS_REVIEW"
+    assert diff_response.json()["diffs"][0]["review_comment"] == ""
+    assert {item["review_status"] for item in task_response.json()["audit_items"]} == {
+        "CONFIRMED",
+        "FALSE_POSITIVE",
+    }
+    assert quality_response.json()["low_confidence_diffs"][0]["review_status"] == "NEEDS_REVIEW"
+    assert quality_response.json()["low_similarity_diffs"][0]["review_status"] == "NEEDS_REVIEW"
+
+    persisted = load_task("TPARTIALREAD")
+    assert persisted.revision == before.revision
+    assert persisted.diffs[0].review_status == "CONFIRMED"
+    assert persisted.diffs[0].review_comment == "legacy"
+    assert set(persisted.audit_item_reviews) == {"DREVIEW:ADD"}
+
+
 def test_single_audit_item_review_persists_normalized_map_and_returns_item_stats_revision(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     diff = _mixed_review_diff()
@@ -1459,6 +1501,48 @@ def test_compare_task_response_includes_ocr_remediation_summary() -> None:
     assert action.changed_evidence is True
     assert action.changed_diff_text is False
     assert action.review_flags_added == ["OCR_REMEDIATION_EVIDENCE_RELOCATED"]
+
+
+def test_compare_task_response_projects_item_level_ocr_and_remediation_context() -> None:
+    task = CompareTask(
+        task_id="task-audit-context",
+        status="COMPLETED",
+        diffs=[DiffItem(diff_id="DCTX", diff_type="ADD", compare_text="added")],
+        ocr_quality_summary=TaskOcrQualitySummary(
+            requires_review=True,
+            profiles=[
+                PageOcrQualityProfile(
+                    side="compare",
+                    page_no=2,
+                    status="UNRELIABLE",
+                    reasons=["OCR_EMPTY"],
+                    affected_diff_ids=["DCTX"],
+                )
+            ],
+        ),
+        ocr_remediation_summary=TaskOcrRemediationSummary(
+            actions=[
+                OcrRemediationAction(
+                    action_id="compare:2:DCTX:ESCALATE_MANUAL_REVIEW",
+                    action_type="ESCALATE_MANUAL_REVIEW",
+                    reason="PAGE_UNRELIABLE",
+                    status="MANUAL_REVIEW_REQUIRED",
+                    diff_id="DCTX",
+                    side="compare",
+                    page_no=2,
+                )
+            ]
+        ),
+    )
+
+    item = compare_task_response(task).audit_items[0]
+
+    assert item.ocr_context.affected is True
+    assert item.ocr_context.statuses == ["UNRELIABLE"]
+    assert item.ocr_context.reasons == ["OCR_EMPTY"]
+    assert item.remediation_context.action_ids == ["compare:2:DCTX:ESCALATE_MANUAL_REVIEW"]
+    assert item.remediation_context.statuses == ["MANUAL_REVIEW_REQUIRED"]
+    assert item.remediation_context.requires_manual_review is True
 
 
 def test_quality_summary_includes_ocr_quality_counts(tmp_path: Path) -> None:

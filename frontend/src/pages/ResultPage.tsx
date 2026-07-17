@@ -8,7 +8,7 @@ import { downloadAuthenticatedFile } from "../lib/authFetch";
 import { useTaskProgress } from "../lib/hooks";
 import { navigateToComparisonRecords } from "../lib/routes";
 import { canRetryTask, taskStatusLabel } from "../lib/taskStatus";
-import type { AuditItem, DiffItem, DiffType, ReviewStatus, TaskOcrRemediationSummary } from "../types";
+import type { AuditItem, DiffItem, DiffType, ReviewStatus } from "../types";
 
 interface ResultPageProps {
   taskId: string;
@@ -27,14 +27,14 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
   const [zoom, setZoom] = useState(1);
   const [activeDiffId, setActiveDiffId] = useState("");
   const [activeAuditItemId, setActiveAuditItemId] = useState("");
-  const [reviewSavingAuditItemId, setReviewSavingAuditItemId] = useState("");
+  const [reviewSavingAuditItemIds, setReviewSavingAuditItemIds] = useState<Set<string>>(() => new Set());
   const [reviewError, setReviewError] = useState("");
   const originalViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
   const compareViewerRef = useRef<PdfDocumentViewerHandle | null>(null);
 
   const auditItems = useMemo(
-    () => (task?.audit_items ?? []).map((item) => toAuditChangeItem(item, task?.ocr_remediation_summary ?? null)),
-    [task?.audit_items, task?.ocr_remediation_summary],
+    () => (task?.audit_items ?? []).map(toAuditChangeItem),
+    [task?.audit_items],
   );
   const axisMarkers = useMemo(() => buildAxisMarkers(auditItems), [auditItems]);
   const auditStats = useMemo(() => buildAuditStats(auditItems), [auditItems]);
@@ -89,33 +89,42 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
   }
 
   async function handleReview(item: AuditChangeItem, status: ReviewStatus) {
-    setReviewSavingAuditItemId(item.id);
+    setReviewSavingAuditItemIds((current) => new Set(current).add(item.id));
     setReviewError("");
     try {
       const payload = await updateAuditItemReview(taskId, item.id, {
         review_status: status,
         review_comment: item.reviewComment ?? "",
       });
-      setTask((currentTask) =>
-        currentTask
-          ? {
-              ...currentTask,
-              audit_items: (currentTask.audit_items ?? []).map((auditItem) =>
-                auditItem.audit_item_id === payload.audit_item.audit_item_id ? payload.audit_item : auditItem
-              ),
-              reviewed_count: payload.review_stats.reviewed_count,
-              confirmed_count: payload.review_stats.confirmed_count,
-              false_positive_count: payload.review_stats.false_positive_count,
-              manual_review_count: payload.review_stats.manual_review_count,
-              ignored_count: payload.review_stats.ignored_count,
-              report_revision: payload.report_revision,
-            }
-          : currentTask,
-      );
+      setTask((currentTask) => {
+        if (!currentTask) {
+          return currentTask;
+        }
+        const auditItems = (currentTask.audit_items ?? []).map((auditItem) =>
+          auditItem.audit_item_id === payload.audit_item.audit_item_id ? payload.audit_item : auditItem
+        );
+        if (payload.report_revision < currentTask.report_revision) {
+          return { ...currentTask, audit_items: auditItems };
+        }
+        return {
+          ...currentTask,
+          audit_items: auditItems,
+          reviewed_count: payload.review_stats.reviewed_count,
+          confirmed_count: payload.review_stats.confirmed_count,
+          false_positive_count: payload.review_stats.false_positive_count,
+          manual_review_count: payload.review_stats.manual_review_count,
+          ignored_count: payload.review_stats.ignored_count,
+          report_revision: payload.report_revision,
+        };
+      });
     } catch (err) {
       setReviewError(err instanceof Error ? err.message : "复核提交失败。");
     } finally {
-      setReviewSavingAuditItemId("");
+      setReviewSavingAuditItemIds((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
     }
   }
 
@@ -175,7 +184,12 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
   }
 
   return (
-    <section className="result-console" aria-labelledby="result-title">
+    <section
+      className="result-console"
+      aria-labelledby="result-title"
+      data-report-revision={task.report_revision}
+      data-reviewed-count={task.reviewed_count ?? 0}
+    >
       <section
         className={isAuditPanelOpen ? "pdf-review-page audit-open" : "pdf-review-page audit-closed"}
         aria-label="PDF 在线对比预览"
@@ -312,7 +326,7 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
           filter={diffFilter}
           items={filteredAuditItems}
           isOpen={isAuditPanelOpen}
-          reviewSavingAuditItemId={reviewSavingAuditItemId}
+          reviewSavingAuditItemIds={reviewSavingAuditItemIds}
           reviewError={reviewError}
           stats={auditStats}
           onClose={() => setIsAuditPanelOpen(false)}
@@ -368,6 +382,7 @@ interface AuditChangeItem {
   reviewComment: string;
   qualityStatus: DiffItem["quality_status"];
   reviewFlags: string[];
+  ocrBadge: { className: string; label: string } | null;
   remediationBadge: { className: string; label: string } | null;
 }
 
@@ -471,9 +486,8 @@ function clampAxisPercent(value: number): number {
 
 function toAuditChangeItem(
   item: AuditItem,
-  remediationSummary: TaskOcrRemediationSummary | null,
 ): AuditChangeItem {
-  const location = evidenceLocation([...item.original_evidence, ...item.compare_evidence]);
+  const location = evidenceLocation(item);
   return {
     id: item.audit_item_id,
     diffId: item.diff_id,
@@ -487,7 +501,8 @@ function toAuditChangeItem(
     reviewComment: item.review_comment,
     qualityStatus: item.quality_status,
     reviewFlags: item.review_flags,
-    remediationBadge: remediationBadgeForDiff(item.diff_id, remediationSummary),
+    ocrBadge: item.ocr_context.affected ? { className: "needs-review", label: "OCR 质量风险" } : null,
+    remediationBadge: remediationBadgeForItem(item),
   };
 }
 
@@ -569,9 +584,18 @@ function groupedAuditItems(items: AuditChangeItem[]): Array<{ group: AuditGroup;
   return groups;
 }
 
-function evidenceLocation(evidenceList: NonNullable<DiffItem["compare_evidence"]>): EvidenceLocation | null {
-  const evidence = evidenceList
-    .filter((item) => item.page_no && item.bbox)
+function evidenceLocation(item: AuditItem): EvidenceLocation | null {
+  if (item.evidence_state !== "LOCATED") {
+    return null;
+  }
+  const evidence = [...item.original_evidence, ...item.compare_evidence]
+    .filter((candidate) => {
+      const { bbox } = candidate;
+      return candidate.page_no > 0
+        && [bbox.x0, bbox.y0, bbox.x1, bbox.y1].every(Number.isFinite)
+        && bbox.x1 > bbox.x0
+        && bbox.y1 > bbox.y0;
+    })
     .sort((left, right) => left.page_no - right.page_no || left.bbox.y0 - right.bbox.y0)[0];
   if (!evidence) {
     return null;
@@ -587,7 +611,7 @@ function AuditPanel({
   filter,
   items,
   isOpen,
-  reviewSavingAuditItemId,
+  reviewSavingAuditItemIds,
   reviewError,
   stats,
   onClose,
@@ -599,7 +623,7 @@ function AuditPanel({
   filter: DiffFilter;
   items: AuditChangeItem[];
   isOpen: boolean;
-  reviewSavingAuditItemId: string;
+  reviewSavingAuditItemIds: Set<string>;
   reviewError: string;
   stats: DiffStats;
   onClose: () => void;
@@ -671,7 +695,7 @@ function AuditPanel({
                   active={item.id === activeAuditItemId}
                   item={item}
                   tabIndex={hiddenTabIndex}
-                  isSaving={reviewSavingAuditItemId === item.id}
+                  isSaving={reviewSavingAuditItemIds.has(item.id)}
                   onSelect={onSelectItem}
                   onReview={onReview}
                 />
@@ -728,6 +752,9 @@ function AuditDiffCard({
               {badge.label}
             </span>
           ))}
+          {item.ocrBadge ? (
+            <span className={`audit-quality-badge ${item.ocrBadge.className}`}>{item.ocrBadge.label}</span>
+          ) : null}
           {item.remediationBadge ? (
             <span className={`audit-quality-badge ${item.remediationBadge.className}`}>
               {item.remediationBadge.label}
@@ -802,45 +829,24 @@ function auditQualityBadges(item: AuditChangeItem): Array<{ className: string; l
   return badges;
 }
 
-function remediationBadgeForDiff(
-  diffId: string,
-  summary?: TaskOcrRemediationSummary | null,
-): { className: string; label: string } | null {
-  const action = summary?.actions
-    .filter((item) => item.diff_id === diffId)
-    .sort((left, right) => remediationStatusPriority(right.status) - remediationStatusPriority(left.status))[0];
-  if (!action) {
+function remediationBadgeForItem(item: AuditItem): { className: string; label: string } | null {
+  const statuses = item.remediation_context.statuses;
+  if (statuses.length === 0) {
     return null;
   }
-  if (action.status === "MANUAL_REVIEW_REQUIRED") {
+  if (item.remediation_context.requires_manual_review || statuses.includes("MANUAL_REVIEW_REQUIRED")) {
     return { className: "needs-review", label: "需人工处置" };
   }
-  if (action.status === "PLANNED") {
+  if (statuses.includes("FAILED")) {
+    return { className: "needs-review", label: "处置未完成" };
+  }
+  if (statuses.includes("PLANNED")) {
     return { className: "needs-review", label: "处置规划" };
   }
-  if (action.status === "SUCCEEDED") {
+  if (statuses.includes("SUCCEEDED")) {
     return { className: "merged", label: "已自动处置" };
   }
   return { className: "needs-review", label: "处置未完成" };
-}
-
-function remediationStatusPriority(status: TaskOcrRemediationSummary["actions"][number]["status"]): number {
-  if (status === "MANUAL_REVIEW_REQUIRED") {
-    return 5;
-  }
-  if (status === "FAILED") {
-    return 4;
-  }
-  if (status === "PLANNED") {
-    return 3;
-  }
-  if (status === "SKIPPED") {
-    return 2;
-  }
-  if (status === "SUCCEEDED") {
-    return 1;
-  }
-  return 0;
 }
 
 function diffTypeLabel(type: DiffFilter): string {

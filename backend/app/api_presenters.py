@@ -19,17 +19,13 @@ from app.api_schemas import (
 )
 from app.infrastructure.task_runner import TaskJob
 from app.models import CompareTask
-from app.services.audit_summary import AuditItem, build_audit_items
+from app.services.audit_summary import AuditItem, build_task_audit_items, project_diff_reviews
 from app.services.report_generator import build_report_filename
 from app.utils.json_utils import to_jsonable
 
 
 def compare_task_response(task: CompareTask, *, retry_eligible: bool = False) -> CompareTaskResponse:
-    audit_items = build_audit_items(
-        task.diffs,
-        task.audit_item_reviews,
-        broadcast_legacy=not task.audit_item_reviews_normalized,
-    )
+    audit_items = build_task_audit_items(task)
     review_counts = Counter(item.review_status for item in audit_items)
     data = {
         "task_id": task.task_id,
@@ -139,9 +135,10 @@ def diff_response(diff) -> CompareDiffResponse:
 
 
 def compare_diff_list_response(task: CompareTask) -> CompareDiffListResponse:
+    projected_diffs = project_diff_reviews(task.diffs, build_task_audit_items(task))
     return CompareDiffListResponse(
         task_id=task.task_id,
-        diffs=[diff_response(diff) for diff in task.diffs],
+        diffs=[diff_response(diff) for diff in projected_diffs],
     )
 
 
@@ -150,11 +147,7 @@ def artifact_filenames(paths: dict[str, str]) -> dict[str, str]:
 
 
 def review_stats(task: CompareTask) -> ReviewStatsResponse:
-    items = build_audit_items(
-        task.diffs,
-        task.audit_item_reviews,
-        broadcast_legacy=not task.audit_item_reviews_normalized,
-    )
+    items = build_task_audit_items(task)
     return ReviewStatsResponse(
         total_count=len(items),
         reviewed_count=task.reviewed_count,
@@ -205,6 +198,21 @@ def audit_item_response(item: AuditItem) -> AuditItemResponse:
         review_flags=item.review_flags,
         text_confidence=item.text_confidence,
         match_confidence=item.match_confidence,
+        ocr_context={
+            "affected": item.ocr_context.affected,
+            "statuses": list(item.ocr_context.statuses),
+            "reasons": list(item.ocr_context.reasons),
+            "sides": list(item.ocr_context.sides),
+            "page_numbers": list(item.ocr_context.page_numbers),
+        },
+        remediation_context={
+            "action_ids": list(item.remediation_context.action_ids),
+            "action_types": list(item.remediation_context.action_types),
+            "statuses": list(item.remediation_context.statuses),
+            "changed_evidence": item.remediation_context.changed_evidence,
+            "changed_diff_text": item.remediation_context.changed_diff_text,
+            "requires_manual_review": item.remediation_context.requires_manual_review,
+        },
         review_status=item.review_status,
         review_comment=item.review_comment,
         reviewed_by=item.reviewed_by,

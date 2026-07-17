@@ -18,7 +18,7 @@ from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate, Spacer, T
 
 from app.config import settings
 from app.models import CompareTask, DiffItem, DiffType, TextRange
-from app.services.audit_summary import AuditItem, build_audit_items
+from app.services.audit_summary import AuditItem, build_task_audit_items
 
 _SOURCE_TYPE_ORDER = {
     "clause": 0,
@@ -55,15 +55,7 @@ def build_report_filename(task: CompareTask) -> str:
 
 
 def _visible_audit_items(task: CompareTask) -> list[AuditItem]:
-    return [
-        item
-        for item in build_audit_items(
-            task.diffs,
-            task.audit_item_reviews,
-            broadcast_legacy=not task.audit_item_reviews_normalized,
-        )
-        if item.review_status != "IGNORED"
-    ]
+    return [item for item in build_task_audit_items(task) if item.review_status != "IGNORED"]
 
 
 class ReportGenerator:

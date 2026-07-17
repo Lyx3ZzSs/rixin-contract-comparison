@@ -115,6 +115,23 @@ class TextRangeResponse(BaseModel):
     highlight_type: DiffType = "MODIFY"
 
 
+class AuditItemOcrContextResponse(BaseModel):
+    affected: bool = False
+    statuses: list[OcrQualityStatus] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+    sides: list[OcrQualitySide] = Field(default_factory=list)
+    page_numbers: list[int] = Field(default_factory=list)
+
+
+class AuditItemRemediationContextResponse(BaseModel):
+    action_ids: list[str] = Field(default_factory=list)
+    action_types: list[OcrRemediationActionType] = Field(default_factory=list)
+    statuses: list[OcrRemediationStatus] = Field(default_factory=list)
+    changed_evidence: bool = False
+    changed_diff_text: bool = False
+    requires_manual_review: bool = False
+
+
 class AuditItemResponse(BaseModel):
     audit_item_id: str
     diff_id: str
@@ -133,6 +150,10 @@ class AuditItemResponse(BaseModel):
     review_flags: list[str] = Field(default_factory=list)
     text_confidence: float | None = None
     match_confidence: str = ""
+    ocr_context: AuditItemOcrContextResponse = Field(default_factory=AuditItemOcrContextResponse)
+    remediation_context: AuditItemRemediationContextResponse = Field(
+        default_factory=AuditItemRemediationContextResponse
+    )
     review_status: ReviewStatus = "UNREVIEWED"
     review_comment: str = ""
     reviewed_by: str = ""

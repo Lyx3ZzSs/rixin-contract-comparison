@@ -1,11 +1,23 @@
 from __future__ import annotations
 
-from app.models import AuditItemReview, BBox, DiffItem, EvidenceBox
+from app.models import (
+    AuditItemReview,
+    BBox,
+    CompareTask,
+    DiffItem,
+    EvidenceBox,
+    OcrRemediationAction,
+    PageOcrQualityProfile,
+    TaskOcrQualitySummary,
+    TaskOcrRemediationSummary,
+)
 from app.services.audit_summary import (
     audit_stats_summary,
     build_audit_items,
     build_audit_stats,
+    build_task_audit_items,
     normalized_audit_item_reviews,
+    project_diff_reviews,
 )
 
 
@@ -213,3 +225,88 @@ def test_normalization_omits_unreviewed_entries() -> None:
     )
 
     assert reviews == {}
+
+
+def test_read_projection_aggregates_normalized_children_without_mutating_diffs() -> None:
+    diff = DiffItem(
+        diff_id="DPROJECT",
+        diff_type="MODIFY",
+        review_status="CONFIRMED",
+        review_comment="legacy",
+        original_evidence=[evidence("old", "MODIFY"), evidence("removed", "DELETE")],
+        compare_evidence=[evidence("new", "MODIFY"), evidence("added", "ADD")],
+    )
+    items = build_audit_items(
+        [diff],
+        {"DPROJECT:ADD": AuditItemReview(review_status="FALSE_POSITIVE", review_comment="canonical")},
+    )
+
+    projected = project_diff_reviews([diff], items)
+
+    assert projected[0] is not diff
+    assert projected[0].review_status == "NEEDS_REVIEW"
+    assert projected[0].review_comment == ""
+    assert diff.review_status == "CONFIRMED"
+    assert diff.review_comment == "legacy"
+
+
+def test_task_audit_items_include_stable_ocr_and_remediation_context_for_all_children() -> None:
+    diff = DiffItem(
+        diff_id="DCONTEXT",
+        diff_type="MODIFY",
+        original_evidence=[evidence("old", "MODIFY")],
+        compare_evidence=[evidence("new", "MODIFY"), evidence("added", "ADD")],
+    )
+    task = CompareTask(
+        task_id="TCONTEXT",
+        diffs=[diff],
+        ocr_quality_summary=TaskOcrQualitySummary(
+            requires_review=True,
+            profiles=[
+                PageOcrQualityProfile(
+                    side="compare",
+                    page_no=1,
+                    status="LOW_TEXT_CONFIDENCE",
+                    reasons=["LOW_AVG_CONFIDENCE"],
+                    affected_diff_ids=["DCONTEXT"],
+                )
+            ],
+        ),
+        ocr_remediation_summary=TaskOcrRemediationSummary(
+            actions=[
+                OcrRemediationAction(
+                    action_id="compare:1:DCONTEXT:RELOCATE_EVIDENCE",
+                    action_type="RELOCATE_EVIDENCE",
+                    reason="EVIDENCE_UNRELIABLE",
+                    status="SUCCEEDED",
+                    side="compare",
+                    page_no=1,
+                    diff_id="DCONTEXT",
+                    changed_evidence=True,
+                    review_flags_added=["OCR_REMEDIATION_EVIDENCE_RELOCATED"],
+                )
+            ]
+        ),
+    )
+
+    items = build_task_audit_items(task)
+
+    assert {item.item_id for item in items} == {"DCONTEXT:ADD", "DCONTEXT:MODIFY"}
+    assert {item.ocr_context.statuses for item in items} == {("LOW_TEXT_CONFIDENCE",)}
+    assert {item.ocr_context.reasons for item in items} == {("LOW_AVG_CONFIDENCE",)}
+    assert {item.remediation_context.action_ids for item in items} == {("compare:1:DCONTEXT:RELOCATE_EVIDENCE",)}
+    assert all(item.remediation_context.changed_evidence for item in items)
+
+
+def test_task_audit_item_context_defaults_are_conservative_for_legacy_fallback() -> None:
+    task = CompareTask(
+        task_id="TLEGACYCONTEXT",
+        diffs=[DiffItem(diff_id="DLEGACYCONTEXT", diff_type="DELETE", original_text="missing")],
+    )
+
+    item = build_task_audit_items(task)[0]
+
+    assert item.ocr_context.affected is False
+    assert item.ocr_context.statuses == ()
+    assert item.remediation_context.action_ids == ()
+    assert item.remediation_context.requires_manual_review is False
