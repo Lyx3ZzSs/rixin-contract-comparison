@@ -8,7 +8,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from pydantic import ValidationError as PydanticValidationError
+
 from app.config import Settings, settings
+from app.errors import TaskRepositoryReadError
 from app.models import CompareTask, OcrRawResultPaths
 
 logger = logging.getLogger(__name__)
@@ -50,11 +53,19 @@ class LocalJsonTaskRepository:
         return self._write_task(task.task_id, self._stamped_payload(task.task_id, data))
 
     def load_compare_task(self, task_id: str) -> CompareTask:
-        data = self._read_task_data(task_id)
-        if data.get("task_type") == "extraction":
-            raise FileNotFoundError(f"任务 {task_id} 不是对比任务。")
-        data = self._hydrate_compare_payload(task_id, data)
-        return CompareTask(**data)
+        try:
+            data = self._read_task_data(task_id)
+            if not isinstance(data, dict):
+                cause = TypeError(f"expected JSON object, got {type(data).__name__}")
+                raise TaskRepositoryReadError(f"任务 {task_id} 的持久化数据无法读取或校验。") from cause
+            if data.get("task_type") == "extraction":
+                raise FileNotFoundError(f"任务 {task_id} 不是对比任务。")
+            data = self._hydrate_compare_payload(task_id, data)
+            return CompareTask(**data)
+        except FileNotFoundError:
+            raise
+        except (OSError, json.JSONDecodeError, PydanticValidationError, UnicodeError) as exc:
+            raise TaskRepositoryReadError(f"任务 {task_id} 的持久化数据无法读取或校验。") from exc
 
     def list_compare_tasks(self) -> list[CompareTask]:
         tasks: list[CompareTask] = []
@@ -75,8 +86,11 @@ class LocalJsonTaskRepository:
             task = self.load_compare_task(task_id)
             mutate(task)
             data = self._normalize_compare_payload_for_storage(task.task_id, to_jsonable(task))
-            self._write_task(task.task_id, self._stamped_payload(task.task_id, data))
-            return self.load_compare_task(task_id)
+            data = self._stamped_payload(task.task_id, data)
+            committed = CompareTask(**self._hydrate_compare_payload(task.task_id, data))
+            serialized = self._normalize_compare_payload_for_storage(task.task_id, to_jsonable(committed))
+            self._write_task(task.task_id, serialized)
+            return committed.model_copy(deep=True)
 
     def task_json_path(self, task_id: str) -> Path:
         return self.task_dir(task_id) / "task.json"

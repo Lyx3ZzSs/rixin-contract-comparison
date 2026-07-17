@@ -43,5 +43,9 @@ class TaskTransitionConflict(TaskExecutionError):
     """The requested Task or Job state transition is not legal."""
 
 
+class TaskRepositoryReadError(AppError, RuntimeError):
+    """The authoritative Task payload could not be read or validated."""
+
+
 class PipelineContractError(TaskExecutionError):
     pass

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -8,11 +9,14 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar, Protocol
 
-from app.errors import TaskCancelled, TaskStaleLeaseError, TaskTransitionConflict
+from app.errors import TaskCancelled, TaskRepositoryReadError, TaskStaleLeaseError, TaskTransitionConflict
 from app.models import CompareTask, DiffItem, TaskStatus, TaskTerminalReason
 
 if TYPE_CHECKING:
     from app.infrastructure.task_runner import TaskJob, TaskJobStatus, TaskJobType
+
+
+logger = logging.getLogger(__name__)
 
 
 class TaskJobPersistence(Protocol):
@@ -147,8 +151,17 @@ class ExecutionStateCoordinator:
         with self._process_lock:
             now = _utc_now()
             for job in self.list_jobs():
-                if self._has_matching_terminal_task(job):
-                    continue
+                try:
+                    if self._has_matching_terminal_task(job):
+                        continue
+                except TaskRepositoryReadError:
+                    logger.warning(
+                        "Skipping task job claim because authoritative Task read failed: task_id=%s job_id=%s",
+                        job.task_id,
+                        job.job_id,
+                        exc_info=True,
+                    )
+                    return None
                 if self._is_expired_at_attempt_limit(job, now):
                     candidate = job.model_copy(deep=True)
                     candidate.status = "FAILED"

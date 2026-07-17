@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.config import Settings
-from app.errors import TaskCancelled, TaskStaleLeaseError
+from app.errors import TaskCancelled, TaskRepositoryReadError, TaskStaleLeaseError
 from app.infrastructure.execution_state import (
     CancellationToken,
     ExecutionStateCoordinator,
@@ -310,6 +310,72 @@ def test_persistence_failure_leaves_memory_snapshot_unchanged(tmp_path: Path, mo
 
     assert coordinator.load(job.job_id).status == "QUEUED"
     assert repository.load(job.job_id).status == "QUEUED"
+
+
+def test_claim_skips_round_when_task_primary_read_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    coordinator, _job_repository, task_repository, _publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TREAD_SKIP")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+
+    def fail_read(_task_id: str) -> CompareTask:
+        raise TaskRepositoryReadError("task primary unavailable")
+
+    monkeypatch.setattr(task_repository, "load_compare_task", fail_read)
+    caplog.set_level("WARNING", logger="app.infrastructure.execution_state")
+
+    assert coordinator.claim_next(worker_id="worker-1", lease_seconds=30) is None
+    assert coordinator.load(job.job_id).status == "QUEUED"
+    assert job.task_id in caplog.text
+    assert job.job_id in caplog.text
+
+
+def test_claim_recovers_after_task_primary_read_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator, _job_repository, task_repository, _publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TREAD_RECOVERY")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    load_task = task_repository.load_compare_task
+    attempts = 0
+
+    def fail_once(task_id: str) -> CompareTask:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TaskRepositoryReadError("transient task primary read failure")
+        return load_task(task_id)
+
+    monkeypatch.setattr(task_repository, "load_compare_task", fail_once)
+
+    assert coordinator.claim_next(worker_id="worker-1", lease_seconds=30) is None
+    claimed = coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
+
+    assert claimed is not None
+    assert (claimed.job_id, claimed.status) == (job.job_id, "RUNNING")
+
+
+def test_claim_does_not_swallow_programming_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator, _job_repository, task_repository, _publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TPROGRAMMING_ERROR")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+
+    def fail_programming(_task_id: str) -> CompareTask:
+        raise RuntimeError("programming defect")
+
+    monkeypatch.setattr(task_repository, "load_compare_task", fail_programming)
+
+    with pytest.raises(RuntimeError, match="programming defect"):
+        coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
+
+    assert coordinator.load(job.job_id).status == "QUEUED"
 
 
 def test_repeated_cancellation_token_checks_only_read_memory_snapshot(

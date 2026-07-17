@@ -4,10 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 
 from app.config import settings
 from app.config import Settings
-from app.errors import TaskTransitionConflict
+from app.errors import TaskRepositoryReadError, TaskTransitionConflict
 from app.infrastructure.task_repository import LocalJsonTaskRepository, build_task_repository
 from app.models import CompareTask, DiffItem
 
@@ -79,6 +80,89 @@ def test_local_json_task_repository_partial_update_increments_revision(tmp_path:
     assert updated.stage == "second"
     assert updated.original_filename == "original.pdf"
     assert updated.revision == first.revision + 1
+
+
+def test_local_json_task_repository_update_returns_isolated_committed_snapshot(tmp_path: Path) -> None:
+    repository = configure_task_storage(tmp_path)
+    repository.save_compare_task(CompareTask(task_id="TISOLATED", stage="first"))
+
+    updated = repository.update_compare_task(
+        "TISOLATED",
+        lambda task: setattr(task, "stage", "second"),
+    )
+    committed_revision = updated.revision
+    updated.stage = "caller mutation"
+    updated.revision = 999
+
+    stored = repository.load_compare_task("TISOLATED")
+    assert (stored.stage, stored.revision) == ("second", committed_revision)
+
+
+def test_local_json_task_repository_validates_update_before_primary_write(tmp_path: Path) -> None:
+    repository = configure_task_storage(tmp_path)
+    repository.save_compare_task(CompareTask(task_id="TVALIDATE_BEFORE_WRITE", stage="before"))
+    primary_path = repository.task_json_path("TVALIDATE_BEFORE_WRITE")
+    before = primary_path.read_text(encoding="utf-8")
+
+    with pytest.raises(PydanticValidationError):
+        repository.update_compare_task(
+            "TVALIDATE_BEFORE_WRITE",
+            lambda task: setattr(task, "status", "INVALID"),
+        )
+
+    assert primary_path.read_text(encoding="utf-8") == before
+    assert repository.load_compare_task("TVALIDATE_BEFORE_WRITE").stage == "before"
+
+
+def test_load_compare_task_preserves_missing_task_error(tmp_path: Path) -> None:
+    repository = configure_task_storage(tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="任务不存在"):
+        repository.load_compare_task("TMISSING")
+
+
+def test_load_compare_task_wraps_os_read_error_with_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = configure_task_storage(tmp_path)
+    repository.save_compare_task(CompareTask(task_id="TREAD_OS_ERROR"))
+
+    def fail_read(_task_id: str) -> dict[str, object]:
+        raise OSError("primary unavailable")
+
+    monkeypatch.setattr(repository, "_read_task_data", fail_read)
+
+    with pytest.raises(TaskRepositoryReadError, match="TREAD_OS_ERROR") as raised:
+        repository.load_compare_task("TREAD_OS_ERROR")
+
+    assert isinstance(raised.value.__cause__, OSError)
+    assert str(raised.value.__cause__) == "primary unavailable"
+
+
+@pytest.mark.parametrize(
+    ("payload", "cause_type"),
+    [
+        ("{", json.JSONDecodeError),
+        ("[]", TypeError),
+        (json.dumps({"task_id": "TINVALID_DATA", "status": "INVALID"}), PydanticValidationError),
+    ],
+)
+def test_load_compare_task_wraps_corrupt_or_invalid_primary_data(
+    tmp_path: Path,
+    payload: str,
+    cause_type: type[Exception],
+) -> None:
+    repository = configure_task_storage(tmp_path)
+    task_id = "TINVALID_DATA"
+    path = repository.task_json_path(task_id)
+    path.parent.mkdir(parents=True)
+    path.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(TaskRepositoryReadError, match=task_id) as raised:
+        repository.load_compare_task(task_id)
+
+    assert isinstance(raised.value.__cause__, cause_type)
 
 
 def test_local_json_task_repository_skips_invalid_list_entries(tmp_path: Path) -> None:

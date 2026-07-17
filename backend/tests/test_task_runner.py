@@ -10,7 +10,13 @@ import pytest
 
 from app.application.compare_tasks import CompareTaskApplication
 from app.config import Settings
-from app.errors import TaskCancelled, TaskExecutionError, TaskStaleLeaseError, TaskTransitionConflict
+from app.errors import (
+    TaskCancelled,
+    TaskExecutionError,
+    TaskRepositoryReadError,
+    TaskStaleLeaseError,
+    TaskTransitionConflict,
+)
 from app.infrastructure.execution_state import CancellationToken, ExecutionStateCoordinator, TaskExecutionContext
 from app.infrastructure.reconciliation import reconcile_terminal_jobs
 from app.infrastructure.task_repository import LocalJsonTaskRepository
@@ -416,6 +422,212 @@ def test_manifest_failure_after_primary_replace_preserves_task_job_association(
     assert (stored_task.active_job_id, stored_task.status) == (expected_job_id, "PROCESSING")
     assert (stored_job.job_id, stored_job.status) == (expected_job_id, "QUEUED")
     assert [item.job_id for item in runner.coordinator.list_jobs()] == expected_job_ids
+
+
+@pytest.mark.parametrize("operation", ["submit", "retry"])
+def test_post_commit_task_reload_failure_cannot_split_task_job_association(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+    original_path = tmp_path / "original.pdf"
+    compare_path = tmp_path / "compare.pdf"
+    original_path.touch()
+    compare_path.touch()
+    task_id = f"TPOST_COMMIT_READ_{operation.upper()}"
+    task_repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            original_pdf_path=str(original_path),
+            compare_pdf_path=str(compare_path),
+        )
+    )
+    expected_execution_no = 1
+    expected_job_ids: list[str] = []
+    if operation == "retry":
+        first_job_id = f"compare:{task_id}:1"
+        task_repository.update_compare_task(
+            task_id,
+            lambda task: setattr(task, "active_job_id", first_job_id),
+        )
+        first = runner.coordinator.enqueue(
+            TaskJob(
+                job_id=first_job_id,
+                task_id=task_id,
+                task_type="compare",
+                execution_no=1,
+                max_attempts=1,
+            )
+        )
+        claimed = runner.coordinator.claim_next(worker_id="seed-worker", lease_seconds=30)
+        assert claimed is not None
+        runner.coordinator.commit_failure(
+            first.job_id,
+            worker_id="seed-worker",
+            error="first failure",
+            retry_delay_seconds=0,
+        )
+        expected_execution_no = 2
+        expected_job_ids.append(first.job_id)
+
+    expected_job_id = f"compare:{task_id}:{expected_execution_no}"
+    load_committed_attempts: list[str] = []
+    load_compare_task = task_repository.load_compare_task
+
+    def fail_if_primary_is_already_committed(load_task_id: str) -> CompareTask:
+        stored = load_compare_task(load_task_id)
+        if stored.active_job_id == expected_job_id:
+            load_committed_attempts.append(stored.active_job_id)
+            raise OSError("post-commit task read unavailable")
+        return stored
+
+    monkeypatch.setattr(task_repository, "load_compare_task", fail_if_primary_is_already_committed)
+
+    if operation == "submit":
+        job = application.submit_compare(
+            original_path=original_path,
+            compare_path=compare_path,
+            task_id=task_id,
+            original_filename=original_path.name,
+            compare_filename=compare_path.name,
+        )
+    else:
+        job = application.retry_compare(task_id)
+
+    expected_job_ids.append(expected_job_id)
+    stored_task = load_compare_task(task_id)
+    stored_job = runner.coordinator._repository.load(expected_job_id)
+
+    assert load_committed_attempts == []
+    assert job.job_id == expected_job_id
+    assert (stored_task.active_job_id, stored_task.status) == (expected_job_id, "PROCESSING")
+    assert (stored_job.job_id, stored_job.status) == (expected_job_id, "QUEUED")
+    assert [item.job_id for item in runner.coordinator.list_jobs()] == expected_job_ids
+
+
+@pytest.mark.parametrize("operation", ["submit", "retry"])
+def test_task_primary_write_failure_reports_error_without_changing_task_or_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+    original_path = tmp_path / "original.pdf"
+    compare_path = tmp_path / "compare.pdf"
+    original_path.touch()
+    compare_path.touch()
+    task_id = f"TPRE_COMMIT_WRITE_{operation.upper()}"
+    task_repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            stage="before write",
+            original_pdf_path=str(original_path),
+            compare_pdf_path=str(compare_path),
+        )
+    )
+    expected_execution_no = 1
+    expected_job_ids: list[str] = []
+    if operation == "retry":
+        first_job_id = f"compare:{task_id}:1"
+        task_repository.update_compare_task(
+            task_id,
+            lambda task: setattr(task, "active_job_id", first_job_id),
+        )
+        first = runner.coordinator.enqueue(
+            TaskJob(
+                job_id=first_job_id,
+                task_id=task_id,
+                task_type="compare",
+                execution_no=1,
+                max_attempts=1,
+            )
+        )
+        claimed = runner.coordinator.claim_next(worker_id="seed-worker", lease_seconds=30)
+        assert claimed is not None
+        runner.coordinator.commit_failure(
+            first.job_id,
+            worker_id="seed-worker",
+            error="first failure",
+            retry_delay_seconds=0,
+        )
+        expected_execution_no = 2
+        expected_job_ids.append(first.job_id)
+
+    before = task_repository.load_compare_task(task_id)
+    expected_job_id = f"compare:{task_id}:{expected_execution_no}"
+    write_task = task_repository._write_task
+
+    def fail_before_primary_replace(write_task_id: str, data: dict[str, Any]) -> Path:
+        if data.get("active_job_id") == expected_job_id:
+            raise OSError("task primary unavailable before replace")
+        return write_task(write_task_id, data)
+
+    monkeypatch.setattr(task_repository, "_write_task", fail_before_primary_replace)
+
+    with pytest.raises(OSError, match="task primary unavailable before replace"):
+        if operation == "submit":
+            application.submit_compare(
+                original_path=original_path,
+                compare_path=compare_path,
+                task_id=task_id,
+                original_filename=original_path.name,
+                compare_filename=compare_path.name,
+            )
+        else:
+            application.retry_compare(task_id)
+
+    stored = task_repository.load_compare_task(task_id)
+    assert stored.model_dump() == before.model_dump()
+    assert [item.job_id for item in runner.coordinator.list_jobs()] == expected_job_ids
+
+
+def test_worker_survives_task_read_error_and_completes_after_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+    task_id = "TWORKER_READ_RECOVERY"
+    task_repository.save_compare_task(CompareTask(task_id=task_id))
+    job = application.submit_compare(
+        original_path=tmp_path / "original.pdf",
+        compare_path=tmp_path / "compare.pdf",
+        task_id=task_id,
+        original_filename="original.pdf",
+        compare_filename="compare.pdf",
+    )
+    load_task = task_repository.load_compare_task
+    failed_once = threading.Event()
+
+    def fail_once(load_task_id: str) -> CompareTask:
+        if not failed_once.is_set():
+            failed_once.set()
+            raise TaskRepositoryReadError("transient task read failure")
+        return load_task(load_task_id)
+
+    monkeypatch.setattr(task_repository, "load_compare_task", fail_once)
+    runner.register_handler("compare", lambda context, _payload: load_task(context.task_id))
+    caplog.set_level("WARNING", logger="app.infrastructure.execution_state")
+
+    runner.start()
+    try:
+        assert failed_once.wait(1)
+        wait_until(lambda: runner.coordinator.load(job.job_id).status == "SUCCEEDED")
+        worker_survived = any(thread.is_alive() for thread in runner._threads)
+    finally:
+        runner.stop()
+
+    assert worker_survived
+    assert runner.coordinator.load(job.job_id).status == "SUCCEEDED"
+    assert task_id in caplog.text
+    assert job.job_id in caplog.text
 
 
 def test_submit_rejects_legacy_raw_job_id_collision_with_different_identity(tmp_path: Path) -> None:
