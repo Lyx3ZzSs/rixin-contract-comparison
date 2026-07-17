@@ -33,6 +33,7 @@ from app.models import (
     CompareTask,
     DiffItem,
     EvidenceBox,
+    NormalizedBBox,
     OcrRemediationAction,
     PageOcrQualityProfile,
     TaskOcrRemediationSummary,
@@ -1374,27 +1375,78 @@ def test_review_persistence_failure_does_not_partially_mutate_task(tmp_path: Pat
     assert persisted.diffs[0].review_status == "UNREVIEWED"
 
 
-def test_unreviewed_review_removes_canonical_entry_but_keeps_normalized_marker(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "request_payload", [{"review_status": "UNREVIEWED"}, {"review_status": "UNREVIEWED", "review_comment": ""}]
+)
+def test_unreviewed_review_always_removes_canonical_entry_but_keeps_normalized_marker(
+    tmp_path: Path,
+    request_payload: dict[str, str],
+) -> None:
     configure_storage(tmp_path)
     save_task(
         CompareTask(
             task_id="TRESETREVIEW",
             status="COMPLETED",
+            report_revision=4,
             diffs=[_mixed_review_diff()],
-            audit_item_reviews={"DREVIEW:ADD": AuditItemReview(review_status="IGNORED")},
+            audit_item_reviews={
+                "DREVIEW:ADD": AuditItemReview(
+                    review_status="IGNORED",
+                    review_comment="旧" * 80_000,
+                )
+            },
             audit_item_reviews_normalized=True,
         )
     )
 
     response = TestClient(app).patch(
         "/api/compare/TRESETREVIEW/audit-items/DREVIEW:ADD/review",
+        json=request_payload,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["report_revision"] == 5
+    assert response.json()["audit_item"]["review_status"] == "UNREVIEWED"
+    assert response.json()["audit_item"]["review_comment"] == ""
+    assert response.json()["review_stats"]["reviewed_count"] == 0
+    persisted = load_task("TRESETREVIEW")
+    assert persisted.audit_item_reviews == {}
+    assert persisted.audit_item_reviews_normalized is True
+    assert persisted.report_revision == 5
+    assert persisted.diffs[0].review_status == "UNREVIEWED"
+
+
+def test_bulk_unreviewed_review_removes_all_child_entries_and_updates_stats_once(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TRESETBULKREVIEW",
+            status="COMPLETED",
+            report_revision=7,
+            diffs=[_mixed_review_diff()],
+            audit_item_reviews={
+                f"DREVIEW:{diff_type}": AuditItemReview(
+                    review_status="IGNORED",
+                    review_comment=f"{diff_type} historical comment",
+                )
+                for diff_type in ("ADD", "DELETE", "MODIFY")
+            },
+            audit_item_reviews_normalized=True,
+        )
+    )
+
+    response = TestClient(app).patch(
+        "/api/compare/TRESETBULKREVIEW/diffs/DREVIEW/review",
         json={"review_status": "UNREVIEWED"},
     )
 
     assert response.status_code == 200, response.text
-    persisted = load_task("TRESETREVIEW")
+    assert response.json()["diff"]["review_status"] == "UNREVIEWED"
+    assert response.json()["review_stats"]["reviewed_count"] == 0
+    persisted = load_task("TRESETBULKREVIEW")
     assert persisted.audit_item_reviews == {}
     assert persisted.audit_item_reviews_normalized is True
+    assert persisted.report_revision == 8
     assert persisted.diffs[0].review_status == "UNREVIEWED"
 
 
@@ -1731,6 +1783,18 @@ def test_diff_and_audit_api_responses_filter_invalid_historical_evidence_without
         ),
         EvidenceBox(
             page_no=2,
+            bbox=BBox(
+                x0=0,
+                y0=0,
+                x1=0,
+                y1=0,
+                normalized=NormalizedBBox(x0=0, y0=0, x1=1, y1=1),
+            ),
+            text="normalized only",
+            highlight_type="ADD",
+        ),
+        EvidenceBox(
+            page_no=2,
             bbox=BBox(x0=1, y0=2, x1=float("inf"), y1=4),
             text="infinite coordinate",
             highlight_type="ADD",
@@ -1796,8 +1860,8 @@ def test_diff_and_audit_api_responses_filter_invalid_historical_evidence_without
     assert item_review_response.json()["audit_item"]["original_evidence"] == []
 
     persisted = load_task("THISTORICALINVALIDEVIDENCE")
-    assert len(persisted.diffs[0].compare_evidence) == 6
-    assert len(persisted.diffs[1].original_evidence) == 5
+    assert len(persisted.diffs[0].compare_evidence) == 7
+    assert len(persisted.diffs[1].original_evidence) == 6
     assert any(math.isnan(item.bbox.x1) for item in persisted.diffs[1].original_evidence)
 
 

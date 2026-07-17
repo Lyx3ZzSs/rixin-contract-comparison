@@ -156,7 +156,7 @@ class CompareReviewService:
         item_id: str,
         review: AuditItemReview,
     ) -> None:
-        if review.review_status == "UNREVIEWED" and not review.review_comment:
+        if review.review_status == "UNREVIEWED":
             reviews.pop(item_id, None)
             return
         reviews[item_id] = review

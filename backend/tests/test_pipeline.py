@@ -1334,6 +1334,47 @@ class TestSummaryStage:
 
         assert [diff.diff_id for diff in ctx.task.diffs] == ["D010"]
 
+    def test_final_dedupe_merges_normalized_only_evidence_at_coverage_threshold(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        first = self._located_diff("D010", compare_evidence=False)
+        second = self._located_diff("D020", compare_evidence=False)
+        first.original_evidence[0].bbox = BBox(
+            x0=0,
+            y0=0,
+            x1=0,
+            y1=0,
+            normalized=NormalizedBBox(x0=0, y0=0, x1=1, y1=1),
+        )
+        second.original_evidence[0].bbox = BBox(
+            x0=0,
+            y0=0,
+            x1=0,
+            y1=0,
+            normalized=NormalizedBBox(x0=0.2, y0=0, x1=1.2, y1=1),
+        )
+        ctx.diffs = [first, second]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010"]
+
+    def test_final_dedupe_does_not_mix_normalized_only_and_raw_only_coordinates(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        normalized_only = self._located_diff("D010", compare_evidence=False)
+        raw_only = self._located_diff("D020", original_x0=20, compare_evidence=False)
+        normalized_only.original_evidence[0].bbox = BBox(
+            x0=0,
+            y0=0,
+            x1=0,
+            y1=0,
+            normalized=NormalizedBBox(x0=0, y0=0, x1=1, y1=1),
+        )
+        ctx.diffs = [normalized_only, raw_only]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"]
+
     def test_final_dedupe_does_not_locate_zero_area_raw_or_normalized_bbox(self, tmp_path: Path) -> None:
         zero_bbox = BBox(
             x0=10,
@@ -1367,8 +1408,6 @@ class TestSummaryStage:
         if coordinate_space == "raw":
             first.original_evidence[0].bbox.x1 = invalid_coordinate
             second.original_evidence[0].bbox.x1 = invalid_coordinate
-            first.original_evidence[0].bbox.normalized = NormalizedBBox(x0=0, y0=0, x1=1, y1=1)
-            second.original_evidence[0].bbox.normalized = NormalizedBBox(x0=0.2, y0=0, x1=1.2, y1=1)
         else:
             first.original_evidence[0].bbox.x1 = 0
             second.original_evidence[0].bbox.x1 = 20

@@ -33,7 +33,7 @@ from app.services.document_profiler import DocumentProfiler
 from app.services.document_preparation import DocumentPreparer
 from app.services.document_understanding import DocumentUnderstandingService
 from app.services.evidence_locator import EvidenceLocator
-from app.services.evidence_validity import comparable_bbox_coordinates, is_located_evidence
+from app.services.evidence_validity import comparable_bbox_coordinates, has_dedupe_location
 from app.services.extractors import build_compare_document_extractor, build_document_extractor
 from app.services.extractors.base import (
     DocumentExtractionError,
@@ -2434,8 +2434,8 @@ def _matching_located_evidence(left: DiffItem, right: DiffItem) -> bool:
         (left.original_evidence, right.original_evidence),
         (left.compare_evidence, right.compare_evidence),
     ):
-        left_located = [item for item in left_evidence if _evidence_is_located(item)]
-        right_located = [item for item in right_evidence if _evidence_is_located(item)]
+        left_located = [item for item in left_evidence if _evidence_has_dedupe_location(item)]
+        right_located = [item for item in right_evidence if _evidence_has_dedupe_location(item)]
         if not left_located and not right_located:
             continue
         if not left_located or not right_located:
@@ -2466,8 +2466,8 @@ def coverage(left: BBox, right: BBox) -> float:
     return (intersection_width * intersection_height) / minimum_area
 
 
-def _evidence_is_located(evidence: EvidenceBox) -> bool:
-    return is_located_evidence(evidence)
+def _evidence_has_dedupe_location(evidence: EvidenceBox) -> bool:
+    return has_dedupe_location(evidence)
 
 
 def _bbox_area(coords: tuple[float, float, float, float]) -> float:

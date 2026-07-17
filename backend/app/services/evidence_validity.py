@@ -46,5 +46,15 @@ def is_located_evidence(evidence: EvidenceBox) -> bool:
     return valid_bbox_coordinates(evidence.bbox) is not None
 
 
+def has_dedupe_location(evidence: EvidenceBox) -> bool:
+    page_no = evidence.page_no
+    if isinstance(page_no, bool) or not isinstance(page_no, int) or page_no <= 0:
+        return False
+    return (
+        valid_bbox_coordinates(evidence.bbox, normalized=True) is not None
+        or valid_bbox_coordinates(evidence.bbox) is not None
+    )
+
+
 def valid_evidence_copies(evidence: list[EvidenceBox]) -> list[EvidenceBox]:
     return [item.model_copy(deep=True) for item in evidence if is_located_evidence(item)]
