@@ -24,6 +24,7 @@ from reportlab.pdfgen import canvas
 from app import api_schemas
 from app.api_errors import http_error
 from app.api_presenters import compare_task_response, task_execution_response
+import app.application.compare_tasks as compare_tasks_module
 from app.application.compare_tasks import CompareTaskApplication, default_compare_task_application
 from app.application.submission_recovery import SubmissionRecoveryService
 from app.config import settings
@@ -522,6 +523,79 @@ def test_submission_publish_post_commit_failure_does_not_orphan_final_input(
     assert list(artifact_store.task_root("TPUBLISH_POST_COMMIT").rglob("*.pdf")) == []
 
 
+@pytest.mark.parametrize(
+    ("failure_index", "write_partial"),
+    [
+        (1, True),
+        (1, False),
+        (2, True),
+        (2, False),
+    ],
+    ids=(
+        "original-partial",
+        "original-complete",
+        "compare-partial",
+        "compare-complete",
+    ),
+)
+def test_submission_recovery_removes_preupload_staging_after_stream_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_index: int,
+    write_partial: bool,
+) -> None:
+    application, repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    task_id = f"TPREUPLOAD_{failure_index}_{'PARTIAL' if write_partial else 'COMPLETE'}"
+    stream = compare_tasks_module.stream_upload_to_path
+    calls = 0
+
+    async def stream_then_terminate(upload: UploadFile, destination: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls != failure_index:
+            return await stream(upload, destination)
+        if write_partial:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"%PDF partial upload")
+        else:
+            await stream(upload, destination)
+        raise SystemExit("simulated process termination during upload staging")
+
+    monkeypatch.setattr(compare_tasks_module, "stream_upload_to_path", stream_then_terminate)
+
+    with pytest.raises(SystemExit, match="during upload staging"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id=task_id,
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    journal = recovery_store.load_marker(task_id)
+    attempt_dir = artifact_store.task_root(task_id) / "staging" / journal.attempt_id
+    live_artifact = artifact_store.task_root(task_id) / "uploads" / "original_committed.pdf"
+    assert not (artifact_store.task_root(task_id) / "uploads").exists()
+    live_artifact.parent.mkdir(parents=True, exist_ok=True)
+    live_artifact.write_bytes(b"committed artifact")
+    assert {action.scope for action in journal.actions} == {"attempt"}
+    assert {Path(action.path).name for action in journal.actions} == {
+        "original_original.pdf",
+        "compare_compare.pdf",
+        journal.attempt_id,
+    }
+    assert attempt_dir.exists()
+
+    restarted_store = RecoveryStore(recovery_store.settings)
+    restarted_service = SubmissionRecoveryService(recovery_store=restarted_store, repository=repository)
+    assert restarted_service.recover_all() is True
+    assert not attempt_dir.exists()
+    assert live_artifact.read_bytes() == b"committed artifact"
+    assert not restarted_store.marker_path(task_id).exists()
+
+
 def test_submission_recovery_removes_staging_after_crash_before_first_final_hardlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -924,7 +998,7 @@ def test_submission_task_commit_read_error_conservatively_preserves_inputs(
     assert "authoritative read unavailable" in caplog.text
 
 
-def test_submission_overflow_ledger_omits_never_created_second_file(
+def test_submission_overflow_ledger_keeps_predeclared_second_file_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -952,7 +1026,8 @@ def test_submission_overflow_ledger_omits_never_created_second_file(
         )
 
     assert captured_actions
-    assert all("compare_" not in Path(action.path).name for action in captured_actions)
+    assert any(Path(action.path).name.startswith("compare_") for action in captured_actions)
+    assert any(action.action == "rmdir" for action in captured_actions)
 
 
 def test_submission_job_create_failure_keeps_inputs_and_marks_submission_failed(

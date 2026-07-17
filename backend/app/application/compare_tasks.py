@@ -78,87 +78,92 @@ class CompareTaskApplication:
             compare_filename,
         )
         attempt_dir = staged_original.parent
+        staged_actions = self._staged_recovery_actions(
+            attempt_dir,
+            (staged_original, staged_compare),
+        )
         final_actions: list[RecoveryAction] = []
         task_persisted = False
 
         try:
-            await stream_upload_to_path(original_file, staged_original)
-            await stream_upload_to_path(compare_file, staged_compare)
-            validate_pdf_path(staged_original, original_file.filename or "")
-            validate_pdf_path(staged_compare, compare_file.filename or "")
-            staged_actions = self._staged_recovery_actions(
-                attempt_dir,
-                (staged_original, staged_compare),
-            )
-
-            original_path = self.artifact_store.upload_path(
-                task_id,
-                "original",
-                original_filename,
-            )
-            compare_path = self.artifact_store.upload_path(
-                task_id,
-                "compare",
-                compare_filename,
-            )
-            self._ensure_publish_destinations_absent(original_path, compare_path)
-
-            self._publish_with_ledger(
-                task_id,
-                staged_original,
-                original_path,
+            with self.recovery_store.journal_submission_attempt(
+                task_id=task_id,
                 attempt_id=attempt_id,
-                final_actions=final_actions,
-                attempt_actions=staged_actions,
-            )
-            self._publish_with_ledger(
-                task_id,
-                staged_compare,
-                compare_path,
-                attempt_id=attempt_id,
-                final_actions=final_actions,
-                attempt_actions=staged_actions,
-            )
+                actions=staged_actions,
+            ):
+                await stream_upload_to_path(original_file, staged_original)
+                await stream_upload_to_path(compare_file, staged_compare)
+                validate_pdf_path(staged_original, original_file.filename or "")
+                validate_pdf_path(staged_compare, compare_file.filename or "")
 
-            try:
-                task = self.create_queued_task(
+                original_path = self.artifact_store.upload_path(
                     task_id=task_id,
-                    original_path=original_path,
-                    compare_path=compare_path,
-                    original_filename=original_file.filename or original_filename,
-                    compare_filename=compare_file.filename or compare_filename,
-                    compare_options=compare_options,
-                    owner=owner,
+                    label="original",
+                    filename=original_filename,
                 )
-            except Exception:
-                task_persisted = self._submission_task_was_committed(
+                compare_path = self.artifact_store.upload_path(
+                    task_id=task_id,
+                    label="compare",
+                    filename=compare_filename,
+                )
+                self._ensure_publish_destinations_absent(original_path, compare_path)
+
+                self._publish_with_ledger(
                     task_id,
-                    original_path=original_path,
-                    compare_path=compare_path,
+                    staged_original,
+                    original_path,
+                    attempt_id=attempt_id,
+                    final_actions=final_actions,
+                    attempt_actions=staged_actions,
                 )
-                if task_persisted:
-                    self._finalize_submission_journal(task_id, attempt_id)
-                raise
-            task_persisted = True
-            self._finalize_submission_journal(task_id, attempt_id)
-            try:
-                self.submit_compare(
-                    original_path=original_path,
-                    compare_path=compare_path,
-                    task_id=task_id,
-                    original_filename=original_file.filename,
-                    compare_filename=compare_file.filename,
-                    compare_options=compare_options,
+                self._publish_with_ledger(
+                    task_id,
+                    staged_compare,
+                    compare_path,
+                    attempt_id=attempt_id,
+                    final_actions=final_actions,
+                    attempt_actions=staged_actions,
                 )
-            except Exception as launch_error:
-                if not self._has_durable_job(task_id):
+
+                try:
+                    task = self.create_queued_task(
+                        task_id=task_id,
+                        original_path=original_path,
+                        compare_path=compare_path,
+                        original_filename=original_file.filename or original_filename,
+                        compare_filename=compare_file.filename or compare_filename,
+                        compare_options=compare_options,
+                        owner=owner,
+                    )
+                except Exception:
+                    task_persisted = self._submission_task_was_committed(
+                        task_id,
+                        original_path=original_path,
+                        compare_path=compare_path,
+                    )
+                    if task_persisted:
+                        self._finalize_submission_journal(task_id, attempt_id)
                     raise
-                logger.critical(
-                    "Worker launch failed after durable submission; queued Job retained: task_id=%s launch_error=%s",
-                    task_id,
-                    self._error_text(launch_error),
-                    exc_info=True,
-                )
+                task_persisted = True
+                self._finalize_submission_journal(task_id, attempt_id)
+                try:
+                    self.submit_compare(
+                        original_path=original_path,
+                        compare_path=compare_path,
+                        task_id=task_id,
+                        original_filename=original_file.filename,
+                        compare_filename=compare_file.filename,
+                        compare_options=compare_options,
+                    )
+                except Exception as launch_error:
+                    if not self._has_durable_job(task_id):
+                        raise
+                    logger.critical(
+                        "Worker launch failed after durable submission; queued Job retained: task_id=%s launch_error=%s",
+                        task_id,
+                        self._error_text(launch_error),
+                        exc_info=True,
+                    )
         except asyncio.CancelledError as primary:
             self._handle_submission_exception(
                 task_id=task_id,
@@ -284,10 +289,8 @@ class CompareTaskApplication:
         actions = [
             RecoveryAction(action="unlink", path=str(path))
             for path in staged_paths
-            if path.exists() or path.is_symlink()
         ]
-        if attempt_dir.exists():
-            actions.append(RecoveryAction(action="rmdir", path=str(attempt_dir)))
+        actions.append(RecoveryAction(action="rmdir", path=str(attempt_dir)))
         return actions
 
     def _submission_task_was_committed(

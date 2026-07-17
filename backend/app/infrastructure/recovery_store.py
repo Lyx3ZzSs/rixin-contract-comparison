@@ -159,6 +159,42 @@ class RecoveryStore:
         return recovered_all
 
     @contextmanager
+    def journal_submission_attempt(
+        self,
+        *,
+        task_id: str,
+        attempt_id: str,
+        actions: list[RecoveryAction],
+    ) -> Iterator[RecoveryMarker]:
+        """Record all staging cleanup before bytes are written for an attempt.
+
+        Holding the task lock through the caller's upload and publish sequence
+        prevents a concurrent recovery from consuming an otherwise empty
+        staging journal before the first stream creates its destination.
+        """
+        marker = RecoveryMarker(
+            task_id=task_id,
+            attempt_id=attempt_id,
+            primary_error="submission attempt pending task persistence",
+            actions=actions,
+        )
+        self._validate_actions(marker)
+        with self._task_marker_lock(task_id):
+            entries = self._load_marker_entries_unlocked(task_id)
+            existing = next((entry for entry in entries if entry.attempt_id == attempt_id), None)
+            if existing is None:
+                entries.append(marker)
+                self._write_marker_entries_unlocked(task_id, entries)
+            else:
+                merged_actions = self._merge_actions(existing.actions, actions)
+                if merged_actions != existing.actions:
+                    existing.actions = merged_actions
+                    existing.updated_at = datetime.now(UTC).isoformat()
+                    self._write_marker_entries_unlocked(task_id, entries)
+                marker = existing
+            yield marker.model_copy(deep=True)
+
+    @contextmanager
     def journal_final_publish(
         self,
         *,
