@@ -18,3 +18,7 @@ def is_located_evidence(evidence: EvidenceBox) -> bool:
         return False
     x0, y0, x1, y1 = coordinates
     return x1 > x0 and y1 > y0
+
+
+def valid_evidence_copies(evidence: list[EvidenceBox]) -> list[EvidenceBox]:
+    return [item.model_copy(deep=True) for item in evidence if is_located_evidence(item)]

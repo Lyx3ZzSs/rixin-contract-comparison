@@ -282,6 +282,7 @@ export interface AuditItem {
   compare_evidence: EvidenceBox[];
   evidence_state: "LOCATED" | "UNLOCATED";
   quality_status: DiffQualityStatus;
+  structural_flags: string[];
   review_flags: string[];
   text_confidence?: number | null;
   match_confidence: string;

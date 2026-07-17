@@ -8,11 +8,18 @@ vi.mock("./authFetch", () => ({
 }));
 
 import { compareContracts, getApiBaseUrl, getCompareRecords, toApiUrl } from "./api";
+import type { AuditItem } from "../types";
+
+const auditStructuralContract: Pick<AuditItem, "structural_flags"> = { structural_flags: [] };
 
 describe("api client URLs", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+  });
+
+  it("keeps backend structural flags on the audit item contract", () => {
+    expect(auditStructuralContract.structural_flags).toEqual([]);
   });
 
   it("uses the configured API base URL without duplicate slashes", () => {

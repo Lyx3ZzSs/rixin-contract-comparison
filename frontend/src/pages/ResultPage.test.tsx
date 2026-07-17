@@ -69,6 +69,7 @@ vi.mock("../lib/api", () => ({
       compare_evidence: [],
       evidence_state: "LOCATED",
       quality_status: "NORMAL",
+      structural_flags: [],
       review_flags: [],
       ocr_context: { affected: false, statuses: [], reasons: [], sides: [], page_numbers: [] },
       remediation_context: {
@@ -321,6 +322,7 @@ function backendAuditItems(diffs: DiffItem[]): AuditItem[] {
         compare_evidence: compare,
         evidence_state: located ? "LOCATED" as const : "UNLOCATED" as const,
         quality_status: located ? (diff.quality_status ?? "NORMAL") : "NEEDS_REVIEW" as const,
+        structural_flags: [],
         review_flags: located ? (diff.review_flags ?? []) : [...(diff.review_flags ?? []), "EVIDENCE_UNLOCATED"],
         text_confidence: diff.text_confidence,
         match_confidence: "",

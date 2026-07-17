@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -1639,6 +1640,105 @@ def test_review_api_accepts_comment_at_limit_and_rejects_longer_comment(tmp_path
     assert accepted.json()["audit_item"]["review_comment"] == allowed_comment
     assert rejected.status_code == 422
     assert rejected.json()["detail"][0]["type"] == "string_too_long"
+
+
+def test_diff_and_audit_api_responses_filter_invalid_historical_evidence_without_mutation(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    valid = EvidenceBox(
+        page_no=2,
+        bbox=BBox(x0=10, y0=20, x1=30, y1=40),
+        text="valid evidence",
+        highlight_type="ADD",
+    )
+    invalid_add = [
+        EvidenceBox(
+            page_no=0,
+            bbox=BBox(x0=1, y0=2, x1=3, y1=4),
+            text="page zero",
+            highlight_type="ADD",
+        ),
+        EvidenceBox(
+            page_no=-1,
+            bbox=BBox(x0=1, y0=2, x1=3, y1=4),
+            text="negative page",
+            highlight_type="ADD",
+        ),
+        EvidenceBox(
+            page_no=2,
+            bbox=BBox(x0=1, y0=2, x1=1, y1=4),
+            text="zero area",
+            highlight_type="ADD",
+        ),
+        EvidenceBox(
+            page_no=2,
+            bbox=BBox(x0=1, y0=2, x1=float("inf"), y1=4),
+            text="infinite coordinate",
+            highlight_type="ADD",
+        ),
+        EvidenceBox(
+            page_no=2,
+            bbox=BBox(x0=1, y0=2, x1=float("nan"), y1=4),
+            text="nan coordinate",
+            highlight_type="ADD",
+        ),
+    ]
+    invalid_delete = [item.model_copy(update={"highlight_type": "DELETE"}, deep=True) for item in invalid_add]
+    save_task(
+        CompareTask(
+            task_id="THISTORICALINVALIDEVIDENCE",
+            status="COMPLETED",
+            diffs=[
+                DiffItem(
+                    diff_id="DMIXED",
+                    diff_type="ADD",
+                    compare_evidence=[valid, *invalid_add],
+                ),
+                DiffItem(
+                    diff_id="DALLINVALID",
+                    diff_type="DELETE",
+                    original_evidence=invalid_delete,
+                ),
+            ],
+        )
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    task_response = client.get("/api/compare/THISTORICALINVALIDEVIDENCE")
+    diffs_response = client.get("/api/compare/THISTORICALINVALIDEVIDENCE/diffs")
+    diff_review_response = client.patch(
+        "/api/compare/THISTORICALINVALIDEVIDENCE/diffs/DALLINVALID/review",
+        json={"review_status": "CONFIRMED"},
+    )
+    item_review_response = client.patch(
+        "/api/compare/THISTORICALINVALIDEVIDENCE/audit-items/DALLINVALID:DELETE/review",
+        json={"review_status": "NEEDS_REVIEW"},
+    )
+
+    for response in [task_response, diffs_response, diff_review_response, item_review_response]:
+        assert response.status_code == 200, response.text
+        json.loads(
+            response.content,
+            parse_constant=lambda value: (_ for _ in ()).throw(AssertionError(f"invalid JSON number: {value}")),
+        )
+        assert b"NaN" not in response.content
+        assert b"Infinity" not in response.content
+
+    task_items = {item["diff_id"]: item for item in task_response.json()["audit_items"]}
+    assert [item["text"] for item in task_items["DMIXED"]["compare_evidence"]] == ["valid evidence"]
+    assert task_items["DALLINVALID"]["original_evidence"] == []
+    assert task_items["DALLINVALID"]["evidence_state"] == "UNLOCATED"
+    assert "page zero" in task_items["DALLINVALID"]["original_text"]
+
+    diffs = {diff["diff_id"]: diff for diff in diffs_response.json()["diffs"]}
+    assert [item["text"] for item in diffs["DMIXED"]["compare_evidence"]] == ["valid evidence"]
+    assert diffs["DALLINVALID"]["original_evidence"] == []
+    assert diff_review_response.json()["diff"]["original_evidence"] == []
+    assert item_review_response.json()["audit_item"]["original_evidence"] == []
+
+    persisted = load_task("THISTORICALINVALIDEVIDENCE")
+    assert len(persisted.diffs[0].compare_evidence) == 6
+    assert len(persisted.diffs[1].original_evidence) == 5
+    assert any(math.isnan(item.bbox.x1) for item in persisted.diffs[1].original_evidence)
 
 
 def test_quality_summary_includes_ocr_quality_counts(tmp_path: Path) -> None:

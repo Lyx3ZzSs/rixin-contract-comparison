@@ -4,6 +4,7 @@ import fitz
 import pytest
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from reportlab.platypus import Paragraph
 
 from app.models import (
     AuditItemReview,
@@ -23,6 +24,7 @@ from app.services.report_generator import (
     _SOURCE_TYPE_ORDER,
     _visible_audit_items,
 )
+from app.services.audit_summary import build_task_audit_items
 
 
 def _make_pdf(path, page_count: int = 6) -> None:
@@ -425,7 +427,17 @@ def test_report_renders_complete_located_and_unlocated_audit_item_evidence(tmp_p
 
 
 def test_report_generates_from_legacy_very_long_context_without_layout_error(tmp_path) -> None:
-    long_comment = "LEGACY-COMMENT-BEGIN-" + ("历史意见" * 20_000) + "-LEGACY-COMMENT-END"
+    long_unbroken_ascii = "ASCII-BEGIN-" + ("ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 2_000) + "-ASCII-END"
+    literal_entity = "ENTITY-BEGIN-&amp;-ENTITY-END"
+    emoji_zwj = "EMOJI-BEGIN-👩‍⚖️-EMOJI-END"
+    long_comment = (
+        "LEGACY-COMMENT-BEGIN-"
+        + ("历史意见" * 20_000)
+        + long_unbroken_ascii
+        + literal_entity
+        + emoji_zwj
+        + "-LEGACY-COMMENT-END"
+    )
     long_path = "PATH-BEGIN-" + ("超长章节" * 2_000) + "-PATH-END"
     long_structural_flag = "STRUCT-BEGIN-" + ("结构" * 2_000) + "-STRUCT-END"
     long_review_flag = "FLAG-BEGIN-" + ("复核" * 2_000) + "-FLAG-END"
@@ -450,20 +462,34 @@ def test_report_generates_from_legacy_very_long_context_without_layout_error(tmp
     )
     output_path = tmp_path / "long-report.pdf"
 
+    generator = ReportGenerator()
     try:
-        ReportGenerator().generate(task, output_path)
+        generator.generate(task, output_path)
     except Exception as exc:
         pytest.fail(f"legacy long report must paginate instead of raising {type(exc).__name__}: {exc}")
 
     with fitz.open(output_path) as report_pdf:
         report_text = "\n".join(page.get_text() for page in report_pdf)
         page_count = len(report_pdf)
+    compact_report_text = "".join(report_text.split())
     assert page_count > 1
-    assert "LEGACY-COMMENT-BEGIN" in report_text
-    assert "LEGACY-COMMENT-END" in report_text
-    assert "PATH-BEGIN" in report_text
-    assert "PATH-END" in report_text
-    assert "STRUCT-BEGIN" in report_text
-    assert "STRUCT-END" in report_text
-    assert "FLAG-BEGIN" in report_text
-    assert "FLAG-END" in report_text
+    assert "LEGACY-COMMENT-BEGIN" in compact_report_text
+    assert "LEGACY-COMMENT-END" in compact_report_text
+    assert "PATH-BEGIN" in compact_report_text
+    assert "PATH-END" in compact_report_text
+    assert "STRUCT-BEGIN" in compact_report_text
+    assert "STRUCT-END" in compact_report_text
+    assert "FLAG-BEGIN" in compact_report_text
+    assert "FLAG-END" in compact_report_text
+    assert "ASCII-BEGIN" in compact_report_text
+    assert "ASCII-END" in compact_report_text
+    assert literal_entity in compact_report_text
+    assert compact_report_text.index("EMOJI-BEGIN") < compact_report_text.index("EMOJI-END")
+
+    item = build_task_audit_items(task)[0]
+    detail_flowables = generator._audit_item_detail_flowables(item, generator._styles(generator._font_name))
+    assert len(detail_flowables) == len(generator._audit_item_detail_fields(item))
+    detail_text = "\n".join(flowable.getPlainText() for flowable in detail_flowables if isinstance(flowable, Paragraph))
+    assert "ASCII-BEGIN" in detail_text and "ASCII-END" in detail_text
+    assert literal_entity in detail_text
+    assert emoji_zwj in detail_text

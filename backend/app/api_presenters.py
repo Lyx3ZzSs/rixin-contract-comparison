@@ -20,6 +20,7 @@ from app.api_schemas import (
 from app.infrastructure.task_runner import TaskJob
 from app.models import CompareTask
 from app.services.audit_summary import AuditItem, build_task_audit_items, project_diff_reviews
+from app.services.evidence_validity import valid_evidence_copies
 from app.services.report_generator import build_report_filename
 from app.utils.json_utils import to_jsonable
 
@@ -131,6 +132,8 @@ def compare_record_list_response(
 
 def diff_response(diff) -> CompareDiffResponse:
     data = to_jsonable(diff)
+    data["original_evidence"] = [to_jsonable(item) for item in valid_evidence_copies(diff.original_evidence)]
+    data["compare_evidence"] = [to_jsonable(item) for item in valid_evidence_copies(diff.compare_evidence)]
     return CompareDiffResponse(**data)
 
 
@@ -191,8 +194,8 @@ def audit_item_response(item: AuditItem) -> AuditItemResponse:
         summary=item.summary,
         original_text=item.original_text,
         compare_text=item.compare_text,
-        original_evidence=[to_jsonable(evidence) for evidence in item.original_evidence],
-        compare_evidence=[to_jsonable(evidence) for evidence in item.compare_evidence],
+        original_evidence=[to_jsonable(evidence) for evidence in valid_evidence_copies(item.original_evidence)],
+        compare_evidence=[to_jsonable(evidence) for evidence in valid_evidence_copies(item.compare_evidence)],
         evidence_state=item.evidence_state,
         quality_status=item.quality_status,
         structural_flags=item.structural_flags,

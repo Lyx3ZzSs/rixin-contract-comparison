@@ -40,7 +40,6 @@ _SOURCE_TYPE_LABELS = {
     "header_footer": "页眉页脚",
 }
 _CHINESE_NUMBERS = "一二三四五六七八九十"
-_DETAIL_CHUNK_LENGTH = 1200
 
 
 def build_report_title(task: CompareTask) -> str:
@@ -408,8 +407,7 @@ class ReportGenerator:
         flowables: list[Flowable] = []
         for label, value in self._audit_item_detail_fields(item):
             text = f"{label}：{value}"
-            for chunk in self._text_chunks(text):
-                flowables.append(Paragraph(escape(chunk), styles["Small"]))
+            flowables.append(Paragraph(escape(text), styles["Small"]))
         return flowables
 
     def _audit_item_detail_fields(self, item: AuditItem) -> list[tuple[str, str]]:
@@ -474,12 +472,6 @@ class ReportGenerator:
             ("审核意见", review_comment),
             ("审核人", reviewed_by),
             ("审核时间", reviewed_at),
-        ]
-
-    @staticmethod
-    def _text_chunks(text: str) -> list[str]:
-        return [text[index : index + _DETAIL_CHUNK_LENGTH] for index in range(0, len(text), _DETAIL_CHUNK_LENGTH)] or [
-            ""
         ]
 
     def _evidence_location_text(self, item: AuditItem) -> str:

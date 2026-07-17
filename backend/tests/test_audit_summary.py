@@ -101,6 +101,9 @@ def test_audit_items_treat_invalid_evidence_coordinates_as_unlocated(page_no, co
     assert item.evidence_state == "UNLOCATED"
     assert item.quality_status == "NEEDS_REVIEW"
     assert "EVIDENCE_UNLOCATED" in item.review_flags
+    assert item.compare_evidence == []
+    assert item.compare_text == "invalid"
+    assert item.is_fallback is False
 
 
 def test_audit_items_prefer_valid_evidence_when_valid_and_invalid_boxes_are_mixed() -> None:
