@@ -522,21 +522,19 @@ def test_submission_publish_post_commit_failure_does_not_orphan_final_input(
     assert list(artifact_store.task_root("TPUBLISH_POST_COMMIT").rglob("*.pdf")) == []
 
 
-def test_submission_crash_after_final_publish_is_recovered_on_restart(
+def test_submission_recovery_removes_staging_after_crash_before_first_final_hardlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    application, _repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
-    publish = artifact_store.publish_staged
-    task_id = "TPUBLISH_CRASH_BOUNDARY"
+    application, repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    task_id = "TPUBLISH_JOURNAL_CRASH_BOUNDARY"
 
-    def publish_then_terminate(source: Path, destination: Path, **kwargs) -> Path:
-        publish(source, destination, **kwargs)
-        raise SystemExit("simulated process termination after final upload publish")
+    def terminate_before_final_hardlink(*_args, **_kwargs) -> Path:
+        raise SystemExit("simulated process termination after durable journal write")
 
-    monkeypatch.setattr(artifact_store, "publish_staged", publish_then_terminate)
+    monkeypatch.setattr(artifact_store, "publish_staged", terminate_before_final_hardlink)
 
-    with pytest.raises(SystemExit, match="simulated process termination"):
+    with pytest.raises(SystemExit, match="after durable journal write"):
         asyncio.run(
             application.submit_uploads(
                 task_id=task_id,
@@ -547,23 +545,104 @@ def test_submission_crash_after_final_publish_is_recovered_on_restart(
             )
         )
 
-    final_inputs = list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))
-    assert len(final_inputs) == 1
     journal = recovery_store.load_marker(task_id)
-    assert journal.attempt_id
-    assert journal.actions == [
-        RecoveryAction(
-            action="unlink",
-            path=str(final_inputs[0]),
-            scope="final_input",
-            owner_token=journal.actions[0].owner_token,
-        )
-    ]
+    attempt_dir = artifact_store.task_root(task_id) / "staging" / journal.attempt_id
+    assert len(list(attempt_dir.glob("*.pdf"))) == 2
+    assert not list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))
 
     restarted_store = RecoveryStore(recovery_store.settings)
-    assert restarted_store.recover_all() is True
-    assert final_inputs[0].exists() is False
+    restarted_service = SubmissionRecoveryService(recovery_store=restarted_store, repository=repository)
+    assert restarted_service.recover_all() is True
+    assert not list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))
+    assert not attempt_dir.exists()
     assert not restarted_store.marker_path(task_id).exists()
+
+
+def test_submission_recovery_removes_final_and_staging_after_crash_before_staged_unlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    task_id = "TPUBLISH_HARDLINK_CRASH_BOUNDARY"
+    unlink = Path.unlink
+
+    def terminate_on_staged_unlink(path: Path, *args, **kwargs) -> None:
+        if path.parent.parent.name == "staging":
+            raise SystemExit("simulated process termination after final hardlink")
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", terminate_on_staged_unlink)
+
+    with pytest.raises(SystemExit, match="after final hardlink"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id=task_id,
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    journal = recovery_store.load_marker(task_id)
+    attempt_dir = artifact_store.task_root(task_id) / "staging" / journal.attempt_id
+    assert len(list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))) == 1
+    assert len(list(attempt_dir.glob("*.pdf"))) == 2
+    monkeypatch.undo()
+
+    restarted_store = RecoveryStore(recovery_store.settings)
+    restarted_service = SubmissionRecoveryService(recovery_store=restarted_store, repository=repository)
+    assert restarted_service.recover_all() is True
+    assert not list((artifact_store.task_root(task_id) / "uploads").glob("*.pdf"))
+    assert not attempt_dir.exists()
+    assert not restarted_store.marker_path(task_id).exists()
+
+
+def test_submission_recovery_keeps_committed_final_inputs_and_removes_staging_after_cleanup_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    task_id = "TPUBLISH_COMMITTED_STAGING_CRASH"
+    unlink = Path.unlink
+
+    def fail_staged_unlink(path: Path, *args, **kwargs) -> None:
+        if path.parent.parent.name == "staging":
+            raise OSError("staging unlink failed")
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_staged_unlink)
+    monkeypatch.setattr(
+        recovery_store,
+        "cleanup_attempt",
+        lambda _marker: (_ for _ in ()).throw(SystemExit("simulated crash after task persistence")),
+    )
+
+    with pytest.raises(SystemExit, match="after task persistence"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id=task_id,
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+    monkeypatch.undo()
+
+    task = repository.load_compare_task(task_id)
+    journal = recovery_store.load_marker(task_id)
+    attempt_dir = artifact_store.task_root(task_id) / "staging" / journal.attempt_id
+    assert Path(task.original_pdf_path).is_file()
+    assert Path(task.compare_pdf_path).is_file()
+    assert len(list(attempt_dir.glob("*.pdf"))) == 2
+
+    restarted_service = SubmissionRecoveryService(recovery_store=recovery_store, repository=repository)
+    assert restarted_service.recover_all() is True
+    assert Path(task.original_pdf_path).is_file()
+    assert Path(task.compare_pdf_path).is_file()
+    assert not attempt_dir.exists()
+    assert not recovery_store.marker_path(task_id).exists()
 
 
 def test_startup_recovery_keeps_final_inputs_after_task_commit_before_journal_finalization(

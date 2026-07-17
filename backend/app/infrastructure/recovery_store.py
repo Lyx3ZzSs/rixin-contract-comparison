@@ -165,8 +165,9 @@ class RecoveryStore:
         task_id: str,
         attempt_id: str,
         action: RecoveryAction,
+        attempt_actions: list[RecoveryAction],
     ) -> Iterator[RecoveryMarker]:
-        """Durably record a final-input rollback before publishing it.
+        """Durably record this submission attempt before publishing a final input.
 
         The marker lock deliberately spans the irreversible link publication so
         a concurrent recovery cannot consume a pre-publication journal entry.
@@ -174,8 +175,8 @@ class RecoveryStore:
         marker = RecoveryMarker(
             task_id=task_id,
             attempt_id=attempt_id,
-            primary_error="submission final input pending task persistence",
-            actions=[action],
+            primary_error="submission attempt pending task persistence",
+            actions=[action, *attempt_actions],
         )
         self._validate_actions(marker)
         with self._task_marker_lock(task_id):
@@ -185,7 +186,7 @@ class RecoveryStore:
                 entries.append(marker)
                 self._write_marker_entries_unlocked(task_id, entries)
             else:
-                merged_actions = self._merge_actions(existing.actions, [action])
+                merged_actions = self._merge_actions(existing.actions, [action, *attempt_actions])
                 if merged_actions != existing.actions:
                     existing.actions = merged_actions
                     existing.updated_at = datetime.now(UTC).isoformat()
@@ -221,12 +222,24 @@ class RecoveryStore:
 
     def finalize_final_inputs(self, marker: RecoveryMarker) -> RecoveryMarker | None:
         """Remove only final-input recovery actions after the Task commit boundary."""
+        return self._finalize_actions(marker, scope="final_input")
+
+    def finalize_attempt_actions(self, marker: RecoveryMarker) -> RecoveryMarker | None:
+        """Remove only completed attempt cleanup actions from this marker."""
+        return self._finalize_actions(marker, scope="attempt")
+
+    def _finalize_actions(
+        self,
+        marker: RecoveryMarker,
+        *,
+        scope: Literal["attempt", "final_input"],
+    ) -> RecoveryMarker | None:
         with self._task_marker_lock(marker.task_id):
             entries = self._load_marker_entries_unlocked(marker.task_id)
             current = next((entry for entry in entries if entry.attempt_id == marker.attempt_id), None)
             if current is None:
                 return None
-            remaining_actions = [action for action in current.actions if action.scope != "final_input"]
+            remaining_actions = [action for action in current.actions if action.scope != scope]
             if len(remaining_actions) == len(current.actions):
                 return current.model_copy(deep=True)
             if remaining_actions:

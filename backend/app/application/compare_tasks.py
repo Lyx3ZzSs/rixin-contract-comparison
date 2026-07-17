@@ -86,6 +86,10 @@ class CompareTaskApplication:
             await stream_upload_to_path(compare_file, staged_compare)
             validate_pdf_path(staged_original, original_file.filename or "")
             validate_pdf_path(staged_compare, compare_file.filename or "")
+            staged_actions = self._staged_recovery_actions(
+                attempt_dir,
+                (staged_original, staged_compare),
+            )
 
             original_path = self.artifact_store.upload_path(
                 task_id,
@@ -105,6 +109,7 @@ class CompareTaskApplication:
                 original_path,
                 attempt_id=attempt_id,
                 final_actions=final_actions,
+                attempt_actions=staged_actions,
             )
             self._publish_with_ledger(
                 task_id,
@@ -112,6 +117,7 @@ class CompareTaskApplication:
                 compare_path,
                 attempt_id=attempt_id,
                 final_actions=final_actions,
+                attempt_actions=staged_actions,
             )
 
             try:
@@ -179,10 +185,7 @@ class CompareTaskApplication:
         self._cleanup_successful_submission(
             task_id=task_id,
             attempt_id=attempt_id,
-            actions=self._staged_recovery_actions(
-                attempt_dir,
-                (staged_original, staged_compare),
-            ),
+            actions=staged_actions,
         )
         return task
 
@@ -218,6 +221,7 @@ class CompareTaskApplication:
         *,
         attempt_id: str,
         final_actions: list[RecoveryAction],
+        attempt_actions: list[RecoveryAction],
     ) -> None:
         owner_token = self.recovery_store.ownership_token(source, attempt_id)
         action = RecoveryAction(
@@ -231,6 +235,7 @@ class CompareTaskApplication:
                 task_id=task_id,
                 attempt_id=attempt_id,
                 action=action,
+                attempt_actions=attempt_actions,
             ):
                 self.artifact_store.publish_staged(source, destination, owner_token=owner_token)
             self._append_final_action(destination, owner_token, final_actions)
@@ -463,7 +468,8 @@ class CompareTaskApplication:
             primary_error="post-submit staging cleanup",
             actions=actions,
         )
-        self.recovery_store.cleanup_attempt(marker)
+        if self.recovery_store.cleanup_attempt(marker):
+            self.recovery_store.finalize_attempt_actions(marker)
 
     @staticmethod
     def _error_text(exc: BaseException) -> str:
