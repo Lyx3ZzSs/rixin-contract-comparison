@@ -58,6 +58,9 @@ export function QualityWorkbenchPage() {
   const taskReviewRequestIdRef = useRef(0);
   const draftExportRequestIdRef = useRef(0);
   const caseListRequestIdRef = useRef(0);
+  const detailAbortControllerRef = useRef<AbortController | null>(null);
+  const taskReviewAbortControllerRef = useRef<AbortController | null>(null);
+  const draftCaseListAbortControllerRef = useRef<AbortController | null>(null);
 
   const applyCaseDetail = useCallback((nextDetail: QualityCaseDetail) => {
     setDetail(nextDetail);
@@ -78,6 +81,9 @@ export function QualityWorkbenchPage() {
   );
 
   const openCase = useCallback((caseId: string) => {
+    detailAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    detailAbortControllerRef.current = controller;
     const requestId = detailRequestIdRef.current + 1;
     detailRequestIdRef.current = requestId;
     selectedCaseIdRef.current = caseId;
@@ -103,14 +109,14 @@ export function QualityWorkbenchPage() {
     setIsRunningQuality(false);
     setError("");
 
-    void getQualityCase(caseId)
+    void getQualityCase(caseId, controller.signal)
       .then((payload) => {
         if (detailRequestIdRef.current === requestId) {
           applyCaseDetail(payload);
         }
       })
       .catch((err) => {
-        if (detailRequestIdRef.current === requestId) {
+        if (detailRequestIdRef.current === requestId && !isAbortError(err, controller.signal)) {
           setError(err instanceof Error ? err.message : "质量样本详情加载失败。");
         }
       })
@@ -118,22 +124,26 @@ export function QualityWorkbenchPage() {
         if (detailRequestIdRef.current === requestId) {
           setIsLoadingDetail(false);
         }
+        if (detailAbortControllerRef.current === controller) {
+          detailAbortControllerRef.current = null;
+        }
       });
   }, [applyCaseDetail]);
 
-  const refreshQualityCases = useCallback(async () => {
-    const payload = await listQualityCases();
+  const refreshQualityCases = useCallback(async (signal?: AbortSignal) => {
+    const payload = await listQualityCases(signal);
     return payload.cases;
   }, []);
 
   useEffect(() => {
     let isCurrent = true;
+    const controller = new AbortController();
     const requestId = caseListRequestIdRef.current + 1;
     caseListRequestIdRef.current = requestId;
     setIsLoadingCases(true);
     setError("");
 
-    void refreshQualityCases()
+    void refreshQualityCases(controller.signal)
       .then((nextCases) => {
         if (!isCurrent || caseListRequestIdRef.current !== requestId) return;
         setCases(nextCases);
@@ -142,7 +152,7 @@ export function QualityWorkbenchPage() {
         }
       })
       .catch((err) => {
-        if (isCurrent && caseListRequestIdRef.current === requestId) {
+        if (isCurrent && caseListRequestIdRef.current === requestId && !isAbortError(err, controller.signal)) {
           setCases([]);
           setDetail(null);
           setError(err instanceof Error ? err.message : "质量样本列表加载失败。");
@@ -156,7 +166,16 @@ export function QualityWorkbenchPage() {
 
     return () => {
       isCurrent = false;
+      controller.abort();
+      detailAbortControllerRef.current?.abort();
+      detailAbortControllerRef.current = null;
+      taskReviewAbortControllerRef.current?.abort();
+      taskReviewAbortControllerRef.current = null;
+      draftCaseListAbortControllerRef.current?.abort();
+      draftCaseListAbortControllerRef.current = null;
       detailRequestIdRef.current += 1;
+      taskReviewRequestIdRef.current += 1;
+      draftExportRequestIdRef.current += 1;
     };
   }, [openCase, refreshQualityCases]);
 
@@ -383,6 +402,9 @@ export function QualityWorkbenchPage() {
     const taskId = taskReviewId.trim();
     if (!taskId) return;
 
+    taskReviewAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    taskReviewAbortControllerRef.current = controller;
     const requestId = taskReviewRequestIdRef.current + 1;
     taskReviewRequestIdRef.current = requestId;
     draftExportRequestIdRef.current += 1;
@@ -393,18 +415,21 @@ export function QualityWorkbenchPage() {
     setDraftExportMessage("");
     setTaskReview(null);
     try {
-      const result = await getQualityTaskReview(taskId);
+      const result = await getQualityTaskReview(taskId, controller.signal);
       if (taskReviewRequestIdRef.current === requestId) {
         setTaskReview(result);
         setDraftCaseId(result.task_id);
       }
     } catch (err) {
-      if (taskReviewRequestIdRef.current === requestId) {
+      if (taskReviewRequestIdRef.current === requestId && !isAbortError(err, controller.signal)) {
         setTaskReviewError(err instanceof Error ? err.message : "任务复盘加载失败。");
       }
     } finally {
       if (taskReviewRequestIdRef.current === requestId) {
         setIsLoadingTaskReview(false);
+      }
+      if (taskReviewAbortControllerRef.current === controller) {
+        taskReviewAbortControllerRef.current = null;
       }
     }
   }, [taskReviewId]);
@@ -419,13 +444,18 @@ export function QualityWorkbenchPage() {
     setIsExportingDraftCase(true);
     setDraftExportError("");
     setDraftExportMessage("");
+    let caseListController: AbortController | undefined;
     try {
       await exportQualityCase({
         task_id: taskReview.task_id,
         case_id: caseId,
         force: false,
       });
-      const nextCases = await refreshQualityCases();
+      if (draftExportRequestIdRef.current !== requestId) return;
+      draftCaseListAbortControllerRef.current?.abort();
+      caseListController = new AbortController();
+      draftCaseListAbortControllerRef.current = caseListController;
+      const nextCases = await refreshQualityCases(caseListController.signal);
       if (draftExportRequestIdRef.current === requestId) {
         caseListRequestIdRef.current += 1;
         setCases(nextCases);
@@ -435,10 +465,13 @@ export function QualityWorkbenchPage() {
         setDraftExportMessage(`已导出 draft golden set：${caseId}`);
       }
     } catch (err) {
-      if (draftExportRequestIdRef.current === requestId) {
+      if (draftExportRequestIdRef.current === requestId && !isAbortError(err, caseListController?.signal)) {
         setDraftExportError(err instanceof Error ? err.message : "Draft Golden Set 导出失败。");
       }
     } finally {
+      if (draftCaseListAbortControllerRef.current === caseListController) {
+        draftCaseListAbortControllerRef.current = null;
+      }
       if (draftExportRequestIdRef.current === requestId) {
         setIsExportingDraftCase(false);
       }
@@ -1004,4 +1037,8 @@ function MetaItem({ label, value }: { label: string; value: string }) {
       <dd>{value}</dd>
     </div>
   );
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  return signal?.aborted === true || (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError");
 }

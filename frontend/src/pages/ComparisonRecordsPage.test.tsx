@@ -276,6 +276,24 @@ describe("ComparisonRecordsPage", () => {
     expect(getTask).toHaveBeenCalledTimes(1);
   });
 
+  it("aborts record reads on unmount without rendering a cancellation error", async () => {
+    let requestSignal: AbortSignal | undefined;
+    vi.mocked(getCompareRecords).mockImplementation((_query, signal) => {
+      requestSignal = signal;
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+
+    const { unmount } = render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
+    await vi.waitFor(() => expect(getCompareRecords).toHaveBeenCalledTimes(1));
+    unmount();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("applies updated date filters from the toolbar", async () => {
     const user = userEvent.setup();
     vi.mocked(getCompareRecords)
@@ -294,7 +312,7 @@ describe("ComparisonRecordsPage", () => {
       pageSize: 10,
       startDate: "2026-05-21",
       endDate: "2026-05-22",
-    });
+    }, expect.any(AbortSignal));
     expect(await screen.findByText("暂无对比记录")).toBeInTheDocument();
   });
 
@@ -315,7 +333,7 @@ describe("ComparisonRecordsPage", () => {
       pageSize: 10,
       startDate: "",
       endDate: "",
-    });
+    }, expect.any(AbortSignal));
     expect(await screen.findByText("task-next")).toBeInTheDocument();
   });
 });

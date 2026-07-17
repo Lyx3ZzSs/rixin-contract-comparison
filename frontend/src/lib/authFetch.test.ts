@@ -109,6 +109,38 @@ describe("authorizedFetch", () => {
     expect(abortCount).toBe(1);
   });
 
+  it("propagates a caller cancellation during silent sign-in without reauthenticating", async () => {
+    getUser.mockResolvedValue({ access_token: "expired-token", expired: true });
+    let rejectSilent!: (reason?: unknown) => void;
+    signinSilent.mockImplementation(() => new Promise((_resolve, reject) => { rejectSilent = reject; }));
+    const caller = new AbortController();
+
+    const request = authorizedFetch("/api/tasks", { signal: caller.signal });
+    await vi.waitFor(() => expect(signinSilent).toHaveBeenCalledTimes(1));
+    caller.abort(new DOMException("Request cancelled", "AbortError"));
+    rejectSilent(new Error("silent sign-in unavailable"));
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(removeUser).not.toHaveBeenCalled();
+    expect(signinRedirect).not.toHaveBeenCalled();
+  });
+
+  it("propagates a timeout during silent sign-in without reauthenticating", async () => {
+    vi.useFakeTimers();
+    getUser.mockResolvedValue({ access_token: "expired-token", expired: true });
+    let rejectSilent!: (reason?: unknown) => void;
+    signinSilent.mockImplementation(() => new Promise((_resolve, reject) => { rejectSilent = reject; }));
+
+    const request = authorizedFetch("/api/tasks", undefined, { timeoutMs: 1000 });
+    await vi.waitFor(() => expect(signinSilent).toHaveBeenCalledTimes(1));
+    vi.advanceTimersByTime(1000);
+    rejectSilent(new Error("silent sign-in unavailable"));
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(removeUser).not.toHaveBeenCalled();
+    expect(signinRedirect).not.toHaveBeenCalled();
+  });
+
   it("maps protected API failures to stable user messages", () => {
     expect(new ApiError(403).message).toBe("当前用户没有执行此操作的权限。");
     expect(new ApiError(404).message).toBe("任务不存在或无权访问。");

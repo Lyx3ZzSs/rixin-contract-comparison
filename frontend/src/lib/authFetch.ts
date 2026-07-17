@@ -35,6 +35,7 @@ export async function authorizedFetch(
       try {
         user = await manager.signinSilent();
       } catch {
+        throwIfAborted(cancellation.signal);
         await beginReauthentication();
         throw new ApiError(401, "统一身份认证会话已失效，请重新登录。");
       }

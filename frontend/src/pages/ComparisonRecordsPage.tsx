@@ -39,6 +39,7 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
   const [syncNotice, setSyncNotice] = useState("");
   const [pendingRetryIds, setPendingRetryIds] = useState<Set<string>>(() => new Set());
   const pendingRetryIdsRef = useRef(new Set<string>());
+  const refreshAbortControllerRef = useRef<AbortController | null>(null);
 
   const buildApiQuery = useCallback((state: RecordQueryState): CompareRecordQuery => ({
     page: state.page,
@@ -59,15 +60,16 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
 
   useEffect(() => {
     let isCurrent = true;
+    const controller = new AbortController();
     setIsLoading(true);
     setError("");
     setSyncNotice("");
-    void getCompareRecords(buildApiQuery(query))
+    void getCompareRecords(buildApiQuery(query), controller.signal)
       .then((payload) => {
         if (isCurrent) applyPayload(payload);
       })
       .catch((err) => {
-        if (isCurrent) {
+        if (isCurrent && !isAbortError(err, controller.signal)) {
           setRecords([]);
           setPagination(emptyPagination);
           setError(err instanceof Error ? err.message : "对比记录加载失败。");
@@ -78,16 +80,27 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
       });
     return () => {
       isCurrent = false;
+      controller.abort();
+      refreshAbortControllerRef.current?.abort();
+      refreshAbortControllerRef.current = null;
     };
   }, [applyPayload, buildApiQuery, query]);
 
   const refreshCurrentPage = useCallback(async () => {
+    refreshAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    refreshAbortControllerRef.current = controller;
     try {
-      const payload = await getCompareRecords(buildApiQuery(query));
+      const payload = await getCompareRecords(buildApiQuery(query), controller.signal);
       applyPayload(payload);
       setSyncNotice("");
-    } catch {
+    } catch (err) {
+      if (isAbortError(err, controller.signal)) return;
       setSyncNotice("刷新失败，任务仍在后台同步。");
+    } finally {
+      if (refreshAbortControllerRef.current === controller) {
+        refreshAbortControllerRef.current = null;
+      }
     }
   }, [applyPayload, buildApiQuery, query]);
 
@@ -298,6 +311,10 @@ function RecordProgress({ record }: { record: CompareRecordSummary }) {
       </div>
     </div>
   );
+}
+
+function isAbortError(error: unknown, signal: AbortSignal): boolean {
+  return signal.aborted || (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError");
 }
 
 function formatDateTime(value: string): string {

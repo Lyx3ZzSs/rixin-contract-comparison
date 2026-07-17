@@ -27,7 +27,7 @@ vi.mock("../lib/api", () => ({
 }));
 
 afterEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
 });
 
 const caseSummary: QualityCaseSummary = {
@@ -218,6 +218,49 @@ function createDeferred<T>() {
 }
 
 describe("QualityWorkbenchPage", () => {
+  it("aborts quality reads on unmount without rendering cancellation errors", async () => {
+    const casesResponse = createDeferred<{ cases: QualityCaseSummary[] }>();
+    let listSignal: AbortSignal | undefined;
+    let detailSignal: AbortSignal | undefined;
+    let reviewSignal: AbortSignal | undefined;
+    vi.mocked(listQualityCases).mockImplementation((signal) => {
+      listSignal = signal;
+      return casesResponse.promise;
+    });
+    vi.mocked(getQualityCase).mockImplementation((_caseId, signal) => {
+      detailSignal = signal;
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    vi.mocked(getQualityTaskReview).mockImplementation((_taskId, signal) => {
+      reviewSignal = signal;
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+
+    const { unmount } = render(<QualityWorkbenchPage />);
+    await act(async () => {
+      casesResponse.resolve({ cases: [caseSummary] });
+      await casesResponse.promise;
+    });
+    expect(getQualityCase).toHaveBeenCalledWith("case-001", expect.any(AbortSignal));
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: "task-001" } });
+      fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
+    });
+    await vi.waitFor(() => expect(getQualityTaskReview).toHaveBeenCalledWith("task-001", expect.any(AbortSignal)));
+
+    unmount();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(listSignal?.aborted).toBe(true);
+    expect(detailSignal?.aborted).toBe(true);
+    expect(reviewSignal?.aborted).toBe(true);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("loads and renders a task review without changing the selected case", async () => {
     vi.mocked(listQualityCases).mockResolvedValueOnce({ cases: [caseSummary] });
     vi.mocked(getQualityCase).mockResolvedValueOnce(caseDetail);
@@ -231,7 +274,7 @@ describe("QualityWorkbenchPage", () => {
       fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
     });
 
-    expect(getQualityTaskReview).toHaveBeenCalledWith("task-001");
+    expect(getQualityTaskReview).toHaveBeenCalledWith("task-001", expect.any(AbortSignal));
     expect(await screen.findByText("历史 10")).toBeInTheDocument();
     expect(screen.getByText("保留 6")).toBeInTheDocument();
     expect(screen.getByText("抑制 4")).toBeInTheDocument();
@@ -293,7 +336,7 @@ describe("QualityWorkbenchPage", () => {
       force: false,
     });
     expect(listQualityCases).toHaveBeenCalledTimes(2);
-    expect(getQualityCase).toHaveBeenLastCalledWith("task-001");
+    expect(getQualityCase).toHaveBeenLastCalledWith("task-001", expect.any(AbortSignal));
     expect(await screen.findByText("已导出 draft golden set：task-001")).toBeInTheDocument();
     expect((await screen.findAllByText("封面字段：合同编号")).length).toBeGreaterThan(1);
   });
@@ -418,7 +461,7 @@ describe("QualityWorkbenchPage", () => {
       fireEvent.click(screen.getByRole("button", { name: "加载任务复盘" }));
     });
 
-    expect(getQualityTaskReview).toHaveBeenCalledWith("missing-task");
+    expect(getQualityTaskReview).toHaveBeenCalledWith("missing-task", expect.any(AbortSignal));
     expect(await screen.findByRole("alert")).toHaveTextContent("任务不存在");
   });
 
@@ -459,7 +502,7 @@ describe("QualityWorkbenchPage", () => {
     expect((await screen.findAllByText("case-001")).length).toBeGreaterThan(0);
     expect(await screen.findByText("签订日期")).toBeInTheDocument();
     expect((await screen.findAllByText("regression")).length).toBeGreaterThan(0);
-    expect(getQualityCase).toHaveBeenCalledWith("case-001");
+    expect(getQualityCase).toHaveBeenCalledWith("case-001", expect.any(AbortSignal));
   });
 
   it("does not let a slower previous case detail overwrite the selected case", async () => {
