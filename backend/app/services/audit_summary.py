@@ -5,13 +5,15 @@ from dataclasses import dataclass, replace
 from collections.abc import Iterable
 from typing import Literal, TypeVar
 
-from app.models import AuditItemReview, CompareTask, DiffItem, DiffType, EvidenceBox, ReviewStatus
+from app.models import AuditItemReview, CompareTask, DiffItem, DiffType, EvidenceBox, ReviewStatus, TextRange
+from app.services.evidence_validity import is_located_evidence
 
 _T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
 class AuditItemOcrContext:
+    scope: Literal["ITEM", "DIFF", "NONE"] = "NONE"
     affected: bool = False
     statuses: tuple[str, ...] = ()
     reasons: tuple[str, ...] = ()
@@ -21,6 +23,7 @@ class AuditItemOcrContext:
 
 @dataclass(frozen=True)
 class AuditItemRemediationContext:
+    scope: Literal["ITEM", "DIFF", "NONE"] = "NONE"
     action_ids: tuple[str, ...] = ()
     action_types: tuple[str, ...] = ()
     statuses: tuple[str, ...] = ()
@@ -32,7 +35,6 @@ class AuditItemRemediationContext:
 @dataclass(frozen=True)
 class AuditItem:
     item_id: str
-    diff: DiffItem
     diff_type: DiffType
     diff_id: str
     source_type: str
@@ -44,6 +46,8 @@ class AuditItem:
     compare_text: str
     original_evidence: list[EvidenceBox]
     compare_evidence: list[EvidenceBox]
+    original_change_ranges: list[TextRange]
+    compare_change_ranges: list[TextRange]
     evidence_state: Literal["LOCATED", "UNLOCATED"]
     quality_status: str
     structural_flags: list[str]
@@ -199,8 +203,12 @@ def _audit_item(
     original_evidence: list[EvidenceBox],
     compare_evidence: list[EvidenceBox],
 ) -> AuditItem:
+    original_evidence = _preferred_evidence(original_evidence)
+    compare_evidence = _preferred_evidence(compare_evidence)
     evidence_state = (
-        "LOCATED" if any(_is_located(evidence) for evidence in [*original_evidence, *compare_evidence]) else "UNLOCATED"
+        "LOCATED"
+        if any(is_located_evidence(evidence) for evidence in [*original_evidence, *compare_evidence])
+        else "UNLOCATED"
     )
     review_flags = list(dict.fromkeys(diff.review_flags))
     quality_status = diff.quality_status
@@ -208,20 +216,35 @@ def _audit_item(
         quality_status = "NEEDS_REVIEW"
         if "EVIDENCE_UNLOCATED" not in review_flags:
             review_flags.append("EVIDENCE_UNLOCATED")
+    original_text = _item_side_text(diff, diff_type, "original", original_evidence)
+    compare_text = _item_side_text(diff, diff_type, "compare", compare_evidence)
     return AuditItem(
         item_id=f"{diff.diff_id}:{diff_type}",
-        diff=diff,
         diff_type=diff_type,
         diff_id=diff.diff_id,
         source_type=diff.source_type,
         section_type=diff.section_type,
         section_path=list(diff.section_path),
-        title=diff.title or diff.clause_no or diff.diff_id,
+        title=_item_title(diff),
         summary=summary or _diff_summary(diff),
-        original_text=diff.original_text or diff.original_snippet,
-        compare_text=diff.compare_text or diff.compare_snippet,
+        original_text=original_text,
+        compare_text=compare_text,
         original_evidence=original_evidence,
         compare_evidence=compare_evidence,
+        original_change_ranges=_item_change_ranges(
+            diff,
+            diff_type,
+            "original",
+            original_evidence,
+            original_text,
+        ),
+        compare_change_ranges=_item_change_ranges(
+            diff,
+            diff_type,
+            "compare",
+            compare_evidence,
+            compare_text,
+        ),
         evidence_state=evidence_state,
         quality_status=quality_status,
         structural_flags=list(diff.structural_flags),
@@ -244,25 +267,33 @@ def _apply_review(item: AuditItem, review: AuditItemReview | None) -> AuditItem:
 
 
 def _apply_task_context(item: AuditItem, task: CompareTask) -> AuditItem:
-    profiles = sorted(
-        [
-            profile
-            for profile in (task.ocr_quality_summary.profiles if task.ocr_quality_summary else [])
-            if item.diff_id in profile.affected_diff_ids
-        ],
-        key=lambda profile: (profile.side, profile.page_no, profile.status),
+    evidence_locations = _item_evidence_locations(item)
+    is_fallback = not any(
+        evidence.highlight_type is not None for evidence in [*item.original_evidence, *item.compare_evidence]
     )
-    actions = sorted(
-        [
-            action
-            for action in (task.ocr_remediation_summary.actions if task.ocr_remediation_summary else [])
-            if action.diff_id == item.diff_id
-        ],
-        key=lambda action: action.action_id,
-    )
+    diff_profiles = [
+        profile
+        for profile in (task.ocr_quality_summary.profiles if task.ocr_quality_summary else [])
+        if item.diff_id in profile.affected_diff_ids
+    ]
+    matched_profiles = [profile for profile in diff_profiles if (profile.side, profile.page_no) in evidence_locations]
+    profiles = matched_profiles or (diff_profiles if is_fallback else [])
+    profile_scope: Literal["ITEM", "DIFF", "NONE"] = "ITEM" if matched_profiles else "DIFF" if profiles else "NONE"
+    profiles = sorted(profiles, key=lambda profile: (profile.side, profile.page_no, profile.status))
+
+    diff_actions = [
+        action
+        for action in (task.ocr_remediation_summary.actions if task.ocr_remediation_summary else [])
+        if action.diff_id == item.diff_id
+    ]
+    matched_actions = [action for action in diff_actions if (action.side, action.page_no) in evidence_locations]
+    actions = matched_actions or (diff_actions if is_fallback else [])
+    action_scope: Literal["ITEM", "DIFF", "NONE"] = "ITEM" if matched_actions else "DIFF" if actions else "NONE"
+    actions = sorted(actions, key=lambda action: action.action_id)
     return replace(
         item,
         ocr_context=AuditItemOcrContext(
+            scope=profile_scope,
             affected=bool(profiles),
             statuses=_ordered_unique(profile.status for profile in profiles),
             reasons=_ordered_unique(reason for profile in profiles for reason in profile.reasons),
@@ -270,6 +301,7 @@ def _apply_task_context(item: AuditItem, task: CompareTask) -> AuditItem:
             page_numbers=tuple(sorted({profile.page_no for profile in profiles})),
         ),
         remediation_context=AuditItemRemediationContext(
+            scope=action_scope,
             action_ids=tuple(action.action_id for action in actions),
             action_types=_ordered_unique(action.action_type for action in actions),
             statuses=_ordered_unique(action.status for action in actions),
@@ -307,15 +339,12 @@ def _ordered_unique(values: Iterable[_T]) -> tuple[_T, ...]:
     return tuple(dict.fromkeys(values))
 
 
-def _is_located(evidence: EvidenceBox) -> bool:
-    return evidence.page_no > 0 and evidence.bbox.x1 > evidence.bbox.x0 and evidence.bbox.y1 > evidence.bbox.y0
-
-
 def _typed_evidence(evidence_list: list[EvidenceBox], diff_type: DiffType) -> list[EvidenceBox]:
     return [evidence for evidence in evidence_list if evidence.highlight_type == diff_type]
 
 
 def _evidence_text(evidence_list: list[EvidenceBox]) -> str:
+    evidence_list = _preferred_evidence(evidence_list)
     return _compact_text(" ".join(evidence.text for evidence in evidence_list if evidence.text.strip()), limit=92)
 
 
@@ -332,3 +361,58 @@ def _diff_summary(diff: DiffItem) -> str:
 def _compact_text(value: str, limit: int = 180) -> str:
     text = " ".join(value.split())
     return f"{text[:limit]}..." if len(text) > limit else text
+
+
+def _item_title(diff: DiffItem) -> str:
+    if diff.clause_no and diff.title:
+        return f"{diff.clause_no} {diff.title}"
+    return diff.title or diff.clause_no or diff.diff_id
+
+
+def _item_side_text(
+    diff: DiffItem,
+    diff_type: DiffType,
+    side: Literal["original", "compare"],
+    evidence: list[EvidenceBox],
+) -> str:
+    if (diff_type == "ADD" and side == "original") or (diff_type == "DELETE" and side == "compare"):
+        return ""
+    located_text = " ".join(box.text.strip() for box in evidence if is_located_evidence(box) and box.text.strip())
+    if located_text:
+        return located_text
+    evidence_text = " ".join(box.text.strip() for box in evidence if box.text.strip())
+    if evidence_text:
+        return evidence_text
+    if side == "original":
+        return diff.original_text or diff.original_snippet
+    return diff.compare_text or diff.compare_snippet
+
+
+def _item_change_ranges(
+    diff: DiffItem,
+    diff_type: DiffType,
+    side: Literal["original", "compare"],
+    evidence: list[EvidenceBox],
+    text: str,
+) -> list[TextRange]:
+    if (diff_type == "ADD" and side == "original") or (diff_type == "DELETE" and side == "compare"):
+        return []
+    if text and any(item.highlight_type == diff_type and item.text.strip() for item in evidence):
+        return [TextRange(start=0, end=len(text), highlight_type=diff_type)]
+    if evidence:
+        return []
+    source = diff.original_change_ranges if side == "original" else diff.compare_change_ranges
+    return [item.model_copy(deep=True) for item in source if item.highlight_type == diff_type]
+
+
+def _preferred_evidence(evidence: list[EvidenceBox]) -> list[EvidenceBox]:
+    located = [item for item in evidence if is_located_evidence(item)]
+    return located or list(evidence)
+
+
+def _item_evidence_locations(item: AuditItem) -> set[tuple[str, int]]:
+    locations = {("original", evidence.page_no) for evidence in item.original_evidence if is_located_evidence(evidence)}
+    locations.update(
+        ("compare", evidence.page_no) for evidence in item.compare_evidence if is_located_evidence(evidence)
+    )
+    return locations

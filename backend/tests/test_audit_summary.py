@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import math
+
+import pytest
+
 from app.models import (
     AuditItemReview,
     BBox,
@@ -10,6 +14,7 @@ from app.models import (
     PageOcrQualityProfile,
     TaskOcrQualitySummary,
     TaskOcrRemediationSummary,
+    TextRange,
 )
 from app.services.audit_summary import (
     audit_stats_summary,
@@ -63,6 +68,63 @@ def test_audit_items_mark_fallback_without_coordinates_for_review() -> None:
     assert "EVIDENCE_UNLOCATED" in item.review_flags
 
 
+@pytest.mark.parametrize(
+    ("page_no", "coordinates"),
+    [
+        (0, (1, 2, 3, 4)),
+        (-1, (1, 2, 3, 4)),
+        (1, (1, 2, 1, 4)),
+        (1, (1, 2, 3, 2)),
+        (1, (3, 2, 1, 4)),
+        (1, (1, 4, 3, 2)),
+        (1, (1, 2, math.inf, 4)),
+        (1, (1, 2, math.nan, 4)),
+    ],
+)
+def test_audit_items_treat_invalid_evidence_coordinates_as_unlocated(page_no, coordinates) -> None:
+    x0, y0, x1, y1 = coordinates
+    diff = DiffItem(
+        diff_id="DINVALID",
+        diff_type="ADD",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=page_no,
+                bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1),
+                text="invalid",
+                highlight_type="ADD",
+            )
+        ],
+    )
+
+    item = build_audit_items([diff])[0]
+
+    assert item.evidence_state == "UNLOCATED"
+    assert item.quality_status == "NEEDS_REVIEW"
+    assert "EVIDENCE_UNLOCATED" in item.review_flags
+
+
+def test_audit_items_prefer_valid_evidence_when_valid_and_invalid_boxes_are_mixed() -> None:
+    diff = DiffItem(
+        diff_id="DMIXEDVALIDITY",
+        diff_type="ADD",
+        compare_evidence=[
+            evidence("valid", "ADD", 2),
+            EvidenceBox(
+                page_no=-1,
+                bbox=BBox(x0=1, y0=2, x1=3, y1=4),
+                text="invalid",
+                highlight_type="ADD",
+            ),
+        ],
+    )
+
+    item = build_audit_items([diff])[0]
+
+    assert item.evidence_state == "LOCATED"
+    assert [box.text for box in item.compare_evidence] == ["valid"]
+    assert item.compare_text == "valid"
+
+
 def test_audit_items_split_mixed_evidence_by_highlight_type() -> None:
     diff = DiffItem(
         diff_id="D002",
@@ -87,6 +149,45 @@ def test_audit_items_split_mixed_evidence_by_highlight_type() -> None:
     assert items[2].summary == "原文：30 days 修改后：45 days"
     assert items[0].compare_evidence[0].text == "新增付款说明"
     assert items[1].original_evidence[0].text == "旧付款说明"
+
+
+def test_audit_items_keep_change_ranges_local_to_each_typed_child() -> None:
+    diff = DiffItem(
+        diff_id="DRANGES",
+        diff_type="MODIFY",
+        clause_no="1",
+        title="付款",
+        original_text="removed old",
+        compare_text="added new",
+        original_evidence=[evidence("removed", "DELETE", 1), evidence("old", "MODIFY", 3)],
+        compare_evidence=[evidence("added", "ADD", 2), evidence("new", "MODIFY", 4)],
+        original_change_ranges=[
+            TextRange(start=0, end=7, highlight_type="DELETE"),
+            TextRange(start=8, end=11, highlight_type="MODIFY"),
+        ],
+        compare_change_ranges=[
+            TextRange(start=0, end=5, highlight_type="ADD"),
+            TextRange(start=6, end=9, highlight_type="MODIFY"),
+        ],
+    )
+
+    items = {item.diff_type: item for item in build_audit_items([diff])}
+
+    assert items["ADD"].title == "1 付款"
+    assert items["ADD"].original_text == ""
+    assert items["ADD"].compare_text == "added"
+    assert items["ADD"].original_change_ranges == []
+    assert [item.highlight_type for item in items["ADD"].compare_change_ranges] == ["ADD"]
+    assert [(item.start, item.end) for item in items["ADD"].compare_change_ranges] == [(0, len("added"))]
+    assert items["DELETE"].original_text == "removed"
+    assert items["DELETE"].compare_text == ""
+    assert [item.highlight_type for item in items["DELETE"].original_change_ranges] == ["DELETE"]
+    assert [(item.start, item.end) for item in items["DELETE"].original_change_ranges] == [(0, len("removed"))]
+    assert items["DELETE"].compare_change_ranges == []
+    assert [item.highlight_type for item in items["MODIFY"].original_change_ranges] == ["MODIFY"]
+    assert [item.highlight_type for item in items["MODIFY"].compare_change_ranges] == ["MODIFY"]
+    assert [(item.start, item.end) for item in items["MODIFY"].original_change_ranges] == [(0, len("old"))]
+    assert [(item.start, item.end) for item in items["MODIFY"].compare_change_ranges] == [(0, len("new"))]
 
 
 def test_audit_item_ids_do_not_depend_on_evidence_order() -> None:
@@ -250,12 +351,12 @@ def test_read_projection_aggregates_normalized_children_without_mutating_diffs()
     assert diff.review_comment == "legacy"
 
 
-def test_task_audit_items_include_stable_ocr_and_remediation_context_for_all_children() -> None:
+def test_task_audit_items_associate_ocr_and_remediation_by_child_side_and_page() -> None:
     diff = DiffItem(
         diff_id="DCONTEXT",
         diff_type="MODIFY",
-        original_evidence=[evidence("old", "MODIFY")],
-        compare_evidence=[evidence("new", "MODIFY"), evidence("added", "ADD")],
+        original_evidence=[evidence("removed", "DELETE", 1), evidence("old", "MODIFY", 3)],
+        compare_evidence=[evidence("added", "ADD", 2), evidence("new", "MODIFY", 4)],
     )
     task = CompareTask(
         task_id="TCONTEXT",
@@ -264,38 +365,167 @@ def test_task_audit_items_include_stable_ocr_and_remediation_context_for_all_chi
             requires_review=True,
             profiles=[
                 PageOcrQualityProfile(
-                    side="compare",
+                    side="original",
                     page_no=1,
                     status="LOW_TEXT_CONFIDENCE",
-                    reasons=["LOW_AVG_CONFIDENCE"],
+                    reasons=["DELETE_ONLY"],
                     affected_diff_ids=["DCONTEXT"],
-                )
+                ),
+                PageOcrQualityProfile(
+                    side="compare",
+                    page_no=2,
+                    status="TABLE_RISK",
+                    reasons=["ADD_ONLY"],
+                    affected_diff_ids=["DCONTEXT"],
+                ),
+                PageOcrQualityProfile(
+                    side="compare",
+                    page_no=4,
+                    status="UNRELIABLE",
+                    reasons=["MODIFY_ONLY"],
+                    affected_diff_ids=["DCONTEXT"],
+                ),
+                PageOcrQualityProfile(
+                    side="compare",
+                    page_no=99,
+                    status="LAYOUT_MISMATCH",
+                    reasons=["NO_CHILD_MATCH"],
+                    affected_diff_ids=["DCONTEXT"],
+                ),
             ],
         ),
         ocr_remediation_summary=TaskOcrRemediationSummary(
             actions=[
                 OcrRemediationAction(
-                    action_id="compare:1:DCONTEXT:RELOCATE_EVIDENCE",
-                    action_type="RELOCATE_EVIDENCE",
-                    reason="EVIDENCE_UNRELIABLE",
-                    status="SUCCEEDED",
-                    side="compare",
+                    action_id="original:1:DCONTEXT:MARK_REVIEW",
+                    action_type="MARK_REVIEW",
+                    reason="DELETE_ONLY",
+                    status="PLANNED",
+                    side="original",
                     page_no=1,
                     diff_id="DCONTEXT",
+                ),
+                OcrRemediationAction(
+                    action_id="compare:2:DCONTEXT:REPAIR_TABLE",
+                    action_type="REPAIR_TABLE",
+                    reason="ADD_ONLY",
+                    status="SUCCEEDED",
+                    side="compare",
+                    page_no=2,
+                    diff_id="DCONTEXT",
                     changed_evidence=True,
-                    review_flags_added=["OCR_REMEDIATION_EVIDENCE_RELOCATED"],
-                )
+                ),
+                OcrRemediationAction(
+                    action_id="compare:4:DCONTEXT:RELOCATE_EVIDENCE",
+                    action_type="RELOCATE_EVIDENCE",
+                    reason="MODIFY_ONLY",
+                    status="MANUAL_REVIEW_REQUIRED",
+                    side="compare",
+                    page_no=4,
+                    diff_id="DCONTEXT",
+                ),
+                OcrRemediationAction(
+                    action_id="DCONTEXT:UNSCOPED",
+                    action_type="ESCALATE_MANUAL_REVIEW",
+                    reason="NO_RELIABLE_CHILD",
+                    status="MANUAL_REVIEW_REQUIRED",
+                    diff_id="DCONTEXT",
+                ),
             ]
         ),
     )
 
     items = build_task_audit_items(task)
 
-    assert {item.item_id for item in items} == {"DCONTEXT:ADD", "DCONTEXT:MODIFY"}
-    assert {item.ocr_context.statuses for item in items} == {("LOW_TEXT_CONFIDENCE",)}
-    assert {item.ocr_context.reasons for item in items} == {("LOW_AVG_CONFIDENCE",)}
-    assert {item.remediation_context.action_ids for item in items} == {("compare:1:DCONTEXT:RELOCATE_EVIDENCE",)}
-    assert all(item.remediation_context.changed_evidence for item in items)
+    by_type = {item.diff_type: item for item in items}
+    assert by_type["DELETE"].ocr_context.scope == "ITEM"
+    assert by_type["DELETE"].ocr_context.reasons == ("DELETE_ONLY",)
+    assert by_type["DELETE"].remediation_context.action_ids == ("original:1:DCONTEXT:MARK_REVIEW",)
+    assert by_type["ADD"].ocr_context.scope == "ITEM"
+    assert by_type["ADD"].ocr_context.reasons == ("ADD_ONLY",)
+    assert by_type["ADD"].remediation_context.action_ids == ("compare:2:DCONTEXT:REPAIR_TABLE",)
+    assert by_type["ADD"].remediation_context.changed_evidence is True
+    assert by_type["MODIFY"].ocr_context.scope == "ITEM"
+    assert by_type["MODIFY"].ocr_context.reasons == ("MODIFY_ONLY",)
+    assert by_type["MODIFY"].remediation_context.action_ids == ("compare:4:DCONTEXT:RELOCATE_EVIDENCE",)
+    assert by_type["MODIFY"].remediation_context.requires_manual_review is True
+    assert all("NO_CHILD_MATCH" not in item.ocr_context.reasons for item in items)
+    assert all("DCONTEXT:UNSCOPED" not in item.remediation_context.action_ids for item in items)
+
+
+def test_typed_item_context_without_matching_side_and_page_has_none_scope() -> None:
+    task = CompareTask(
+        task_id="TNONECONTEXT",
+        diffs=[
+            DiffItem(
+                diff_id="DNONECONTEXT",
+                diff_type="ADD",
+                compare_evidence=[evidence("added", "ADD", 2)],
+            )
+        ],
+        ocr_quality_summary=TaskOcrQualitySummary(
+            profiles=[
+                PageOcrQualityProfile(
+                    side="compare",
+                    page_no=9,
+                    status="UNRELIABLE",
+                    affected_diff_ids=["DNONECONTEXT"],
+                )
+            ]
+        ),
+        ocr_remediation_summary=TaskOcrRemediationSummary(
+            actions=[
+                OcrRemediationAction(
+                    action_id="DNONECONTEXT:UNSCOPED",
+                    action_type="MARK_REVIEW",
+                    reason="DIFF_ONLY",
+                    diff_id="DNONECONTEXT",
+                )
+            ]
+        ),
+    )
+
+    item = build_task_audit_items(task)[0]
+
+    assert item.ocr_context.scope == "NONE"
+    assert item.ocr_context.affected is False
+    assert item.remediation_context.scope == "NONE"
+    assert item.remediation_context.action_ids == ()
+
+
+def test_fallback_item_accepts_diff_scoped_ocr_and_remediation_context() -> None:
+    task = CompareTask(
+        task_id="TDIFFCONTEXT",
+        diffs=[DiffItem(diff_id="DDIFFCONTEXT", diff_type="DELETE", original_text="legacy")],
+        ocr_quality_summary=TaskOcrQualitySummary(
+            profiles=[
+                PageOcrQualityProfile(
+                    side="original",
+                    page_no=9,
+                    status="UNRELIABLE",
+                    reasons=["DIFF_LEVEL"],
+                    affected_diff_ids=["DDIFFCONTEXT"],
+                )
+            ]
+        ),
+        ocr_remediation_summary=TaskOcrRemediationSummary(
+            actions=[
+                OcrRemediationAction(
+                    action_id="DDIFFCONTEXT:UNSCOPED",
+                    action_type="MARK_REVIEW",
+                    reason="DIFF_LEVEL",
+                    diff_id="DDIFFCONTEXT",
+                )
+            ]
+        ),
+    )
+
+    item = build_task_audit_items(task)[0]
+
+    assert item.ocr_context.scope == "DIFF"
+    assert item.ocr_context.reasons == ("DIFF_LEVEL",)
+    assert item.remediation_context.scope == "DIFF"
+    assert item.remediation_context.action_ids == ("DDIFFCONTEXT:UNSCOPED",)
 
 
 def test_task_audit_item_context_defaults_are_conservative_for_legacy_fallback() -> None:
@@ -307,6 +537,8 @@ def test_task_audit_item_context_defaults_are_conservative_for_legacy_fallback()
     item = build_task_audit_items(task)[0]
 
     assert item.ocr_context.affected is False
+    assert item.ocr_context.scope == "NONE"
     assert item.ocr_context.statuses == ()
     assert item.remediation_context.action_ids == ()
+    assert item.remediation_context.scope == "NONE"
     assert item.remediation_context.requires_manual_review is False

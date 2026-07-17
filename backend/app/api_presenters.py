@@ -200,6 +200,7 @@ def audit_item_response(item: AuditItem) -> AuditItemResponse:
         text_confidence=item.text_confidence,
         match_confidence=item.match_confidence,
         ocr_context={
+            "scope": item.ocr_context.scope,
             "affected": item.ocr_context.affected,
             "statuses": list(item.ocr_context.statuses),
             "reasons": list(item.ocr_context.reasons),
@@ -207,6 +208,7 @@ def audit_item_response(item: AuditItem) -> AuditItemResponse:
             "page_numbers": list(item.ocr_context.page_numbers),
         },
         remediation_context={
+            "scope": item.remediation_context.scope,
             "action_ids": list(item.remediation_context.action_ids),
             "action_types": list(item.remediation_context.action_types),
             "statuses": list(item.remediation_context.statuses),

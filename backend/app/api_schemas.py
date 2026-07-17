@@ -8,6 +8,7 @@ TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 TaskTerminalReason = Literal["NONE", "EXECUTION_FAILED", "SUBMISSION_FAILED", "CANCELLED"]
 TaskExecutionStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED"]
 TaskExecutionType = Literal["compare"]
+AuditContextScope = Literal["ITEM", "DIFF", "NONE"]
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
@@ -42,6 +43,8 @@ OcrRemediationSummaryStatus = Literal[
     "ACTIONS_PLANNED",
     "MANUAL_REVIEW_REQUIRED",
 ]
+
+MAX_REVIEW_COMMENT_LENGTH = 2000
 
 
 class BBoxResponse(BaseModel):
@@ -116,6 +119,7 @@ class TextRangeResponse(BaseModel):
 
 
 class AuditItemOcrContextResponse(BaseModel):
+    scope: AuditContextScope = "NONE"
     affected: bool = False
     statuses: list[OcrQualityStatus] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
@@ -124,6 +128,7 @@ class AuditItemOcrContextResponse(BaseModel):
 
 
 class AuditItemRemediationContextResponse(BaseModel):
+    scope: AuditContextScope = "NONE"
     action_ids: list[str] = Field(default_factory=list)
     action_types: list[OcrRemediationActionType] = Field(default_factory=list)
     statuses: list[OcrRemediationStatus] = Field(default_factory=list)
@@ -284,7 +289,7 @@ class CompareDiffListResponse(BaseModel):
 
 class DiffReviewRequest(BaseModel):
     review_status: ReviewStatus
-    review_comment: str = ""
+    review_comment: str = Field(default="", max_length=MAX_REVIEW_COMMENT_LENGTH)
     reviewed_by: str = ""
 
 

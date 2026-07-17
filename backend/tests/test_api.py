@@ -1538,9 +1538,11 @@ def test_compare_task_response_projects_item_level_ocr_and_remediation_context()
     item = compare_task_response(task).audit_items[0]
 
     assert item.ocr_context.affected is True
+    assert item.ocr_context.scope == "DIFF"
     assert item.ocr_context.statuses == ["UNRELIABLE"]
     assert item.ocr_context.reasons == ["OCR_EMPTY"]
     assert item.remediation_context.action_ids == ["compare:2:DCTX:ESCALATE_MANUAL_REVIEW"]
+    assert item.remediation_context.scope == "DIFF"
     assert item.remediation_context.statuses == ["MANUAL_REVIEW_REQUIRED"]
     assert item.remediation_context.requires_manual_review is True
 
@@ -1609,6 +1611,34 @@ def test_compare_api_serializes_canonical_audit_and_diff_structural_evidence_fie
     assert diffs["DLEGACYDEFAULT"]["section_path"] == []
     assert diffs["DLEGACYDEFAULT"]["match_confidence"] == ""
     assert diffs["DLEGACYDEFAULT"]["structural_flags"] == []
+
+
+def test_review_api_accepts_comment_at_limit_and_rejects_longer_comment(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TREVIEWCOMMENTLIMIT",
+            status="COMPLETED",
+            diffs=[DiffItem(diff_id="DCOMMENT", diff_type="ADD", compare_text="added")],
+        )
+    )
+    client = TestClient(app)
+    allowed_comment = "复" * api_schemas.MAX_REVIEW_COMMENT_LENGTH
+
+    accepted = client.patch(
+        "/api/compare/TREVIEWCOMMENTLIMIT/audit-items/DCOMMENT:ADD/review",
+        json={"review_status": "CONFIRMED", "review_comment": allowed_comment},
+    )
+    rejected = client.patch(
+        "/api/compare/TREVIEWCOMMENTLIMIT/audit-items/DCOMMENT:ADD/review",
+        json={"review_status": "CONFIRMED", "review_comment": f"{allowed_comment}超"},
+    )
+
+    assert api_schemas.MAX_REVIEW_COMMENT_LENGTH == 2000
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["audit_item"]["review_comment"] == allowed_comment
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"][0]["type"] == "string_too_long"
 
 
 def test_quality_summary_includes_ocr_quality_counts(tmp_path: Path) -> None:

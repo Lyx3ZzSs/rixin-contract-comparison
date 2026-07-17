@@ -286,6 +286,7 @@ export interface AuditItem {
   text_confidence?: number | null;
   match_confidence: string;
   ocr_context: {
+    scope?: "ITEM" | "DIFF" | "NONE";
     affected: boolean;
     statuses: OcrQualityStatus[];
     reasons: string[];
@@ -293,6 +294,7 @@ export interface AuditItem {
     page_numbers: number[];
   };
   remediation_context: {
+    scope?: "ITEM" | "DIFF" | "NONE";
     action_ids: string[];
     action_types: OcrRemediationActionType[];
     statuses: OcrRemediationStatus[];

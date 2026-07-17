@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fitz
+import pytest
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
@@ -277,7 +278,14 @@ def test_report_renders_complete_located_and_unlocated_audit_item_evidence(tmp_p
                         highlight_type="MODIFY",
                         confidence=0.97,
                         evidence_quality="HIGH",
-                    )
+                    ),
+                    EvidenceBox(
+                        page_no=-1,
+                        bbox=BBox(x0=1, y0=2, x1=3, y1=4),
+                        method="invalid_negative_page",
+                        text="无效定位不得展示",
+                        highlight_type="MODIFY",
+                    ),
                 ],
                 compare_evidence=[
                     EvidenceBox(
@@ -380,6 +388,9 @@ def test_report_renders_complete_located_and_unlocated_audit_item_evidence(tmp_p
     assert "bbox=(12, 22, 82, 37)" in report_text
     assert "char_exact" in report_text
     assert "ocr_exact" in report_text
+    assert "invalid_negative_page" not in report_text
+    assert "无效定位不得展示" not in report_text
+    assert "原文第-1页" not in report_text
 
     # Quality, OCR, remediation and independent review context are never inferred away.
     assert "质量状态：NEEDS_REVIEW" in report_text
@@ -395,6 +406,8 @@ def test_report_renders_complete_located_and_unlocated_audit_item_evidence(tmp_p
     assert "修复动作ID：compare:4:DLOCATED:ESCALATE_MANUAL_REVIEW" in report_text
     assert "修复动作：ESCALATE_MANUAL_REVIEW" in report_text
     assert "修复状态：MANUAL_REVIEW_REQUIRED" in report_text
+    assert "OCR归属：审计项" in report_text
+    assert "修复归属：审计项" in report_text
     assert "审核状态：NEEDS_REVIEW" in report_text
     assert "审核意见：请复核报价 <script>alert(1)</script>" in report_text
 
@@ -409,3 +422,48 @@ def test_report_renders_complete_located_and_unlocated_audit_item_evidence(tmp_p
 
     assert "DIGNORED:ADD" not in report_text
     assert "不得出现在报告" not in report_text
+
+
+def test_report_generates_from_legacy_very_long_context_without_layout_error(tmp_path) -> None:
+    long_comment = "LEGACY-COMMENT-BEGIN-" + ("历史意见" * 20_000) + "-LEGACY-COMMENT-END"
+    long_path = "PATH-BEGIN-" + ("超长章节" * 2_000) + "-PATH-END"
+    long_structural_flag = "STRUCT-BEGIN-" + ("结构" * 2_000) + "-STRUCT-END"
+    long_review_flag = "FLAG-BEGIN-" + ("复核" * 2_000) + "-FLAG-END"
+    task = CompareTask(
+        task_id="TLONGREPORT",
+        status="COMPLETED",
+        original_filename="original.pdf",
+        compare_filename="compare.pdf",
+        diffs=[
+            DiffItem(
+                diff_id="DLONG",
+                diff_type="MODIFY",
+                title="超长历史审核",
+                section_path=[long_path],
+                structural_flags=[long_structural_flag],
+                review_flags=[long_review_flag],
+                original_text="原文完整内容",
+                compare_text="修改后完整内容",
+            )
+        ],
+        audit_item_reviews={"DLONG:MODIFY": AuditItemReview(review_status="NEEDS_REVIEW", review_comment=long_comment)},
+    )
+    output_path = tmp_path / "long-report.pdf"
+
+    try:
+        ReportGenerator().generate(task, output_path)
+    except Exception as exc:
+        pytest.fail(f"legacy long report must paginate instead of raising {type(exc).__name__}: {exc}")
+
+    with fitz.open(output_path) as report_pdf:
+        report_text = "\n".join(page.get_text() for page in report_pdf)
+        page_count = len(report_pdf)
+    assert page_count > 1
+    assert "LEGACY-COMMENT-BEGIN" in report_text
+    assert "LEGACY-COMMENT-END" in report_text
+    assert "PATH-BEGIN" in report_text
+    assert "PATH-END" in report_text
+    assert "STRUCT-BEGIN" in report_text
+    assert "STRUCT-END" in report_text
+    assert "FLAG-BEGIN" in report_text
+    assert "FLAG-END" in report_text
