@@ -158,7 +158,7 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
   }
 
   if (task.status === "FAILED") {
-    const retryable = canRetryTask(task.status, task.terminal_reason);
+    const retryable = canRetryTask(task.status, task.terminal_reason, task.retry_eligible);
     return (
       <section className="state-screen">
         <p className="eyebrow">合同审查系统</p>

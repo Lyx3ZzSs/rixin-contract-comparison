@@ -103,17 +103,10 @@ class CompareTaskApplication:
 
     def retry_compare(self, task_id: str) -> TaskJob:
         task = self.load_compare_task(task_id)
-        validated_inputs_exist = Path(task.original_pdf_path).is_file() and Path(task.compare_pdf_path).is_file()
-        task.ensure_transition_allowed(
-            "PROCESSING",
-            validated_inputs_exist=validated_inputs_exist,
-        )
+        task.ensure_retry_eligible()
 
         def mark_retry_queued(persisted: CompareTask, job: TaskJob) -> None:
-            persisted.ensure_transition_allowed(
-                "PROCESSING",
-                validated_inputs_exist=validated_inputs_exist,
-            )
+            persisted.ensure_retry_eligible()
             persisted.status = "PROCESSING"
             persisted.terminal_reason = "NONE"
             persisted.active_job_id = job.job_id

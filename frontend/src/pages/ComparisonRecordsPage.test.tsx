@@ -2,7 +2,8 @@ import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getCompareRecords, getTask } from "../lib/api";
+import { getCompareRecords, getTask, retryCompareTask } from "../lib/api";
+import { createProgressEventSource } from "../lib/api_sse";
 import type { CompareRecordSummary } from "../types";
 import { ComparisonRecordsPage } from "./ComparisonRecordsPage";
 
@@ -28,6 +29,7 @@ const processingRecord: CompareRecordSummary = {
   terminal_reason: "NONE",
   revision: 1,
   report_revision: 0,
+  retry_eligible: false,
   stage: "文档解析中",
   progress_percent: 35,
   created_at: "2026-05-12T00:00:00Z",
@@ -65,6 +67,7 @@ describe("ComparisonRecordsPage", () => {
     mockEventSource.close.mockClear();
     vi.mocked(getTask).mockReset();
     vi.mocked(getCompareRecords).mockReset();
+    vi.mocked(retryCompareTask).mockReset();
   });
 
   it("opens processing records as progress and completed records as results", async () => {
@@ -211,9 +214,10 @@ describe("ComparisonRecordsPage", () => {
 
   it("labels cancelled records and only offers retry for retryable failures", async () => {
     const cancelled = { ...processingRecord, task_id: "cancelled", status: "FAILED" as const, terminal_reason: "CANCELLED" as const };
-    const failed = { ...processingRecord, task_id: "failed", status: "FAILED" as const, terminal_reason: "EXECUTION_FAILED" as const };
-    const submissionFailed = { ...processingRecord, task_id: "submission-failed", status: "FAILED" as const, terminal_reason: "SUBMISSION_FAILED" as const };
-    vi.mocked(getCompareRecords).mockResolvedValueOnce(pagePayload([cancelled, failed, submissionFailed]));
+    const failed = { ...processingRecord, task_id: "failed", status: "FAILED" as const, terminal_reason: "EXECUTION_FAILED" as const, retry_eligible: undefined };
+    const submissionFailed = { ...processingRecord, task_id: "submission-failed", status: "FAILED" as const, terminal_reason: "SUBMISSION_FAILED" as const, retry_eligible: true };
+    const legacySubmissionFailed = { ...submissionFailed, task_id: "legacy-submission-failed", retry_eligible: undefined };
+    vi.mocked(getCompareRecords).mockResolvedValueOnce(pagePayload([cancelled, failed, submissionFailed, legacySubmissionFailed]));
 
     render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
 
@@ -221,10 +225,36 @@ describe("ComparisonRecordsPage", () => {
     const cancelledRow = screen.getByText("cancelled").closest("article")!;
     const failedRow = screen.getByText("failed").closest("article")!;
     const submissionFailedRow = screen.getByText("submission-failed").closest("article")!;
+    const legacySubmissionFailedRow = screen.getByText("legacy-submission-failed").closest("article")!;
     expect(within(cancelledRow).getByText("已取消")).toBeInTheDocument();
     expect(within(cancelledRow).queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
     expect(within(failedRow).getByRole("button", { name: "重试" })).toBeInTheDocument();
     expect(within(submissionFailedRow).getByRole("button", { name: "重试" })).toBeInTheDocument();
+    expect(within(legacySubmissionFailedRow).queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+  });
+
+  it("projects a successful retry to processing, prevents duplicate submits, and keeps syncing if refresh fails", async () => {
+    const user = userEvent.setup();
+    const failed = { ...processingRecord, task_id: "retry-me", status: "FAILED" as const, terminal_reason: "EXECUTION_FAILED" as const, retry_eligible: true };
+    let resolveRetry!: () => void;
+    vi.mocked(getCompareRecords)
+      .mockResolvedValueOnce(pagePayload([failed]))
+      .mockRejectedValueOnce(new Error("refresh failed"));
+    vi.mocked(retryCompareTask).mockReturnValueOnce(new Promise((resolve) => { resolveRetry = () => resolve({} as never); }));
+
+    render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
+    const retryButton = await screen.findByRole("button", { name: "重试" });
+    await user.click(retryButton);
+    await user.click(retryButton);
+
+    expect(retryCompareTask).toHaveBeenCalledTimes(1);
+    expect(retryButton).toBeDisabled();
+
+    await act(async () => { resolveRetry(); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    expect(createProgressEventSource).toHaveBeenCalledWith("retry-me");
+    expect(screen.getByText("刷新失败，任务仍在后台同步。" )).toBeInTheDocument();
   });
 
   it("closes streams and aborts polling when unmounted", async () => {

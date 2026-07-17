@@ -7,7 +7,7 @@ export interface ProgressEvent {
   stage: string;
   progress_percent: number;
   status: TaskStatus;
-  revision: number;
+  revision?: number;
   detail?: Record<string, unknown>;
 }
 

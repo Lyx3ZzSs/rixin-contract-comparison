@@ -11,6 +11,11 @@ const POLL_MAX_DELAY_MS = 4800;
 const RESULT_COMPLETION_ANIMATION_MS = 1200;
 const RECORD_COMPLETION_ANIMATION_MS = 900;
 
+function normalizeRevision(value: unknown): number | null {
+  const revision = typeof value === "number" ? value : Number.NaN;
+  return Number.isFinite(revision) && revision >= 0 ? revision : null;
+}
+
 interface ProgressSynchronizationOptions {
   taskId: string;
   skipInitialLoad?: boolean;
@@ -85,11 +90,17 @@ function startProgressSynchronization(options: ProgressSynchronizationOptions): 
 
     stream.onmessage = (message) => {
       if (stopped) return;
-      clearTimers();
       try {
         const event = JSON.parse(message.data) as ProgressEvent;
+        if (!event || typeof event !== "object" || !["PROCESSING", "COMPLETED", "FAILED"].includes(event.status)) {
+          return;
+        }
+        clearTimers();
         if (event.status === "COMPLETED" || event.status === "FAILED") {
-          terminalHintRevision = Math.max(terminalHintRevision ?? 0, Number(event.revision) || 0);
+          const eventRevision = normalizeRevision(event.revision);
+          if (eventRevision !== null) {
+            terminalHintRevision = Math.max(terminalHintRevision ?? eventRevision, eventRevision);
+          }
           options.onTerminalHint?.(event);
           fallBackToPolling(true);
           return;
@@ -111,7 +122,9 @@ function startProgressSynchronization(options: ProgressSynchronizationOptions): 
       if (stopped) return;
       pollDelay = POLL_INITIAL_DELAY_MS;
       const terminal = task.status === "COMPLETED" || task.status === "FAILED";
-      const revisionConfirmed = terminalHintRevision === null || task.revision >= terminalHintRevision;
+      const taskRevision = normalizeRevision(task.revision);
+      const revisionConfirmed = terminalHintRevision === null
+        || (taskRevision !== null && taskRevision >= terminalHintRevision);
       if (terminal && revisionConfirmed) {
         clearTimers();
         closeStream();
@@ -214,7 +227,7 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
           ...current,
           stage: progress.stage,
           progress_percent: progress.progress_percent,
-          revision: Math.max(current.revision, Number(progress.revision) || 0),
+          revision: Math.max(current.revision ?? 0, normalizeRevision(progress.revision) ?? 0),
         } : current);
       },
       onTerminalHint(progress) {

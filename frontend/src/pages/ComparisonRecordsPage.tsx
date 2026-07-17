@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, RotateCcw, Search } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ProgressRing } from "../components/ProgressRing";
 import { getCompareRecords, retryCompareTask, toApiUrl } from "../lib/api";
@@ -36,6 +36,9 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
   const [endDate, setEndDate] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
+  const [syncNotice, setSyncNotice] = useState("");
+  const [pendingRetryIds, setPendingRetryIds] = useState<Set<string>>(() => new Set());
+  const pendingRetryIdsRef = useRef(new Set<string>());
 
   const buildApiQuery = useCallback((state: RecordQueryState): CompareRecordQuery => ({
     page: state.page,
@@ -58,6 +61,7 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
     let isCurrent = true;
     setIsLoading(true);
     setError("");
+    setSyncNotice("");
     void getCompareRecords(buildApiQuery(query))
       .then((payload) => {
         if (isCurrent) applyPayload(payload);
@@ -77,8 +81,14 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
     };
   }, [applyPayload, buildApiQuery, query]);
 
-  const refreshCurrentPage = useCallback(() => {
-    void getCompareRecords(buildApiQuery(query)).then(applyPayload);
+  const refreshCurrentPage = useCallback(async () => {
+    try {
+      const payload = await getCompareRecords(buildApiQuery(query));
+      applyPayload(payload);
+      setSyncNotice("");
+    } catch {
+      setSyncNotice("刷新失败，任务仍在后台同步。");
+    }
   }, [applyPayload, buildApiQuery, query]);
 
   // SSE 实时更新 PROCESSING 记录进度
@@ -91,7 +101,7 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
           progress_percent: update.progress_percent,
           stage: update.stage,
           status: update.status,
-          revision: Math.max(record.revision, Number(update.revision) || 0),
+          revision: Math.max(record.revision ?? 0, Number(update.revision) || 0),
           terminal_reason: "terminal_reason" in update ? update.terminal_reason : record.terminal_reason,
           report_revision: "report_revision" in update ? update.report_revision : record.report_revision,
         } : record),
@@ -99,17 +109,31 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
     },
     () => {
       // 记录完成时刷新完整列表（获取 diff_count、report_url 等最终字段）
-      refreshCurrentPage();
+      void refreshCurrentPage();
     },
   );
 
   const retryRecord = useCallback(async (taskId: string) => {
-    setError("");
+    if (pendingRetryIdsRef.current.has(taskId)) return;
+    pendingRetryIdsRef.current.add(taskId);
+    setPendingRetryIds(new Set(pendingRetryIdsRef.current));
+    setSyncNotice("");
     try {
       await retryCompareTask(taskId);
-      refreshCurrentPage();
+      setRecords((current) => current.map((record) => record.task_id === taskId ? {
+        ...record,
+        status: "PROCESSING",
+        terminal_reason: "NONE",
+        retry_eligible: false,
+        stage: "排队中",
+        progress_percent: 3,
+      } : record));
+      void refreshCurrentPage();
     } catch (retryError) {
-      setError(retryError instanceof Error ? retryError.message : "重试失败。");
+      setSyncNotice(retryError instanceof Error ? retryError.message : "重试失败。");
+    } finally {
+      pendingRetryIdsRef.current.delete(taskId);
+      setPendingRetryIds(new Set(pendingRetryIdsRef.current));
     }
   }, [refreshCurrentPage]);
 
@@ -166,6 +190,8 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
           </button>
         </div>
 
+        {syncNotice && <p role="status">{syncNotice}</p>}
+
         {isLoading ? (
           <div className="records-state" role="status">
             正在加载对比记录...
@@ -216,8 +242,14 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
                       报告
                     </button>
                   )}
-                  {canRetryTask(record.status, record.terminal_reason) && (
-                    <button type="button" onClick={() => void retryRecord(record.task_id)}>重试</button>
+                  {canRetryTask(record.status, record.terminal_reason, record.retry_eligible) && (
+                    <button
+                      type="button"
+                      disabled={pendingRetryIds.has(record.task_id)}
+                      onClick={() => void retryRecord(record.task_id)}
+                    >
+                      {pendingRetryIds.has(record.task_id) ? "重试中..." : "重试"}
+                    </button>
                   )}
                   {record.status === "PROCESSING" ? (
                     <RecordProgress record={record} />

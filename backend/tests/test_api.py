@@ -667,7 +667,11 @@ def test_compare_execution_api_rejects_ineligible_retry_transition(
     failed_compare_job(default_task_runner, task_id)
 
     try:
-        response = TestClient(app).post(f"/api/compare/{task_id}/retry")
+        client = TestClient(app)
+        assert client.get(f"/api/compare/{task_id}").json()["retry_eligible"] is False
+        records = client.get("/api/compare/records").json()["records"]
+        assert next(item for item in records if item["task_id"] == task_id)["retry_eligible"] is False
+        response = client.post(f"/api/compare/{task_id}/retry")
     finally:
         default_task_runner.autostart = original_autostart
 
@@ -698,7 +702,11 @@ def test_compare_execution_api_retries_eligible_submission_failure(tmp_path: Pat
     failed_compare_job(default_task_runner, task_id)
 
     try:
-        response = TestClient(app).post(f"/api/compare/{task_id}/retry")
+        client = TestClient(app)
+        assert client.get(f"/api/compare/{task_id}").json()["retry_eligible"] is True
+        records = client.get("/api/compare/records").json()["records"]
+        assert next(item for item in records if item["task_id"] == task_id)["retry_eligible"] is True
+        response = client.post(f"/api/compare/{task_id}/retry")
     finally:
         default_task_runner.autostart = original_autostart
 
@@ -733,11 +741,15 @@ def test_compare_task_api_projects_terminal_reason_and_revisions(tmp_path: Path)
         )
     )
 
-    payload = TestClient(app).get("/api/compare/TSTATE_FIELDS").json()
+    client = TestClient(app)
+    payload = client.get("/api/compare/TSTATE_FIELDS").json()
 
     assert payload["terminal_reason"] == "EXECUTION_FAILED"
     assert payload["revision"] >= 1
     assert payload["report_revision"] == 3
+    assert payload["retry_eligible"] is True
+    records = client.get("/api/compare/records").json()["records"]
+    assert next(item for item in records if item["task_id"] == "TSTATE_FIELDS")["retry_eligible"] is True
 
 
 def test_task_execution_presenter_includes_execution_identity_and_error_code() -> None:

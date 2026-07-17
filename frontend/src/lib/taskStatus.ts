@@ -8,6 +8,12 @@ export function taskStatusLabel(status: TaskStatus, terminalReason: TaskTerminal
   return "处理中";
 }
 
-export function canRetryTask(status: TaskStatus, terminalReason: TaskTerminalReason): boolean {
-  return status === "FAILED" && (terminalReason === "EXECUTION_FAILED" || terminalReason === "SUBMISSION_FAILED");
+export function canRetryTask(
+  status: TaskStatus,
+  terminalReason: TaskTerminalReason,
+  retryEligible?: boolean,
+): boolean {
+  if (status !== "FAILED") return false;
+  if (terminalReason === "EXECUTION_FAILED") return retryEligible !== false;
+  return terminalReason === "SUBMISSION_FAILED" && retryEligible === true;
 }

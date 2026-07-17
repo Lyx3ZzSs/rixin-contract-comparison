@@ -89,6 +89,7 @@ const mockTask: CompareTask = {
   terminal_reason: "NONE",
   revision: 2,
   report_revision: 1,
+  retry_eligible: false,
   stage: "已完成",
   progress_percent: 100,
   created_at: "2026-05-12T00:00:00Z",
@@ -568,18 +569,102 @@ describe("ResultPage", () => {
     expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
   });
 
-  it.each(["EXECUTION_FAILED", "SUBMISSION_FAILED"] as const)("offers retry for %s", async (terminalReason) => {
+  it("offers retry for an execution failure even when a legacy response omits retry_eligible", async () => {
     vi.mocked(getTask).mockResolvedValueOnce({
       ...mockTask,
       status: "FAILED",
-      terminal_reason: terminalReason,
-      stage: terminalReason === "EXECUTION_FAILED" ? "执行失败" : "提交失败",
+      terminal_reason: "EXECUTION_FAILED",
+      retry_eligible: undefined,
+      stage: "执行失败",
       errors: [],
     });
 
     render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
 
     expect(await screen.findByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+
+  it("only offers retry for a submission failure when the backend marks it eligible", async () => {
+    vi.mocked(getTask).mockResolvedValueOnce({
+      ...mockTask,
+      status: "FAILED",
+      terminal_reason: "SUBMISSION_FAILED",
+      retry_eligible: false,
+      stage: "提交失败",
+      errors: [],
+    });
+
+    const { rerender } = render(<ResultPage taskId="task-ineligible" onBack={vi.fn()} />);
+    expect(await screen.findByRole("heading", { name: "提交失败" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+
+    vi.mocked(getTask).mockResolvedValueOnce({ ...mockTask, status: "FAILED", terminal_reason: "SUBMISSION_FAILED", retry_eligible: true });
+    rerender(<ResultPage taskId="task-eligible" onBack={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+
+  it("converges legacy terminal payloads when both event and task omit revision", async () => {
+    vi.useFakeTimers();
+    const processing = { ...mockTask, status: "PROCESSING" as const, revision: undefined, report_url: "" };
+    const terminal = { ...mockTask, revision: undefined };
+    vi.mocked(getTask).mockResolvedValueOnce(processing).mockResolvedValueOnce(terminal);
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      mockEventSource.onmessage?.({ data: JSON.stringify({ task_id: "task-1", status: "COMPLETED", stage: "已完成", progress_percent: 100 }) } as MessageEvent);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => { vi.advanceTimersByTime(1200); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument();
+  });
+
+  it("does not converge when only the terminal event has a revision", async () => {
+    vi.useFakeTimers();
+    const processing = { ...mockTask, status: "PROCESSING" as const, revision: undefined, report_url: "" };
+    const terminal = { ...mockTask, revision: undefined };
+    vi.mocked(getTask).mockResolvedValueOnce(processing).mockResolvedValue(terminal);
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      mockEventSource.onmessage?.({ data: JSON.stringify({ task_id: "task-1", status: "COMPLETED", stage: "已完成", progress_percent: 100, revision: 5 }) } as MessageEvent);
+      await Promise.resolve();
+    });
+    await act(async () => { vi.advanceTimersByTime(5000); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(screen.queryByLabelText("原版PDF 在线预览")).not.toBeInTheDocument();
+  });
+
+  it("keeps the first-event timeout armed after a malformed SSE frame", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getTask)
+      .mockResolvedValueOnce({ ...mockTask, status: "PROCESSING", report_url: "" })
+      .mockResolvedValueOnce({ ...mockTask, status: "PROCESSING", stage: "轮询恢复", report_url: "" });
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); mockEventSource.onmessage?.({ data: "{" } as MessageEvent); });
+    await act(async () => { vi.advanceTimersByTime(4200); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(getTask).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("轮询恢复")).toBeInTheDocument();
+  });
+
+  it("aborts a pending final diff read when unmounted", async () => {
+    let diffSignal: AbortSignal | undefined;
+    vi.mocked(getTask).mockResolvedValueOnce(mockTask);
+    vi.mocked(getDiffs).mockImplementationOnce(async (_taskId, signal) => {
+      diffSignal = signal;
+      return await new Promise<DiffItem[]>(() => undefined);
+    });
+    const { unmount } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    unmount();
+
+    expect(diffSignal?.aborted).toBe(true);
   });
 
   it("closes the stream and aborts in-flight task reads on unmount", async () => {

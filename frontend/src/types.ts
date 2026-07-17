@@ -124,8 +124,9 @@ export interface CompareResponse {
   task_id: string;
   status: TaskStatus;
   terminal_reason: TaskTerminalReason;
-  revision: number;
+  revision?: number;
   report_revision: number;
+  retry_eligible?: boolean;
   stage: string;
   progress_percent: number;
   diff_count: number;
@@ -170,8 +171,9 @@ export interface CompareRecordSummary {
   task_id: string;
   status: TaskStatus;
   terminal_reason: TaskTerminalReason;
-  revision: number;
+  revision?: number;
   report_revision: number;
+  retry_eligible?: boolean;
   stage: string;
   progress_percent: number;
   created_at: string;

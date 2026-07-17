@@ -121,6 +121,7 @@ class CompareTaskResponse(BaseModel):
     terminal_reason: TaskTerminalReason = "NONE"
     revision: int = 0
     report_revision: int = 0
+    retry_eligible: bool = False
     stage: str
     progress_percent: int
     diff_count: int
@@ -159,6 +160,7 @@ class CompareRecordResponse(BaseModel):
     terminal_reason: TaskTerminalReason = "NONE"
     revision: int = 0
     report_revision: int = 0
+    retry_eligible: bool = False
     stage: str
     progress_percent: int
     created_at: str
