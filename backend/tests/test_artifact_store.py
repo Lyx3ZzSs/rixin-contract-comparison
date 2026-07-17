@@ -16,9 +16,10 @@ def test_local_artifact_store_resolves_task_artifact_paths(tmp_path: Path) -> No
     assert store.upload_path("T/001", "original", "a.pdf") == (
         app_settings.tasks_dir / "T_001" / "uploads" / "original_a.pdf"
     )
-    assert store.report_pdf_path("T001") == (
-        app_settings.tasks_dir / "T001" / "reports" / "contract_compare_report.pdf"
+    assert store.report_pdf_path("T001", 12) == (
+        app_settings.tasks_dir / "T001" / "reports" / "contract_compare_report-r12.pdf"
     )
+    assert store.report_manifest_path("T001", 12).name == "contract_compare_report-r12.manifest.json"
     assert store.raw_json_path("T001", "合同 初稿.pdf", "ppocrv5_raw").name == "合同_初稿_ppocrv5_raw.json"
 
 

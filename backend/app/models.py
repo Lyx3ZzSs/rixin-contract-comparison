@@ -419,7 +419,7 @@ class CompareTask(BaseModel):
     active_job_id: str = ""
     terminal_job_id: str = ""
     terminal_attempt: int = 0
-    report_revision: int = 0
+    report_revision: int = Field(default=0, ge=0)
     stage: str = "已创建"
     progress_percent: int = Field(default=0, ge=0, le=100)
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())

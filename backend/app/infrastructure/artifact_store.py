@@ -65,7 +65,10 @@ class ArtifactStore(Protocol):
     ) -> Path:
         raise NotImplementedError
 
-    def report_pdf_path(self, task_id: str) -> Path:
+    def report_pdf_path(self, task_id: str, report_revision: int = 0) -> Path:
+        raise NotImplementedError
+
+    def report_manifest_path(self, task_id: str, report_revision: int = 0) -> Path:
         raise NotImplementedError
 
     def raw_json_path(self, task_id: str, source_path: str | Path, suffix: str) -> Path:
@@ -163,8 +166,11 @@ class LocalArtifactStore:
             )
         return destination
 
-    def report_pdf_path(self, task_id: str) -> Path:
-        return self.task_dir("reports", task_id) / "contract_compare_report.pdf"
+    def report_pdf_path(self, task_id: str, report_revision: int = 0) -> Path:
+        return self.task_dir("reports", task_id) / f"contract_compare_report-r{report_revision}.pdf"
+
+    def report_manifest_path(self, task_id: str, report_revision: int = 0) -> Path:
+        return self.task_dir("reports", task_id) / f"contract_compare_report-r{report_revision}.manifest.json"
 
     def raw_json_path(self, task_id: str, source_path: str | Path, suffix: str) -> Path:
         stem = self._artifact_stem(Path(source_path).stem)

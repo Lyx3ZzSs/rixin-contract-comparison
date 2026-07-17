@@ -6,6 +6,7 @@ import importlib
 import io
 import json
 import math
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -21,7 +22,7 @@ from reportlab.pdfgen import canvas
 from app import api_schemas
 from app.api_errors import http_error
 from app.api_presenters import compare_task_response, task_execution_response
-from app.application.compare_tasks import CompareTaskApplication
+from app.application.compare_tasks import CompareTaskApplication, default_compare_task_application
 from app.config import settings
 from app.errors import TaskStaleLeaseError, TaskTransitionConflict
 from app.infrastructure.artifact_store import ArtifactPublishCommittedError, LocalArtifactStore
@@ -75,6 +76,14 @@ def save_task(task: CompareTask):
     return persist_task(_owned_task(task))
 
 
+@pytest.fixture
+def stop_default_runner_after_test():
+    try:
+        yield
+    finally:
+        default_task_runner.stop(wait=True)
+
+
 def make_pdf(path: Path, lines: list[str]) -> None:
     c = canvas.Canvas(str(path), pagesize=A4)
     _, height = A4
@@ -96,6 +105,19 @@ def configure_storage(tmp_path: Path) -> None:
     settings.compare_document_extractor = "auto"
     settings.compare_require_structured_ocr = False
     settings.ensure_storage()
+
+
+class ApiRecordingReportGenerator:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, Path]] = []
+        self._lock = threading.Lock()
+
+    def generate(self, task: CompareTask, output_path: str | Path) -> Path:
+        path = Path(output_path)
+        with self._lock:
+            self.calls.append((task.report_revision, path))
+        path.write_bytes(f"%PDF-api-revision-{task.report_revision}".encode())
+        return path
 
 
 def _submission_application(
@@ -194,7 +216,7 @@ def wait_for_compare_task(client: TestClient, task_id: str) -> dict:
     raise AssertionError(f"Compare task did not finish: {task_id}")
 
 
-def test_api_compare_contracts(tmp_path: Path) -> None:
+def test_api_compare_contracts(tmp_path: Path, stop_default_runner_after_test) -> None:
     configure_storage(tmp_path)
     original = tmp_path / "original.pdf"
     compare = tmp_path / "compare.pdf"
@@ -756,6 +778,8 @@ def test_submission_worker_start_failure_after_enqueue_keeps_durable_job(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    live_workers_before = [thread.name for thread in threading.enumerate() if thread.name.startswith("task-runner-")]
+    assert live_workers_before == []
     application, repository, runner, artifact_store, recovery_store = _submission_application(tmp_path)
     runner.autostart = True
     monkeypatch.setattr(runner, "start", lambda: (_ for _ in ()).throw(OSError("worker start failed")))
@@ -775,6 +799,72 @@ def test_submission_worker_start_failure_after_enqueue_keeps_durable_job(
     assert (stored.status, stored.active_job_id) == ("PROCESSING", job.job_id)
     assert job.status == "QUEUED"
     assert Path(stored.original_pdf_path).exists() and Path(stored.compare_pdf_path).exists()
+    assert list((artifact_store.task_root(task.task_id) / "staging").rglob("*.pdf")) == []
+    assert not recovery_store.marker_path(task.task_id).exists()
+
+
+def test_submission_partial_worker_start_failure_keeps_active_binding_until_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, repository, runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    runner.autostart = True
+    claimed = threading.Event()
+    finish = threading.Event()
+    worker_done = threading.Event()
+    worker_errors: list[BaseException] = []
+    worker_threads: list[threading.Thread] = []
+
+    def worker() -> None:
+        try:
+            job = runner.coordinator.claim_next(worker_id="partial-start-worker", lease_seconds=30)
+            assert job is not None
+            claimed.set()
+            assert finish.wait(timeout=5)
+            result = repository.load_compare_task(job.task_id)
+            runner.coordinator.commit_success(
+                job.job_id,
+                worker_id="partial-start-worker",
+                result=result,
+            )
+        except BaseException as exc:
+            worker_errors.append(exc)
+        finally:
+            worker_done.set()
+
+    def start_worker_then_fail() -> None:
+        thread = threading.Thread(target=worker, name="controlled-partial-start-worker")
+        worker_threads.append(thread)
+        thread.start()
+        assert claimed.wait(timeout=5)
+        raise OSError("worker start failed after claim")
+
+    monkeypatch.setattr(runner, "start", start_worker_then_fail)
+
+    task = asyncio.run(
+        application.submit_uploads(
+            task_id="TPARTIAL_START_FAIL",
+            original_file=_pdf_upload("original.pdf"),
+            compare_file=_pdf_upload("compare.pdf"),
+            compare_options=CompareOptions(),
+            owner=ADMIN,
+        )
+    )
+
+    stored = repository.load_compare_task(task.task_id)
+    running_job = runner.load_job(stored.active_job_id)
+    assert (stored.status, stored.active_job_id) == ("PROCESSING", running_job.job_id)
+    assert (running_job.status, running_job.lease_owner) == ("RUNNING", "partial-start-worker")
+
+    finish.set()
+    assert worker_done.wait(timeout=5)
+    worker_threads[0].join(timeout=5)
+    assert worker_errors == []
+    terminal_task = repository.load_compare_task(task.task_id)
+    terminal_job = runner.load_job(terminal_task.terminal_job_id)
+    assert (terminal_task.status, terminal_task.active_job_id) == ("COMPLETED", terminal_job.job_id)
+    assert (terminal_task.terminal_job_id, terminal_job.status) == (terminal_job.job_id, "SUCCEEDED")
+    assert Path(terminal_task.original_pdf_path).is_file() and Path(terminal_task.compare_pdf_path).is_file()
     assert list((artifact_store.task_root(task.task_id) / "staging").rglob("*.pdf")) == []
     assert not recovery_store.marker_path(task.task_id).exists()
 
@@ -3097,6 +3187,103 @@ def test_api_review_missing_diff_returns_404(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 404
+
+
+def test_concurrent_real_report_requests_generate_once_without_changing_report_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_storage(tmp_path)
+    save_task(CompareTask(task_id="TAPICONCURRENTREPORT", status="COMPLETED", report_revision=3))
+    generator = ApiRecordingReportGenerator()
+    monkeypatch.setattr(default_compare_task_application.report_store, "generator", generator)
+    start = threading.Barrier(10)
+
+    def download() -> tuple[int, bytes]:
+        start.wait(timeout=5)
+        with TestClient(app) as client:
+            response = client.get("/api/compare/TAPICONCURRENTREPORT/report")
+            return response.status_code, response.content
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        responses = list(pool.map(lambda _index: download(), range(10)))
+
+    assert {status for status, _content in responses} == {200}
+    assert {content for _status, content in responses} == {b"%PDF-api-revision-3"}
+    assert len(generator.calls) == 1
+    persisted = load_task("TAPICONCURRENTREPORT")
+    assert persisted.report_revision == 3
+    assert Path(persisted.report_pdf_path or "").name == "contract_compare_report-r3.pdf"
+
+
+def test_review_creates_next_revision_report_and_preserves_previous_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TAPIREVIEWREPORT",
+            status="COMPLETED",
+            report_revision=1,
+            diffs=[_mixed_review_diff()],
+        )
+    )
+    generator = ApiRecordingReportGenerator()
+    monkeypatch.setattr(default_compare_task_application.report_store, "generator", generator)
+    client = TestClient(app)
+
+    first = client.get("/api/compare/TAPIREVIEWREPORT/report")
+    review = client.patch(
+        "/api/compare/TAPIREVIEWREPORT/audit-items/DREVIEW:ADD/review",
+        json={"review_status": "CONFIRMED"},
+    )
+    second = client.get("/api/compare/TAPIREVIEWREPORT/report")
+
+    assert first.status_code == 200
+    assert review.status_code == 200
+    assert review.json()["report_revision"] == 2
+    assert second.status_code == 200
+    reports_dir = settings.tasks_dir / "TAPIREVIEWREPORT" / "reports"
+    first_path = reports_dir / "contract_compare_report-r1.pdf"
+    second_path = reports_dir / "contract_compare_report-r2.pdf"
+    assert first_path.read_bytes() == b"%PDF-api-revision-1"
+    assert second_path.read_bytes() == b"%PDF-api-revision-2"
+    assert load_task("TAPIREVIEWREPORT").report_revision == 2
+    assert Path(load_task("TAPIREVIEWREPORT").report_pdf_path or "") == second_path
+    assert [revision for revision, _path in generator.calls] == [1, 2]
+
+
+def test_report_path_persistence_failure_keeps_published_report_and_prior_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_storage(tmp_path)
+    save_task(CompareTask(task_id="TAPIPERSISTFAIL", status="COMPLETED", report_revision=2))
+    generator = ApiRecordingReportGenerator()
+    monkeypatch.setattr(default_compare_task_application.report_store, "generator", generator)
+    prior_task = load_task("TAPIPERSISTFAIL").model_copy(update={"report_revision": 1})
+    prior_path = default_compare_task_application.report_store.ensure_report(prior_task)
+    prior_manifest = prior_path.with_suffix(".manifest.json")
+    prior_report_bytes = prior_path.read_bytes()
+    prior_manifest_bytes = prior_manifest.read_bytes()
+    monkeypatch.setattr(
+        default_compare_task_application.repository,
+        "update_compare_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("task report path persistence failed")),
+    )
+
+    response = TestClient(app).get("/api/compare/TAPIPERSISTFAIL/report")
+
+    assert response.status_code == 500
+    current_path = settings.tasks_dir / "TAPIPERSISTFAIL" / "reports" / "contract_compare_report-r2.pdf"
+    assert current_path.read_bytes() == b"%PDF-api-revision-2"
+    assert current_path.with_suffix(".manifest.json").is_file()
+    assert prior_path.read_bytes() == prior_report_bytes
+    assert prior_manifest.read_bytes() == prior_manifest_bytes
+    persisted = load_task("TAPIPERSISTFAIL")
+    assert persisted.report_revision == 2
+    assert persisted.report_pdf_path is None
 
 
 def test_cors_allows_frontend_dev_origin() -> None:

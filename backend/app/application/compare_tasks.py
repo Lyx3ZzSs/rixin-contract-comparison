@@ -22,6 +22,7 @@ from app.infrastructure.recovery_store import (
     RecoveryStore,
     default_recovery_store,
 )
+from app.infrastructure.report_store import ReportStore
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.infrastructure.task_runner import QueuedTaskRunner, TaskJob, default_task_runner
 from app.models import CompareOptions, CompareTask, DiffItem, ReviewStatus
@@ -40,11 +41,13 @@ class CompareTaskApplication:
         runner: QueuedTaskRunner = default_task_runner,
         artifact_store: ArtifactStore = default_artifact_store,
         recovery_store: RecoveryStore = default_recovery_store,
+        report_store: ReportStore | None = None,
     ) -> None:
         self.repository = repository
         self.runner = runner
         self.artifact_store = artifact_store
         self.recovery_store = recovery_store
+        self.report_store = report_store or ReportStore(artifact_store=artifact_store)
         from app.services.progress_bus import ProgressBus
 
         self.runner.coordinator.configure_terminal_commits(repository, ProgressBus.get_instance())
@@ -614,7 +617,11 @@ class CompareTaskApplication:
         }
 
     def ensure_report(self, task: CompareTask) -> CompareTask:
-        return CompareService(repository=self.repository).ensure_report(task)
+        return CompareService(
+            repository=self.repository,
+            artifact_store=self.artifact_store,
+            report_store=self.report_store,
+        ).ensure_report(task)
 
     def update_diff_review(
         self,

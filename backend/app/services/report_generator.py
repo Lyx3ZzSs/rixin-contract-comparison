@@ -60,6 +60,12 @@ def _visible_audit_items(task: CompareTask) -> list[AuditItem]:
 
 
 class ReportGenerator:
+    """Render one report to a caller-owned staging path.
+
+    Atomic publication, revision locking, and manifest updates belong to
+    ``ReportStore``; callers must not pass the final report path directly.
+    """
+
     def generate(self, task: CompareTask, output_path: str | Path) -> Path:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)

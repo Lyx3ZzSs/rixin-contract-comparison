@@ -7,12 +7,12 @@ from app.config import settings
 from app.errors import TaskTransitionConflict
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.infrastructure.execution_state import TaskExecutionContext
+from app.infrastructure.report_store import ReportStore
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.models import CompareOptions, CompareTask
 from app.services.extractors.base import DocumentExtractor
 from app.services.pipeline import ComparePipeline, PipelineContext
 from app.services.pipeline_stages import ExtractionStage
-from app.services.report_generator import ReportGenerator
 from app.utils.id_utils import generate_task_id
 
 
@@ -23,12 +23,13 @@ class CompareService:
         structured_extractor: DocumentExtractor | None = None,
         repository: TaskRepository = default_task_repository,
         artifact_store: ArtifactStore = default_artifact_store,
+        report_store: ReportStore | None = None,
     ) -> None:
         self._extractor = extractor
         self._structured_extractor = structured_extractor
         self.repository = repository
         self.artifact_store = artifact_store
-        self._report_generator = ReportGenerator()
+        self.report_store = report_store or ReportStore(artifact_store=artifact_store)
 
     def _build_pipeline(self) -> ComparePipeline:
         from app.services.pipeline_stages import (
@@ -198,16 +199,18 @@ class CompareService:
         return task
 
     def ensure_report(self, task: CompareTask) -> CompareTask:
-        settings.ensure_storage()
-        report_path = self.artifact_store.report_pdf_path(task.task_id)
+        report_revision = task.report_revision
+        report_path = self.report_store.ensure_report(task)
 
-        self._report_generator.generate(task, report_path)
-        return self.repository.update_compare_task(
-            task.task_id,
-            lambda persisted: self._copy_report_artifacts(persisted, task, report_path),
-        )
+        def persist_report_path(persisted: CompareTask) -> None:
+            if persisted.report_revision != report_revision:
+                raise TaskTransitionConflict(
+                    f"任务 {task.task_id} 的报告版本已从 {report_revision} 更新为 {persisted.report_revision}。"
+                )
+            persisted.report_pdf_path = str(report_path)
+            persisted.stage = "已完成"
+            persisted.progress_percent = 100
 
-    def _copy_report_artifacts(self, target: CompareTask, source: CompareTask, report_path: Path) -> None:
-        target.report_pdf_path = str(report_path)
-        target.stage = "已完成"
-        target.progress_percent = 100
+        # ReportStore has already committed the PDF and manifest. Task path
+        # persistence failure must not delete that reusable report artifact.
+        return self.repository.update_compare_task(task.task_id, persist_report_path)
