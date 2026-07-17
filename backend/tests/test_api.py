@@ -108,7 +108,14 @@ def configure_storage(tmp_path: Path) -> None:
 
 
 class ApiRecordingReportGenerator:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        entered: threading.Event | None = None,
+        release: threading.Event | None = None,
+    ) -> None:
+        self.entered = entered
+        self.release = release
         self.calls: list[tuple[int, Path]] = []
         self._lock = threading.Lock()
 
@@ -116,6 +123,10 @@ class ApiRecordingReportGenerator:
         path = Path(output_path)
         with self._lock:
             self.calls.append((task.report_revision, path))
+        if self.entered is not None:
+            self.entered.set()
+        if self.release is not None:
+            assert self.release.wait(timeout=5)
         path.write_bytes(f"%PDF-api-revision-{task.report_revision}".encode())
         return path
 
@@ -3195,8 +3206,11 @@ def test_concurrent_real_report_requests_generate_once_without_changing_report_r
 ) -> None:
     configure_storage(tmp_path)
     save_task(CompareTask(task_id="TAPICONCURRENTREPORT", status="COMPLETED", report_revision=3))
-    generator = ApiRecordingReportGenerator()
-    monkeypatch.setattr(default_compare_task_application.report_store, "generator", generator)
+    generator_entered = threading.Event()
+    release_generator = threading.Event()
+    generator = ApiRecordingReportGenerator(entered=generator_entered, release=release_generator)
+    report_store = default_compare_task_application.report_store
+    monkeypatch.setattr(report_store, "generator", generator)
     start = threading.Barrier(10)
 
     def download() -> tuple[int, bytes]:
@@ -3205,8 +3219,22 @@ def test_concurrent_real_report_requests_generate_once_without_changing_report_r
             response = client.get("/api/compare/TAPICONCURRENTREPORT/report")
             return response.status_code, response.content
 
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        responses = list(pool.map(lambda _index: download(), range(10)))
+    pool = ThreadPoolExecutor(max_workers=10)
+    futures = [pool.submit(download) for _index in range(10)]
+    try:
+        assert generator_entered.wait(timeout=5)
+        assert report_store.lock_registry.wait_for_ref_count("TAPICONCURRENTREPORT", 3, 10, timeout=5)
+        assert len(generator.calls) == 1
+        final_path = settings.tasks_dir / "TAPICONCURRENTREPORT" / "reports" / "contract_compare_report-r3.pdf"
+        assert not final_path.exists()
+        blocked_task = load_task("TAPICONCURRENTREPORT")
+        assert blocked_task.report_revision == 3
+        assert blocked_task.report_pdf_path is None
+        release_generator.set()
+        responses = [future.result(timeout=10) for future in futures]
+    finally:
+        release_generator.set()
+        pool.shutdown(wait=True)
 
     assert {status for status, _content in responses} == {200}
     assert {content for _status, content in responses} == {b"%PDF-api-revision-3"}
@@ -3214,6 +3242,7 @@ def test_concurrent_real_report_requests_generate_once_without_changing_report_r
     persisted = load_task("TAPICONCURRENTREPORT")
     assert persisted.report_revision == 3
     assert Path(persisted.report_pdf_path or "").name == "contract_compare_report-r3.pdf"
+    assert report_store.lock_registry.ref_count("TAPICONCURRENTREPORT", 3) == 0
 
 
 def test_review_creates_next_revision_report_and_preserves_previous_file(

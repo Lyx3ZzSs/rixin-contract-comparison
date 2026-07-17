@@ -32,7 +32,7 @@ class ReportLockRegistry:
     """Process-local report locks; cross-process exclusion is intentionally unsupported."""
 
     def __init__(self) -> None:
-        self._guard = threading.Lock()
+        self._guard = threading.Condition()
         self._entries: dict[tuple[str, int], _LockEntry] = {}
 
     @contextmanager
@@ -46,6 +46,7 @@ class ReportLockRegistry:
             # Count before blocking so the holder cannot remove an entry that
             # an already-arrived waiter still references.
             entry.ref_count += 1
+            self._guard.notify_all()
 
         acquired = False
         try:
@@ -59,6 +60,7 @@ class ReportLockRegistry:
                 entry.ref_count -= 1
                 if entry.ref_count == 0 and self._entries.get(key) is entry:
                     del self._entries[key]
+                self._guard.notify_all()
 
     @property
     def key_count(self) -> int:
@@ -69,6 +71,20 @@ class ReportLockRegistry:
         with self._guard:
             entry = self._entries.get((task_id, report_revision))
             return entry.ref_count if entry is not None else 0
+
+    def wait_for_ref_count(
+        self,
+        task_id: str,
+        report_revision: int,
+        expected: int,
+        *,
+        timeout: float,
+    ) -> bool:
+        with self._guard:
+            return self._guard.wait_for(
+                lambda: self.ref_count(task_id, report_revision) == expected,
+                timeout=timeout,
+            )
 
 
 default_report_lock_registry = ReportLockRegistry()

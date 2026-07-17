@@ -14,8 +14,16 @@ from app.models import CompareTask
 
 
 class RecordingGenerator:
-    def __init__(self, barrier: threading.Barrier | None = None) -> None:
+    def __init__(
+        self,
+        barrier: threading.Barrier | None = None,
+        *,
+        entered: threading.Event | None = None,
+        release: threading.Event | None = None,
+    ) -> None:
         self.barrier = barrier
+        self.entered = entered
+        self.release = release
         self.calls: list[tuple[int, Path]] = []
         self._lock = threading.Lock()
         self.failure: Exception | None = None
@@ -24,6 +32,10 @@ class RecordingGenerator:
         path = Path(output_path)
         with self._lock:
             self.calls.append((task.report_revision, path))
+        if self.entered is not None:
+            self.entered.set()
+        if self.release is not None:
+            assert self.release.wait(timeout=5)
         if self.failure is not None:
             raise self.failure
         if self.barrier is not None:
@@ -52,7 +64,9 @@ def test_report_artifact_paths_include_report_revision(tmp_path: Path) -> None:
 
 
 def test_same_task_revision_concurrency_generates_once_and_returns_one_path(tmp_path: Path) -> None:
-    generator = RecordingGenerator()
+    generator_entered = threading.Event()
+    release_generator = threading.Event()
+    generator = RecordingGenerator(entered=generator_entered, release=release_generator)
     store, registry = _store(tmp_path, generator)
     task = CompareTask(task_id="TSAME", status="COMPLETED", report_revision=7)
     start = threading.Barrier(12)
@@ -61,8 +75,19 @@ def test_same_task_revision_concurrency_generates_once_and_returns_one_path(tmp_
         start.wait(timeout=5)
         return store.ensure_report(task)
 
-    with ThreadPoolExecutor(max_workers=12) as pool:
-        paths = list(pool.map(lambda _index: generate(), range(12)))
+    pool = ThreadPoolExecutor(max_workers=12)
+    futures = [pool.submit(generate) for _index in range(12)]
+    try:
+        assert generator_entered.wait(timeout=5)
+        assert registry.wait_for_ref_count(task.task_id, task.report_revision, 12, timeout=5)
+        assert len(generator.calls) == 1
+        final_path = store.artifact_store.report_pdf_path(task.task_id, task.report_revision)
+        assert not final_path.exists()
+        release_generator.set()
+        paths = [future.result(timeout=5) for future in futures]
+    finally:
+        release_generator.set()
+        pool.shutdown(wait=True)
 
     assert len(generator.calls) == 1
     assert len(set(paths)) == 1
@@ -110,10 +135,7 @@ def test_report_lock_registry_counts_waiters_and_removes_key_after_exceptions() 
         holding = pool.submit(holder)
         waiting = pool.submit(waiter)
         assert holder_entered.wait(timeout=5)
-        for _attempt in range(10_000):
-            if registry.ref_count("TABA", 2) == 2:
-                break
-        assert registry.ref_count("TABA", 2) == 2
+        assert registry.wait_for_ref_count("TABA", 2, 2, timeout=5)
         release_holder.set()
         holding.result(timeout=5)
         try:
@@ -257,3 +279,33 @@ def test_manifest_failure_keeps_published_report_for_next_call_to_self_heal(
     assert store.ensure_report(task) == final_path
     assert len(generator.calls) == 1
     assert store.artifact_store.report_manifest_path(task.task_id, 4).is_file()
+
+
+def test_generation_primary_survives_temp_cleanup_failure_and_registry_is_clean(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generator = RecordingGenerator()
+    generator.failure = RuntimeError("distinct generation primary")
+    store, registry = _store(tmp_path, generator)
+    task = CompareTask(task_id="TCLEANUPPRIMARY", status="COMPLETED", report_revision=9)
+    reports_dir = store.artifact_store.report_pdf_path(task.task_id, task.report_revision).parent
+    real_unlink = Path.unlink
+
+    def fail_only_report_temp(path: Path, *args, **kwargs) -> None:
+        if path.parent == reports_dir and path.name.startswith(".contract_compare_report-r9.pdf."):
+            raise OSError("temp cleanup failed")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_only_report_temp)
+
+    with pytest.raises(RuntimeError, match="distinct generation primary"):
+        store.ensure_report(task)
+
+    assert len(generator.calls) == 1
+    temp_path = generator.calls[0][1]
+    assert temp_path.is_file()
+    assert registry.key_count == 0
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    temp_path.unlink()
+    assert not temp_path.exists()
