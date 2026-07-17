@@ -16,6 +16,7 @@ from app.errors import (
     ConflictError,
     NotFoundError,
     TaskCancelled,
+    TaskRepositoryReadError,
     TaskStaleLeaseError,
     TaskTransitionConflict,
 )
@@ -315,6 +316,14 @@ class QueuedTaskRunner:
         self._wake_event.set()
         return jobs
 
+    def load_job(self, job_id: str) -> TaskJob:
+        return self.coordinator.load(job_id)
+
+    def cancel_job(self, job_id: str) -> TaskJob:
+        job = self.coordinator.request_cancel_job(job_id)
+        self._wake_event.set()
+        return job
+
     def jobs_for_task(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
         jobs = [
             job
@@ -415,8 +424,33 @@ class QueuedTaskRunner:
             self._threads.clear()
 
     def _worker_loop(self, worker_id: str) -> None:
+        claim_failures = 0
         while not self._stop_event.is_set():
-            job = self.job_repository.claim_next(worker_id=worker_id, lease_seconds=self.lease_seconds)
+            try:
+                job = self.job_repository.claim_next(worker_id=worker_id, lease_seconds=self.lease_seconds)
+            except (OSError, TaskRepositoryReadError) as exc:
+                claim_failures += 1
+                logger.warning(
+                    "Recoverable task claim persistence error; worker backing off: "
+                    "task_id=%s job_id=%s worker_id=%s failures=%s",
+                    getattr(exc, "task_id", None),
+                    getattr(exc, "job_id", None),
+                    worker_id,
+                    claim_failures,
+                    exc_info=True,
+                )
+                self._wait_for_claim_retry(claim_failures)
+                continue
+            except Exception:
+                claim_failures += 1
+                logger.exception(
+                    "Unexpected task claim error; worker continuing after bounded backoff: worker_id=%s failures=%s",
+                    worker_id,
+                    claim_failures,
+                )
+                self._wait_for_claim_retry(claim_failures)
+                continue
+            claim_failures = 0
             if job is None:
                 self._wake_event.wait(self.poll_interval_seconds)
                 self._wake_event.clear()
@@ -425,6 +459,12 @@ class QueuedTaskRunner:
                 self._run_job(job, worker_id)
             except Exception:
                 logger.exception("Unexpected task worker error; worker continuing: job_id=%s", job.job_id)
+
+    def _wait_for_claim_retry(self, failures: int) -> None:
+        base = max(0.01, self.poll_interval_seconds)
+        delay = min(1.0, base * (2 ** min(failures - 1, 6)))
+        self._wake_event.wait(delay)
+        self._wake_event.clear()
 
     def _run_job(self, job: TaskJob, worker_id: str) -> None:
         handler = self._handlers.get(job.task_type)
@@ -525,7 +565,7 @@ class QueuedTaskRunner:
         )
 
     def _heartbeat_loop(self, job_id: str, worker_id: str, stop_event: threading.Event) -> None:
-        interval = max(1.0, self.lease_seconds / 3)
+        interval = max(0.01, min(1.0, self.lease_seconds / 3))
         while not stop_event.wait(interval):
             try:
                 extended = self.coordinator.extend_lease(
@@ -535,6 +575,21 @@ class QueuedTaskRunner:
                 )
             except TaskStaleLeaseError:
                 logger.warning("Task heartbeat lost lease: job_id=%s worker_id=%s", job_id, worker_id)
+                return
+            except (OSError, TaskRepositoryReadError):
+                logger.warning(
+                    "Recoverable task heartbeat persistence error; retrying: job_id=%s worker_id=%s",
+                    job_id,
+                    worker_id,
+                    exc_info=True,
+                )
+                continue
+            except Exception:
+                logger.exception(
+                    "Unexpected task heartbeat error; heartbeat stopping: job_id=%s worker_id=%s",
+                    job_id,
+                    worker_id,
+                )
                 return
             if extended is None:
                 return

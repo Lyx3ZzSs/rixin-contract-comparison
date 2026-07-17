@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import settings
+from app.errors import TaskTransitionConflict
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.infrastructure.execution_state import TaskExecutionContext
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
@@ -92,6 +93,7 @@ class CompareService:
             original_filename=original_filename,
             compare_filename=compare_filename,
             compare_options=compare_options,
+            execution_context=execution_context,
         )
 
         ctx = PipelineContext(
@@ -111,6 +113,16 @@ class CompareService:
 
             if execution_context is not None:
                 execution_context.cancellation_token.raise_if_cancelled()
+                coordinator = getattr(execution_context.cancellation_token, "coordinator", None)
+                if coordinator is not None and coordinator.has_terminal_dependencies:
+                    coordinator.commit_progress(
+                        execution_context.job_id,
+                        worker_id=execution_context.worker_id,
+                        stage=stage,
+                        progress_percent=percent,
+                        detail=detail,
+                    )
+                    return
             progress = min(max(percent, 0), 99)
 
             def mutate(task: CompareTask) -> None:
@@ -125,13 +137,16 @@ class CompareService:
 
             if execution_context is not None:
                 execution_context.cancellation_token.raise_if_cancelled()
-            ProgressBus.get_instance().publish(ProgressEvent(
-                task_id=task_id,
-                stage=task.stage,
-                progress_percent=task.progress_percent,
-                status="PROCESSING",
-                detail=detail,
-            ))
+            ProgressBus.get_instance().publish(
+                ProgressEvent(
+                    task_id=task_id,
+                    stage=task.stage,
+                    progress_percent=task.progress_percent,
+                    status="PROCESSING",
+                    detail=detail,
+                )
+            )
+
         return callback
 
     def _load_or_create_task(
@@ -143,11 +158,30 @@ class CompareService:
         original_filename: str | None,
         compare_filename: str | None,
         compare_options: CompareOptions | None,
+        execution_context: TaskExecutionContext | None = None,
     ) -> CompareTask:
         try:
             task = self.repository.load_compare_task(task_id)
         except FileNotFoundError:
             task = CompareTask(task_id=task_id)
+        else:
+            if task.status != "PROCESSING":
+                raise TaskTransitionConflict(
+                    f"任务 {task.task_id} 不允许从 {task.status}/{task.terminal_reason} 重新进入执行。"
+                )
+
+        coordinator = (
+            getattr(execution_context.cancellation_token, "coordinator", None)
+            if execution_context is not None
+            else None
+        )
+        if coordinator is not None and coordinator.has_terminal_dependencies:
+            return coordinator.commit_progress(
+                execution_context.job_id,
+                worker_id=execution_context.worker_id,
+                stage="文档解析中",
+                progress_percent=8,
+            )
 
         task.status = "PROCESSING"
         task.stage = "文档解析中"

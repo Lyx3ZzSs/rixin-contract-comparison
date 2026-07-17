@@ -45,6 +45,13 @@ class ProgressPublisher(Protocol):
 TaskEnqueueMutation = Callable[[CompareTask, "TaskJob"], None]
 
 
+class TaskClaimPersistenceError(OSError):
+    def __init__(self, job: TaskJob, cause: OSError) -> None:
+        super().__init__(str(cause))
+        self.job_id = job.job_id
+        self.task_id = job.task_id
+
+
 @dataclass(frozen=True)
 class TaskExecutionContext:
     job_id: str
@@ -155,7 +162,7 @@ class ExecutionStateCoordinator:
             now = _utc_now()
             for job in self.list_jobs():
                 try:
-                    if self._has_matching_terminal_task(job):
+                    if not self._task_binding_allows_claim(job):
                         continue
                 except TaskRepositoryReadError:
                     logger.warning(
@@ -165,16 +172,17 @@ class ExecutionStateCoordinator:
                         exc_info=True,
                     )
                     return None
+                if self._is_expired_cancel_request(job, now):
+                    try:
+                        self._commit_cancel_terminal(job)
+                    except OSError as exc:
+                        raise TaskClaimPersistenceError(job, exc) from exc
+                    continue
                 if self._is_expired_at_attempt_limit(job, now):
-                    candidate = job.model_copy(deep=True)
-                    candidate.status = "FAILED"
-                    candidate.error_code = "LEASE_EXPIRED_MAX_ATTEMPTS"
-                    candidate.last_error = "任务租约过期且已达到最大尝试次数。"
-                    candidate.finished_at = now
-                    candidate.updated_at = now
-                    candidate.lease_owner = ""
-                    candidate.lease_expires_at = ""
-                    self._persist_then_replace(candidate)
+                    try:
+                        self._commit_expired_lease_failure(job)
+                    except OSError as exc:
+                        raise TaskClaimPersistenceError(job, exc) from exc
                     continue
                 if not self._is_claimable(job, now):
                     continue
@@ -186,7 +194,10 @@ class ExecutionStateCoordinator:
                 candidate.lease_owner = worker_id
                 candidate.lease_expires_at = _plus_seconds(lease_seconds)
                 candidate.last_error = ""
-                return self._persist_then_replace(candidate)
+                try:
+                    return self._persist_then_replace(candidate)
+                except OSError as exc:
+                    raise TaskClaimPersistenceError(job, exc) from exc
         return None
 
     def extend_lease(self, job_id: str, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
@@ -212,31 +223,36 @@ class ExecutionStateCoordinator:
                 return []
             active = [job for job in jobs if job.status not in {"SUCCEEDED", "FAILED", "CANCELLED"}]
             job = max(active or jobs, key=lambda item: item.execution_no)
-            if job.status in {"SUCCEEDED", "FAILED", "CANCELLED", "CANCEL_REQUESTED"}:
-                return [job.model_copy(deep=True)]
-            candidate = job.model_copy(deep=True)
-            now = _utc_now()
-            if candidate.status == "QUEUED":
-                candidate.status = "CANCELLED"
-                candidate.finished_at = now
-                candidate.lease_owner = ""
-                candidate.lease_expires_at = ""
-            elif candidate.status == "RUNNING":
-                candidate.status = "CANCEL_REQUESTED"
-            else:
-                raise TaskTransitionConflict(f"执行记录 {candidate.job_id} 不能从 {candidate.status} 请求取消。")
-            candidate.updated_at = now
-            if candidate.status == "CANCELLED" and self.has_terminal_dependencies:
-                task = self._persist_terminal_task(
-                    job,
-                    status="FAILED",
-                    terminal_reason="CANCELLED",
-                    error="任务已取消。",
-                )
-                persisted = self._persist_then_replace(candidate)
-                self._publish_terminal(task)
-                return [persisted]
-            return [self._persist_then_replace(candidate)]
+            return [self._request_cancel_job_locked(job)]
+
+    def request_cancel_job(self, job_id: str) -> TaskJob:
+        with self._process_lock:
+            return self._request_cancel_job_locked(self._get(job_id))
+
+    def _request_cancel_job_locked(self, job: TaskJob) -> TaskJob:
+        if job.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+            return job.model_copy(deep=True)
+        now = _utc_now()
+        if job.status == "CANCEL_REQUESTED":
+            if self._lease_expired(job, now):
+                return self._commit_cancel_terminal(job)[1]
+            return job.model_copy(deep=True)
+        if job.status == "RUNNING" and self._lease_expired(job, now):
+            return self._commit_cancel_terminal(job)[1]
+        candidate = job.model_copy(deep=True)
+        if candidate.status == "QUEUED":
+            if self.has_terminal_dependencies:
+                return self._commit_cancel_terminal(job)[1]
+            candidate.status = "CANCELLED"
+            candidate.finished_at = now
+            candidate.lease_owner = ""
+            candidate.lease_expires_at = ""
+        elif candidate.status == "RUNNING":
+            candidate.status = "CANCEL_REQUESTED"
+        else:
+            raise TaskTransitionConflict(f"执行记录 {candidate.job_id} 不能从 {candidate.status} 请求取消。")
+        candidate.updated_at = now
+        return self._persist_then_replace(candidate)
 
     def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
         with self._process_lock:
@@ -271,6 +287,31 @@ class ExecutionStateCoordinator:
             persisted_job = self._persist_then_replace(candidate)
             self._publish_terminal(task)
             return task, persisted_job
+
+    def commit_progress(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        stage: str,
+        progress_percent: int,
+        detail: dict | None = None,
+    ) -> CompareTask:
+        with self._process_lock:
+            job = self._validate_running_terminal(job_id, worker_id, "RUNNING")
+            if self._task_repository is None:
+                raise RuntimeError("ExecutionStateCoordinator 未配置 Task persistence。")
+            progress = min(max(progress_percent, 0), 99)
+
+            def mutate(task: CompareTask) -> None:
+                if task.status != "PROCESSING" or task.active_job_id != job.job_id:
+                    raise TaskTransitionConflict(f"任务 {task.task_id} 的活动执行记录不是 {job.job_id}，不能写入进度。")
+                task.stage = stage
+                task.progress_percent = max(task.progress_percent, progress)
+
+            task = self._task_repository.update_compare_task(job.task_id, mutate)
+            self._publish_progress(task, detail=detail)
+            return task
 
     def commit_failure(
         self,
@@ -318,17 +359,9 @@ class ExecutionStateCoordinator:
             job = self._get(job_id)
             if job.status != "CANCEL_REQUESTED":
                 raise TaskTransitionConflict(f"执行记录 {job_id} 不能从 {job.status} 改写为 CANCELLED。")
-            self._ensure_current_lease(job, worker_id)
-            task = self._persist_terminal_task(
-                job,
-                status="FAILED",
-                terminal_reason="CANCELLED",
-                error="任务已取消。",
-            )
-            candidate = self._terminal_job_candidate(job, "CANCELLED")
-            persisted_job = self._persist_then_replace(candidate)
-            self._publish_terminal(task)
-            return task, persisted_job
+            if job.lease_owner != worker_id:
+                raise TaskStaleLeaseError(f"执行记录 {job.job_id} 不属于 worker {worker_id}。")
+            return self._commit_cancel_terminal(job)
 
     def repair_job_from_terminal_task(self, task: CompareTask) -> bool:
         with self._process_lock:
@@ -493,6 +526,51 @@ class ExecutionStateCoordinator:
             )
         )
 
+    def _publish_progress(self, task: CompareTask, *, detail: dict | None = None) -> None:
+        if self._progress_publisher is None:
+            return
+        from app.services.progress_bus import ProgressEvent
+
+        self._progress_publisher.publish(
+            ProgressEvent(
+                task_id=task.task_id,
+                stage=task.stage,
+                progress_percent=task.progress_percent,
+                status="PROCESSING",
+                detail=detail,
+                revision=task.revision,
+            )
+        )
+
+    def _commit_expired_lease_failure(self, job: TaskJob) -> tuple[CompareTask | None, TaskJob]:
+        error = "任务租约过期且已达到最大尝试次数。"
+        if self._task_repository is None:
+            candidate = self._terminal_job_candidate(job, "FAILED", error=error)
+            candidate.error_code = "LEASE_EXPIRED_MAX_ATTEMPTS"
+            return None, self._persist_then_replace(candidate)
+        task = self._persist_terminal_task(
+            job,
+            status="FAILED",
+            terminal_reason="EXECUTION_FAILED",
+            error=error,
+        )
+        candidate = self._terminal_job_candidate(job, "FAILED", error=error)
+        candidate.error_code = "LEASE_EXPIRED_MAX_ATTEMPTS"
+        persisted_job = self._persist_then_replace(candidate)
+        self._publish_terminal(task, detail={"error": error, "error_code": candidate.error_code})
+        return task, persisted_job
+
+    def _commit_cancel_terminal(self, job: TaskJob) -> tuple[CompareTask, TaskJob]:
+        task = self._persist_terminal_task(
+            job,
+            status="FAILED",
+            terminal_reason="CANCELLED",
+            error="任务已取消。",
+        )
+        persisted_job = self._persist_then_replace(self._terminal_job_candidate(job, "CANCELLED"))
+        self._publish_terminal(task)
+        return task, persisted_job
+
     @staticmethod
     def _terminal_job_candidate(job: TaskJob, status: TaskJobStatus, *, error: str = "") -> TaskJob:
         candidate = job.model_copy(deep=True)
@@ -519,18 +597,16 @@ class ExecutionStateCoordinator:
         if not job.lease_expires_at or job.lease_expires_at <= _utc_now():
             raise TaskStaleLeaseError(f"执行记录 {job.job_id} 的 worker lease 已过期。")
 
-    def _has_matching_terminal_task(self, job: TaskJob) -> bool:
-        if job.status in {"SUCCEEDED", "FAILED", "CANCELLED"} or self._task_repository is None:
+    def _task_binding_allows_claim(self, job: TaskJob) -> bool:
+        if job.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
             return False
+        if self._task_repository is None:
+            return True
         try:
             task = self._task_repository.load_compare_task(job.task_id)
         except FileNotFoundError:
             return False
-        return bool(
-            task.status in {"COMPLETED", "FAILED"}
-            and task.terminal_job_id == job.job_id
-            and task.terminal_attempt == job.attempt
-        )
+        return bool(task.status == "PROCESSING" and task.active_job_id == job.job_id)
 
     def _persist_then_replace(self, candidate: TaskJob) -> TaskJob:
         persisted = self._repository._persist(candidate.model_copy(deep=True))
@@ -619,6 +695,14 @@ class ExecutionStateCoordinator:
             and job.lease_expires_at <= now
             and job.attempt >= job.max_attempts
         )
+
+    @classmethod
+    def _is_expired_cancel_request(cls, job: TaskJob, now: str) -> bool:
+        return bool(job.status == "CANCEL_REQUESTED" and cls._lease_expired(job, now))
+
+    @staticmethod
+    def _lease_expired(job: TaskJob, now: str) -> bool:
+        return bool(job.lease_expires_at and job.lease_expires_at <= now)
 
     @classmethod
     def _has_same_identity(cls, existing: TaskJob, candidate: TaskJob) -> bool:

@@ -91,15 +91,21 @@ class CompareTaskApplication:
         return self.repository.list_compare_tasks()
 
     def load_execution(self, task_id: str) -> TaskJob:
-        self.load_compare_task(task_id)
-        return self.runner.latest_job(task_id, task_type="compare")
+        task = self.load_compare_task(task_id)
+        return self._load_active_job(task)
 
     def cancel_compare(self, task_id: str) -> TaskJob:
-        self.load_compare_task(task_id)
-        jobs = self.runner.cancel(task_id, task_type="compare")
-        if not jobs:
-            raise NotFoundError(f"任务执行记录不存在: {task_id}")
-        return jobs[0]
+        task = self.load_compare_task(task_id)
+        job = self._load_active_job(task)
+        return self.runner.cancel_job(job.job_id)
+
+    def _load_active_job(self, task: CompareTask) -> TaskJob:
+        if not task.active_job_id:
+            raise NotFoundError(f"任务 {task.task_id} 的活动执行记录不存在。")
+        job = self.runner.load_job(task.active_job_id)
+        if job.task_id != task.task_id or job.task_type != "compare":
+            raise TaskTransitionConflict(f"任务 {task.task_id} 的活动执行记录身份不匹配。")
+        return job
 
     def retry_compare(self, task_id: str) -> TaskJob:
         task = self.load_compare_task(task_id)

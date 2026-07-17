@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from app.config import Settings
-from app.errors import TaskCancelled, TaskRepositoryReadError, TaskStaleLeaseError
+from app.errors import TaskCancelled, TaskRepositoryReadError, TaskStaleLeaseError, TaskTransitionConflict
 from app.infrastructure.execution_state import (
     CancellationToken,
     ExecutionStateCoordinator,
@@ -45,7 +46,7 @@ class RecordingPublisher:
         self.events: list[ProgressEvent] = []
 
     def publish(self, event: ProgressEvent) -> None:
-        self.calls.append("publish_terminal")
+        self.calls.append("publish_terminal" if event.status in {"COMPLETED", "FAILED"} else "publish_progress")
         self.events.append(event)
 
 
@@ -376,6 +377,253 @@ def test_claim_does_not_swallow_programming_error(
         coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
 
     assert coordinator.load(job.job_id).status == "QUEUED"
+
+
+@pytest.mark.parametrize("binding", ["missing", "terminal", "mismatch"])
+def test_claim_requires_processing_task_bound_to_job(tmp_path: Path, binding: str) -> None:
+    coordinator, _job_repository, task_repository, _publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, f"TCLAIM_BINDING_{binding.upper()}")
+    if binding == "terminal":
+        task_repository.save_compare_task(
+            CompareTask(task_id=job.task_id, status="COMPLETED", active_job_id=job.job_id)
+        )
+    elif binding == "mismatch":
+        task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=f"compare:{job.task_id}:2"))
+
+    assert coordinator.claim_next(worker_id="worker-1", lease_seconds=30) is None
+    assert coordinator.load(job.job_id).status == "QUEUED"
+
+
+def test_claim_skips_orphan_old_job_and_claims_task_active_job(tmp_path: Path) -> None:
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    job_repository = LocalJsonTaskJobRepository(app_settings)
+    task_repository = LocalJsonTaskRepository(app_settings)
+    task_id = "TCLAIM_ACTIVE_ONLY"
+    old_job = job_repository._persist(
+        TaskJob(job_id=f"compare:{task_id}:1", task_id=task_id, task_type="compare", execution_no=1)
+    )
+    active_job = job_repository._persist(
+        TaskJob(job_id=f"compare:{task_id}:2", task_id=task_id, task_type="compare", execution_no=2)
+    )
+    task_repository.save_compare_task(CompareTask(task_id=task_id, active_job_id=active_job.job_id))
+    coordinator = ExecutionStateCoordinator(
+        job_repository,
+        task_repository=task_repository,
+        progress_publisher=RecordingPublisher([]),
+    )
+
+    claimed = coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
+
+    assert claimed is not None
+    assert claimed.job_id == active_job.job_id
+    assert coordinator.load(old_job.job_id).status == "QUEUED"
+
+
+def test_expired_active_lease_at_attempt_limit_commits_task_then_job_then_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator, job_repository, task_repository, publisher, calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TLEASE_LIMIT_AUTHORITY")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    claimed = coordinator.claim_next(worker_id="expired-worker", lease_seconds=-1)
+    assert claimed is not None
+    persist_task = task_repository.update_compare_task
+    persist_job = job_repository._persist
+
+    def record_task(*args: object, **kwargs: object) -> CompareTask:
+        calls.append("persist_task")
+        return persist_task(*args, **kwargs)
+
+    def record_job(candidate: TaskJob) -> TaskJob:
+        calls.append("persist_job")
+        return persist_job(candidate)
+
+    monkeypatch.setattr(task_repository, "update_compare_task", record_task)
+    monkeypatch.setattr(job_repository, "_persist", record_job)
+
+    assert coordinator.claim_next(worker_id="replacement-worker", lease_seconds=30) is None
+
+    task = task_repository.load_compare_task(job.task_id)
+    stored_job = coordinator.load(job.job_id)
+    assert calls == ["persist_task", "persist_job", "publish_terminal"]
+    assert (task.status, task.terminal_reason) == ("FAILED", "EXECUTION_FAILED")
+    assert (task.terminal_job_id, task.terminal_attempt) == (job.job_id, claimed.attempt)
+    assert stored_job.status == "FAILED"
+    assert stored_job.error_code == "LEASE_EXPIRED_MAX_ATTEMPTS"
+    assert publisher.events[-1].revision == task.revision
+
+
+@pytest.mark.parametrize("failure_point", ["task", "job"])
+def test_expired_lease_terminal_partial_failure_preserves_repairable_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    coordinator, job_repository, task_repository, publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, f"TLEASE_PARTIAL_{failure_point.upper()}")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    claimed = coordinator.claim_next(worker_id="expired-worker", lease_seconds=-1)
+    assert claimed is not None
+    if failure_point == "task":
+        monkeypatch.setattr(
+            task_repository,
+            "update_compare_task",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("task disk unavailable")),
+        )
+    else:
+        persist_job = job_repository._persist
+
+        def fail_terminal_job(candidate: TaskJob) -> TaskJob:
+            if candidate.status == "FAILED":
+                raise OSError("job disk unavailable")
+            return persist_job(candidate)
+
+        monkeypatch.setattr(job_repository, "_persist", fail_terminal_job)
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        coordinator.claim_next(worker_id="replacement-worker", lease_seconds=30)
+
+    task = task_repository.load_compare_task(job.task_id)
+    stored_job = coordinator.load(job.job_id)
+    if failure_point == "task":
+        assert (task.status, stored_job.status) == ("PROCESSING", "RUNNING")
+    else:
+        assert (task.status, stored_job.status) == ("FAILED", "RUNNING")
+        assert coordinator.claim_next(worker_id="another-worker", lease_seconds=30) is None
+    assert publisher.events == []
+
+
+def test_cancel_expired_running_job_commits_cancel_terminal_immediately(tmp_path: Path) -> None:
+    coordinator, _job_repository, task_repository, publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TCANCEL_EXPIRED_RUNNING")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    claimed = coordinator.claim_next(worker_id="crashed-worker", lease_seconds=-1)
+    assert claimed is not None
+
+    [cancelled] = coordinator.request_cancel(job.task_id, task_type="compare")
+
+    task = task_repository.load_compare_task(job.task_id)
+    assert cancelled.status == "CANCELLED"
+    assert (task.status, task.terminal_reason) == ("FAILED", "CANCELLED")
+    assert publisher.events[-1].revision == task.revision
+
+
+def test_cancel_requested_owner_can_commit_after_lease_expires(tmp_path: Path) -> None:
+    coordinator, _job_repository, task_repository, _publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TCANCEL_OWNER_EXPIRED")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    claimed = coordinator.claim_next(worker_id="worker-1", lease_seconds=0.01)
+    assert claimed is not None
+    [requested] = coordinator.request_cancel(job.task_id, task_type="compare")
+    assert requested.status == "CANCEL_REQUESTED"
+    time.sleep(0.02)
+
+    task, cancelled = coordinator.commit_cancelled(job.job_id, worker_id="worker-1")
+
+    assert cancelled.status == "CANCELLED"
+    assert (task.status, task.terminal_reason) == ("FAILED", "CANCELLED")
+
+
+def test_expired_cancel_request_is_finalized_by_claim_loop_after_worker_crash(tmp_path: Path) -> None:
+    coordinator, _job_repository, task_repository, publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TCANCEL_CRASH_RECOVERY")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    claimed = coordinator.claim_next(worker_id="crashed-worker", lease_seconds=0.01)
+    assert claimed is not None
+    [requested] = coordinator.request_cancel(job.task_id, task_type="compare")
+    assert requested.status == "CANCEL_REQUESTED"
+    time.sleep(0.02)
+
+    assert coordinator.claim_next(worker_id="replacement-worker", lease_seconds=30) is None
+
+    task = task_repository.load_compare_task(job.task_id)
+    assert coordinator.load(job.job_id).status == "CANCELLED"
+    assert (task.status, task.terminal_reason) == ("FAILED", "CANCELLED")
+    assert len(publisher.events) == 1
+
+
+def test_repeated_cancel_after_expired_direct_cancel_is_idempotent(tmp_path: Path) -> None:
+    coordinator, _job_repository, task_repository, publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TCANCEL_EXPIRED_REPLAY")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    assert coordinator.claim_next(worker_id="crashed-worker", lease_seconds=-1) is not None
+    [first] = coordinator.request_cancel(job.task_id, task_type="compare")
+    first_task = task_repository.load_compare_task(job.task_id)
+
+    [second] = coordinator.request_cancel(job.task_id, task_type="compare")
+    second_task = task_repository.load_compare_task(job.task_id)
+
+    assert second == first
+    assert second_task.revision == first_task.revision
+    assert len(publisher.events) == 1
+
+
+def test_progress_commit_persists_before_publish_with_actual_revision(tmp_path: Path) -> None:
+    coordinator, _job_repository, task_repository, publisher, calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TPROGRESS_AUTHORITY")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    claimed = coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
+    assert claimed is not None
+    calls.clear()
+
+    task = coordinator.commit_progress(
+        job.job_id,
+        worker_id="worker-1",
+        stage="条款匹配中",
+        progress_percent=42,
+        detail={"matched": 3},
+    )
+
+    assert calls == ["publish_progress"]
+    assert (task.status, task.stage, task.progress_percent) == ("PROCESSING", "条款匹配中", 42)
+    assert publisher.events[-1].revision == task.revision
+    assert publisher.events[-1].detail == {"matched": 3}
+    assert coordinator.load(job.job_id).status == "RUNNING"
+
+
+def test_progress_commit_rejects_cancel_without_late_processing_write(tmp_path: Path) -> None:
+    coordinator, _job_repository, task_repository, publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TPROGRESS_CANCEL_RACE")
+    task_repository.save_compare_task(
+        CompareTask(task_id=job.task_id, active_job_id=job.job_id, stage="取消前", progress_percent=20)
+    )
+    assert coordinator.claim_next(worker_id="worker-1", lease_seconds=30) is not None
+    coordinator.request_cancel(job.task_id, task_type="compare")
+
+    with pytest.raises(TaskCancelled):
+        coordinator.commit_progress(
+            job.job_id,
+            worker_id="worker-1",
+            stage="取消后晚到进度",
+            progress_percent=90,
+        )
+
+    task = task_repository.load_compare_task(job.task_id)
+    assert (task.stage, task.progress_percent) == ("取消前", 20)
+    assert publisher.events == []
+
+
+def test_progress_commit_rejects_active_job_mismatch_without_write(tmp_path: Path) -> None:
+    coordinator, _job_repository, task_repository, publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TPROGRESS_ACTIVE_MISMATCH")
+    task_repository.save_compare_task(
+        CompareTask(task_id=job.task_id, active_job_id=f"compare:{job.task_id}:2", stage="before")
+    )
+    coordinator_without_binding = ExecutionStateCoordinator(coordinator._repository)
+    claimed = coordinator_without_binding.claim_next(worker_id="worker-1", lease_seconds=30)
+    assert claimed is not None
+
+    with pytest.raises(TaskTransitionConflict):
+        coordinator.commit_progress(
+            job.job_id,
+            worker_id="worker-1",
+            stage="late",
+            progress_percent=50,
+        )
+
+    assert task_repository.load_compare_task(job.task_id).stage == "before"
+    assert publisher.events == []
 
 
 def test_repeated_cancellation_token_checks_only_read_memory_snapshot(

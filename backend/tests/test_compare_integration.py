@@ -9,14 +9,18 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from app.config import settings
+from app.errors import TaskTransitionConflict
 from app.infrastructure.artifact_store import ArtifactStore, LocalArtifactStore
+from app.infrastructure.execution_state import CancellationToken, ExecutionStateCoordinator, TaskExecutionContext
 from app.infrastructure.task_repository import LocalJsonTaskRepository
-from app.models import BBox, Clause, ClausePair, Document, Page, TextBlock
+from app.infrastructure.task_runner import LocalJsonTaskJobRepository, TaskJob
+from app.models import BBox, Clause, ClausePair, CompareTask, Document, Page, TextBlock
 from app.services.compare_debug import CompareDebugWriter
 from app.services.compare_service import CompareService
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.pymupdf import PyMuPDFExtractor
 from app.services.pipeline_stages import ExtractionStage
+from app.services.progress_bus import ProgressBus
 from app.services.report_generator import build_report_filename
 
 
@@ -54,11 +58,7 @@ def test_match_matrix_summary_counts_alignment_risks(tmp_path: Path) -> None:
             compare=Clause(clause_id="N001", text="付款5000元", normalized_text="付款5000元"),
             match_method="body",
             match_confidence="LOW",
-            score_details={
-                "alignment": {
-                    "risk_flags": ["CRITICAL_TOKEN_MISMATCH", "POSSIBLE_CLAUSE_MISALIGNMENT"]
-                }
-            },
+            score_details={"alignment": {"risk_flags": ["CRITICAL_TOKEN_MISMATCH", "POSSIBLE_CLAUSE_MISALIGNMENT"]}},
         ),
         ClausePair(
             original=Clause(clause_id="O002", text="交付", normalized_text="交付"),
@@ -140,14 +140,16 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
 def test_compare_service_progress_callback_persists_monotonic_progress(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     repository = LocalJsonTaskRepository(settings)
-    repository.save_compare_task(CompareService(repository=repository)._load_or_create_task(
-        task_id="TPROGRESS_CALLBACK",
-        original_pdf=tmp_path / "original.pdf",
-        compare_pdf=tmp_path / "compare.pdf",
-        original_filename="original.pdf",
-        compare_filename="compare.pdf",
-        compare_options=None,
-    ))
+    repository.save_compare_task(
+        CompareService(repository=repository)._load_or_create_task(
+            task_id="TPROGRESS_CALLBACK",
+            original_pdf=tmp_path / "original.pdf",
+            compare_pdf=tmp_path / "compare.pdf",
+            original_filename="original.pdf",
+            compare_filename="compare.pdf",
+            compare_options=None,
+        )
+    )
     service = CompareService(repository=repository)
     callback = service._make_progress_callback("TPROGRESS_CALLBACK")
 
@@ -179,6 +181,75 @@ def test_compare_service_progress_callback_clamps_processing_progress_below_comp
     CompareService(repository=repository)._make_progress_callback("TPROGRESS_CLAMP")(100, "汇总统计中", None)
 
     assert repository.load_compare_task("TPROGRESS_CLAMP").progress_percent == 99
+
+
+def test_compare_service_does_not_reset_terminal_task_to_processing(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    repository = LocalJsonTaskRepository(settings)
+    task = CompareTask(task_id="TTERMINAL_ENTRY", status="COMPLETED", stage="已完成", progress_percent=100)
+    repository.save_compare_task(task)
+    before = repository.load_compare_task(task.task_id)
+    service = CompareService(repository=repository)
+
+    with pytest.raises(TaskTransitionConflict):
+        service._load_or_create_task(
+            task_id=task.task_id,
+            original_pdf=tmp_path / "original.pdf",
+            compare_pdf=tmp_path / "compare.pdf",
+            original_filename="original.pdf",
+            compare_filename="compare.pdf",
+            compare_options=None,
+        )
+
+    assert repository.load_compare_task(task.task_id) == before
+
+
+def test_compare_service_execution_progress_delegates_to_coordinator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_storage(tmp_path)
+    repository = LocalJsonTaskRepository(settings)
+    job_repository = LocalJsonTaskJobRepository(settings)
+    events: list[object] = []
+    monkeypatch.setattr(ProgressBus.get_instance(), "publish", events.append)
+    coordinator = ExecutionStateCoordinator(
+        job_repository,
+        task_repository=repository,
+        progress_publisher=ProgressBus.get_instance(),
+    )
+    job = coordinator.enqueue(
+        TaskJob(job_id="compare:TSERVICE_PROGRESS:1", task_id="TSERVICE_PROGRESS", task_type="compare")
+    )
+    repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    claimed = coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
+    assert claimed is not None
+    execution_context = TaskExecutionContext(
+        job_id=job.job_id,
+        task_id=job.task_id,
+        worker_id="worker-1",
+        cancellation_token=CancellationToken(job.job_id, "worker-1", coordinator),
+    )
+    commit_progress = coordinator.commit_progress
+    calls = 0
+
+    def record_progress(*args: object, **kwargs: object) -> CompareTask:
+        nonlocal calls
+        calls += 1
+        return commit_progress(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator, "commit_progress", record_progress)
+
+    CompareService(repository=repository)._make_progress_callback(job.task_id, execution_context)(
+        42,
+        "条款匹配中",
+        {"matched": 3},
+    )
+
+    task = repository.load_compare_task(job.task_id)
+    assert calls == 1
+    assert (task.stage, task.progress_percent) == ("条款匹配中", 42)
+    assert events[-1].revision == task.revision
 
 
 def test_compare_service_aligns_pymupdf_side_to_structured_extraction(tmp_path: Path) -> None:

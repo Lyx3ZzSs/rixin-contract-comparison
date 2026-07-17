@@ -630,6 +630,165 @@ def test_worker_survives_task_read_error_and_completes_after_recovery(
     assert job.job_id in caplog.text
 
 
+def test_application_execution_and_cancel_target_task_active_job_not_latest(tmp_path: Path) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    task_id = "TCONTROL_ACTIVE"
+    job_repository = runner.coordinator._repository
+    active_job = job_repository._persist(
+        TaskJob(job_id=f"compare:{task_id}:1", task_id=task_id, task_type="compare", execution_no=1)
+    )
+    stray_latest = job_repository._persist(
+        TaskJob(job_id=f"compare:{task_id}:2", task_id=task_id, task_type="compare", execution_no=2)
+    )
+    task_repository.save_compare_task(CompareTask(task_id=task_id, active_job_id=active_job.job_id))
+    runner.coordinator = ExecutionStateCoordinator(job_repository)
+    runner.job_repository = runner.coordinator
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+
+    assert application.load_execution(task_id).job_id == active_job.job_id
+    cancelled = application.cancel_compare(task_id)
+
+    assert cancelled.job_id == active_job.job_id
+    assert cancelled.status == "CANCELLED"
+    assert runner.coordinator.load(stray_latest.job_id).status == "QUEUED"
+
+
+def test_application_execution_without_active_job_is_not_found(tmp_path: Path) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    task_repository.save_compare_task(CompareTask(task_id="TNO_ACTIVE_CONTROL"))
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+
+    with pytest.raises(Exception, match="活动执行记录不存在"):
+        application.load_execution("TNO_ACTIVE_CONTROL")
+
+    with pytest.raises(Exception, match="活动执行记录不存在"):
+        application.cancel_compare("TNO_ACTIVE_CONTROL")
+
+
+def test_single_worker_recovers_from_claim_persistence_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+    task_id = "TCLAIM_PERSIST_RECOVERY"
+    task_repository.save_compare_task(CompareTask(task_id=task_id))
+    job = application.submit_compare(
+        original_path=tmp_path / "original.pdf",
+        compare_path=tmp_path / "compare.pdf",
+        task_id=task_id,
+        original_filename="original.pdf",
+        compare_filename="compare.pdf",
+    )
+    runner.register_handler("compare", lambda context, _payload: task_repository.load_compare_task(context.task_id))
+    job_repository = runner.coordinator._repository
+    persist = job_repository._persist
+    failed_once = False
+
+    def fail_first_claim(candidate: TaskJob) -> TaskJob:
+        nonlocal failed_once
+        if candidate.job_id == job.job_id and candidate.status == "RUNNING" and not failed_once:
+            failed_once = True
+            raise OSError("claim disk temporarily unavailable")
+        return persist(candidate)
+
+    monkeypatch.setattr(job_repository, "_persist", fail_first_claim)
+    caplog.set_level("WARNING", logger="app.infrastructure.task_runner")
+
+    runner.start()
+    try:
+        wait_until(lambda: runner.coordinator.load(job.job_id).status == "SUCCEEDED")
+        worker_alive = any(thread.is_alive() for thread in runner._threads)
+    finally:
+        runner.stop()
+
+    assert failed_once
+    assert worker_alive
+    assert "claim" in caplog.text
+    assert job.job_id in caplog.text
+
+
+def test_single_worker_logs_programming_claim_error_and_continues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    task_repository = LocalJsonTaskRepository(runner.settings)
+    application = CompareTaskApplication(repository=task_repository, runner=runner)
+    task_id = "TCLAIM_PROGRAMMING_RECOVERY"
+    task_repository.save_compare_task(CompareTask(task_id=task_id))
+    job = application.submit_compare(
+        original_path=tmp_path / "original.pdf",
+        compare_path=tmp_path / "compare.pdf",
+        task_id=task_id,
+        original_filename="original.pdf",
+        compare_filename="compare.pdf",
+    )
+    runner.register_handler("compare", lambda context, _payload: task_repository.load_compare_task(context.task_id))
+    claim_next = runner.coordinator.claim_next
+    failed_once = False
+
+    def fail_first_claim(*, worker_id: str, lease_seconds: int) -> TaskJob | None:
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError("claim programming defect")
+        return claim_next(worker_id=worker_id, lease_seconds=lease_seconds)
+
+    monkeypatch.setattr(runner.coordinator, "claim_next", fail_first_claim)
+    caplog.set_level("ERROR", logger="app.infrastructure.task_runner")
+
+    runner.start()
+    try:
+        wait_until(lambda: runner.coordinator.load(job.job_id).status == "SUCCEEDED")
+    finally:
+        runner.stop()
+
+    assert failed_once
+    assert "claim programming defect" in caplog.text
+
+
+def test_heartbeat_retries_transient_persistence_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runner = build_runner(tmp_path, autostart=False)
+    runner.lease_seconds = 0.03
+    stop_event = threading.Event()
+    calls = 0
+    job = TaskJob(job_id="compare:THEARTBEAT:1", task_id="THEARTBEAT", task_type="compare")
+
+    def extend_lease(_job_id: str, *, worker_id: str, lease_seconds: int) -> TaskJob:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("heartbeat disk temporarily unavailable")
+        stop_event.set()
+        return job
+
+    monkeypatch.setattr(runner.coordinator, "extend_lease", extend_lease)
+    caplog.set_level("WARNING", logger="app.infrastructure.task_runner")
+    heartbeat = threading.Thread(
+        target=runner._heartbeat_loop,
+        args=(job.job_id, "worker-1", stop_event),
+    )
+
+    heartbeat.start()
+    heartbeat.join(timeout=0.5)
+    stop_event.set()
+    heartbeat.join(timeout=1)
+
+    assert calls == 2
+    assert "heartbeat" in caplog.text.lower()
+    assert job.job_id in caplog.text
+
+
 def test_submit_rejects_legacy_raw_job_id_collision_with_different_identity(tmp_path: Path) -> None:
     app_settings = Settings(storage_dir=tmp_path / "storage")
     legacy_path = app_settings.tasks_dir / "tenant_1" / "job.json"
@@ -992,6 +1151,10 @@ def test_application_passes_execution_context_to_compare_service(
     application = CompareTaskApplication(repository=task_repository, runner=runner)
     task_repository.save_compare_task(CompareTask(task_id="THANDOFF"))
     job = runner.submit(task_type="compare", task_id="THANDOFF", payload={})
+    task_repository.update_compare_task(
+        job.task_id,
+        lambda task: setattr(task, "active_job_id", job.job_id),
+    )
     claimed = runner.job_repository.claim_next(worker_id="worker-1", lease_seconds=30)
     assert claimed is not None
     execution_context = TaskExecutionContext(
