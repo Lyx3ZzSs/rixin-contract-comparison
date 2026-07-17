@@ -46,6 +46,7 @@ class AuditItem:
     compare_evidence: list[EvidenceBox]
     evidence_state: Literal["LOCATED", "UNLOCATED"]
     quality_status: str
+    structural_flags: list[str]
     review_flags: list[str]
     text_confidence: float | None
     match_confidence: str
@@ -223,6 +224,7 @@ def _audit_item(
         compare_evidence=compare_evidence,
         evidence_state=evidence_state,
         quality_status=quality_status,
+        structural_flags=list(diff.structural_flags),
         review_flags=review_flags,
         text_confidence=diff.text_confidence,
         match_confidence=diff.match_confidence,

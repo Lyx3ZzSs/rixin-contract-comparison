@@ -195,6 +195,7 @@ def audit_item_response(item: AuditItem) -> AuditItemResponse:
         compare_evidence=[to_jsonable(evidence) for evidence in item.compare_evidence],
         evidence_state=item.evidence_state,
         quality_status=item.quality_status,
+        structural_flags=item.structural_flags,
         review_flags=item.review_flags,
         text_confidence=item.text_confidence,
         match_confidence=item.match_confidence,

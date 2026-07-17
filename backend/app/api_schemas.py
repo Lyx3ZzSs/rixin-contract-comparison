@@ -147,6 +147,7 @@ class AuditItemResponse(BaseModel):
     compare_evidence: list[EvidenceBoxResponse] = Field(default_factory=list)
     evidence_state: Literal["LOCATED", "UNLOCATED"] = "UNLOCATED"
     quality_status: DiffQualityStatus = "NORMAL"
+    structural_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     text_confidence: float | None = None
     match_confidence: str = ""
@@ -254,10 +255,14 @@ class CompareDiffResponse(BaseModel):
     compare_snippet: str = ""
     readable_change: str = ""
     source_type: str = "clause"
+    section_type: str = ""
+    section_path: list[str] = Field(default_factory=list)
     match_score: float | None = None
     match_method: str = ""
     match_score_details: dict[str, Any] = Field(default_factory=dict)
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    match_confidence: str = ""
+    structural_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     quality_status: DiffQualityStatus = "NORMAL"
     text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)

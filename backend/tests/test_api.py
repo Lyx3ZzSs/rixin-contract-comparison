@@ -1545,6 +1545,72 @@ def test_compare_task_response_projects_item_level_ocr_and_remediation_context()
     assert item.remediation_context.requires_manual_review is True
 
 
+def test_compare_api_serializes_canonical_audit_and_diff_structural_evidence_fields(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    save_task(
+        CompareTask(
+            task_id="TSTRUCTURALEVIDENCE",
+            status="COMPLETED",
+            diffs=[
+                DiffItem(
+                    diff_id="DTYPED",
+                    diff_type="ADD",
+                    source_type="table",
+                    section_type="appendix",
+                    section_path=["附件一", "报价表"],
+                    match_confidence="LOW",
+                    structural_flags=["TABLE_STRUCTURE", "ROW_REORDERED"],
+                    compare_text="新增报价行",
+                    compare_evidence=[
+                        EvidenceBox(
+                            page_no=2,
+                            bbox=BBox(x0=10, y0=20, x1=110, y1=40),
+                            text="新增报价行",
+                            highlight_type="ADD",
+                        )
+                    ],
+                ),
+                DiffItem(
+                    diff_id="DLEGACYDEFAULT",
+                    diff_type="DELETE",
+                    original_text="历史无定位差异",
+                ),
+            ],
+        )
+    )
+    client = TestClient(app)
+
+    task_response = client.get("/api/compare/TSTRUCTURALEVIDENCE")
+    diffs_response = client.get("/api/compare/TSTRUCTURALEVIDENCE/diffs")
+
+    assert task_response.status_code == diffs_response.status_code == 200
+    items = {item["diff_id"]: item for item in task_response.json()["audit_items"]}
+    typed = items["DTYPED"]
+    assert typed["section_type"] == "appendix"
+    assert typed["section_path"] == ["附件一", "报价表"]
+    assert typed["match_confidence"] == "LOW"
+    assert typed["structural_flags"] == ["TABLE_STRUCTURE", "ROW_REORDERED"]
+    assert isinstance(typed["section_path"], list)
+    assert isinstance(typed["structural_flags"], list)
+
+    legacy = items["DLEGACYDEFAULT"]
+    assert legacy["section_type"] == ""
+    assert legacy["section_path"] == []
+    assert legacy["match_confidence"] == ""
+    assert legacy["structural_flags"] == []
+    assert legacy["evidence_state"] == "UNLOCATED"
+
+    diffs = {diff["diff_id"]: diff for diff in diffs_response.json()["diffs"]}
+    assert diffs["DTYPED"]["section_type"] == "appendix"
+    assert diffs["DTYPED"]["section_path"] == ["附件一", "报价表"]
+    assert diffs["DTYPED"]["match_confidence"] == "LOW"
+    assert diffs["DTYPED"]["structural_flags"] == ["TABLE_STRUCTURE", "ROW_REORDERED"]
+    assert diffs["DLEGACYDEFAULT"]["section_type"] == ""
+    assert diffs["DLEGACYDEFAULT"]["section_path"] == []
+    assert diffs["DLEGACYDEFAULT"]["match_confidence"] == ""
+    assert diffs["DLEGACYDEFAULT"]["structural_flags"] == []
+
+
 def test_quality_summary_includes_ocr_quality_counts(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     save_task(
