@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api_quality_schemas import (
@@ -20,7 +18,9 @@ from app.auth.models import AGENT_ADMIN
 from app.config import settings
 from app.services.quality_workbench import (
     InvalidQualityWorkbenchIdError,
+    QualityCaseInvalidError,
     QualityCaseNotFoundError,
+    QualityCasesPathConflictError,
     QualityExpectedDiffNotFoundError,
     QualityTaskNotFoundError,
     QualityWorkbenchService,
@@ -35,21 +35,25 @@ router = APIRouter(
 
 
 def get_quality_workbench_service() -> QualityWorkbenchService:
-    backend_root = Path(__file__).resolve().parents[1]
-    case_root = backend_root / "tests" / "fixtures" / "ocr_compare_cases"
-    output_root = backend_root / ".ocr-compare-quality"
-    return QualityWorkbenchService(
-        case_root=case_root,
-        task_root=settings.tasks_dir,
-        output_root=output_root,
-    )
+    try:
+        return QualityWorkbenchService(
+            case_root=settings.quality_cases_dir,
+            task_root=settings.tasks_dir,
+            output_root=settings.quality_runs_dir,
+            seed_root=settings.quality_cases_seed_dir,
+        )
+    except QualityCasesPathConflictError as exc:
+        raise _quality_http_error(exc) from exc
 
 
 @router.get("/cases", response_model=QualityCaseListResponse)
 def list_cases(
     service: QualityWorkbenchService = Depends(get_quality_workbench_service),
 ) -> dict:
-    return {"cases": service.list_cases()}
+    try:
+        return {"cases": service.list_cases()}
+    except QualityCaseInvalidError as exc:
+        raise _quality_http_error(exc) from exc
 
 
 @router.post("/cases/export", response_model=QualityCaseExportResponse)
@@ -65,6 +69,7 @@ def export_case(
         )
     except (
         InvalidQualityWorkbenchIdError,
+        QualityCasesPathConflictError,
         QualityTaskNotFoundError,
         FileExistsError,
     ) as exc:
@@ -89,11 +94,7 @@ def evaluate_quality(
 ) -> dict:
     try:
         return service.evaluate_cases(
-            dataset_splits=(
-                set(request.dataset_splits)
-                if request.dataset_splits is not None
-                else None
-            ),
+            dataset_splits=(set(request.dataset_splits) if request.dataset_splits is not None else None),
             run_id=request.run_id,
         )
     except InvalidQualityWorkbenchIdError as exc:
@@ -107,11 +108,7 @@ def run_quality_regression(
 ) -> dict:
     try:
         return service.run_regression(
-            dataset_splits=(
-                set(request.dataset_splits)
-                if request.dataset_splits is not None
-                else None
-            ),
+            dataset_splits=(set(request.dataset_splits) if request.dataset_splits is not None else None),
             baseline_name=request.baseline_name,
             run_id=request.run_id,
         )
@@ -126,7 +123,11 @@ def get_case(
 ) -> dict:
     try:
         return service.get_case(case_id)
-    except (InvalidQualityWorkbenchIdError, QualityCaseNotFoundError) as exc:
+    except (
+        InvalidQualityWorkbenchIdError,
+        QualityCaseInvalidError,
+        QualityCaseNotFoundError,
+    ) as exc:
         raise _quality_http_error(exc) from exc
 
 
@@ -148,6 +149,7 @@ def update_expected_diff(
         )
     except (
         InvalidQualityWorkbenchIdError,
+        QualityCaseInvalidError,
         QualityCaseNotFoundError,
         QualityExpectedDiffNotFoundError,
     ) as exc:
@@ -168,7 +170,11 @@ def create_expected_diff(
             case_id,
             request.model_dump(exclude_unset=True),
         )
-    except (InvalidQualityWorkbenchIdError, QualityCaseNotFoundError) as exc:
+    except (
+        InvalidQualityWorkbenchIdError,
+        QualityCaseInvalidError,
+        QualityCaseNotFoundError,
+    ) as exc:
         raise _quality_http_error(exc) from exc
 
 
@@ -185,6 +191,7 @@ def delete_expected_diff(
         return service.delete_expected_diff(case_id, index)
     except (
         InvalidQualityWorkbenchIdError,
+        QualityCaseInvalidError,
         QualityCaseNotFoundError,
         QualityExpectedDiffNotFoundError,
     ) as exc:
@@ -192,6 +199,16 @@ def delete_expected_diff(
 
 
 def _quality_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, QualityCasesPathConflictError):
+        return HTTPException(
+            status_code=500,
+            detail={"code": exc.error_code, "message": str(exc)},
+        )
+    if isinstance(exc, QualityCaseInvalidError):
+        return HTTPException(
+            status_code=422,
+            detail={"code": exc.error_code, "message": str(exc)},
+        )
     if isinstance(exc, InvalidQualityWorkbenchIdError):
         return HTTPException(status_code=400, detail=str(exc))
     if isinstance(

@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     ocr_dir: Path | None = None
     debug_dir: Path | None = None
     cache_dir: Path | None = None
+    quality_cases_dir: Path = Path("/data/storage/quality/cases")
+    quality_runs_dir: Path = Path("/data/storage/quality/runs")
+    quality_cases_seed_dir: Path = Path("/app/resources/quality_cases")
     max_upload_size_mb: int = Field(default=30, ge=1)
 
     # -- Document extraction/OCR ------------------------------------------
@@ -400,11 +403,20 @@ class Settings(BaseSettings):
             self.cache_dir = storage_dir / "cache"
         else:
             self.cache_dir = self._resolve_runtime_path(self.cache_dir)
+        self.quality_cases_dir = self._resolve_quality_path(self.quality_cases_dir)
+        self.quality_runs_dir = self._resolve_quality_path(self.quality_runs_dir)
+        self.quality_cases_seed_dir = self._resolve_quality_path(self.quality_cases_seed_dir)
 
         return self
 
     def _resolve_runtime_path(self, path: Path) -> Path:
         return path if path.is_absolute() else BASE_DIR / path
+
+    def _resolve_quality_path(self, path: Path) -> Path:
+        expanded = path.expanduser()
+        if not expanded.is_absolute():
+            expanded = BASE_DIR / expanded
+        return expanded.resolve()
 
     @property
     def storage_subdirs(self) -> list[Path]:

@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.1",
+  "case_id": "baseline-contract-001",
+  "dataset_split": "regression",
+  "case_tags": [
+    "sanitized",
+    "approved",
+    "production-seed"
+  ],
+  "baseline_required": true,
+  "source_task_id": "sanitized-baseline-contract-001",
+  "source_files": {
+    "original_filename": "sanitized-original.pdf",
+    "compare_filename": "sanitized-revision.pdf"
+  },
+  "annotation_status": "APPROVED",
+  "expected_diffs": [
+    {
+      "diff_type": "MODIFY",
+      "source_type": "clause",
+      "title_contains": "Payment term",
+      "original_contains": "within 30 days",
+      "compare_contains": "within 45 days",
+      "source_actual_diff_id": "D001",
+      "review_status": "APPROVED",
+      "severity": "major",
+      "notes": "Synthetic, sanitized baseline change approved for regression use."
+    }
+  ],
+  "quality_expectations": {
+    "max_task_failures": 0,
+    "min_recall": 1.0,
+    "max_false_positive_count": 0,
+    "min_evidence_hit_rate": 1.0
+  }
+}

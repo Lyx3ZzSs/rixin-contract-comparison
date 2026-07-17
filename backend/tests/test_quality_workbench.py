@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import quality_workbench as quality_workbench_module
 from app.services.quality_workbench import (
     InvalidQualityWorkbenchIdError,
     QualityExpectedDiffNotFoundError,
@@ -67,9 +68,7 @@ def _make_case(case_root: Path, case_id: str = "case-001") -> Path:
             ],
         },
     )
-    (case_dir / "README.md").write_text(
-        "# OCR Compare Gold Case: case-001\n", encoding="utf-8"
-    )
+    (case_dir / "README.md").write_text("# OCR Compare Gold Case: case-001\n", encoding="utf-8")
     return case_dir
 
 
@@ -388,9 +387,7 @@ def test_update_expected_diff_writes_allowed_fields(tmp_path: Path) -> None:
     assert diff["severity"] == "major"
     assert diff["notes"] == "Needs reviewer confirmation"
     assert "unexpected_field" not in diff
-    expected_text = (case_root / "case-001" / "expected.json").read_text(
-        encoding="utf-8"
-    )
+    expected_text = (case_root / "case-001" / "expected.json").read_text(encoding="utf-8")
     assert expected_text.endswith("\n")
 
 
@@ -457,10 +454,7 @@ def test_create_and_delete_expected_diff(tmp_path: Path) -> None:
     deleted = service.delete_expected_diff("case-001", 3)
 
     assert len(deleted["expected"]["expected_diffs"]) == 3
-    assert all(
-        diff.get("title_contains") != "warranty"
-        for diff in deleted["expected"]["expected_diffs"]
-    )
+    assert all(diff.get("title_contains") != "warranty" for diff in deleted["expected"]["expected_diffs"])
 
 
 def test_create_expected_diff_is_idempotent_for_same_negative_actual_diff(
@@ -526,8 +520,7 @@ def test_create_expected_diff_appends_same_actual_diff_when_not_negative(
     approved_matches = [
         diff
         for diff in second["expected"]["expected_diffs"]
-        if diff.get("source_actual_diff_id") == "D001"
-        and diff.get("review_status") == "APPROVED"
+        if diff.get("source_actual_diff_id") == "D001" and diff.get("review_status") == "APPROVED"
     ]
 
     assert len(first["expected"]["expected_diffs"]) == 4
@@ -640,8 +633,7 @@ def test_review_task_replays_quality_filter_and_reports_suppressed_diffs(
     assert "original_text" not in result["retained_diffs"][0]
     assert "compare_text" not in result["suppressed_diffs"][0]
     assert any(
-        decision["action"] == "suppressed_low_value_noise"
-        and decision["diff_id"] == "D001"
+        decision["action"] == "suppressed_low_value_noise" and decision["diff_id"] == "D001"
         for decision in result["quality_decisions"]
     )
     assert result["debug_artifacts"] == {
@@ -672,6 +664,91 @@ def test_review_task_missing_task_raises(tmp_path: Path) -> None:
 
     with pytest.raises(QualityTaskNotFoundError):
         service.review_task("missing-task")
+
+
+def test_invalid_expected_json_raises_stable_quality_error(tmp_path: Path) -> None:
+    case_root = tmp_path / "cases"
+    invalid_path = case_root / "case-invalid" / "expected.json"
+    invalid_path.parent.mkdir(parents=True)
+    invalid_path.write_text("{not-json", encoding="utf-8")
+    service = QualityWorkbenchService(
+        case_root=case_root,
+        task_root=tmp_path / "tasks",
+        output_root=tmp_path / "runs",
+    )
+
+    with pytest.raises(Exception) as captured:
+        service.get_case("case-invalid")
+
+    assert type(captured.value).__name__ == "QualityCaseInvalidError"
+    assert captured.value.error_code == "QUALITY_CASE_INVALID"
+
+
+def test_export_failure_never_leaves_partial_final_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case_root = tmp_path / "cases"
+    task_root = tmp_path / "tasks"
+    _write_json(
+        task_root / "task-001" / "task.json",
+        {"task_id": "task-001", "status": "COMPLETED", "diffs": []},
+    )
+    service = QualityWorkbenchService(
+        case_root=case_root,
+        task_root=task_root,
+        output_root=tmp_path / "runs",
+    )
+
+    def partial_export(_task_dir: Path, output_dir: Path, *, force: bool) -> dict:
+        output_dir.mkdir(parents=True)
+        (output_dir / "expected.json").write_text("{}\n", encoding="utf-8")
+        raise OSError("injected export failure")
+
+    monkeypatch.setattr(
+        quality_workbench_module,
+        "export_gold_case",
+        partial_export,
+    )
+
+    with pytest.raises(OSError, match="injected export failure"):
+        service.export_case("task-001", "case-001")
+
+    assert not (case_root / "case-001").exists()
+    assert not [path for path in case_root.iterdir() if path.name.startswith(".")]
+
+
+def test_evaluate_uses_quality_runs_dir_without_duplicate_runs_segment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_root = tmp_path / "data/storage/quality/runs"
+    service = QualityWorkbenchService(
+        case_root=tmp_path / "cases",
+        task_root=tmp_path / "tasks",
+        output_root=output_root,
+    )
+    checked_roots: list[Path] = []
+    real_safe_child_dir = quality_workbench_module._safe_child_dir
+
+    def record_safe_child(root: Path, identifier: str, label: str) -> Path:
+        checked_roots.append(root)
+        return real_safe_child_dir(root, identifier, label)
+
+    monkeypatch.setattr(
+        quality_workbench_module,
+        "_safe_child_dir",
+        record_safe_child,
+    )
+    monkeypatch.setattr(
+        quality_workbench_module,
+        "evaluate_case_root",
+        lambda *_args, **_kwargs: {"case_count": 0},
+    )
+
+    service.evaluate_cases(run_id="run-001")
+
+    assert checked_roots == [output_root.resolve()]
 
 
 def test_review_task_reports_cross_source_merged_suppressed_diff(

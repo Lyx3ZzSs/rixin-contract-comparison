@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Application source
 COPY app/ ./app/
 COPY scripts/ ./scripts/
+COPY resources/quality_cases/ ./resources/quality_cases/
 
 # Create storage directory (mounted as volume at runtime)
 RUN mkdir -p /data/storage
@@ -24,4 +25,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "python scripts/init_quality_cases.py && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]

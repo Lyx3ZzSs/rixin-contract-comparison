@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import ctypes
+import errno
 import json
 import os
 import re
+import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
+from app.infrastructure.atomic_files import atomic_write_json, atomic_write_text
 from app.models import DiffItem
 from app.services.diff_quality import DiffQualityProcessor
 from scripts.export_ocr_compare_gold_case import export_gold_case
@@ -54,11 +59,32 @@ class QualityExpectedDiffNotFoundError(QualityWorkbenchError):
     """Raised when a requested expected diff entry does not exist."""
 
 
+class QualityCaseInvalidError(QualityWorkbenchError):
+    """Raised when a quality case or seed manifest is malformed."""
+
+    error_code = "QUALITY_CASE_INVALID"
+
+
+class QualityCasesPathConflictError(QualityWorkbenchError):
+    """Raised when seed and target paths overlap after resolution."""
+
+    error_code = "QUALITY_CASES_PATH_CONFLICT"
+
+
 class QualityWorkbenchService:
-    def __init__(self, case_root: Path, task_root: Path, output_root: Path) -> None:
-        self.case_root = case_root
-        self.task_root = task_root
-        self.output_root = output_root
+    def __init__(
+        self,
+        case_root: Path,
+        task_root: Path,
+        output_root: Path,
+        seed_root: Path | None = None,
+    ) -> None:
+        self.case_root = _resolve_path(case_root)
+        self.task_root = _resolve_path(task_root)
+        self.output_root = _resolve_path(output_root)
+        self.seed_root = _resolve_path(seed_root) if seed_root is not None else None
+        if self.seed_root is not None:
+            ensure_quality_paths_separated(self.case_root, self.seed_root)
 
     def list_cases(self) -> list[dict[str, Any]]:
         if not self.case_root.exists():
@@ -68,12 +94,8 @@ class QualityWorkbenchService:
         for case_dir in sorted(self.case_root.iterdir()):
             if not case_dir.is_dir() or not (case_dir / "expected.json").exists():
                 continue
-            expected = _read_json(case_dir / "expected.json")
-            actual = (
-                _read_json(case_dir / "actual.json")
-                if (case_dir / "actual.json").exists()
-                else {}
-            )
+            expected = _read_expected_json(case_dir / "expected.json")
+            actual = _read_json(case_dir / "actual.json") if (case_dir / "actual.json").exists() else {}
             cases.append(self._build_summary(case_dir, expected, actual))
         return cases
 
@@ -83,20 +105,16 @@ class QualityWorkbenchService:
         if not expected_path.exists():
             raise QualityCaseNotFoundError(f"Quality case not found: {case_id}")
 
-        expected = _read_json(expected_path)
+        expected = _read_expected_json(expected_path)
         actual_path = case_dir / "actual.json"
         actual = _read_json(actual_path) if actual_path.exists() else {}
         readme_path = case_dir / "README.md"
 
         return {
             "summary": self._build_summary(case_dir, expected, actual),
-            "readme": (
-                readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
-            ),
+            "readme": (readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""),
             "expected": expected,
-            "actual_diffs": [
-                _summarize_actual_diff(diff) for diff in actual.get("diffs", [])
-            ],
+            "actual_diffs": [_summarize_actual_diff(diff) for diff in actual.get("diffs", [])],
         }
 
     def export_case(
@@ -105,12 +123,33 @@ class QualityWorkbenchService:
         case_id: str,
         force: bool = False,
     ) -> dict[str, Any]:
+        if self.seed_root is not None:
+            ensure_quality_paths_separated(self.case_root, self.seed_root)
         task_dir = self._task_dir(task_id)
         case_dir = self._case_dir(case_id)
         if not (task_dir / "task.json").exists():
             raise QualityTaskNotFoundError(f"Quality task not found: {task_id}")
+        if case_dir.exists():
+            raise FileExistsError(f"Quality case already exists: {case_id}")
 
-        return export_gold_case(task_dir, case_dir, force=force)
+        self.case_root.mkdir(parents=True, exist_ok=True)
+        staging_root = Path(
+            tempfile.mkdtemp(
+                prefix=f".{case_id}.",
+                suffix=".staging",
+                dir=self.case_root,
+            )
+        )
+        staging_case = staging_root / case_id
+        try:
+            summary = export_gold_case(task_dir, staging_case, force=False)
+            _read_expected_json(staging_case / "expected.json")
+            _fsync_tree(staging_case)
+            publish_directory_without_overwrite(staging_case, case_dir)
+            _fsync_directory(self.case_root)
+            return summary
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
 
     def review_task(self, task_id: str) -> dict[str, Any]:
         task_dir = self._task_dir(task_id)
@@ -119,11 +158,7 @@ class QualityWorkbenchService:
             raise QualityTaskNotFoundError(f"Quality task not found: {task_id}")
 
         task = _read_json(task_path)
-        historical_diffs = [
-            DiffItem.model_validate(diff)
-            for diff in task.get("diffs", [])
-            if isinstance(diff, dict)
-        ]
+        historical_diffs = [DiffItem.model_validate(diff) for diff in task.get("diffs", []) if isinstance(diff, dict)]
         replay = DiffQualityProcessor().process(historical_diffs)
         quality_decisions = replay.to_debug_payload()
 
@@ -165,17 +200,13 @@ class QualityWorkbenchService:
         case_dir, expected = self._read_expected_case(case_id)
         expected_diffs = _expected_diffs_list(expected)
         if index < 0 or index >= len(expected_diffs):
-            raise QualityExpectedDiffNotFoundError(
-                f"Expected diff not found: {case_id}[{index}]"
-            )
+            raise QualityExpectedDiffNotFoundError(f"Expected diff not found: {case_id}[{index}]")
 
         current = expected_diffs[index]
         if not isinstance(current, dict):
             current = {}
-        expected_diffs[index] = _allowed_expected_diff(current) | _allowed_expected_diff(
-            patch
-        )
-        _write_json_atomic(case_dir / "expected.json", expected)
+        expected_diffs[index] = _allowed_expected_diff(current) | _allowed_expected_diff(patch)
+        _write_expected_json(case_dir / "expected.json", expected)
         return self.get_case(case_id)
 
     def create_expected_diff(
@@ -197,19 +228,17 @@ class QualityWorkbenchService:
             return self.get_case(case_id)
 
         expected_diffs.append(next_diff)
-        _write_json_atomic(case_dir / "expected.json", expected)
+        _write_expected_json(case_dir / "expected.json", expected)
         return self.get_case(case_id)
 
     def delete_expected_diff(self, case_id: str, index: int) -> dict[str, Any]:
         case_dir, expected = self._read_expected_case(case_id)
         expected_diffs = _expected_diffs_list(expected)
         if index < 0 or index >= len(expected_diffs):
-            raise QualityExpectedDiffNotFoundError(
-                f"Expected diff not found: {case_id}[{index}]"
-            )
+            raise QualityExpectedDiffNotFoundError(f"Expected diff not found: {case_id}[{index}]")
 
         del expected_diffs[index]
-        _write_json_atomic(case_dir / "expected.json", expected)
+        _write_expected_json(case_dir / "expected.json", expected)
         return self.get_case(case_id)
 
     def evaluate_cases(
@@ -217,7 +246,7 @@ class QualityWorkbenchService:
         dataset_splits: set[str] | None = None,
         run_id: str = "local-eval",
     ) -> dict[str, Any]:
-        _safe_child_dir(self.output_root / "runs", run_id, "quality run")
+        _safe_child_dir(self.output_root, run_id, "quality run")
         report = evaluate_case_root(self.case_root, dataset_splits=dataset_splits)
         return {
             "run_id": run_id,
@@ -231,7 +260,7 @@ class QualityWorkbenchService:
         baseline_name: str = "current",
         run_id: str = "local-regression",
     ) -> dict[str, Any]:
-        output_dir = _safe_child_dir(self.output_root / "runs", run_id, "quality run")
+        output_dir = _safe_child_dir(self.output_root, run_id, "quality run")
         baseline_path = None
         if baseline_name:
             candidate = _safe_child_file(
@@ -271,7 +300,7 @@ class QualityWorkbenchService:
         expected_path = case_dir / "expected.json"
         if not expected_path.exists():
             raise QualityCaseNotFoundError(f"Quality case not found: {case_id}")
-        return case_dir, _read_json(expected_path)
+        return case_dir, _read_expected_json(expected_path)
 
     def _build_summary(
         self,
@@ -286,11 +315,7 @@ class QualityWorkbenchService:
             "case_id": str(expected.get("case_id") or case_dir.name),
             "schema_version": str(expected.get("schema_version") or "1.0"),
             "dataset_split": str(expected.get("dataset_split") or "legacy"),
-            "case_tags": list(
-                expected["case_tags"]
-                if "case_tags" in expected
-                else expected.get("tags") or []
-            ),
+            "case_tags": list(expected["case_tags"] if "case_tags" in expected else expected.get("tags") or []),
             "baseline_required": bool(expected.get("baseline_required", False)),
             "source_task_id": expected.get("source_task_id", ""),
             "original_filename": source_files.get("original_filename", ""),
@@ -305,14 +330,223 @@ class QualityWorkbenchService:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON object required: {path.name}")
+    return payload
+
+
+def _read_expected_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = _read_json(path)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise QualityCaseInvalidError(f"Invalid quality case expected.json: {path.parent.name}") from exc
+    if not isinstance(payload.get("expected_diffs", []), list):
+        raise QualityCaseInvalidError(f"Invalid quality case expected.json: {path.parent.name}")
+    return payload
+
+
+def _write_expected_json(path: Path, payload: dict[str, Any]) -> None:
+    atomic_write_text(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+    )
+
+
+def _resolve_path(path: Path) -> Path:
+    return path.expanduser().resolve()
+
+
+def ensure_quality_paths_separated(
+    target_root: Path,
+    seed_root: Path,
+) -> tuple[Path, Path]:
+    target = _resolve_path(target_root)
+    seed = _resolve_path(seed_root)
+    if target == seed or target in seed.parents or seed in target.parents:
+        raise QualityCasesPathConflictError(
+            "QUALITY_CASES_PATH_CONFLICT: quality cases target and seed directories "
+            "must be separate and must not contain one another"
+        )
+    return target, seed
+
+
+def initialize_quality_cases(target_root: Path, seed_root: Path) -> dict[str, Any]:
+    target, seed = ensure_quality_paths_separated(target_root, seed_root)
+    manifest, seed_cases = _validate_seed_repository(seed)
+    target.mkdir(parents=True, exist_ok=True)
+
+    created_case_ids: list[str] = []
+    preserved_case_ids: list[str] = []
+    for case_id, source_case in seed_cases:
+        target_case = target / case_id
+        if target_case.exists():
+            preserved_case_ids.append(case_id)
+            continue
+
+        staging_root = Path(
+            tempfile.mkdtemp(
+                prefix=f".{case_id}.",
+                suffix=".staging",
+                dir=target,
+            )
+        )
+        staging_case = staging_root / case_id
+        try:
+            shutil.copytree(source_case, staging_case)
+            _validate_seed_case(staging_case, case_id)
+            _fsync_tree(staging_case)
+            try:
+                publish_directory_without_overwrite(staging_case, target_case)
+            except FileExistsError:
+                if not target_case.exists():
+                    raise
+                preserved_case_ids.append(case_id)
+            else:
+                _fsync_directory(target)
+                created_case_ids.append(case_id)
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
+
+    atomic_write_json(
+        target / "seed-manifest.json",
+        {
+            "schema_version": "1.0",
+            "seed_version": manifest["seed_version"],
+            "case_ids": [case_id for case_id, _ in seed_cases],
+        },
+    )
+    return {
+        "seed_version": manifest["seed_version"],
+        "created_case_ids": created_case_ids,
+        "preserved_case_ids": preserved_case_ids,
+    }
+
+
+def _validate_seed_repository(
+    seed_root: Path,
+) -> tuple[dict[str, Any], list[tuple[str, Path]]]:
+    manifest_path = seed_root / "manifest.json"
+    try:
+        manifest = _read_json(manifest_path)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise QualityCaseInvalidError("Invalid quality seed manifest.json") from exc
+
+    seed_version = manifest.get("seed_version")
+    cases = manifest.get("cases")
+    if manifest.get("schema_version") != "1.0":
+        raise QualityCaseInvalidError("Invalid quality seed manifest schema_version")
+    if not isinstance(seed_version, str) or not seed_version.strip():
+        raise QualityCaseInvalidError("Invalid quality seed manifest seed_version")
+    if not isinstance(cases, list) or not cases:
+        raise QualityCaseInvalidError("Invalid quality seed manifest cases")
+
+    validated: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for item in cases:
+        if not isinstance(item, dict) or not isinstance(item.get("case_id"), str):
+            raise QualityCaseInvalidError("Invalid quality seed manifest case entry")
+        case_id = item["case_id"]
+        if case_id in seen:
+            raise QualityCaseInvalidError(f"Duplicate quality seed case: {case_id}")
+        try:
+            case_dir = _safe_child_dir(seed_root, case_id, "quality seed case")
+        except InvalidQualityWorkbenchIdError as exc:
+            raise QualityCaseInvalidError(f"Invalid quality seed manifest case id: {case_id}") from exc
+        _validate_seed_case(case_dir, case_id)
+        validated.append((case_id, case_dir))
+        seen.add(case_id)
+    return manifest, validated
+
+
+def _validate_seed_case(case_dir: Path, case_id: str) -> None:
+    if not case_dir.is_dir():
+        raise QualityCaseInvalidError(f"Quality seed case is missing: {case_id}")
+    expected = _read_expected_json(case_dir / "expected.json")
+    if expected.get("case_id") != case_id:
+        raise QualityCaseInvalidError(f"Quality seed expected.json case_id mismatch: {case_id}")
+    if not (case_dir / "tests").is_dir():
+        raise QualityCaseInvalidError(f"Quality seed case is missing required tests directory: {case_id}")
+    actual_json = case_dir / "actual.json"
+    has_pdfs = (case_dir / "original.pdf").is_file() and (case_dir / "compare.pdf").is_file()
+    if actual_json.is_file():
+        try:
+            _read_json(actual_json)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise QualityCaseInvalidError(f"Invalid quality seed actual.json: {case_id}") from exc
+    elif not has_pdfs:
+        raise QualityCaseInvalidError(f"Quality seed case has no evaluation source: {case_id}")
+
+
+def _fsync_tree(root: Path) -> None:
+    directories = [root]
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            descriptor = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        elif path.is_dir():
+            directories.append(path)
+    for directory in reversed(directories):
+        _fsync_directory(directory)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def publish_directory_without_overwrite(source: Path, target: Path) -> None:
+    """Atomically publish a directory while preserving any existing target."""
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        rename_exclusive = libc.renamex_np
+        rename_exclusive.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        rename_exclusive.restype = ctypes.c_int
+        result = rename_exclusive(os.fsencode(source), os.fsencode(target), 0x00000004)
+        _raise_rename_error(result, target)
+        return
+
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        rename_no_replace = libc.renameat2
+        rename_no_replace.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename_no_replace.restype = ctypes.c_int
+        result = rename_no_replace(
+            -100,
+            os.fsencode(source),
+            -100,
+            os.fsencode(target),
+            0x00000001,
+        )
+        _raise_rename_error(result, target)
+        return
+
+    raise NotImplementedError(f"Atomic no-overwrite directory publication is unsupported on {sys.platform}")
+
+
+def _raise_rename_error(result: int, target: Path) -> None:
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise FileExistsError(error_number, os.strerror(error_number), target)
+    raise OSError(error_number, os.strerror(error_number), target)
 
 
 def _safe_child_dir(root: Path, identifier: str, label: str) -> Path:
-    if (
-        not re.fullmatch(SAFE_ID_RE, identifier)
-        or identifier in {".", ".."}
-    ):
+    if not re.fullmatch(SAFE_ID_RE, identifier) or identifier in {".", ".."}:
         raise InvalidQualityWorkbenchIdError(f"Invalid {label} id: {identifier}")
     root_path = root.resolve()
     child_path = (root / identifier).resolve()
@@ -322,37 +556,13 @@ def _safe_child_dir(root: Path, identifier: str, label: str) -> Path:
 
 
 def _safe_child_file(root: Path, identifier: str, suffix: str, label: str) -> Path:
-    if (
-        not re.fullmatch(SAFE_ID_RE, identifier)
-        or identifier in {".", ".."}
-    ):
+    if not re.fullmatch(SAFE_ID_RE, identifier) or identifier in {".", ".."}:
         raise InvalidQualityWorkbenchIdError(f"Invalid {label} id: {identifier}")
     root_path = root.resolve()
     child_path = (root / f"{identifier}{suffix}").resolve()
     if child_path.parent != root_path:
         raise InvalidQualityWorkbenchIdError(f"Invalid {label} id: {identifier}")
     return child_path
-
-
-def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp_file:
-            tmp_path = Path(tmp_file.name)
-            tmp_file.write(json.dumps(payload, ensure_ascii=False, indent=2))
-            tmp_file.write("\n")
-        os.replace(tmp_path, path)
-    finally:
-        if tmp_path is not None and tmp_path.exists():
-            tmp_path.unlink()
 
 
 def _expected_diffs_list(expected: dict[str, Any]) -> list[Any]:
@@ -363,11 +573,7 @@ def _expected_diffs_list(expected: dict[str, Any]) -> list[Any]:
 
 
 def _allowed_expected_diff(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in payload.items()
-        if key in EXPECTED_DIFF_ALLOWED_FIELDS
-    }
+    return {key: value for key, value in payload.items() if key in EXPECTED_DIFF_ALLOWED_FIELDS}
 
 
 def _is_negative_expected_diff(diff: dict[str, Any]) -> bool:

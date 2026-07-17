@@ -11,6 +11,9 @@ services:
       - HOST=0.0.0.0
       - PORT=8000
       - STORAGE_DIR=/data/storage
+      - QUALITY_CASES_DIR=/data/storage/quality/cases
+      - QUALITY_RUNS_DIR=/data/storage/quality/runs
+      - QUALITY_CASES_SEED_DIR=/app/resources/quality_cases
       - RELOAD=false
       - FRONTEND_CORS_ORIGINS=http://localhost,http://127.0.0.1
     expose:

@@ -1,6 +1,6 @@
 # 国能日新 · 合同智能审查平台 — 部署文档（Docker）
 
-> **最后更新:** 2026-06-10
+> **最后更新:** 2026-07-17
 
 ## 1. 系统要求
 
@@ -123,6 +123,9 @@ TASK_RUNNER_POLL_INTERVAL_SECONDS=0.25
 ```yaml
 environment:
   - STORAGE_DIR=/data/storage
+  - QUALITY_CASES_DIR=/data/storage/quality/cases
+  - QUALITY_RUNS_DIR=/data/storage/quality/runs
+  - QUALITY_CASES_SEED_DIR=/app/resources/quality_cases
   - FRONTEND_CORS_ORIGINS=http://localhost,http://127.0.0.1
 ```
 
@@ -143,6 +146,10 @@ docker compose up -d
 ```
 
 首次启动会自动构建镜像（如未提前构建）。后端容器会等待 health check 通过后，前端容器才启动。
+
+后端启动 API 前会运行 `python scripts/init_quality_cases.py`。该命令把镜像中经过脱敏和批准的
+`QUALITY_CASES_SEED_DIR` 案例幂等初始化到持久卷内的 `QUALITY_CASES_DIR`，质量运行结果写入
+`QUALITY_RUNS_DIR`。已有同 case ID 的管理员案例不会覆盖；后续启动和重新初始化会原样保留它。
 
 ### 5.3 查看状态
 
@@ -183,7 +190,25 @@ docker compose up -d                # 滚动重启
       ocr/                 # OCR 原始结果
       debug/               # 调试输出
       reports/             # 生成的 PDF 报告
+  quality/
+    cases/                  # 管理员案例和镜像种子案例
+      seed-manifest.json    # 已应用镜像 seed_version 与案例 ID 元数据
+    runs/                   # 质量评估和回归运行输出
 ```
+
+`seed-manifest.json` 只记录最近成功应用的镜像 seed manifest 版本和清单，不声明目录中只有种子案例，
+也不会赋予初始化器覆盖管理员案例的权限。管理员通过质量工作台导出的案例会追加到同一 cases 目录，
+以后执行初始化仍不会覆盖。
+
+部署人员可以在容器内手工重复执行初始化：
+
+```bash
+docker compose exec backend python scripts/init_quality_cases.py
+```
+
+命令成功或失败都会输出结构化 JSON，并以非零退出码报告失败。`QUALITY_CASES_DIR` 与
+`QUALITY_CASES_SEED_DIR` 的解析结果必须彼此分离，不能相同或互为父子目录（包括符号链接解析后的
+关系）；违反时命令以 `QUALITY_CASES_PATH_CONFLICT` 失败，防止递归复制或修改只读种子。
 
 ### 备份存储卷
 

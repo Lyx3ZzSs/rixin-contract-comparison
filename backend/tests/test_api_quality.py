@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.api_quality import get_quality_workbench_service
@@ -52,9 +53,7 @@ def _make_case(case_root: Path, case_id: str = "case-001") -> Path:
             ],
         },
     )
-    (case_dir / "README.md").write_text(
-        "# OCR Compare Gold Case: case-001\n", encoding="utf-8"
-    )
+    (case_dir / "README.md").write_text("# OCR Compare Gold Case: case-001\n", encoding="utf-8")
     return case_dir
 
 
@@ -203,15 +202,44 @@ def test_quality_case_dot_segment_returns_400(
     assert response.status_code == 400
 
 
-def test_default_quality_service_uses_configured_task_root(tmp_path: Path) -> None:
+def test_default_quality_service_uses_configured_quality_paths(tmp_path: Path) -> None:
     original_tasks_dir = settings.tasks_dir
+    original_cases_dir = settings.quality_cases_dir
+    original_runs_dir = settings.quality_runs_dir
+    original_seed_dir = settings.quality_cases_seed_dir
     settings.tasks_dir = tmp_path / "configured-tasks"
+    settings.quality_cases_dir = tmp_path / "data" / "storage" / "quality" / "cases"
+    settings.quality_runs_dir = tmp_path / "data" / "storage" / "quality" / "runs"
+    settings.quality_cases_seed_dir = tmp_path / "app" / "resources" / "quality_cases"
     try:
         service = get_quality_workbench_service()
     finally:
         settings.tasks_dir = original_tasks_dir
+        settings.quality_cases_dir = original_cases_dir
+        settings.quality_runs_dir = original_runs_dir
+        settings.quality_cases_seed_dir = original_seed_dir
 
     assert service.task_root == tmp_path / "configured-tasks"
+    assert service.case_root == tmp_path / "data" / "storage" / "quality" / "cases"
+    assert service.output_root == tmp_path / "data" / "storage" / "quality" / "runs"
+    assert service.seed_root == tmp_path / "app" / "resources" / "quality_cases"
+
+
+def test_default_quality_service_rejects_conflicting_paths(tmp_path: Path) -> None:
+    original_cases_dir = settings.quality_cases_dir
+    original_seed_dir = settings.quality_cases_seed_dir
+    conflict = tmp_path / "quality"
+    settings.quality_cases_dir = conflict
+    settings.quality_cases_seed_dir = conflict
+    try:
+        with pytest.raises(HTTPException) as captured:
+            get_quality_workbench_service()
+    finally:
+        settings.quality_cases_dir = original_cases_dir
+        settings.quality_cases_seed_dir = original_seed_dir
+
+    assert captured.value.status_code == 500
+    assert captured.value.detail["code"] == "QUALITY_CASES_PATH_CONFLICT"
 
 
 def test_export_quality_case(quality_service: QualityWorkbenchService) -> None:
@@ -248,12 +276,58 @@ def test_export_quality_case(quality_service: QualityWorkbenchService) -> None:
         "expected_diff_count": 1,
         "actual_diff_count": 1,
     }
-    exported = json.loads(
-        (quality_service.case_root / "case-001" / "expected.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    exported = json.loads((quality_service.case_root / "case-001" / "expected.json").read_text(encoding="utf-8"))
     assert exported["expected_diffs"][0]["review_status"] == "DRAFT"
+
+
+def test_export_quality_case_never_overwrites_existing_case_even_with_force(
+    quality_service: QualityWorkbenchService,
+) -> None:
+    existing = _make_case(quality_service.case_root)
+    expected_path = existing / "expected.json"
+    original_bytes = expected_path.read_bytes()
+    _write_json(
+        quality_service.task_root / "task-001" / "task.json",
+        {"task_id": "task-001", "status": "COMPLETED", "diffs": []},
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/quality/cases/export",
+        json={"task_id": "task-001", "case_id": "case-001", "force": True},
+    )
+
+    assert response.status_code == 409, response.text
+    assert expected_path.read_bytes() == original_bytes
+
+
+def test_export_path_conflict_returns_stable_api_error(
+    quality_service: QualityWorkbenchService,
+) -> None:
+    quality_service.seed_root = quality_service.case_root
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/quality/cases/export",
+        json={"task_id": "task-001", "case_id": "case-001"},
+    )
+
+    assert response.status_code == 500, response.text
+    assert response.json()["detail"]["code"] == "QUALITY_CASES_PATH_CONFLICT"
+
+
+def test_invalid_expected_json_returns_stable_api_error(
+    quality_service: QualityWorkbenchService,
+) -> None:
+    invalid_path = quality_service.case_root / "case-invalid" / "expected.json"
+    invalid_path.parent.mkdir(parents=True)
+    invalid_path.write_text("{not-json", encoding="utf-8")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get("/api/quality/cases/case-invalid")
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "QUALITY_CASE_INVALID"
 
 
 def test_review_quality_task_endpoint(
@@ -462,10 +536,7 @@ def test_create_and_delete_quality_expected_diff(
     assert delete_response.status_code == 200, delete_response.text
     deleted = delete_response.json()
     assert len(deleted["expected"]["expected_diffs"]) == 2
-    assert all(
-        diff.get("title_contains") != "warranty"
-        for diff in deleted["expected"]["expected_diffs"]
-    )
+    assert all(diff.get("title_contains") != "warranty" for diff in deleted["expected"]["expected_diffs"])
 
 
 def test_create_quality_expected_diff_is_idempotent_for_same_negative_actual_diff(
