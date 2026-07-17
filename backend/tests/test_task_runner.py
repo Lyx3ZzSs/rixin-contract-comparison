@@ -1933,6 +1933,33 @@ def test_legacy_job_updates_preserve_source_path(tmp_path: Path) -> None:
     assert not (legacy_path.parent / "jobs" / "1.json").exists()
 
 
+def test_retry_after_legacy_execution_starts_in_new_jobs_directory(tmp_path: Path) -> None:
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    repository = LocalJsonTaskJobRepository(app_settings)
+    task_id = "TLEGACY_RETRY"
+    legacy_path = app_settings.tasks_dir / task_id / "job.json"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        TaskJob(
+            job_id=f"compare:{task_id}:1",
+            task_id=task_id,
+            task_type="compare",
+            status="FAILED",
+            execution_no=1,
+            attempt=1,
+            max_attempts=1,
+        ).model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    runner = QueuedTaskRunner(job_repository=repository, app_settings=app_settings, autostart=False)
+
+    retried = runner.retry(task_id, task_type="compare")
+
+    assert (retried.job_id, retried.execution_no) == (f"compare:{task_id}:2", 2)
+    assert json.loads(legacy_path.read_text(encoding="utf-8"))["status"] == "FAILED"
+    assert (legacy_path.parent / "jobs" / "2.json").is_file()
+
+
 def test_task_job_execution_identity_fields_have_legacy_defaults() -> None:
     job = TaskJob(job_id="compare:TLEGACY", task_id="TLEGACY", task_type="compare")
 

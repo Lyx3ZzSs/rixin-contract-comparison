@@ -206,8 +206,8 @@ def test_lifespan_recovers_submissions_before_reconciliation_and_workers(
     )
     monkeypatch.setattr(
         main_module,
-        "reconcile_terminal_jobs",
-        lambda *_args: events.append("reconciliation") or 0,
+        "reconcile_startup",
+        lambda *_args, **_kwargs: events.append("reconciliation") or 0,
     )
     monkeypatch.setattr(main_module.default_task_runner, "start", lambda: events.append("workers"))
     monkeypatch.setattr(main_module.default_task_runner, "stop", lambda **_kwargs: None)
@@ -251,7 +251,7 @@ def test_lifespan_defers_locked_recovery_marker_and_starts(
     monkeypatch.setattr(main_module.default_task_repository, "resolve", lambda: None)
     monkeypatch.setattr(main_module.default_task_runner, "start", lambda: None)
     monkeypatch.setattr(main_module.default_task_runner, "stop", lambda **_kwargs: None)
-    monkeypatch.setattr(main_module, "reconcile_terminal_jobs", lambda *_args: 0)
+    monkeypatch.setattr(main_module, "reconcile_startup", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(main_module, "register_default_models", lambda: None)
     monkeypatch.setattr(main_module, "teardown_models", lambda: None)
     monkeypatch.setattr(main_module, "close_clients", lambda: None)

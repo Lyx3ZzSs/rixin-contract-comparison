@@ -55,6 +55,7 @@ class TaskJob(BaseModel):
     error_code: str = ""
     last_error: str = ""
     source_path: str = Field(default="", exclude=True, repr=False)
+    duplicate_execution: bool = Field(default=False, exclude=True, repr=False)
 
 
 class TaskRunnerStats(BaseModel):
@@ -92,11 +93,10 @@ class LocalJsonTaskJobRepository:
         self._lock = threading.RLock()
 
     def load(self, job_id: str) -> TaskJob:
-        path = self._find_job_path(job_id)
-        if path is None:
+        matches = [job for job in self.list_jobs() if job.job_id == job_id]
+        if not matches:
             raise FileNotFoundError(f"任务执行记录不存在: {job_id}")
-        with self._lock:
-            return self._load_job_path(path)
+        return matches[0].model_copy(deep=True)
 
     def list_jobs(self) -> list[TaskJob]:
         tasks_dir = self.settings.tasks_dir
@@ -110,7 +110,7 @@ class LocalJsonTaskJobRepository:
                     jobs.append(self._load_job_path(path))
                 except (OSError, ValueError, TypeError):
                     continue
-        return sorted(jobs, key=lambda job: (job.next_run_at or job.queued_at, job.queued_at))
+        return self._merge_execution_view(jobs)
 
     def _persist(self, job: TaskJob) -> TaskJob:
         with self._lock:
@@ -147,20 +147,31 @@ class LocalJsonTaskJobRepository:
         return job
 
     def _find_job_path(self, job_id: str) -> Path | None:
-        if not self.settings.tasks_dir.exists():
-            return None
-        paths = [
-            *self.settings.tasks_dir.glob("*/job.json"),
-            *self.settings.tasks_dir.glob("*/jobs/*.json"),
-        ]
-        for path in paths:
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError):
+        match = next((job for job in self.list_jobs() if job.job_id == job_id), None)
+        return Path(match.source_path) if match is not None else None
+
+    @staticmethod
+    def _merge_execution_view(jobs: list[TaskJob]) -> list[TaskJob]:
+        grouped: dict[tuple[str, str, int], list[TaskJob]] = {}
+        for job in jobs:
+            grouped.setdefault((job.task_id, job.task_type, job.execution_no), []).append(job)
+
+        merged: list[TaskJob] = []
+        for duplicates in grouped.values():
+            if len(duplicates) == 1:
+                merged.append(duplicates[0])
                 continue
-            if payload.get("job_id") == job_id:
-                return path
-        return None
+            identities = {(job.job_id, job.status, job.attempt) for job in duplicates}
+            if len(identities) == 1:
+                # Keep the legacy source for execution 1 so subsequent repairs
+                # update it in place; retries still use jobs/{execution_no}.json.
+                merged.append(min(duplicates, key=lambda job: (Path(job.source_path).name != "job.json", job.source_path)))
+                continue
+            for job in duplicates:
+                job.error_code = "DUPLICATE_JOB_EXECUTION"
+                job.duplicate_execution = True
+                merged.append(job)
+        return sorted(merged, key=lambda job: (job.next_run_at or job.queued_at, job.queued_at, job.source_path))
 
     def _new_job_path(self, job: TaskJob) -> Path:
         return self._task_dir(job.task_id) / "jobs" / f"{job.execution_no}.json"

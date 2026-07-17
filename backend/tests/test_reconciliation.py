@@ -6,7 +6,9 @@ import pytest
 
 from app.config import Settings
 from app.infrastructure.execution_state import ExecutionStateCoordinator
+from app.infrastructure import reconciliation
 from app.infrastructure.reconciliation import reconcile_terminal_jobs
+from app.infrastructure.recovery_store import RecoveryStore
 from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.infrastructure.task_runner import LocalJsonTaskJobRepository, TaskJob
 from app.models import CompareTask
@@ -131,3 +133,150 @@ def test_startup_reconciliation_maps_failed_task_reason_to_job_terminal(
     assert repaired.status == expected_job_status
     assert repaired.last_error == expected_error
     assert publisher.events == []
+
+
+def _reconciliation_dependencies(tmp_path: Path):
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    task_repository = LocalJsonTaskRepository(app_settings)
+    job_repository = LocalJsonTaskJobRepository(app_settings)
+    coordinator = ExecutionStateCoordinator(job_repository, task_repository=task_repository)
+    return task_repository, coordinator, RecoveryStore(app_settings)
+
+
+def test_startup_reconciliation_completes_matching_terminal_job(tmp_path: Path) -> None:
+    task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
+    task_id = "TTERMINAL"
+    job = coordinator.enqueue(TaskJob(job_id=f"compare:{task_id}:1", task_id=task_id, task_type="compare"))
+    task_repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            status="COMPLETED",
+            active_job_id=job.job_id,
+            terminal_job_id=job.job_id,
+            terminal_attempt=job.attempt,
+        )
+    )
+
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 1
+    assert coordinator.load(job.job_id).status == "SUCCEEDED"
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
+
+
+def test_startup_reconciliation_fails_unreferenced_nonterminal_job(tmp_path: Path) -> None:
+    task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
+    task_id = "TORPHAN"
+    task_repository.save_compare_task(
+        CompareTask(task_id=task_id, status="FAILED", terminal_reason="SUBMISSION_FAILED")
+    )
+    job = coordinator.enqueue(TaskJob(job_id=f"compare:{task_id}:1", task_id=task_id, task_type="compare"))
+
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 1
+    repaired = coordinator.load(job.job_id)
+    assert (repaired.status, repaired.error_code) == ("FAILED", "ORPHANED_JOB")
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
+
+
+def test_startup_reconciliation_fails_processing_task_with_missing_active_job(tmp_path: Path) -> None:
+    task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
+    task_id = "TMISSING"
+    task_repository.save_compare_task(CompareTask(task_id=task_id, active_job_id=f"compare:{task_id}:1"))
+
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 1
+    repaired = task_repository.load_compare_task(task_id)
+    assert (repaired.status, repaired.terminal_reason) == ("FAILED", "SUBMISSION_FAILED")
+    assert recovery_store.load_marker(task_id).primary_error == "活动执行记录缺失或身份不匹配。"
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
+
+
+def test_startup_reconciliation_requeues_prestart_running_job_with_attempts_remaining(tmp_path: Path) -> None:
+    task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
+    task_id = "TSTALE_RETRY"
+    task_repository.save_compare_task(CompareTask(task_id=task_id, active_job_id=f"compare:{task_id}:1"))
+    job = coordinator.enqueue(
+        TaskJob(job_id=f"compare:{task_id}:1", task_id=task_id, task_type="compare", max_attempts=2)
+    )
+    running = coordinator.claim_next(worker_id="old-worker", lease_seconds=3600)
+    assert running is not None
+
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 1
+    repaired = coordinator.load(job.job_id)
+    assert (repaired.status, repaired.attempt, repaired.lease_owner, repaired.lease_expires_at) == (
+        "QUEUED",
+        1,
+        "",
+        "",
+    )
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
+
+
+def test_startup_reconciliation_fails_prestart_running_job_at_attempt_limit(tmp_path: Path) -> None:
+    task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
+    task_id = "TSTALE_MAX"
+    task_repository.save_compare_task(CompareTask(task_id=task_id, active_job_id=f"compare:{task_id}:1"))
+    job = coordinator.enqueue(
+        TaskJob(job_id=f"compare:{task_id}:1", task_id=task_id, task_type="compare", max_attempts=1)
+    )
+    assert coordinator.claim_next(worker_id="old-worker", lease_seconds=3600) is not None
+
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 1
+    assert (coordinator.load(job.job_id).status, coordinator.load(job.job_id).error_code) == (
+        "FAILED",
+        "PROCESS_RESTART_MAX_ATTEMPTS",
+    )
+    assert (task_repository.load_compare_task(task_id).status, task_repository.load_compare_task(task_id).terminal_reason) == (
+        "FAILED",
+        "EXECUTION_FAILED",
+    )
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
+
+
+def test_runtime_reconciliation_keeps_valid_running_lease_unchanged(tmp_path: Path) -> None:
+    task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
+    task_id = "TRUNTIME"
+    task_repository.save_compare_task(CompareTask(task_id=task_id, active_job_id=f"compare:{task_id}:1"))
+    job = coordinator.enqueue(TaskJob(job_id=f"compare:{task_id}:1", task_id=task_id, task_type="compare", max_attempts=2))
+    running = coordinator.claim_next(worker_id="live-worker", lease_seconds=3600)
+    assert running is not None
+
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store, pre_start=False) == 0
+    assert coordinator.load(job.job_id) == running
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store, pre_start=False) == 0
+
+
+def test_startup_reconciliation_deduplicates_agreeing_legacy_and_new_execution(tmp_path: Path) -> None:
+    task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
+    task_id = "TLEGACY_AGREE"
+    task_repository.save_compare_task(CompareTask(task_id=task_id, active_job_id=f"compare:{task_id}:1"))
+    legacy = TaskJob(job_id=f"compare:{task_id}:1", task_id=task_id, task_type="compare")
+    legacy_path = tmp_path / "storage" / "tasks" / task_id / "job.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(legacy.model_dump_json(indent=2), encoding="utf-8")
+    new_path = legacy_path.parent / "jobs" / "1.json"
+    new_path.parent.mkdir()
+    new_path.write_text(legacy.model_dump_json(indent=2), encoding="utf-8")
+
+    coordinator.reload_from_storage()
+    assert len(coordinator.list_jobs()) == 1
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
+    persisted = coordinator.load(legacy.job_id)
+    assert persisted.source_path == str(legacy_path)
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
+
+
+def test_startup_reconciliation_marks_conflicting_duplicate_execution_unclaimable(tmp_path: Path) -> None:
+    task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
+    task_id = "TLEGACY_CONFLICT"
+    task_repository.save_compare_task(CompareTask(task_id=task_id, active_job_id=f"compare:{task_id}:1"))
+    legacy = TaskJob(job_id=f"compare:{task_id}:1", task_id=task_id, task_type="compare")
+    legacy_path = tmp_path / "storage" / "tasks" / task_id / "job.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(legacy.model_dump_json(indent=2), encoding="utf-8")
+    conflicting = legacy.model_copy(update={"status": "RUNNING", "attempt": 1, "lease_owner": "old"})
+    new_path = legacy_path.parent / "jobs" / "1.json"
+    new_path.parent.mkdir()
+    new_path.write_text(conflicting.model_dump_json(indent=2), encoding="utf-8")
+
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) >= 1
+    assert coordinator.claim_next(worker_id="worker", lease_seconds=30) is None
+    assert all(job.error_code == "DUPLICATE_JOB_EXECUTION" for job in coordinator.list_jobs())
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0

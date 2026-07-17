@@ -20,7 +20,7 @@ from app.auth.runtime import AuthRuntime
 from app.application.submission_recovery import SubmissionRecoveryService
 from app.clients import close_clients
 from app.config import settings
-from app.infrastructure.reconciliation import reconcile_terminal_jobs
+from app.infrastructure.reconciliation import reconcile_startup
 from app.infrastructure.recovery_store import default_recovery_store
 from app.infrastructure.task_repository import default_task_repository
 from app.infrastructure.task_runner import default_task_runner
@@ -42,7 +42,11 @@ async def lifespan(app: FastAPI):
     default_task_repository.resolve()
     if not submission_recovery_service.recover_all():
         logger.error("Some pending submission compensation actions remain after startup recovery")
-    reconcile_terminal_jobs(default_task_repository, default_task_runner.coordinator)
+    reconcile_startup(
+        default_task_repository,
+        default_task_runner.coordinator,
+        recovery_store=default_recovery_store,
+    )
     default_task_runner.start()
     register_default_models()
 

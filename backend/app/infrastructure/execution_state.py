@@ -163,6 +163,17 @@ class ExecutionStateCoordinator:
             jobs = [job.model_copy(deep=True) for job in self._snapshots.values()]
         return sorted(jobs, key=lambda job: (job.next_run_at or job.queued_at, job.queued_at))
 
+    def reload_from_storage(self) -> None:
+        """Refresh the coordinator view before startup reconciliation."""
+        with self._process_lock:
+            self._repository_namespace = self._storage_namespace()
+            self._snapshots = self._hydrate_snapshots()
+
+    def list_persisted_jobs(self) -> list[TaskJob]:
+        """Return the repository view without collapsing duplicate job IDs."""
+        with self._process_lock:
+            return [job.model_copy(deep=True) for job in self._repository.list_jobs()]
+
     def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
         with self._process_lock:
             now = _utc_now()
@@ -457,6 +468,92 @@ class ExecutionStateCoordinator:
             self._persist_then_replace(self._terminal_job_candidate(job, target, error=error))
             return True
 
+    def reconcile_duplicate_execution(self, job: TaskJob) -> bool:
+        with self._process_lock:
+            if not job.duplicate_execution:
+                return False
+            if (
+                job.error_code == "DUPLICATE_JOB_EXECUTION"
+                and job.last_error == "同一执行编号存在冲突的 Job 记录。"
+                and job.status in {"SUCCEEDED", "FAILED", "CANCELLED"}
+            ):
+                return False
+            candidate = job.model_copy(deep=True)
+            candidate.error_code = "DUPLICATE_JOB_EXECUTION"
+            candidate.last_error = "同一执行编号存在冲突的 Job 记录。"
+            if candidate.status not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+                candidate.status = "FAILED"
+                candidate.finished_at = _utc_now()
+                candidate.lease_owner = ""
+                candidate.lease_expires_at = ""
+            candidate.updated_at = _utc_now()
+            candidate.duplicate_execution = False
+            self._persist_then_replace(candidate)
+            return True
+
+    def reconcile_orphan_job(self, job: TaskJob) -> bool:
+        with self._process_lock:
+            if job.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+                return False
+            candidate = self._terminal_job_candidate(job, "FAILED", error="未关联到 Task 的活动或终态执行记录。")
+            candidate.error_code = "ORPHANED_JOB"
+            self._persist_then_replace(candidate)
+            return True
+
+    def reconcile_submission_failure(self, task_id: str, *, error: str) -> bool:
+        with self._process_lock:
+            if self._task_repository is None:
+                raise RuntimeError("ExecutionStateCoordinator 未配置 Task persistence。")
+            task = self._task_repository.load_compare_task(task_id)
+            if task.status != "PROCESSING":
+                return False
+
+            def mutate(candidate: CompareTask) -> None:
+                candidate.ensure_transition_allowed(
+                    "FAILED",
+                    terminal_reason="SUBMISSION_FAILED",
+                    job_id=candidate.active_job_id,
+                )
+                candidate.status = "FAILED"
+                candidate.terminal_reason = "SUBMISSION_FAILED"
+                candidate.active_job_id = ""
+                candidate.terminal_job_id = ""
+                candidate.terminal_attempt = 0
+                candidate.stage = "提交失败"
+                candidate.progress_percent = 100
+                if error not in candidate.errors:
+                    candidate.errors.append(error)
+
+            self._task_repository.update_compare_task(task_id, mutate)
+            return True
+
+    def reconcile_stale_running_job(self, job: TaskJob) -> bool:
+        with self._process_lock:
+            if job.status != "RUNNING":
+                return False
+            if job.attempt < job.max_attempts:
+                candidate = job.model_copy(deep=True)
+                candidate.status = "QUEUED"
+                candidate.next_run_at = ""
+                candidate.updated_at = _utc_now()
+                candidate.lease_owner = ""
+                candidate.lease_expires_at = ""
+                self._persist_then_replace(candidate)
+                return True
+
+            error = "进程重启时执行已达到最大尝试次数。"
+            if self._task_repository is not None:
+                self._persist_terminal_task(
+                    job,
+                    status="FAILED",
+                    terminal_reason="EXECUTION_FAILED",
+                    error=error,
+                )
+            candidate = self._terminal_job_candidate(job, "FAILED", error=error)
+            candidate.error_code = "PROCESS_RESTART_MAX_ATTEMPTS"
+            self._persist_then_replace(candidate)
+            return True
+
     def mark_failed(
         self,
         job_id: str,
@@ -674,6 +771,8 @@ class ExecutionStateCoordinator:
 
     def _task_binding_allows_claim(self, job: TaskJob) -> bool:
         if job.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+            return False
+        if job.duplicate_execution or job.error_code == "DUPLICATE_JOB_EXECUTION":
             return False
         if self._task_repository is None:
             return True
