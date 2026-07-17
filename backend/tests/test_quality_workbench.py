@@ -8,6 +8,7 @@ import pytest
 from app.services import quality_workbench as quality_workbench_module
 from app.services.quality_workbench import (
     InvalidQualityWorkbenchIdError,
+    QualityCaseInvalidError,
     QualityExpectedDiffNotFoundError,
     QualityTaskNotFoundError,
     QualityWorkbenchService,
@@ -455,6 +456,75 @@ def test_create_and_delete_expected_diff(tmp_path: Path) -> None:
 
     assert len(deleted["expected"]["expected_diffs"]) == 3
     assert all(diff.get("title_contains") != "warranty" for diff in deleted["expected"]["expected_diffs"])
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda service: service.update_expected_diff(
+            "case-001", 0, {"title_contains": ""}
+        ),
+        lambda service: service.create_expected_diff(
+            "case-001", {"review_status": "DRAFT"}
+        ),
+    ],
+    ids=["update", "create"],
+)
+def test_invalid_expected_diff_mutation_preserves_expected_json(
+    tmp_path: Path,
+    mutation,
+) -> None:
+    case_root = tmp_path / "cases"
+    service = QualityWorkbenchService(
+        case_root=case_root,
+        task_root=tmp_path / "tasks",
+        output_root=tmp_path / ".ocr-compare-quality",
+    )
+    case_dir = _make_case(case_root)
+    expected_path = case_dir / "expected.json"
+    original_bytes = expected_path.read_bytes()
+
+    with pytest.raises(QualityCaseInvalidError) as captured:
+        mutation(service)
+
+    assert captured.value.error_code == "QUALITY_CASE_INVALID"
+    assert expected_path.read_bytes() == original_bytes
+
+
+def test_delete_expected_diff_validates_before_persisting_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case_root = tmp_path / "cases"
+    service = QualityWorkbenchService(
+        case_root=case_root,
+        task_root=tmp_path / "tasks",
+        output_root=tmp_path / ".ocr-compare-quality",
+    )
+    case_dir = _make_case(case_root)
+    expected_path = case_dir / "expected.json"
+    expected = json.loads(expected_path.read_text(encoding="utf-8"))
+    expected["expected_diffs"] = [expected["expected_diffs"][0]]
+    _write_json(expected_path, expected)
+    original_bytes = expected_path.read_bytes()
+    original_validator = quality_workbench_module._validate_expected_payload
+
+    def reject_empty_expected_diffs(payload: dict) -> None:
+        original_validator(payload)
+        if not payload["expected_diffs"]:
+            raise ValueError("expected_diffs must not be empty")
+
+    monkeypatch.setattr(
+        quality_workbench_module,
+        "_validate_expected_payload",
+        reject_empty_expected_diffs,
+    )
+
+    with pytest.raises(QualityCaseInvalidError) as captured:
+        service.delete_expected_diff("case-001", 0)
+
+    assert captured.value.error_code == "QUALITY_CASE_INVALID"
+    assert expected_path.read_bytes() == original_bytes
 
 
 def test_create_expected_diff_is_idempotent_for_same_negative_actual_diff(

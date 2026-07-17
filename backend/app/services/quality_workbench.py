@@ -325,6 +325,7 @@ class QualityWorkbenchService:
         if not isinstance(current, dict):
             current = {}
         expected_diffs[index] = _allowed_expected_diff(current) | _allowed_expected_diff(patch)
+        _validate_expected_candidate(expected, case_id)
         _write_expected_json(case_dir / "expected.json", expected)
         return self.get_case(case_id)
 
@@ -347,6 +348,7 @@ class QualityWorkbenchService:
             return self.get_case(case_id)
 
         expected_diffs.append(next_diff)
+        _validate_expected_candidate(expected, case_id)
         _write_expected_json(case_dir / "expected.json", expected)
         return self.get_case(case_id)
 
@@ -357,6 +359,7 @@ class QualityWorkbenchService:
             raise QualityExpectedDiffNotFoundError(f"Expected diff not found: {case_id}[{index}]")
 
         del expected_diffs[index]
+        _validate_expected_candidate(expected, case_id)
         _write_expected_json(case_dir / "expected.json", expected)
         return self.get_case(case_id)
 
@@ -476,6 +479,15 @@ def _read_expected_json(path: Path) -> dict[str, Any]:
     except (TypeError, ValueError):
         raise QualityCaseInvalidError(f"Invalid quality case expected.json: {path.parent.name}")
     return payload
+
+
+def _validate_expected_candidate(payload: dict[str, Any], case_id: str) -> None:
+    try:
+        _validate_expected_payload(payload)
+    except (TypeError, ValueError) as exc:
+        raise QualityCaseInvalidError(
+            f"Invalid quality case expected.json: {case_id}"
+        ) from exc
 
 
 def _validate_expected_payload(payload: dict[str, Any]) -> None:

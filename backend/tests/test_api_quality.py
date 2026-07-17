@@ -281,6 +281,34 @@ def test_export_quality_case(quality_service: QualityWorkbenchService) -> None:
     assert exported["expected_diffs"][0]["review_status"] == "DRAFT"
 
 
+def test_export_quality_case_returns_invalid_case_error_for_unmatchable_diff(
+    quality_service: QualityWorkbenchService,
+) -> None:
+    _write_json(
+        quality_service.task_root / "task-001" / "task.json",
+        {
+            "task_id": "task-001",
+            "status": "COMPLETED",
+            "diffs": [
+                {
+                    "diff_id": "D001",
+                    "diff_type": "MODIFY",
+                    "source_type": "clause",
+                }
+            ],
+        },
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/quality/cases/export",
+        json={"task_id": "task-001", "case_id": "case-001"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "QUALITY_CASE_INVALID"
+
+
 def test_export_quality_case_never_overwrites_existing_case_even_with_force(
     quality_service: QualityWorkbenchService,
 ) -> None:

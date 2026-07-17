@@ -69,6 +69,7 @@ def export_case(
         )
     except (
         InvalidQualityWorkbenchIdError,
+        QualityCaseInvalidError,
         QualityCasesPathConflictError,
         QualityTaskNotFoundError,
         FileExistsError,
