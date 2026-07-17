@@ -2013,6 +2013,11 @@ class OcrRemediationStage:
     def _refresh_summary_counts(summary) -> None:
         actions = summary.actions
         successful_diff_ids = {action.diff_id for action in actions if action.status == "SUCCEEDED" and action.diff_id}
+        successful_pages = {
+            (action.side, action.page_no)
+            for action in actions
+            if action.status == "SUCCEEDED" and action.page_no is not None and action.page_no > 0
+        }
         manual_count = sum(1 for action in actions if action.status == "MANUAL_REVIEW_REQUIRED")
         unresolved_count = sum(
             1 for action in actions if action.status in {"PLANNED", "FAILED", "MANUAL_REVIEW_REQUIRED"}
@@ -2022,6 +2027,7 @@ class OcrRemediationStage:
         summary.successful_action_count = sum(1 for action in actions if action.status == "SUCCEEDED")
         summary.unresolved_action_count = unresolved_count
         summary.risk_reduced_diff_count = len(successful_diff_ids)
+        summary.risk_reduced_page_count = len(successful_pages)
         summary.manual_review_required_count = manual_count
         summary.requires_manual_review = bool(manual_count)
 
@@ -2273,7 +2279,7 @@ def _dedupe_final_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str
         return [], {}
 
     original_ids = {diff.diff_id for diff in diffs if diff.diff_id}
-    working_diffs, generated_ids = _with_stable_missing_diff_ids(diffs)
+    working_diffs, generated_ids = _with_stable_missing_diff_ids(diffs, reserved_ids=original_ids)
 
     members_by_id: dict[str, list[DiffItem]] = {}
     for diff in sorted(working_diffs, key=_diff_partition_key):
@@ -2322,7 +2328,11 @@ def _dedupe_final_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str
     return result, remap
 
 
-def _with_stable_missing_diff_ids(diffs: list[DiffItem]) -> tuple[list[DiffItem], set[str]]:
+def _with_stable_missing_diff_ids(
+    diffs: list[DiffItem],
+    *,
+    reserved_ids: set[str],
+) -> tuple[list[DiffItem], set[str]]:
     working = [diff.model_copy(deep=True) for diff in diffs if diff.diff_id]
     missing: list[tuple[str, str, DiffItem]] = []
     for diff in diffs:
@@ -2339,12 +2349,18 @@ def _with_stable_missing_diff_ids(diffs: list[DiffItem]) -> tuple[list[DiffItem]
         missing.append((stable_json, full_json, diff))
 
     generated_ids: set[str] = set()
+    used_ids = set(reserved_ids)
     digest_counts: dict[str, int] = {}
     for stable_json, _, diff in sorted(missing, key=lambda item: (item[0], item[1])):
         digest = hashlib.sha256(stable_json.encode("utf-8")).hexdigest()
-        digest_counts[digest] = digest_counts.get(digest, 0) + 1
-        generated_id = f"AUTO-{digest}-{digest_counts[digest]:04d}"
+        occurrence = digest_counts.get(digest, 0) + 1
+        generated_id = f"AUTO-{digest}-{occurrence:04d}"
+        while generated_id in used_ids:
+            occurrence += 1
+            generated_id = f"AUTO-{digest}-{occurrence:04d}"
+        digest_counts[digest] = occurrence
         generated_ids.add(generated_id)
+        used_ids.add(generated_id)
         working.append(diff.model_copy(deep=True, update={"diff_id": generated_id}))
     return working, generated_ids
 
@@ -2459,7 +2475,7 @@ def _comparable_bbox_coordinates(
 
 
 def _evidence_is_located(evidence: EvidenceBox) -> bool:
-    if evidence.page_no < 0 or evidence.bbox is None:
+    if evidence.page_no <= 0 or evidence.bbox is None:
         return False
     raw = evidence.bbox
     raw_area = _bbox_area((raw.x0, raw.y0, raw.x1, raw.y1))
@@ -2638,12 +2654,14 @@ def _remap_audit_item_reviews_after_final_dedupe(
     task: CompareTask,
     dedupe_remap: dict[str, str],
 ) -> None:
-    if not task.audit_item_reviews or not dedupe_remap:
+    if not task.audit_item_reviews:
         return
 
     grouped_reviews: dict[str, list[AuditItemReview]] = {}
     for item_id, review in sorted(task.audit_item_reviews.items()):
         diff_id, separator, suffix = item_id.partition(":")
+        if not diff_id and "" not in dedupe_remap:
+            continue
         canonical_diff_id = dedupe_remap.get(diff_id, diff_id)
         canonical_item_id = f"{canonical_diff_id}:{suffix}" if separator else canonical_diff_id
         grouped_reviews.setdefault(canonical_item_id, []).append(review)

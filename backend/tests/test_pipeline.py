@@ -58,6 +58,7 @@ from app.services.pipeline_stages import (
 )
 from app.services.progress_bus import ProgressBus
 from app.services.repeated_overlay_filter import RepeatedOverlayFilterResult
+from app.services.review_service import CompareReviewService
 
 
 def test_document_extraction_result_and_compare_pipeline_remain_importable() -> None:
@@ -1117,6 +1118,38 @@ class TestSummaryStage:
         assert len({item["diff_id"] for item in forward}) == 2
         assert all(str(item["diff_id"]).startswith("AUTO-") for item in forward)
 
+    def test_final_dedupe_avoids_collision_between_generated_and_original_auto_ids(self, tmp_path: Path) -> None:
+        def run(order: list[DiffItem], suffix: str) -> list[dict[str, object]]:
+            ctx = make_ctx(tmp_path / suffix)
+            ctx.diffs = [item.model_copy(deep=True) for item in order]
+            SummaryStage().execute(ctx)
+            return [item.model_dump(mode="json") for item in ctx.task.diffs]
+
+        empty = self._located_diff("").model_copy(update={"original_evidence": [], "compare_evidence": []})
+        probe = run([empty], "auto-collision-probe")
+        default_auto_id = str(probe[0]["diff_id"])
+        legitimate = self._located_diff(default_auto_id).model_copy(
+            update={
+                "original_text": "完全不同的原文",
+                "compare_text": "完全不同的修订文本",
+                "section_path": ["其他条款"],
+                "original_clause_id": "O999",
+                "compare_clause_id": "C999",
+                "original_evidence": [],
+                "compare_evidence": [],
+            }
+        )
+
+        forward = run([empty, empty.model_copy(deep=True), legitimate], "auto-collision-forward")
+        reverse = run([legitimate, empty.model_copy(deep=True), empty], "auto-collision-reverse")
+
+        assert forward == reverse
+        assert len(forward) == 3
+        assert len({str(item["diff_id"]) for item in forward}) == 3
+        assert default_auto_id in {str(item["diff_id"]) for item in forward}
+        legitimate_result = next(item for item in forward if item["diff_id"] == default_auto_id)
+        assert legitimate_result["original_text"] == "完全不同的原文"
+
     def test_final_dedupe_merges_matching_empty_id_into_existing_nonempty_id(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         ctx.diffs = [
@@ -1265,7 +1298,7 @@ class TestSummaryStage:
         assert ctx.task.diffs[0].original_clause_id is None
         assert ctx.task.diffs[0].compare_clause_id is None
 
-    def test_final_dedupe_treats_page_zero_as_a_valid_same_page_location(self, tmp_path: Path) -> None:
+    def test_final_dedupe_treats_page_zero_as_unlocated(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         ctx.diffs = [
             self._located_diff("D010", page_no=0, compare_evidence=False),
@@ -1274,7 +1307,7 @@ class TestSummaryStage:
 
         SummaryStage().execute(ctx)
 
-        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010"]
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"]
 
     def test_final_dedupe_falls_back_to_raw_bbox_when_normalized_bbox_is_invalid(self, tmp_path: Path) -> None:
         invalid_normalized = NormalizedBBox(x0=0, y0=0, x1=0, y1=0)
@@ -1315,6 +1348,7 @@ class TestSummaryStage:
             attempted_action_count=2,
             successful_action_count=1,
             unresolved_action_count=1,
+            risk_reduced_page_count=1,
             actions=[
                 OcrRemediationAction(
                     action_id="original:1:D010:RELOCATE_EVIDENCE",
@@ -1364,6 +1398,53 @@ class TestSummaryStage:
         assert summary.attempted_action_count == 1
         assert summary.successful_action_count == 0
         assert summary.unresolved_action_count == 1
+        assert summary.risk_reduced_page_count == 0
+
+    def test_ocr_remediation_summary_counts_unique_successful_positive_pages(self) -> None:
+        summary = TaskOcrRemediationSummary(
+            actions=[
+                OcrRemediationAction(
+                    action_id="original:1:D010:RELOCATE_EVIDENCE",
+                    action_type="RELOCATE_EVIDENCE",
+                    reason="done",
+                    status="SUCCEEDED",
+                    side="original",
+                    page_no=1,
+                    diff_id="D010",
+                ),
+                OcrRemediationAction(
+                    action_id="original:1:D020:RELOCATE_EVIDENCE",
+                    action_type="RELOCATE_EVIDENCE",
+                    reason="done",
+                    status="SUCCEEDED",
+                    side="original",
+                    page_no=1,
+                    diff_id="D020",
+                ),
+                OcrRemediationAction(
+                    action_id="compare:1:D030:RELOCATE_EVIDENCE",
+                    action_type="RELOCATE_EVIDENCE",
+                    reason="done",
+                    status="SUCCEEDED",
+                    side="compare",
+                    page_no=1,
+                    diff_id="D030",
+                ),
+                OcrRemediationAction(
+                    action_id="original:0:D040:RELOCATE_EVIDENCE",
+                    action_type="RELOCATE_EVIDENCE",
+                    reason="invalid-page",
+                    status="SUCCEEDED",
+                    side="original",
+                    page_no=0,
+                    diff_id="D040",
+                ),
+            ]
+        )
+
+        OcrRemediationStage._refresh_summary_counts(summary)
+
+        assert summary.risk_reduced_page_count == 2
 
     def test_final_dedupe_uses_canonical_id_and_merged_content_independent_of_input_order(self, tmp_path: Path) -> None:
         def run(order: list[DiffItem], suffix: str) -> tuple[list[dict[str, object]], CompareTask]:
@@ -1421,6 +1502,28 @@ class TestSummaryStage:
         review = ctx.task.audit_item_reviews["D010:MODIFY"]
         assert review.review_status == "NEEDS_REVIEW"
         assert review.review_comment == "已确认"
+
+    def test_final_dedupe_drops_ambiguous_blank_audit_review_before_stats(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.task.audit_item_reviews = {
+            ":MODIFY": AuditItemReview(review_status="CONFIRMED"),
+            "D900:MODIFY": AuditItemReview(review_status="FALSE_POSITIVE"),
+        }
+        first_empty = self._located_diff("").model_copy(
+            update={"original_text": "付款30日", "compare_text": "付款45日"}
+        )
+        second_empty = self._located_diff("").model_copy(
+            update={"original_text": "交付10日", "compare_text": "交付20日"}
+        )
+        ctx.diffs = [first_empty, second_empty, self._located_diff("D900")]
+
+        SummaryStage().execute(ctx)
+        CompareReviewService().refresh_review_stats(ctx.task)
+
+        assert set(ctx.task.audit_item_reviews) == {"D900:MODIFY"}
+        assert ctx.task.reviewed_count == 1
+        assert ctx.task.confirmed_count == 0
+        assert ctx.task.false_positive_count == 1
 
     def test_final_dedupe_remaps_unique_empty_id_references_to_generated_id(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
