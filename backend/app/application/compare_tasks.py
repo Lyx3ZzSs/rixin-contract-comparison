@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -70,11 +71,6 @@ class CompareTaskApplication:
             compare_filename,
         )
         attempt_dir = staged_original.parent
-        staged_actions = [
-            RecoveryAction(action="unlink", path=str(staged_original)),
-            RecoveryAction(action="unlink", path=str(staged_compare)),
-            RecoveryAction(action="rmdir", path=str(attempt_dir)),
-        ]
         final_actions: list[RecoveryAction] = []
         task_persisted = False
 
@@ -96,20 +92,36 @@ class CompareTaskApplication:
             )
             self._ensure_publish_destinations_absent(original_path, compare_path)
 
-            self.artifact_store.publish_staged(staged_original, original_path)
-            final_actions.append(RecoveryAction(action="unlink", path=str(original_path), scope="final_input"))
-            self.artifact_store.publish_staged(staged_compare, compare_path)
-            final_actions.append(RecoveryAction(action="unlink", path=str(compare_path), scope="final_input"))
-
-            task = self.create_queued_task(
-                task_id=task_id,
-                original_path=original_path,
-                compare_path=compare_path,
-                original_filename=original_file.filename or original_filename,
-                compare_filename=compare_file.filename or compare_filename,
-                compare_options=compare_options,
-                owner=owner,
+            self._publish_with_ledger(
+                staged_original,
+                original_path,
+                attempt_id=attempt_id,
+                final_actions=final_actions,
             )
+            self._publish_with_ledger(
+                staged_compare,
+                compare_path,
+                attempt_id=attempt_id,
+                final_actions=final_actions,
+            )
+
+            try:
+                task = self.create_queued_task(
+                    task_id=task_id,
+                    original_path=original_path,
+                    compare_path=compare_path,
+                    original_filename=original_file.filename or original_filename,
+                    compare_filename=compare_file.filename or compare_filename,
+                    compare_options=compare_options,
+                    owner=owner,
+                )
+            except Exception:
+                task_persisted = self._submission_task_was_committed(
+                    task_id,
+                    original_path=original_path,
+                    compare_path=compare_path,
+                )
+                raise
             task_persisted = True
             try:
                 self.submit_compare(
@@ -120,8 +132,8 @@ class CompareTaskApplication:
                     compare_filename=compare_file.filename,
                     compare_options=compare_options,
                 )
-            except BaseException as launch_error:
-                if not self._has_durable_active_job(task_id):
+            except Exception as launch_error:
+                if not self._has_durable_job(task_id):
                     raise
                 logger.critical(
                     "Worker launch failed after durable submission; queued Job retained: task_id=%s launch_error=%s",
@@ -129,26 +141,132 @@ class CompareTaskApplication:
                     self._error_text(launch_error),
                     exc_info=True,
                 )
-        except BaseException as primary:
-            if task_persisted:
-                self._record_submission_failure(task_id, primary)
-                actions = staged_actions
-            else:
-                actions = [*reversed(final_actions), *staged_actions]
-            self._compensate_submission(
+        except asyncio.CancelledError as primary:
+            self._handle_submission_exception(
                 task_id=task_id,
                 attempt_id=attempt_id,
                 primary=primary,
-                actions=actions,
+                task_persisted=task_persisted,
+                attempt_dir=attempt_dir,
+                staged_paths=(staged_original, staged_compare),
+                final_actions=final_actions,
+            )
+            raise
+        except Exception as primary:
+            self._handle_submission_exception(
+                task_id=task_id,
+                attempt_id=attempt_id,
+                primary=primary,
+                task_persisted=task_persisted,
+                attempt_dir=attempt_dir,
+                staged_paths=(staged_original, staged_compare),
+                final_actions=final_actions,
             )
             raise
 
         self._cleanup_successful_submission(
             task_id=task_id,
             attempt_id=attempt_id,
-            actions=staged_actions,
+            actions=self._staged_recovery_actions(
+                attempt_dir,
+                (staged_original, staged_compare),
+            ),
         )
         return task
+
+    def _handle_submission_exception(
+        self,
+        *,
+        task_id: str,
+        attempt_id: str,
+        primary: BaseException,
+        task_persisted: bool,
+        attempt_dir: Path,
+        staged_paths: tuple[Path, Path],
+        final_actions: list[RecoveryAction],
+    ) -> None:
+        if task_persisted:
+            self._record_submission_failure(task_id, primary)
+        staged_actions = self._staged_recovery_actions(attempt_dir, staged_paths)
+        actions = staged_actions if task_persisted else [*reversed(final_actions), *staged_actions]
+        compensated = self._compensate_submission(
+            task_id=task_id,
+            attempt_id=attempt_id,
+            primary=primary,
+            actions=actions,
+        )
+        if task_persisted and not compensated:
+            self._record_compensation_incomplete(task_id, primary)
+
+    def _publish_with_ledger(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        attempt_id: str,
+        final_actions: list[RecoveryAction],
+    ) -> None:
+        self.artifact_store.publish_staged(
+            source,
+            destination,
+            on_created=lambda created: self._append_final_action(created, attempt_id, final_actions),
+        )
+
+    def _append_final_action(
+        self,
+        path: Path,
+        attempt_id: str,
+        final_actions: list[RecoveryAction],
+    ) -> None:
+        if any(Path(action.path) == path for action in final_actions):
+            return
+        final_actions.append(
+            RecoveryAction(
+                action="unlink",
+                path=str(path),
+                scope="final_input",
+                owner_token=self.recovery_store.ownership_token(path, attempt_id),
+            )
+        )
+
+    @staticmethod
+    def _staged_recovery_actions(attempt_dir: Path, staged_paths: tuple[Path, Path]) -> list[RecoveryAction]:
+        actions = [
+            RecoveryAction(action="unlink", path=str(path))
+            for path in staged_paths
+            if path.exists() or path.is_symlink()
+        ]
+        if attempt_dir.exists():
+            actions.append(RecoveryAction(action="rmdir", path=str(attempt_dir)))
+        return actions
+
+    def _submission_task_was_committed(
+        self,
+        task_id: str,
+        *,
+        original_path: Path,
+        compare_path: Path,
+    ) -> bool:
+        try:
+            task = self.repository.load_compare_task(task_id)
+        except FileNotFoundError:
+            return False
+        except Exception as read_error:
+            logger.critical(
+                "Authoritative Task commit verification failed; preserving published inputs: "
+                "task_id=%s original_path=%s compare_path=%s read_error=%s",
+                task_id,
+                original_path,
+                compare_path,
+                self._error_text(read_error),
+                exc_info=True,
+            )
+            return True
+        return bool(
+            task.task_id == task_id
+            and Path(task.original_pdf_path).resolve() == original_path.resolve()
+            and Path(task.compare_pdf_path).resolve() == compare_path.resolve()
+        )
 
     @staticmethod
     def _ensure_publish_destinations_absent(*paths: Path) -> None:
@@ -179,7 +297,7 @@ class CompareTaskApplication:
 
         try:
             self.repository.update_compare_task(task_id, mutate)
-        except BaseException as secondary:
+        except Exception as secondary:
             logger.error(
                 "Submission failure state persistence failed: task_id=%s primary_error=%s secondary_error=%s",
                 task_id,
@@ -188,24 +306,21 @@ class CompareTaskApplication:
                 exc_info=True,
             )
 
-    def _has_durable_active_job(self, task_id: str) -> bool:
+    def _has_durable_job(self, task_id: str) -> bool:
         try:
             task = self.repository.load_compare_task(task_id)
-            if task.status != "PROCESSING" or not task.active_job_id:
-                return False
-            job = self.runner.load_job(task.active_job_id)
         except Exception:
             return False
-        return (
-            job.task_id == task_id
-            and job.task_type == "compare"
-            and job.status
-            not in {
-                "SUCCEEDED",
-                "FAILED",
-                "CANCELLED",
-            }
-        )
+        for job_id in (task.active_job_id, task.terminal_job_id):
+            if not job_id:
+                continue
+            try:
+                job = self.runner.load_job(job_id)
+            except Exception:
+                continue
+            if job.task_id == task_id and job.task_type == "compare":
+                return True
+        return False
 
     def _compensate_submission(
         self,
@@ -214,7 +329,7 @@ class CompareTaskApplication:
         attempt_id: str,
         primary: BaseException,
         actions: list[RecoveryAction],
-    ) -> None:
+    ) -> bool:
         primary_error = self._error_text(primary)
         try:
             marker = self.recovery_store.create_marker(
@@ -223,7 +338,7 @@ class CompareTaskApplication:
                 primary_error=primary_error,
                 actions=actions,
             )
-        except BaseException as marker_error:
+        except Exception as marker_error:
             logger.critical(
                 "Submission recovery marker creation failed: task_id=%s attempt_id=%s "
                 "primary_error=%s actions=%s marker_error=%s",
@@ -240,9 +355,29 @@ class CompareTaskApplication:
                 primary_error=primary_error,
                 actions=actions,
             )
-            self.recovery_store.cleanup_attempt(marker)
-            return
-        self.recovery_store.recover_marker(marker)
+            return self.recovery_store.cleanup_attempt(marker)
+        return self.recovery_store.recover_marker(marker)
+
+    def _record_compensation_incomplete(self, task_id: str, primary: BaseException) -> None:
+        marker_path = self.recovery_store.marker_path(task_id)
+        primary_error = self._error_text(primary)
+        summary = f"COMPENSATION_INCOMPLETE marker={marker_path} primary_error={primary_error}"
+
+        def mutate(task: CompareTask) -> None:
+            if summary not in task.errors:
+                task.errors.append(summary)
+
+        try:
+            self.repository.update_compare_task(task_id, mutate)
+        except Exception as secondary:
+            logger.error(
+                "Compensation summary persistence failed: task_id=%s marker=%s primary_error=%s secondary_error=%s",
+                task_id,
+                marker_path,
+                primary_error,
+                self._error_text(secondary),
+                exc_info=True,
+            )
 
     def _cleanup_successful_submission(
         self,

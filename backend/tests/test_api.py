@@ -24,7 +24,7 @@ from app.application.compare_tasks import CompareTaskApplication
 from app.config import settings
 from app.errors import TaskStaleLeaseError, TaskTransitionConflict
 from app.infrastructure.artifact_store import LocalArtifactStore
-from app.infrastructure.recovery_store import RecoveryStore
+from app.infrastructure.recovery_store import RecoveryAction, RecoveryStore
 from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.infrastructure.task_runner import (
     LocalJsonTaskJobRepository,
@@ -303,7 +303,10 @@ def test_submission_validates_both_staged_files_before_publishing_either(
     monkeypatch.setattr(
         artifact_store,
         "publish_staged",
-        lambda source, destination: (published.append(destination), publish(source, destination))[1],
+        lambda source, destination, **kwargs: (
+            published.append(destination),
+            publish(source, destination, **kwargs),
+        )[1],
     )
 
     with pytest.raises(FileValidationError, match="second validation failed"):
@@ -331,12 +334,12 @@ def test_submission_publish_failure_compensates_only_current_attempt_artifacts(
     publish = artifact_store.publish_staged
     calls = 0
 
-    def fail_publish(source: Path, destination: Path) -> Path:
+    def fail_publish(source: Path, destination: Path, **kwargs) -> Path:
         nonlocal calls
         calls += 1
         if calls == failure_index:
             raise OSError(f"publish {failure_index} failed")
-        return publish(source, destination)
+        return publish(source, destination, **kwargs)
 
     monkeypatch.setattr(artifact_store, "publish_staged", fail_publish)
 
@@ -354,6 +357,86 @@ def test_submission_publish_failure_compensates_only_current_attempt_artifacts(
     task_root = artifact_store.task_root(f"TPUBLISH_{failure_index}")
     assert list(task_root.rglob("*.pdf")) == []
     assert not recovery_store.marker_path(f"TPUBLISH_{failure_index}").exists()
+
+
+def test_submission_publish_post_commit_failure_does_not_orphan_final_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, _repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    publish = artifact_store.publish_staged
+    calls = 0
+    captured_actions = []
+    create_marker = recovery_store.create_marker
+
+    def publish_then_raise(source: Path, destination: Path, **kwargs) -> Path:
+        nonlocal calls
+        calls += 1
+        published = publish(source, destination, **kwargs)
+        if calls == 1:
+            raise OSError("publish failed after destination commit")
+        return published
+
+    def record_marker(**kwargs):
+        captured_actions.extend(kwargs["actions"])
+        return create_marker(**kwargs)
+
+    monkeypatch.setattr(artifact_store, "publish_staged", publish_then_raise)
+    monkeypatch.setattr(recovery_store, "create_marker", record_marker)
+
+    with pytest.raises(OSError, match="after destination commit"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id="TPUBLISH_POST_COMMIT",
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    assert any(action.scope == "final_input" and action.owner_token for action in captured_actions)
+    assert list(artifact_store.task_root("TPUBLISH_POST_COMMIT").rglob("*.pdf")) == []
+
+
+def test_submission_publish_file_exists_race_never_claims_or_deletes_other_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, _repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    publish = artifact_store.publish_staged
+    captured_actions = []
+    create_marker = recovery_store.create_marker
+    raced_destination: Path | None = None
+
+    def race_publish(source: Path, destination: Path, **kwargs) -> Path:
+        nonlocal raced_destination
+        raced_destination = destination
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"other attempt")
+        return publish(source, destination, **kwargs)
+
+    def record_marker(**kwargs):
+        captured_actions.extend(kwargs["actions"])
+        return create_marker(**kwargs)
+
+    monkeypatch.setattr(artifact_store, "publish_staged", race_publish)
+    monkeypatch.setattr(recovery_store, "create_marker", record_marker)
+
+    with pytest.raises(FileExistsError):
+        asyncio.run(
+            application.submit_uploads(
+                task_id="TPUBLISH_RACE",
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    assert raced_destination is not None
+    assert raced_destination.read_bytes() == b"other attempt"
+    assert all(action.scope != "final_input" for action in captured_actions)
 
 
 def test_submission_task_save_failure_removes_published_inputs_and_records_recovery(
@@ -388,6 +471,123 @@ def test_submission_task_save_failure_removes_published_inputs_and_records_recov
     assert marker_writes
     assert any("uploads" in path for path in marker_writes[0])
     assert not recovery_store.marker_path("TTASK_SAVE_FAIL").exists()
+
+
+def test_submission_task_save_post_commit_failure_preserves_inputs_and_marks_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    save = repository.save_compare_task
+    marker_actions: list[list[RecoveryAction]] = []
+    create_marker = recovery_store.create_marker
+
+    def save_then_raise(task: CompareTask):
+        save(task)
+        raise OSError("task manifest failed after commit")
+
+    def record_marker(**kwargs):
+        marker_actions.append(kwargs["actions"])
+        return create_marker(**kwargs)
+
+    monkeypatch.setattr(repository, "save_compare_task", save_then_raise)
+    monkeypatch.setattr(recovery_store, "create_marker", record_marker)
+    task_id = "TTASK_POST_COMMIT_FAIL"
+
+    with pytest.raises(OSError, match="after commit"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id=task_id,
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    task = repository.load_compare_task(task_id)
+    assert (task.status, task.terminal_reason) == ("FAILED", "SUBMISSION_FAILED")
+    assert Path(task.original_pdf_path).is_file()
+    assert Path(task.compare_pdf_path).is_file()
+    assert marker_actions
+    assert all(action.scope == "attempt" for action in marker_actions[0])
+    assert list((artifact_store.task_root(task_id) / "staging").rglob("*.pdf")) == []
+
+
+def test_submission_task_commit_read_error_conservatively_preserves_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    application, repository, _runner, artifact_store, _recovery_store = _submission_application(tmp_path)
+    save = repository.save_compare_task
+    load = repository.load_compare_task
+    reads = 0
+
+    def save_then_raise(task: CompareTask):
+        save(task)
+        raise OSError("task save post-commit error")
+
+    def fail_first_read(task_id: str):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            raise OSError("authoritative read unavailable")
+        return load(task_id)
+
+    monkeypatch.setattr(repository, "save_compare_task", save_then_raise)
+    monkeypatch.setattr(repository, "load_compare_task", fail_first_read)
+    caplog.set_level("CRITICAL", logger="app.application.compare_tasks")
+    task_id = "TTASK_COMMIT_READ_FAIL"
+
+    with pytest.raises(OSError, match="post-commit"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id=task_id,
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    task = load(task_id)
+    assert (task.status, task.terminal_reason) == ("FAILED", "SUBMISSION_FAILED")
+    assert Path(task.original_pdf_path).is_file() and Path(task.compare_pdf_path).is_file()
+    assert list((artifact_store.task_root(task_id) / "staging").rglob("*.pdf")) == []
+    assert task_id in caplog.text
+    assert "authoritative read unavailable" in caplog.text
+
+
+def test_submission_overflow_ledger_omits_never_created_second_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, _repository, _runner, _artifact_store, recovery_store = _submission_application(tmp_path)
+    monkeypatch.setattr(settings, "max_upload_size_mb", 1)
+    captured_actions: list[RecoveryAction] = []
+    create_marker = recovery_store.create_marker
+
+    def record_marker(**kwargs):
+        captured_actions.extend(kwargs["actions"])
+        return create_marker(**kwargs)
+
+    monkeypatch.setattr(recovery_store, "create_marker", record_marker)
+    oversized = UploadFile(filename="original.pdf", file=io.BytesIO(b"%PDF" + b"x" * (2 * 1024 * 1024)))
+
+    with pytest.raises(FileValidationError, match="超过 1MB"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id="TOVERFLOW_LEDGER",
+                original_file=oversized,
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    assert captured_actions
+    assert all("compare_" not in Path(action.path).name for action in captured_actions)
 
 
 def test_submission_job_create_failure_keeps_inputs_and_marks_submission_failed(
@@ -476,6 +676,105 @@ def test_submission_worker_start_failure_after_enqueue_keeps_durable_job(
     assert not recovery_store.marker_path(task.task_id).exists()
 
 
+def test_submission_worker_start_failure_after_immediate_terminal_claim_is_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, repository, runner, artifact_store, recovery_store = _submission_application(tmp_path)
+    runner.autostart = True
+
+    def finish_then_fail_start() -> None:
+        claimed = runner.coordinator.claim_next(worker_id="immediate-worker", lease_seconds=30)
+        assert claimed is not None
+        result = repository.load_compare_task(claimed.task_id)
+        runner.coordinator.commit_success(
+            claimed.job_id,
+            worker_id="immediate-worker",
+            result=result,
+        )
+        raise OSError("worker start failed after terminal commit")
+
+    monkeypatch.setattr(runner, "start", finish_then_fail_start)
+
+    task = asyncio.run(
+        application.submit_uploads(
+            task_id="TSTART_TERMINAL",
+            original_file=_pdf_upload("original.pdf"),
+            compare_file=_pdf_upload("compare.pdf"),
+            compare_options=CompareOptions(),
+            owner=ADMIN,
+        )
+    )
+
+    stored = repository.load_compare_task(task.task_id)
+    terminal_job = runner.load_job(stored.terminal_job_id)
+    assert (stored.status, terminal_job.status) == ("COMPLETED", "SUCCEEDED")
+    assert Path(stored.original_pdf_path).is_file() and Path(stored.compare_pdf_path).is_file()
+    assert list((artifact_store.task_root(task.task_id) / "staging").rglob("*.pdf")) == []
+    assert not recovery_store.marker_path(task.task_id).exists()
+
+
+def test_submission_does_not_catch_keyboard_interrupt_as_business_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, _repository, _runner, _artifact_store, recovery_store = _submission_application(tmp_path)
+    marker_calls = 0
+
+    async def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt("stop process")
+
+    def record_marker(**_kwargs):
+        nonlocal marker_calls
+        marker_calls += 1
+        raise AssertionError("process interrupt must not create a recovery marker")
+
+    monkeypatch.setattr("app.application.compare_tasks.stream_upload_to_path", interrupt)
+    monkeypatch.setattr(recovery_store, "create_marker", record_marker)
+
+    with pytest.raises(KeyboardInterrupt, match="stop process"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id="TINTERRUPT",
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    assert marker_calls == 0
+
+
+def test_submission_cancelled_error_cleans_scoped_partial_and_reraises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, _repository, _runner, artifact_store, recovery_store = _submission_application(tmp_path)
+
+    async def write_partial_then_cancel(_upload, destination: Path) -> Path:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"partial")
+        raise asyncio.CancelledError("request cancelled")
+
+    monkeypatch.setattr("app.application.compare_tasks.stream_upload_to_path", write_partial_then_cancel)
+    task_id = "TCANCELLED_UPLOAD"
+
+    with pytest.raises(asyncio.CancelledError, match="request cancelled"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id=task_id,
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    assert list(artifact_store.task_root(task_id).rglob("*.pdf")) == []
+    assert not recovery_store.marker_path(task_id).exists()
+
+
 def test_submission_cleanup_failure_keeps_primary_error_and_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -508,6 +807,81 @@ def test_submission_cleanup_failure_keeps_primary_error_and_marker(
     assert marker.primary_error == "primary task save"
     assert marker.attempts == 1
     assert marker.actions
+
+
+def test_submission_compensation_failure_marks_existing_task_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, repository, runner, _artifact_store, recovery_store = _submission_application(tmp_path)
+    monkeypatch.setattr(
+        runner.job_repository,
+        "enqueue",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("enqueue primary")),
+    )
+    monkeypatch.setattr(recovery_store, "recover_marker", lambda _marker: False)
+    task_id = "TCOMPENSATION_INCOMPLETE"
+
+    with pytest.raises(OSError, match="enqueue primary"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id=task_id,
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    task = repository.load_compare_task(task_id)
+    summary = next(error for error in task.errors if "COMPENSATION_INCOMPLETE" in error)
+    assert "enqueue primary" in summary
+    assert str(recovery_store.marker_path(task_id)) in summary
+    assert recovery_store.marker_path(task_id).exists()
+
+
+def test_submission_compensation_summary_failure_logs_secondary_and_keeps_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    application, repository, runner, _artifact_store, recovery_store = _submission_application(tmp_path)
+    monkeypatch.setattr(
+        runner.job_repository,
+        "enqueue",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("enqueue primary")),
+    )
+    monkeypatch.setattr(recovery_store, "recover_marker", lambda _marker: False)
+    update = repository.update_compare_task
+    updates = 0
+
+    def fail_second_update(*args, **kwargs):
+        nonlocal updates
+        updates += 1
+        if updates == 2:
+            raise OSError("summary persistence secondary")
+        return update(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "update_compare_task", fail_second_update)
+    caplog.set_level("ERROR", logger="app.application.compare_tasks")
+    task_id = "TCOMPENSATION_SUMMARY_FAIL"
+
+    with pytest.raises(OSError, match="enqueue primary"):
+        asyncio.run(
+            application.submit_uploads(
+                task_id=task_id,
+                original_file=_pdf_upload("original.pdf"),
+                compare_file=_pdf_upload("compare.pdf"),
+                compare_options=CompareOptions(),
+                owner=ADMIN,
+            )
+        )
+
+    assert recovery_store.marker_path(task_id).exists()
+    assert task_id in caplog.text
+    assert "enqueue primary" in caplog.text
+    assert "summary persistence secondary" in caplog.text
+    assert str(recovery_store.marker_path(task_id)) in caplog.text
 
 
 def test_submission_rmdir_cleanup_failure_logs_secondary_and_keeps_marker(

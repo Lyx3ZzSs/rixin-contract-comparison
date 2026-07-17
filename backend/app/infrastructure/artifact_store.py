@@ -5,7 +5,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 from app.config import Settings, settings
 from app.utils.file_utils import FileValidationError
@@ -35,7 +35,13 @@ class ArtifactStore(Protocol):
     def staging_path(self, task_id: str, attempt_id: str, label: str, filename: str) -> Path:
         raise NotImplementedError
 
-    def publish_staged(self, source: Path, destination: Path) -> Path:
+    def publish_staged(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        on_created: Callable[[Path], None] | None = None,
+    ) -> Path:
         raise NotImplementedError
 
     def report_pdf_path(self, task_id: str) -> Path:
@@ -86,11 +92,30 @@ class LocalArtifactStore:
             / (f"{self._safe_path_part(label)}_{Path(filename).name}")
         )
 
-    def publish_staged(self, source: Path, destination: Path) -> Path:
+    def publish_staged(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        on_created: Callable[[Path], None] | None = None,
+    ) -> Path:
         self.assert_inside_storage(source)
         self.assert_inside_storage(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.hardlink_to(source)
+        if on_created is not None:
+            try:
+                on_created(destination)
+            except Exception:
+                try:
+                    destination.unlink(missing_ok=True)
+                except OSError:
+                    logger.critical(
+                        "Published upload callback failed and destination rollback also failed: destination=%s",
+                        destination,
+                        exc_info=True,
+                    )
+                raise
         try:
             source.unlink()
         except OSError:
@@ -140,7 +165,7 @@ class LocalArtifactStore:
 
     def _safe_path_part(self, value: str) -> str:
         sanitized = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", value or "")
-        return sanitized or "artifact"
+        return "artifact" if sanitized in {"", ".", ".."} else sanitized
 
     def _record_manifest(self, path: Path, kind: str) -> None:
         try:

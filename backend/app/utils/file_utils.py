@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import logging
 import uuid
@@ -104,7 +105,13 @@ async def stream_upload_to_path(upload_file: UploadFile, destination: Path) -> P
                     raise FileValidationError(f"文件超过 {settings.max_upload_size_mb}MB 限制。")
                 stream.write(chunk)
         return destination
-    except BaseException:
+    except asyncio.CancelledError:
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            logger.error("Failed to clean cancelled partial upload: path=%s", destination.name, exc_info=True)
+        raise
+    except Exception:
         try:
             destination.unlink(missing_ok=True)
         except OSError:

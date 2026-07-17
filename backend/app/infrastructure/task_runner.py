@@ -130,9 +130,15 @@ class LocalJsonTaskJobRepository:
         job.source_path = str(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = path.with_suffix(path.suffix + ".tmp")
-        temp_path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
-        # jobs/{execution_no}.json is authoritative; manifest.json is a derived index.
-        temp_path.replace(path)
+        try:
+            temp_path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
+            # jobs/{execution_no}.json is authoritative; manifest.json is a derived index.
+            temp_path.replace(path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         try:
             self._write_manifest(job, path)
         except OSError:

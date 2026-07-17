@@ -96,3 +96,21 @@ def test_publish_reports_success_and_leaves_staging_for_compensation_when_unlink
     assert store.publish_staged(staged, destination) == destination
     assert destination.read_bytes() == b"new"
     assert staged.exists()
+
+
+def test_publish_created_callback_failure_rolls_back_destination_and_preserves_primary(tmp_path: Path) -> None:
+    store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    staged = store.staging_path("T001", "attempt-1", "original", "contract.pdf")
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"new")
+    destination = store.upload_path("T001", "original", "contract.pdf")
+
+    with pytest.raises(OSError, match="callback primary"):
+        store.publish_staged(
+            staged,
+            destination,
+            on_created=lambda _path: (_ for _ in ()).throw(OSError("callback primary")),
+        )
+
+    assert staged.read_bytes() == b"new"
+    assert not destination.exists()

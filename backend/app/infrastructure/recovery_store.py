@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -19,6 +21,7 @@ class RecoveryAction(BaseModel):
     action: Literal["unlink", "rmdir"]
     path: str
     scope: Literal["attempt", "final_input"] = "attempt"
+    owner_token: str = ""
 
 
 class RecoveryMarker(BaseModel):
@@ -32,7 +35,15 @@ class RecoveryMarker(BaseModel):
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
+class RecoveryMarkerFile(BaseModel):
+    schema_version: int = 2
+    task_id: str
+    entries: list[RecoveryMarker] = Field(default_factory=list)
+
+
 class RecoveryStore:
+    _process_lock = threading.RLock()
+
     def __init__(self, app_settings: Settings = settings) -> None:
         self.settings = app_settings
 
@@ -58,11 +69,30 @@ class RecoveryStore:
             actions=actions,
         )
         self._validate_actions(marker)
-        atomic_write_json(self.marker_path(task_id), marker.model_dump(mode="json"))
+        with self._process_lock:
+            entries = self._load_marker_entries_unlocked(task_id)
+            existing = next((entry for entry in entries if entry.attempt_id == attempt_id), None)
+            if existing is not None:
+                return existing
+            entries.append(marker)
+            self._write_marker_entries_unlocked(task_id, entries)
+            return marker
+
+    def load_marker(self, task_id: str, attempt_id: str | None = None) -> RecoveryMarker:
+        entries = self.load_marker_entries(task_id)
+        if attempt_id is None:
+            return entries[0]
+        marker = next((entry for entry in entries if entry.attempt_id == attempt_id), None)
+        if marker is None:
+            raise FileNotFoundError(f"恢复标记不存在: {task_id}/{attempt_id}")
         return marker
 
-    def load_marker(self, task_id: str) -> RecoveryMarker:
-        return RecoveryMarker.model_validate_json(self.marker_path(task_id).read_text(encoding="utf-8"))
+    def load_marker_entries(self, task_id: str) -> list[RecoveryMarker]:
+        with self._process_lock:
+            entries = self._load_marker_entries_unlocked(task_id)
+            if not entries:
+                raise FileNotFoundError(f"恢复标记不存在: {task_id}")
+            return [entry.model_copy(deep=True) for entry in entries]
 
     def list_markers(self) -> list[RecoveryMarker]:
         if not self.recovery_dir.exists():
@@ -70,7 +100,8 @@ class RecoveryStore:
         markers: list[RecoveryMarker] = []
         for path in sorted(self.recovery_dir.glob("*.json")):
             try:
-                markers.append(RecoveryMarker.model_validate_json(path.read_text(encoding="utf-8")))
+                with self._process_lock:
+                    markers.extend(self._load_marker_file(path))
             except (OSError, ValueError, json.JSONDecodeError):
                 logger.error("Invalid recovery marker ignored: marker=%s", path.name, exc_info=True)
         return markers
@@ -83,18 +114,17 @@ class RecoveryStore:
         return recovered_all
 
     def recover_marker(self, marker: RecoveryMarker) -> bool:
-        return self._execute_marker(marker, remove_owned_marker=True, preserve_other_marker=False)
+        return self._execute_marker(marker, remove_owned_marker=True)
 
     def cleanup_attempt(self, marker: RecoveryMarker) -> bool:
         """Execute ephemeral cleanup without deleting or overwriting another attempt's marker."""
-        return self._execute_marker(marker, remove_owned_marker=False, preserve_other_marker=True)
+        return self._execute_marker(marker, remove_owned_marker=False)
 
     def _execute_marker(
         self,
         marker: RecoveryMarker,
         *,
         remove_owned_marker: bool,
-        preserve_other_marker: bool,
     ) -> bool:
         current_action: RecoveryAction | None = None
         try:
@@ -103,21 +133,24 @@ class RecoveryStore:
                 current_action = action
                 self._execute_action(marker, action)
             if remove_owned_marker:
-                self._remove_marker_if_owned(marker)
+                self._remove_marker_entry(marker)
             return True
         except Exception as exc:
             marker.attempts += 1
             marker.last_error = str(exc)
             marker.updated_at = datetime.now(UTC).isoformat()
             try:
-                if preserve_other_marker and self._marker_owned_by_other_attempt(marker):
-                    raise FileExistsError(f"恢复标记已属于其他提交尝试: {self.marker_path(marker.task_id)}")
-                atomic_write_json(self.marker_path(marker.task_id), marker.model_dump(mode="json"))
+                self._upsert_marker_entry(marker)
             except Exception as update_exc:
                 logger.critical(
-                    "Recovery marker update failed: task_id=%s primary_error=%s actions=%s update_error=%s",
+                    "Recovery marker update failed: task_id=%s attempt_id=%s action=%s path=%s "
+                    "primary_error=%s action_error=%s actions=%s update_error=%s",
                     marker.task_id,
+                    marker.attempt_id,
+                    current_action.action if current_action else "validation",
+                    current_action.path if current_action else "",
                     marker.primary_error,
+                    exc,
                     [action.model_dump(mode="json") for action in marker.actions],
                     update_exc,
                     exc_info=True,
@@ -135,33 +168,35 @@ class RecoveryStore:
                 )
             return False
 
-    def _remove_marker_if_owned(self, marker: RecoveryMarker) -> None:
-        marker_path = self.marker_path(marker.task_id)
-        try:
-            persisted = self.load_marker(marker.task_id)
-        except FileNotFoundError:
-            return
-        if persisted.attempt_id != marker.attempt_id:
-            logger.warning(
-                "Recovery marker ownership changed; preserving newer marker: "
-                "task_id=%s recovered_attempt_id=%s persisted_attempt_id=%s",
-                marker.task_id,
-                marker.attempt_id,
-                persisted.attempt_id,
-            )
-            return
-        marker_path.unlink(missing_ok=True)
+    def _remove_marker_entry(self, marker: RecoveryMarker) -> None:
+        with self._process_lock:
+            entries = self._load_marker_entries_unlocked(marker.task_id)
+            remaining = [entry for entry in entries if entry.attempt_id != marker.attempt_id]
+            if len(remaining) == len(entries):
+                return
+            if remaining:
+                self._write_marker_entries_unlocked(marker.task_id, remaining)
+            else:
+                self.marker_path(marker.task_id).unlink(missing_ok=True)
 
-    def _marker_owned_by_other_attempt(self, marker: RecoveryMarker) -> bool:
-        try:
-            persisted = self.load_marker(marker.task_id)
-        except FileNotFoundError:
-            return False
-        return persisted.attempt_id != marker.attempt_id
+    def _upsert_marker_entry(self, marker: RecoveryMarker) -> None:
+        with self._process_lock:
+            entries = self._load_marker_entries_unlocked(marker.task_id)
+            for index, entry in enumerate(entries):
+                if entry.attempt_id == marker.attempt_id:
+                    entries[index] = marker
+                    break
+            else:
+                entries.append(marker)
+            self._write_marker_entries_unlocked(marker.task_id, entries)
 
     def _execute_action(self, marker: RecoveryMarker, action: RecoveryAction) -> None:
         path = self._validated_action_path(marker, action)
         if action.action == "unlink":
+            if action.scope == "final_input" and (path.exists() or path.is_symlink()):
+                actual_token = self.ownership_token(path, marker.attempt_id)
+                if actual_token != action.owner_token:
+                    raise RuntimeError(f"Final input ownership mismatch: {path}")
             path.unlink(missing_ok=True)
             return
         try:
@@ -196,17 +231,47 @@ class RecoveryStore:
             action.action != "unlink"
             or resolved.parent != uploads_root
             or not resolved.name.startswith(("original_", "compare_"))
+            or not action.owner_token
         ):
             raise ValueError(f"恢复路径不是当前任务的最终输入: {action.path}")
         return resolved
 
+    def ownership_token(self, path: Path, attempt_id: str) -> str:
+        stat = path.stat()
+        digest = hashlib.sha256()
+        identity = (attempt_id, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        digest.update(":".join(str(value) for value in identity).encode("utf-8"))
+        with path.open("rb") as stream:
+            while chunk := stream.read(64 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _load_marker_entries_unlocked(self, task_id: str) -> list[RecoveryMarker]:
+        path = self.marker_path(task_id)
+        if not path.exists():
+            return []
+        return self._load_marker_file(path)
+
+    def _load_marker_file(self, path: Path) -> list[RecoveryMarker]:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and "entries" in payload:
+            marker_file = RecoveryMarkerFile.model_validate(payload)
+            return marker_file.entries
+        return [RecoveryMarker.model_validate(payload)]
+
+    def _write_marker_entries_unlocked(self, task_id: str, entries: list[RecoveryMarker]) -> None:
+        marker_file = RecoveryMarkerFile(task_id=task_id, entries=entries)
+        atomic_write_json(self.marker_path(task_id), marker_file.model_dump(mode="json"))
+
     @staticmethod
     def _safe_task_id(task_id: str) -> str:
-        return re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", task_id or "") or "task"
+        sanitized = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", task_id or "")
+        return "task" if sanitized in {"", ".", ".."} else sanitized
 
     @staticmethod
     def _safe_path_part(value: str) -> str:
-        return re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", value or "") or "artifact"
+        sanitized = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", value or "")
+        return "artifact" if sanitized in {"", ".", ".."} else sanitized
 
 
 default_recovery_store = RecoveryStore()

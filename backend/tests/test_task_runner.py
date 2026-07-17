@@ -138,6 +138,66 @@ def test_local_json_task_job_repository_skips_legacy_extraction_job(tmp_path: Pa
     assert legacy_path.read_text(encoding="utf-8") == legacy_json
 
 
+@pytest.mark.parametrize("failure", ["write", "replace"])
+def test_job_persist_failure_cleans_authoritative_temp_without_replacing_primary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    repository = LocalJsonTaskJobRepository(app_settings)
+    job = TaskJob(job_id="compare:TJOB_TEMP:1", task_id="TJOB_TEMP", task_type="compare")
+    write_text = Path.write_text
+    replace = Path.replace
+
+    def fail_write(path: Path, *args, **kwargs):
+        result = write_text(path, *args, **kwargs)
+        if path.name.endswith(".json.tmp"):
+            raise OSError("job-write-primary")
+        return result
+
+    def fail_replace(path: Path, target: Path):
+        if path.name.endswith(".json.tmp"):
+            raise OSError("job-replace-primary")
+        return replace(path, target)
+
+    monkeypatch.setattr(Path, "write_text", fail_write if failure == "write" else write_text)
+    monkeypatch.setattr(Path, "replace", fail_replace if failure == "replace" else replace)
+
+    with pytest.raises(OSError, match=f"job-{failure}-primary"):
+        repository._persist(job)
+
+    assert list(app_settings.tasks_dir.rglob("*.json.tmp")) == []
+    assert not (app_settings.tasks_dir / "TJOB_TEMP" / "jobs" / "1.json").exists()
+
+
+def test_job_temp_cleanup_failure_does_not_override_replace_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    repository = LocalJsonTaskJobRepository(app_settings)
+    job = TaskJob(job_id="compare:TJOB_CLEANUP:1", task_id="TJOB_CLEANUP", task_type="compare")
+    unlink = Path.unlink
+    monkeypatch.setattr(
+        Path,
+        "replace",
+        lambda path, _target: (
+            (_ for _ in ()).throw(OSError("job-replace-primary")) if path.name.endswith(".json.tmp") else None
+        ),
+    )
+
+    def fail_cleanup(path: Path, *args, **kwargs):
+        if path.name.endswith(".json.tmp"):
+            raise OSError("job-cleanup-secondary")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_cleanup)
+
+    with pytest.raises(OSError, match="job-replace-primary"):
+        repository._persist(job)
+
+
 def test_queued_task_runner_persists_and_runs_job(tmp_path: Path) -> None:
     runner = build_runner(tmp_path)
     finished = threading.Event()
