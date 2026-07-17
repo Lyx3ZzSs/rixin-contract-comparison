@@ -479,6 +479,38 @@ def test_compare_execution_api_gets_and_cancels_queued_job(tmp_path: Path) -> No
     assert load_task(task_id).stage == "已取消"
 
 
+def test_compare_execution_api_repeats_cancel_after_success_without_mutation(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    default_task_runner.stop(wait=True)
+    task_id = "TEXEC_SUCCESS_CANCEL_REPLAY"
+    job_id = f"compare:{task_id}:1"
+    save_task(CompareTask(task_id=task_id, active_job_id=job_id))
+    job = default_task_runner.coordinator.enqueue(
+        TaskJob(job_id=job_id, task_id=task_id, task_type="compare", execution_no=1)
+    )
+    claimed = default_task_runner.coordinator.claim_next(worker_id="api-success-worker", lease_seconds=30)
+    assert claimed is not None
+    terminal_task, terminal_job = default_task_runner.coordinator.commit_success(
+        job.job_id,
+        worker_id="api-success-worker",
+        result=CompareTask(task_id=task_id),
+    )
+
+    client = TestClient(app)
+    first = client.post(f"/api/compare/{task_id}/cancel")
+    second = client.post(f"/api/compare/{task_id}/cancel")
+
+    stored_task = load_task(task_id)
+    stored_job = default_task_runner.coordinator.load(job.job_id)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["status"] == "SUCCEEDED"
+    assert second.json() == first.json()
+    assert stored_job == terminal_job
+    assert stored_task.revision == terminal_task.revision
+    assert stored_task.report_revision == terminal_task.report_revision
+
+
 def test_compare_execution_api_retries_failed_job(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     default_task_runner.stop(wait=True)

@@ -159,6 +159,83 @@ def test_success_terminal_replay_is_idempotent_without_revision_or_report_increm
     assert len(publisher.events) == 1
 
 
+@pytest.mark.parametrize(
+    ("terminal", "expected_task_status", "expected_reason", "expected_job_status"),
+    [
+        ("success", "COMPLETED", "NONE", "SUCCEEDED"),
+        ("cancel", "FAILED", "CANCELLED", "CANCELLED"),
+    ],
+)
+def test_active_cancel_replays_matching_terminal_without_writes_or_events(
+    tmp_path: Path,
+    terminal: str,
+    expected_task_status: str,
+    expected_reason: str,
+    expected_job_status: str,
+) -> None:
+    coordinator, _job_repository, task_repository, publisher, calls = build_terminal_coordinator(tmp_path)
+    job = seed_running_terminal_job(coordinator, task_repository, f"TCANCEL_REPLAY_{terminal.upper()}")
+    if terminal == "success":
+        terminal_task, terminal_job = coordinator.commit_success(
+            job.job_id,
+            worker_id="worker-1",
+            result=CompareTask(task_id=job.task_id),
+        )
+    else:
+        coordinator.request_cancel_active_task(job.task_id, task_type="compare")
+        terminal_task, terminal_job = coordinator.commit_cancelled(job.job_id, worker_id="worker-1")
+    calls.clear()
+    event_count = len(publisher.events)
+
+    first = coordinator.request_cancel_active_task(job.task_id, task_type="compare")
+    second = coordinator.request_cancel_active_task(job.task_id, task_type="compare")
+
+    stored_task = task_repository.load_compare_task(job.task_id)
+    assert first == terminal_job
+    assert second == terminal_job
+    assert (stored_task.status, stored_task.terminal_reason, first.status) == (
+        expected_task_status,
+        expected_reason,
+        expected_job_status,
+    )
+    assert stored_task.revision == terminal_task.revision
+    assert stored_task.report_revision == terminal_task.report_revision
+    assert calls == []
+    assert len(publisher.events) == event_count
+
+
+def test_active_cancel_reports_missing_terminal_job_binding_explicitly(tmp_path: Path) -> None:
+    coordinator, job_repository, task_repository, _publisher, _calls = build_terminal_coordinator(tmp_path)
+    task_id = "TCANCEL_MISSING_TERMINAL_JOB"
+    active_job = job_repository._persist(
+        TaskJob(
+            job_id=f"compare:{task_id}:1",
+            task_id=task_id,
+            task_type="compare",
+            execution_no=1,
+            status="SUCCEEDED",
+            attempt=1,
+        )
+    )
+    task_repository.save_compare_task(
+        CompareTask(
+            task_id=task_id,
+            status="COMPLETED",
+            active_job_id=active_job.job_id,
+            terminal_job_id=f"compare:{task_id}:missing",
+            terminal_attempt=1,
+        )
+    )
+    coordinator = ExecutionStateCoordinator(
+        job_repository,
+        task_repository=task_repository,
+        progress_publisher=RecordingPublisher([]),
+    )
+
+    with pytest.raises(TaskTransitionConflict, match="终态执行记录不存在"):
+        coordinator.request_cancel_active_task(task_id, task_type="compare")
+
+
 @pytest.mark.parametrize("terminal", ["success", "failure"])
 def test_cancel_wins_authoritative_terminal_barrier_without_task_or_event_write(
     tmp_path: Path,

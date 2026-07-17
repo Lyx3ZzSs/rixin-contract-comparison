@@ -242,12 +242,17 @@ class ExecutionStateCoordinator:
 
     def request_cancel_active_task(self, task_id: str, *, task_type: TaskJobType) -> TaskJob:
         with self._process_lock:
-            task, job = self._load_active_task_job_locked(task_id, task_type=task_type)
-            if task.status != "PROCESSING":
-                raise TaskTransitionConflict(
-                    f"任务 {task.task_id} 已为 {task.status}/{task.terminal_reason}，不能请求取消。"
-                )
-            return self._request_cancel_job_locked(job)
+            task = self._load_task_locked(task_id)
+            if task.status == "PROCESSING":
+                job = self._load_bound_job_locked(task, task.active_job_id, task_type=task_type, binding="活动")
+                return self._request_cancel_job_locked(job)
+            if task.status == "COMPLETED" and task.terminal_reason == "NONE":
+                return self._load_terminal_job_locked(task, task_type=task_type, expected_status="SUCCEEDED")
+            if task.status == "FAILED" and task.terminal_reason == "CANCELLED":
+                return self._load_terminal_job_locked(task, task_type=task_type, expected_status="CANCELLED")
+            raise TaskTransitionConflict(
+                f"任务 {task.task_id} 已为 {task.status}/{task.terminal_reason}，不能请求取消。"
+            )
 
     def _request_cancel_job_locked(self, job: TaskJob) -> TaskJob:
         if job.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
@@ -280,15 +285,49 @@ class ExecutionStateCoordinator:
         *,
         task_type: TaskJobType,
     ) -> tuple[CompareTask, TaskJob]:
+        task = self._load_task_locked(task_id)
+        job = self._load_bound_job_locked(task, task.active_job_id, task_type=task_type, binding="活动")
+        return task, job
+
+    def _load_task_locked(self, task_id: str) -> CompareTask:
         if self._task_repository is None:
             raise RuntimeError("ExecutionStateCoordinator 未配置 Task persistence。")
-        task = self._task_repository.load_compare_task(task_id)
-        if not task.active_job_id:
-            raise NotFoundError(f"任务 {task.task_id} 的活动执行记录不存在。")
-        job = self._get(task.active_job_id)
+        return self._task_repository.load_compare_task(task_id)
+
+    def _load_bound_job_locked(
+        self,
+        task: CompareTask,
+        job_id: str,
+        *,
+        task_type: TaskJobType,
+        binding: str,
+    ) -> TaskJob:
+        if not job_id:
+            raise NotFoundError(f"任务 {task.task_id} 的{binding}执行记录不存在。")
+        job = self._get(job_id)
         if job.task_id != task.task_id or job.task_type != task_type:
-            raise TaskTransitionConflict(f"任务 {task.task_id} 的活动执行记录身份不匹配。")
-        return task, job
+            raise TaskTransitionConflict(f"任务 {task.task_id} 的{binding}执行记录身份不匹配。")
+        return job
+
+    def _load_terminal_job_locked(
+        self,
+        task: CompareTask,
+        *,
+        task_type: TaskJobType,
+        expected_status: TaskJobStatus,
+    ) -> TaskJob:
+        try:
+            job = self._load_bound_job_locked(
+                task,
+                task.terminal_job_id,
+                task_type=task_type,
+                binding="终态",
+            )
+        except (FileNotFoundError, NotFoundError) as exc:
+            raise TaskTransitionConflict(f"任务 {task.task_id} 的终态执行记录不存在。") from exc
+        if job.attempt != task.terminal_attempt or job.status != expected_status:
+            raise TaskTransitionConflict(f"任务 {task.task_id} 的终态执行记录与任务终态不一致。")
+        return job.model_copy(deep=True)
 
     def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
         with self._process_lock:
