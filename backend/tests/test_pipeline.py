@@ -18,6 +18,7 @@ from app.infrastructure.execution_state import (
 from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.infrastructure.task_runner import LocalJsonTaskJobRepository, TaskJob
 from app.models import (
+    AuditItemReview,
     BBox,
     Clause,
     ClausePair,
@@ -882,18 +883,36 @@ class TestSummaryStage:
         assert ctx.task.diffs == [clause_diff]
         assert ctx.task.diff_count == 1
 
-    def test_deduplicates_final_diffs(self, tmp_path: Path) -> None:
+    def test_same_id_final_dedupe_merges_evidence_flags_sources_and_review_projection(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        duplicate = DiffItem(
+        first = DiffItem(
             diff_id="D001",
             diff_type="DELETE",
             title="表格字段：单位名称",
             original_text="国能日新科技股份有限公司",
             source_type="table",
+            original_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=0, y0=0, x1=100, y1=20), text="单位名称")],
+            structural_flags=["TABLE_STRUCTURE"],
+            review_flags=["FIRST_FLAG"],
+            merged_sources=["metadata"],
+        )
+        reviewed = first.model_copy(
+            deep=True,
+            update={
+                "source_type": "metadata",
+                "original_evidence": [EvidenceBox(page_no=2, bbox=BBox(x0=0, y0=0, x1=100, y1=20), text="公司名称")],
+                "structural_flags": ["OCR_STRUCTURE"],
+                "review_flags": ["SECOND_FLAG"],
+                "merged_sources": ["header_footer"],
+                "review_status": "CONFIRMED",
+                "review_comment": "已核验",
+                "reviewed_by": "reviewer",
+                "reviewed_at": "2026-07-17T00:00:00+00:00",
+            },
         )
         ctx.diffs = [
-            duplicate,
-            duplicate.model_copy(deep=True),
+            first,
+            reviewed,
             DiffItem(
                 diff_id="D002",
                 diff_type="DELETE",
@@ -905,8 +924,229 @@ class TestSummaryStage:
 
         SummaryStage().execute(ctx)
 
-        assert [diff.diff_id for diff in ctx.task.diffs] == ["D001"]
-        assert ctx.task.diff_count == 1
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D001", "D002"]
+        survivor = ctx.task.diffs[0]
+        assert [item.page_no for item in survivor.original_evidence] == [1, 2]
+        assert survivor.structural_flags == ["OCR_STRUCTURE", "TABLE_STRUCTURE"]
+        assert survivor.review_flags == ["FIRST_FLAG", "SECOND_FLAG"]
+        assert survivor.merged_sources == ["header_footer", "metadata", "table"]
+        assert survivor.review_status == "CONFIRMED"
+        assert survivor.review_comment == "已核验"
+        assert survivor.reviewed_by == "reviewer"
+        assert survivor.reviewed_at == "2026-07-17T00:00:00+00:00"
+        assert ctx.task.diff_count == 2
+
+    @pytest.mark.parametrize(
+        ("second_update", "case_name"),
+        [
+            ({"source_type": "metadata"}, "source"),
+            ({"section_type": "appendix"}, "section_type"),
+            ({"diff_type": "DELETE"}, "diff_type"),
+            ({"original_text": "付款20日"}, "original_text"),
+            ({"compare_text": "付款60日"}, "compare_text"),
+        ],
+    )
+    def test_different_id_final_dedupe_requires_all_semantic_fields_to_match(
+        self,
+        tmp_path: Path,
+        second_update: dict[str, str],
+        case_name: str,
+    ) -> None:
+        ctx = make_ctx(tmp_path)
+        first = self._located_diff("D010")
+        second = self._located_diff("D020").model_copy(update=second_update)
+        ctx.diffs = [first, second]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"], case_name
+
+    @pytest.mark.parametrize(
+        "second_update",
+        [
+            {"original_clause_id": "O002", "compare_clause_id": "C002", "section_path": ["其他", "条款"]},
+            {"original_clause_id": None, "compare_clause_id": None, "section_path": ["其他", "期限"]},
+        ],
+    )
+    def test_different_id_final_dedupe_keeps_cross_clause_or_stable_path_diffs(
+        self,
+        tmp_path: Path,
+        second_update: dict[str, object],
+    ) -> None:
+        ctx = make_ctx(tmp_path)
+        first = self._located_diff("D010")
+        if second_update["original_clause_id"] is None:
+            first = first.model_copy(
+                update={"original_clause_id": None, "compare_clause_id": None, "section_path": ["付款", "方式"]}
+            )
+        ctx.diffs = [first, self._located_diff("D020").model_copy(update=second_update)]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"]
+
+    def test_different_id_final_dedupe_keeps_same_text_on_different_pages(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.diffs = [self._located_diff("D010", page_no=1), self._located_diff("D020", page_no=2)]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"]
+
+    def test_different_id_final_dedupe_never_text_merges_unlocated_diffs(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.diffs = [
+            self._located_diff("D010").model_copy(update={"original_evidence": [], "compare_evidence": []}),
+            self._located_diff("D020").model_copy(update={"original_evidence": [], "compare_evidence": []}),
+        ]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"]
+
+    @pytest.mark.parametrize(("shift", "expected_ids"), [(21, ["D010", "D020"]), (20, ["D010"])])
+    def test_final_dedupe_uses_inclusive_evidence_coverage_threshold(
+        self,
+        tmp_path: Path,
+        shift: int,
+        expected_ids: list[str],
+    ) -> None:
+        ctx = make_ctx(tmp_path)
+        first = self._located_diff("D010", compare_evidence=False)
+        second = self._located_diff("D020", x0=shift, compare_evidence=False)
+        ctx.diffs = [first, second]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == expected_ids
+
+    def test_final_dedupe_requires_both_located_sides_to_meet_coverage_threshold(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        first = self._located_diff("D010")
+        second = self._located_diff("D020", original_x0=20, compare_x0=21)
+        ctx.diffs = [first, second]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"]
+
+    def test_final_dedupe_allows_one_located_side_when_other_side_is_unlocated_for_both(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.diffs = [
+            self._located_diff("D010", compare_evidence=False),
+            self._located_diff("D020", original_x0=20, compare_evidence=False),
+        ]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010"]
+
+    def test_final_dedupe_rejects_a_side_located_for_only_one_candidate(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        ctx.diffs = [
+            self._located_diff("D010", compare_evidence=False),
+            self._located_diff("D020", original_x0=20),
+        ]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"]
+
+    def test_final_dedupe_does_not_transitively_bridge_non_overlapping_members(self, tmp_path: Path) -> None:
+        def run(order: list[DiffItem], suffix: str) -> list[dict[str, object]]:
+            ctx = make_ctx(tmp_path / suffix)
+            ctx.diffs = [item.model_copy(deep=True) for item in order]
+            SummaryStage().execute(ctx)
+            return [item.model_dump(mode="json") for item in ctx.task.diffs]
+
+        left = self._located_diff("D010", original_x0=0, compare_evidence=False)
+        bridge = self._located_diff("D020", original_x0=20, compare_evidence=False)
+        right = self._located_diff("D030", original_x0=40, compare_evidence=False)
+
+        forward = run([left, bridge, right], "bridge-forward")
+        reverse = run([right, bridge, left], "bridge-reverse")
+
+        assert forward == reverse
+        assert [item["diff_id"] for item in forward] == ["D010", "D030"]
+        assert len(forward[0]["original_evidence"]) == 2
+        assert len(forward[1]["original_evidence"]) == 1
+
+    def test_final_dedupe_uses_canonical_id_and_merged_content_independent_of_input_order(self, tmp_path: Path) -> None:
+        def run(order: list[DiffItem], suffix: str) -> tuple[list[dict[str, object]], CompareTask]:
+            ctx = make_ctx(tmp_path / suffix)
+            ctx.task.audit_item_reviews = {
+                "D020:MODIFY": AuditItemReview(
+                    review_status="CONFIRMED",
+                    review_comment="已核验",
+                    reviewed_by="reviewer",
+                    reviewed_at="2026-07-17T00:00:00+00:00",
+                )
+            }
+            ctx.diffs = [item.model_copy(deep=True) for item in order]
+            SummaryStage().execute(ctx)
+            return [item.model_dump(mode="json") for item in ctx.task.diffs], ctx.task
+
+        higher = self._located_diff("D020", original_x0=20, compare_x0=20).model_copy(
+            update={
+                "review_flags": ["HIGHER_ID"],
+                "review_status": "CONFIRMED",
+                "review_comment": "已核验",
+                "reviewed_by": "reviewer",
+                "reviewed_at": "2026-07-17T00:00:00+00:00",
+            }
+        )
+        lower = self._located_diff("D010").model_copy(update={"review_flags": ["LOWER_ID"]})
+
+        forward_diffs, forward_task = run([higher, lower], "forward")
+        reverse_diffs, reverse_task = run([lower, higher], "reverse")
+
+        assert forward_diffs == reverse_diffs
+        assert [item["diff_id"] for item in forward_diffs] == ["D010"]
+        assert forward_task.audit_item_reviews == reverse_task.audit_item_reviews
+        assert set(forward_task.audit_item_reviews) == {"D010:MODIFY"}
+
+    @staticmethod
+    def _located_diff(
+        diff_id: str,
+        *,
+        page_no: int = 1,
+        x0: float = 0,
+        original_x0: float | None = None,
+        compare_x0: float | None = None,
+        compare_evidence: bool = True,
+    ) -> DiffItem:
+        original_left = x0 if original_x0 is None else original_x0
+        compare_left = x0 if compare_x0 is None else compare_x0
+        return DiffItem(
+            diff_id=diff_id,
+            diff_type="MODIFY",
+            source_type="clause",
+            section_type="main_contract",
+            section_path=["付款", "期限"],
+            original_clause_id="O001",
+            compare_clause_id="C001",
+            title="付款期限",
+            original_text="付款30日",
+            compare_text="付款45日",
+            original_evidence=[
+                EvidenceBox(
+                    page_no=page_no,
+                    bbox=BBox(x0=original_left, y0=0, x1=original_left + 100, y1=100),
+                    highlight_type="MODIFY",
+                )
+            ],
+            compare_evidence=(
+                [
+                    EvidenceBox(
+                        page_no=page_no,
+                        bbox=BBox(x0=compare_left, y0=200, x1=compare_left + 100, y1=300),
+                        highlight_type="MODIFY",
+                    )
+                ]
+                if compare_evidence
+                else []
+            ),
+        )
 
     def test_final_dedupe_remaps_ocr_summaries(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
@@ -946,16 +1186,22 @@ class TestSummaryStage:
                 diff_type="MODIFY",
                 source_type="table",
                 title="付款",
+                section_type="main_contract",
+                section_path=["付款"],
                 original_text="付款30日",
                 compare_text="付款45日",
+                original_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=0, y0=0, x1=100, y1=100))],
             ),
             DiffItem(
                 diff_id="D002",
                 diff_type="MODIFY",
                 source_type="table",
                 title="付款",
+                section_type="main_contract",
+                section_path=["付款"],
                 original_text="付款30日",
                 compare_text="付款45日",
+                original_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=20, y0=0, x1=120, y1=100))],
                 review_flags=["OCR_REMEDIATION_PLANNED"],
                 quality_status="NEEDS_REVIEW",
             ),

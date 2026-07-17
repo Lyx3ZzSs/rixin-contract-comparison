@@ -8,12 +8,14 @@ from typing import Any
 from app.config import settings
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.models import (
+    AuditItemReview,
     BBox,
     Clause,
     CompareTask,
     DiffItem,
     Document,
     DocumentProfile,
+    EvidenceBox,
     OcrRemediationAction,
     OcrRawResultPaths,
     Page,
@@ -89,6 +91,8 @@ from app.services.text_coordinate_locator import TextCoordinateLocator
 from app.utils.id_utils import generate_diff_id
 
 logger = logging.getLogger(__name__)
+
+FINAL_DIFF_EVIDENCE_OVERLAP_THRESHOLD = 0.80
 
 
 def _append_warning_details(
@@ -2218,6 +2222,7 @@ class SummaryStage:
         ctx.diffs = task.diffs
         _remap_ocr_quality_summary_after_final_dedupe(task, dedupe_remap)
         DiffQualityStage._remap_ocr_remediation_summary(ctx, dedupe_remap)
+        _remap_audit_item_reviews_after_final_dedupe(task, dedupe_remap)
         _write_debug_artifact(
             task,
             "diff_decisions",
@@ -2257,41 +2262,208 @@ def _filter_compare_option_diffs(task: CompareTask, diffs: list[DiffItem]) -> li
 
 
 def _dedupe_final_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str, str]]:
-    seen_ids: dict[str, DiffItem] = {}
-    seen_content: dict[tuple[str, str, str, str, str, str], DiffItem] = {}
+    if not diffs:
+        return [], {}
+
+    members_by_id: dict[str, list[DiffItem]] = {}
+    for diff in sorted(diffs, key=lambda item: (item.diff_id, item.model_dump_json())):
+        members_by_id.setdefault(diff.diff_id, []).append(diff)
+
+    groups: list[list[DiffItem]] = []
+    for same_id_members in members_by_id.values():
+        target = next(
+            (
+                group
+                for group in groups
+                if all(
+                    _different_id_diffs_are_spatial_duplicates(member, grouped_member)
+                    for member in same_id_members
+                    for grouped_member in group
+                )
+            ),
+            None,
+        )
+        if target is None:
+            groups.append(list(same_id_members))
+        else:
+            target.extend(same_id_members)
+
     remap: dict[str, str] = {}
     result: list[DiffItem] = []
-    for diff in diffs:
-        if diff.diff_id in seen_ids:
-            survivor = seen_ids[diff.diff_id]
-            remap[diff.diff_id] = survivor.diff_id
-            _merge_final_dedupe_review_state(survivor, diff)
-            continue
-        content_key = (
-            diff.source_type,
-            diff.section_type,
-            diff.title,
-            diff.diff_type,
-            diff.original_text or diff.original_snippet,
-            diff.compare_text or diff.compare_snippet,
-        )
-        if content_key in seen_content:
-            survivor = seen_content[content_key]
-            remap[diff.diff_id] = survivor.diff_id
-            _merge_final_dedupe_review_state(survivor, diff)
-            continue
-        seen_ids[diff.diff_id] = diff
-        seen_content[content_key] = diff
-        result.append(diff)
+    for members in groups:
+        nonempty_ids = sorted({member.diff_id for member in members if member.diff_id})
+        canonical_id = nonempty_ids[0] if nonempty_ids else ""
+        for old_id in nonempty_ids:
+            if old_id != canonical_id:
+                remap[old_id] = canonical_id
+        result.append(_merge_final_dedupe_group(members, canonical_id))
+
+    result.sort(key=lambda diff: (diff.diff_id, diff.model_dump_json()))
     return result, remap
 
 
-def _merge_final_dedupe_review_state(survivor: DiffItem, dropped: DiffItem) -> None:
-    for flag in dropped.review_flags:
-        if flag not in survivor.review_flags:
-            survivor.review_flags.append(flag)
-    if dropped.quality_status == "NEEDS_REVIEW":
+def _different_id_diffs_are_spatial_duplicates(left: DiffItem, right: DiffItem) -> bool:
+    if left.diff_id == right.diff_id:
+        return True
+    if (
+        left.source_type != right.source_type
+        or left.section_type != right.section_type
+        or left.diff_type != right.diff_type
+        or left.original_text != right.original_text
+        or left.compare_text != right.compare_text
+    ):
+        return False
+    if not _same_clause_or_stable_path(left, right):
+        return False
+    return _matching_located_evidence(left, right)
+
+
+def _same_clause_or_stable_path(left: DiffItem, right: DiffItem) -> bool:
+    left_clause_ids = (left.original_clause_id or "", left.compare_clause_id or "")
+    right_clause_ids = (right.original_clause_id or "", right.compare_clause_id or "")
+    same_clause_ids = any(left_clause_ids) and left_clause_ids == right_clause_ids
+    same_section_path = bool(left.section_path) and left.section_path == right.section_path
+    return same_clause_ids or same_section_path
+
+
+def _matching_located_evidence(left: DiffItem, right: DiffItem) -> bool:
+    side_results: list[bool] = []
+    for left_evidence, right_evidence in (
+        (left.original_evidence, right.original_evidence),
+        (left.compare_evidence, right.compare_evidence),
+    ):
+        left_located = [item for item in left_evidence if _evidence_is_located(item)]
+        right_located = [item for item in right_evidence if _evidence_is_located(item)]
+        if not left_located and not right_located:
+            continue
+        if not left_located or not right_located:
+            return False
+        side_results.append(
+            any(
+                left_item.page_no == right_item.page_no
+                and coverage(left_item.bbox, right_item.bbox) >= FINAL_DIFF_EVIDENCE_OVERLAP_THRESHOLD
+                for left_item in left_located
+                for right_item in right_located
+            )
+        )
+    return bool(side_results) and all(side_results)
+
+
+def coverage(left: BBox, right: BBox) -> float:
+    left_coords, right_coords = _comparable_bbox_coordinates(left, right)
+    left_area = _bbox_area(left_coords)
+    right_area = _bbox_area(right_coords)
+    minimum_area = min(left_area, right_area)
+    if minimum_area <= 0:
+        return 0.0
+    intersection_width = max(0.0, min(left_coords[2], right_coords[2]) - max(left_coords[0], right_coords[0]))
+    intersection_height = max(0.0, min(left_coords[3], right_coords[3]) - max(left_coords[1], right_coords[1]))
+    return (intersection_width * intersection_height) / minimum_area
+
+
+def _comparable_bbox_coordinates(
+    left: BBox,
+    right: BBox,
+) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+    if left.normalized is not None and right.normalized is not None:
+        return (
+            (left.normalized.x0, left.normalized.y0, left.normalized.x1, left.normalized.y1),
+            (right.normalized.x0, right.normalized.y0, right.normalized.x1, right.normalized.y1),
+        )
+    return (left.x0, left.y0, left.x1, left.y1), (right.x0, right.y0, right.x1, right.y1)
+
+
+def _evidence_is_located(evidence: EvidenceBox) -> bool:
+    if evidence.page_no <= 0 or evidence.bbox is None:
+        return False
+    bbox = evidence.bbox.normalized or evidence.bbox
+    return _bbox_area((bbox.x0, bbox.y0, bbox.x1, bbox.y1)) > 0
+
+
+def _bbox_area(coords: tuple[float, float, float, float]) -> float:
+    return max(0.0, coords[2] - coords[0]) * max(0.0, coords[3] - coords[1])
+
+
+def _merge_final_dedupe_group(members: list[DiffItem], canonical_id: str) -> DiffItem:
+    if len(members) == 1:
+        return members[0].model_copy(deep=True, update={"diff_id": canonical_id})
+    ordered = sorted(members, key=lambda diff: (diff.diff_id != canonical_id, diff.model_dump_json()))
+    survivor = ordered[0].model_copy(deep=True, update={"diff_id": canonical_id})
+    survivor.original_evidence = _merge_model_list(item for member in members for item in member.original_evidence)
+    survivor.compare_evidence = _merge_model_list(item for member in members for item in member.compare_evidence)
+    survivor.original_change_ranges = _merge_model_list(
+        item for member in members for item in member.original_change_ranges
+    )
+    survivor.compare_change_ranges = _merge_model_list(
+        item for member in members for item in member.compare_change_ranges
+    )
+    survivor.structural_flags = sorted({flag for member in members for flag in member.structural_flags})
+    survivor.review_flags = sorted({flag for member in members for flag in member.review_flags})
+    survivor.merged_sources = sorted(
+        {source for member in members for source in [member.source_type, *member.merged_sources] if source}
+    )
+    if any(member.quality_status == "NEEDS_REVIEW" for member in members):
         survivor.quality_status = "NEEDS_REVIEW"
+    _merge_diff_review_projection(survivor, members)
+    return survivor
+
+
+def _merge_model_list(items: Any) -> list[Any]:
+    by_payload = {item.model_dump_json(): item for item in items}
+    return [by_payload[key].model_copy(deep=True) for key in sorted(by_payload)]
+
+
+def _merge_diff_review_projection(survivor: DiffItem, members: list[DiffItem]) -> None:
+    reviewed = [member for member in members if member.review_status != "UNREVIEWED"]
+    if not reviewed:
+        survivor.review_status = "UNREVIEWED"
+        survivor.review_comment = ""
+        survivor.reviewed_by = ""
+        survivor.reviewed_at = ""
+        return
+    chosen = max(
+        reviewed,
+        key=lambda member: (member.reviewed_at, member.reviewed_by, member.review_comment, member.review_status),
+    )
+    statuses = {member.review_status for member in reviewed}
+    survivor.review_status = chosen.review_status if len(statuses) == 1 else "NEEDS_REVIEW"
+    survivor.review_comment = chosen.review_comment
+    survivor.reviewed_by = chosen.reviewed_by
+    survivor.reviewed_at = chosen.reviewed_at
+
+
+def _remap_audit_item_reviews_after_final_dedupe(
+    task: CompareTask,
+    dedupe_remap: dict[str, str],
+) -> None:
+    if not task.audit_item_reviews or not dedupe_remap:
+        return
+
+    grouped_reviews: dict[str, list[AuditItemReview]] = {}
+    for item_id, review in sorted(task.audit_item_reviews.items()):
+        diff_id, separator, suffix = item_id.partition(":")
+        canonical_diff_id = dedupe_remap.get(diff_id, diff_id)
+        canonical_item_id = f"{canonical_diff_id}:{suffix}" if separator else canonical_diff_id
+        grouped_reviews.setdefault(canonical_item_id, []).append(review)
+
+    task.audit_item_reviews = {
+        item_id: _merge_audit_item_review_projection(reviews) for item_id, reviews in sorted(grouped_reviews.items())
+    }
+
+
+def _merge_audit_item_review_projection(reviews: list[AuditItemReview]) -> AuditItemReview:
+    reviewed = [review for review in reviews if review.review_status != "UNREVIEWED"]
+    if not reviewed:
+        return AuditItemReview()
+    chosen = max(
+        reviewed,
+        key=lambda review: (review.reviewed_at, review.reviewed_by, review.review_comment, review.review_status),
+    )
+    statuses = {review.review_status for review in reviewed}
+    return chosen.model_copy(
+        deep=True,
+        update={"review_status": chosen.review_status if len(statuses) == 1 else "NEEDS_REVIEW"},
+    )
 
 
 def _remap_ocr_quality_summary_after_final_dedupe(
