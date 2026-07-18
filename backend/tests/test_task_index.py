@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import multiprocessing
 import os
 from pathlib import Path
@@ -145,6 +146,23 @@ def test_rebuild_index_is_deterministic_and_skips_invalid_or_extraction_payloads
     assert first == second == 1
     assert first_payload["records"] == second_payload["records"] == {"TVALID": first_payload["records"]["TVALID"]}
     assert list(first_payload["records"]) == ["TVALID"]
+
+
+def test_index_rebuild_emits_stable_event(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    from app.logging_config import STRUCTURED_EVENT_FIELDS
+
+    repository = configure_task_storage(tmp_path)
+    repository.save_compare_task(CompareTask(task_id="TEVENT_INDEX"))
+    caplog.set_level(logging.INFO, logger="app.infrastructure.task_index")
+
+    assert CompareTaskIndex(settings).rebuild() == 1
+
+    [event] = [
+        record.structured_event
+        for record in caplog.records
+        if getattr(record, "structured_event", {}).get("event") == "index_rebuilt"
+    ]
+    assert set(event) == set(STRUCTURED_EVENT_FIELDS)
 
 
 def test_rebuild_script_runs_from_repository_root(tmp_path: Path) -> None:

@@ -65,3 +65,12 @@ def test_main_starts_exactly_one_uvicorn_worker(monkeypatch: pytest.MonkeyPatch)
     run_api.main()
 
     assert calls == [(("app.main:app",), {"host": "0.0.0.0", "port": 9000, "workers": 1, "reload": False})]
+
+
+def test_top_level_docs_only_document_the_supported_run_api_startup() -> None:
+    repository_root = Path(__file__).parents[2]
+    for name in ("README.md", "CLAUDE.md"):
+        document = (repository_root / name).read_text(encoding="utf-8")
+        assert "python scripts/run_api.py" in document
+        assert "python -m uvicorn" not in document
+        assert "python app/main.py" not in document

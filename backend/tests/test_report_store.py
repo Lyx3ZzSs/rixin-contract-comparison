@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from importlib import import_module
 import json
@@ -165,6 +166,30 @@ def test_final_report_without_manifest_is_reused_and_manifest_is_self_healed(tmp
     assert manifest["report_revision"] == 5
     assert manifest["report_path"] == final_path.name
     assert manifest["size"] == final_path.stat().st_size
+
+
+def test_report_generation_and_reuse_emit_stable_events(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.logging_config import STRUCTURED_EVENT_FIELDS
+
+    caplog.set_level(logging.INFO, logger="app.infrastructure.report_store")
+    generator = RecordingGenerator()
+    store, _registry = _store(tmp_path, generator)
+    task = CompareTask(task_id="TEVENT_REPORT", status="COMPLETED", report_revision=3)
+
+    store.ensure_report(task)
+    store.ensure_report(task)
+
+    events = [
+        record.structured_event
+        for record in caplog.records
+        if getattr(record, "structured_event", {}).get("event") in {"report_generated", "report_reused"}
+    ]
+    assert [event["event"] for event in events] == ["report_generated", "report_reused"]
+    assert all(set(event) == set(STRUCTURED_EVENT_FIELDS) for event in events)
+    assert all(event["task_id"] == task.task_id and event["report_revision"] == 3 for event in events)
 
 
 def test_stale_manifest_with_valid_final_is_repaired_without_regeneration(tmp_path: Path) -> None:

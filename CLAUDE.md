@@ -15,10 +15,8 @@ Contract comparison MVP (合同差异审查系统) — uploads two PDF contracts
 cd backend
 python -m pip install -r requirements.txt
 
-# Run dev server (with auto-reload)
-python -m uvicorn app.main:app --reload --port 8000
-# Or via entry point (for PyCharm run configs)
-python app/main.py
+# Run the only supported API entry point (also use this in PyCharm run configs)
+python scripts/run_api.py
 
 # Run all tests
 python -m pytest

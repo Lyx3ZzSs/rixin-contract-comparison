@@ -591,6 +591,16 @@ class QueuedTaskRunner:
             else:
                 self.coordinator.mark_cancelled(job.job_id, worker_id=worker_id)
         except TaskStaleLeaseError:
+            log_event(
+                logger,
+                "stale_lease_detected",
+                task_id=job.task_id,
+                job_id=job.job_id,
+                execution_no=job.execution_no,
+                attempt=job.attempt,
+                worker_id=worker_id,
+                error_code="STALE_LEASE",
+            )
             logger.warning(
                 "Stale task job cancellation; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id
             )
@@ -616,6 +626,16 @@ class QueuedTaskRunner:
         except TaskCancelled:
             self._mark_job_cancelled(job, worker_id)
         except TaskStaleLeaseError:
+            log_event(
+                logger,
+                "stale_lease_detected",
+                task_id=job.task_id,
+                job_id=job.job_id,
+                execution_no=job.execution_no,
+                attempt=job.attempt,
+                worker_id=worker_id,
+                error_code="STALE_LEASE",
+            )
             logger.warning("Stale task job failure; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id)
         except Exception:
             self._log_terminal_commit_failure(job, "failure")
@@ -647,6 +667,13 @@ class QueuedTaskRunner:
                     lease_seconds=self.lease_seconds,
                 )
             except TaskStaleLeaseError:
+                log_event(
+                    logger,
+                    "stale_lease_detected",
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    error_code="STALE_LEASE",
+                )
                 logger.warning("Task heartbeat lost lease: job_id=%s worker_id=%s", job_id, worker_id)
                 return
             except (OSError, TaskRepositoryReadError):

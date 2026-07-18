@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import threading
 from pathlib import Path
 from typing import TextIO
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised through the runtime capability check
+    fcntl = None
 
 
 MULTI_API_PROCESS_UNSUPPORTED = "MULTI_API_PROCESS_UNSUPPORTED"
@@ -30,6 +34,10 @@ class ApiRuntimeLock:
             if self._stream is not None:
                 self._acquisition_count += 1
                 return
+            if fcntl is None:
+                raise RuntimeLockError(
+                    f"{MULTI_API_PROCESS_UNSUPPORTED}: API runtime requires POSIX fcntl advisory locks"
+                )
             self.path.parent.mkdir(parents=True, exist_ok=True)
             stream = self.path.open("a+", encoding="utf-8")
             try:

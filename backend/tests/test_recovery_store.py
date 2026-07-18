@@ -848,3 +848,37 @@ def test_recovery_attempt_update_failure_logs_critical_and_keeps_primary_marker(
     assert "cleanup" in caplog.text
     assert "marker update" in caplog.text
     assert store.marker_path("TUPDATEFAIL").exists()
+
+
+def test_compensation_failure_emits_sanitized_stable_json_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.logging_config import JsonFormatter, STRUCTURED_EVENT_FIELDS
+
+    settings = Settings(storage_dir=tmp_path / "storage")
+    store = RecoveryStore(settings)
+    task_file = settings.tasks_dir / "TEVENT_COMPENSATION" / "staging" / "attempt-1" / "upload.pdf"
+    task_file.parent.mkdir(parents=True)
+    task_file.write_bytes(b"partial")
+    marker = store.create_marker(
+        task_id="TEVENT_COMPENSATION",
+        attempt_id="attempt-1",
+        primary_error="confidential contract text token=secret",
+        actions=[RecoveryAction(action="unlink", path=str(task_file))],
+    )
+    monkeypatch.setattr(store, "_execute_action", lambda _marker, _action: (_ for _ in ()).throw(OSError("/tmp/secret.pdf")))
+    caplog.set_level("INFO", logger="app.infrastructure.recovery_store")
+
+    assert store.recover_marker(marker) is False
+
+    [record] = [
+        record
+        for record in caplog.records
+        if getattr(record, "structured_event", {}).get("event") == "compensation_failed"
+    ]
+    assert set(record.structured_event) == set(STRUCTURED_EVENT_FIELDS)
+    rendered = JsonFormatter().format(record)
+    assert "confidential contract text" not in rendered
+    assert "secret.pdf" not in rendered

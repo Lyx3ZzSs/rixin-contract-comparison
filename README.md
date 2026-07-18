@@ -40,7 +40,7 @@ python -m pip install -e ".[dev]"
 
 ```bash
 cd backend
-python -m uvicorn app.main:app --reload --port 8000
+python scripts/run_api.py
 ```
 
 准备并启动前端：
@@ -75,15 +75,10 @@ Docker 部署前，必须由认证管理员为容器的实际地址注册精确�
 
 ```bash
 cd backend
-python -m uvicorn app.main:app --reload --port 8001
+PORT=8001 python scripts/run_api.py
 ```
 
-也可以直接运行入口文件，适合 PyCharm Run 配置：
-
-```bash
-cd backend
-python app/main.py
-```
+`python scripts/run_api.py` 是唯一受支持的 API 启动方式；它会强制单个 API 进程。PyCharm Run 配置也应指向该脚本。
 
 如果后端不是运行在 `http://127.0.0.1:8000`，在前端 `.env` 中配置：
 

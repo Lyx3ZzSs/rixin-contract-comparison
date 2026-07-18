@@ -1427,7 +1427,13 @@ def test_runner_checks_cancellation_immediately_before_terminal_commit(tmp_path:
     assert stored.status == "CANCELLED"
 
 
-def test_runner_stale_lease_stops_without_terminal_write(tmp_path: Path) -> None:
+def test_runner_stale_lease_stops_without_terminal_write_and_emits_stable_event(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.logging_config import STRUCTURED_EVENT_FIELDS
+
+    caplog.set_level("INFO", logger="app.infrastructure.task_runner")
     runner = build_runner(tmp_path, autostart=False)
     handled = False
 
@@ -1445,6 +1451,13 @@ def test_runner_stale_lease_stops_without_terminal_write(tmp_path: Path) -> None
     stored = runner.job_repository.load(job.job_id)
     assert handled is False
     assert stored.status == "RUNNING"
+    [event] = [
+        record.structured_event
+        for record in caplog.records
+        if getattr(record, "structured_event", {}).get("event") == "stale_lease_detected"
+    ]
+    assert set(event) == set(STRUCTURED_EVENT_FIELDS)
+    assert event["error_code"] == "STALE_LEASE"
 
 
 def test_application_passes_execution_context_to_compare_service(

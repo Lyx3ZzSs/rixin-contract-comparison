@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -81,6 +82,55 @@ def test_startup_reconciliation_repairs_task_terminal_job_gap_without_task_chang
     assert terminal_after == terminal_before
     assert publisher.events == []
     assert reconcile_terminal_jobs(task_repository, restarted) == 0
+
+
+def test_reconciliation_paths_emit_stable_manifest_orphan_and_stale_lease_events(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.logging_config import STRUCTURED_EVENT_FIELDS
+
+    caplog.set_level(logging.INFO)
+    task_repository, coordinator, recovery_store = _reconciliation_dependencies(tmp_path)
+
+    recovered_id = "TEVENT_MANIFEST"
+    recovered_job = coordinator.enqueue(
+        TaskJob(job_id=f"compare:{recovered_id}:1", task_id=recovered_id, task_type="compare", execution_no=1)
+    )
+    task_repository.save_compare_task(
+        CompareTask(
+            task_id=recovered_id,
+            status="COMPLETED",
+            active_job_id=recovered_job.job_id,
+            terminal_job_id=recovered_job.job_id,
+            terminal_attempt=recovered_job.attempt,
+        )
+    )
+
+    orphan_id = "TEVENT_ORPHAN"
+    task_repository.save_compare_task(CompareTask(task_id=orphan_id, status="FAILED", terminal_reason="SUBMISSION_FAILED"))
+    coordinator.enqueue(TaskJob(job_id=f"compare:{orphan_id}:1", task_id=orphan_id, task_type="compare"))
+
+    stale_id = "TEVENT_STALE"
+    stale_job = coordinator.enqueue(
+        TaskJob(job_id=f"compare:{stale_id}:1", task_id=stale_id, task_type="compare", max_attempts=1)
+    )
+    task_repository.save_compare_task(CompareTask(task_id=stale_id, active_job_id=stale_job.job_id))
+    assert coordinator.claim_next(worker_id="old-worker", lease_seconds=3600) is not None
+
+    assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 3
+
+    events = [record.structured_event for record in caplog.records if hasattr(record, "structured_event")]
+    names = {event["event"] for event in events}
+    assert {"manifest_recovered", "orphan_job_reconciled", "stale_lease_reconciled", "terminal_committed"} <= names
+    for event in events:
+        assert set(event) == set(STRUCTURED_EVENT_FIELDS)
+    stale_terminal = next(
+        event
+        for event in events
+        if event["event"] == "terminal_committed" and event["job_id"] == stale_job.job_id
+    )
+    assert stale_terminal["error_code"] == "PROCESS_RESTART_MAX_ATTEMPTS"
 
 
 @pytest.mark.parametrize(

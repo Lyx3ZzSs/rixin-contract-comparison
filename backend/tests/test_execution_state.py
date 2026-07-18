@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from pathlib import Path
@@ -22,6 +23,20 @@ from app.infrastructure.task_runner import (
 )
 from app.models import CompareTask
 from app.services.progress_bus import ProgressEvent
+
+
+def structured_events(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, object]]:
+    return [
+        record.structured_event
+        for record in caplog.records
+        if getattr(record, "structured_event", {}).get("event") == event
+    ]
+
+
+def assert_stable_event(event: dict[str, object]) -> None:
+    from app.logging_config import STRUCTURED_EVENT_FIELDS
+
+    assert set(event) == set(STRUCTURED_EVENT_FIELDS)
 
 
 def build_coordinator(tmp_path: Path) -> tuple[ExecutionStateCoordinator, LocalJsonTaskJobRepository]:
@@ -82,6 +97,49 @@ def seed_running_terminal_job(
     claimed = coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
     assert claimed is not None
     return claimed
+
+
+def test_claim_cancellation_and_expired_lease_terminal_paths_emit_stable_events(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.infrastructure.execution_state")
+    coordinator, _job_repository, task_repository, _publisher, _calls = build_terminal_coordinator(tmp_path)
+
+    cancelled_job = enqueue_job(coordinator, "TEVENT_CANCEL")
+    task_repository.save_compare_task(CompareTask(task_id=cancelled_job.task_id, active_job_id=cancelled_job.job_id))
+    assert coordinator.claim_next(worker_id="cancel-worker", lease_seconds=30) is not None
+    [requested] = coordinator.request_cancel(cancelled_job.task_id, task_type="compare")
+    assert requested.status == "CANCEL_REQUESTED"
+    coordinator.commit_cancelled(cancelled_job.job_id, worker_id="cancel-worker")
+
+    queued_cancel_job = enqueue_job(coordinator, "TEVENT_QUEUED_CANCEL")
+    task_repository.save_compare_task(CompareTask(task_id=queued_cancel_job.task_id, active_job_id=queued_cancel_job.job_id))
+    [queued_cancelled] = coordinator.request_cancel(queued_cancel_job.task_id, task_type="compare")
+    assert queued_cancelled.status == "CANCELLED"
+
+    expired_job = enqueue_job(coordinator, "TEVENT_EXPIRED")
+    task_repository.save_compare_task(CompareTask(task_id=expired_job.task_id, active_job_id=expired_job.job_id))
+    assert coordinator.claim_next(worker_id="expired-worker", lease_seconds=-1) is not None
+    assert coordinator.claim_next(worker_id="replacement-worker", lease_seconds=30) is None
+
+    claimed = structured_events(caplog, "job_claimed")
+    requested_events = structured_events(caplog, "cancellation_requested")
+    committed = structured_events(caplog, "terminal_committed")
+    assert claimed
+    assert {event["job_id"] for event in requested_events} == {cancelled_job.job_id, queued_cancel_job.job_id}
+    assert {event["job_id"] for event in committed} == {
+        cancelled_job.job_id,
+        queued_cancel_job.job_id,
+        expired_job.job_id,
+    }
+    for event in [*claimed, *requested_events, *committed]:
+        assert_stable_event(event)
+    assert {(event["from_status"], event["to_status"]) for event in requested_events} == {
+        ("RUNNING", "CANCEL_REQUESTED"),
+        ("QUEUED", "CANCELLED"),
+    }
+    assert {event["terminal_reason"] for event in committed} == {"CANCELLED", "EXECUTION_FAILED"}
 
 
 @pytest.mark.parametrize("terminal", ["success", "failure", "cancel"])

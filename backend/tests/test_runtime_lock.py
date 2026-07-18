@@ -45,3 +45,12 @@ def test_reentrant_lifespan_acquisition_keeps_the_process_lock_until_all_shutdow
     first.release()
     second.acquire()
     second.release()
+
+
+def test_missing_fcntl_is_reported_as_an_explicit_unsupported_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.infrastructure import runtime_lock
+
+    monkeypatch.setattr(runtime_lock, "fcntl", None)
+
+    with pytest.raises(runtime_lock.RuntimeLockError, match="MULTI_API_PROCESS_UNSUPPORTED"):
+        runtime_lock.ApiRuntimeLock(tmp_path).acquire()
