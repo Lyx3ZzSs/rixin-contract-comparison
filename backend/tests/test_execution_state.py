@@ -673,6 +673,87 @@ def test_cancel_expired_running_job_commits_cancel_terminal_immediately(tmp_path
     assert publisher.events[-1].revision == task.revision
 
 
+def test_cancel_expired_running_job_emits_request_before_terminal_once(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.infrastructure.execution_state")
+    coordinator, _job_repository, task_repository, _publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TCANCEL_EXPIRED_EVENT")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    claimed = coordinator.claim_next(worker_id="crashed-worker", lease_seconds=-1)
+    assert claimed is not None
+    caplog.clear()
+
+    [cancelled] = coordinator.request_cancel(job.task_id, task_type="compare")
+    events = [
+        record.structured_event
+        for record in caplog.records
+        if getattr(record, "structured_event", {}).get("job_id") == job.job_id
+    ]
+
+    assert cancelled.status == "CANCELLED"
+    assert [event["event"] for event in events] == ["cancellation_requested", "terminal_committed"]
+    for event in events:
+        assert_stable_event(event)
+        assert event["task_id"] == job.task_id
+        assert event["job_id"] == job.job_id
+        assert event["execution_no"] == claimed.execution_no
+        assert event["attempt"] == claimed.attempt
+    assert events[0]["from_status"] == "RUNNING"
+    assert events[0]["to_status"] == "CANCELLED"
+    assert events[1]["terminal_reason"] == "CANCELLED"
+    assert events[1]["to_status"] == "CANCELLED"
+
+    [replayed] = coordinator.request_cancel(job.task_id, task_type="compare")
+
+    assert replayed == cancelled
+    assert len(caplog.records) == len(events)
+
+
+def test_expired_lease_at_attempt_limit_emits_detection_reconciliation_and_terminal_once(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.infrastructure.execution_state")
+    coordinator, _job_repository, task_repository, _publisher, _calls = build_terminal_coordinator(tmp_path)
+    job = enqueue_job(coordinator, "TLEASE_LIMIT_EVENTS")
+    task_repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
+    claimed = coordinator.claim_next(worker_id="expired-worker", lease_seconds=-1)
+    assert claimed is not None
+    caplog.clear()
+
+    assert coordinator.claim_next(worker_id="replacement-worker", lease_seconds=30) is None
+    events = [
+        record.structured_event
+        for record in caplog.records
+        if getattr(record, "structured_event", {}).get("job_id") == job.job_id
+    ]
+
+    assert [event["event"] for event in events] == [
+        "stale_lease_detected",
+        "stale_lease_reconciled",
+        "terminal_committed",
+    ]
+    for event in events:
+        assert_stable_event(event)
+        assert event["task_id"] == job.task_id
+        assert event["job_id"] == job.job_id
+        assert event["execution_no"] == claimed.execution_no
+        assert event["attempt"] == claimed.attempt
+        assert event["worker_id"] == "expired-worker"
+        assert event["error_code"] == "LEASE_EXPIRED_MAX_ATTEMPTS"
+    assert events[0]["from_status"] is None
+    assert events[0]["to_status"] is None
+    assert (events[1]["from_status"], events[1]["to_status"]) == ("RUNNING", "FAILED")
+    assert events[2]["terminal_reason"] == "EXECUTION_FAILED"
+    assert events[2]["to_status"] == "FAILED"
+
+    assert coordinator.claim_next(worker_id="another-worker", lease_seconds=30) is None
+
+    assert len(caplog.records) == len(events)
+
+
 def test_cancel_requested_owner_can_commit_after_lease_expires(tmp_path: Path) -> None:
     coordinator, _job_repository, task_repository, _publisher, _calls = build_terminal_coordinator(tmp_path)
     job = enqueue_job(coordinator, "TCANCEL_OWNER_EXPIRED")

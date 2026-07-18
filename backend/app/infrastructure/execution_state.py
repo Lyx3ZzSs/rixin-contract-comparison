@@ -287,7 +287,25 @@ class ExecutionStateCoordinator:
                 return self._commit_cancel_terminal(job)[1]
             return job.model_copy(deep=True)
         if job.status == "RUNNING" and self._lease_expired(job, now):
-            return self._commit_cancel_terminal(job)[1]
+            task, cancelled = self._commit_cancel_terminal(job, log_terminal=False)
+            log_event(
+                logger,
+                "cancellation_requested",
+                task_id=cancelled.task_id,
+                job_id=cancelled.job_id,
+                execution_no=cancelled.execution_no,
+                attempt=cancelled.attempt,
+                from_status=job.status,
+                to_status=cancelled.status,
+            )
+            self._log_terminal_committed(
+                task,
+                cancelled,
+                worker_id=job.lease_owner,
+                from_status=job.status,
+                terminal_reason="CANCELLED",
+            )
+            return cancelled
         candidate = job.model_copy(deep=True)
         if candidate.status == "QUEUED":
             if self.has_terminal_dependencies:
@@ -880,16 +898,40 @@ class ExecutionStateCoordinator:
 
     def _commit_expired_lease_failure(self, job: TaskJob) -> tuple[CompareTask | None, TaskJob]:
         error = "任务租约过期且已达到最大尝试次数。"
+        error_code = "LEASE_EXPIRED_MAX_ATTEMPTS"
+        log_event(
+            logger,
+            "stale_lease_detected",
+            task_id=job.task_id,
+            job_id=job.job_id,
+            execution_no=job.execution_no,
+            attempt=job.attempt,
+            worker_id=job.lease_owner,
+            error_code=error_code,
+        )
         if self._task_repository is None:
             candidate = self._terminal_job_candidate(job, "FAILED", error=error)
-            candidate.error_code = "LEASE_EXPIRED_MAX_ATTEMPTS"
+            candidate.error_code = error_code
             persisted_job = self._persist_then_replace(candidate)
+            log_event(
+                logger,
+                "stale_lease_reconciled",
+                task_id=job.task_id,
+                job_id=job.job_id,
+                execution_no=job.execution_no,
+                attempt=job.attempt,
+                worker_id=job.lease_owner,
+                from_status=job.status,
+                to_status=persisted_job.status,
+                error_code=error_code,
+            )
             self._log_terminal_committed(
                 None,
                 persisted_job,
+                worker_id=job.lease_owner,
                 from_status=job.status,
                 terminal_reason="EXECUTION_FAILED",
-                error_code=candidate.error_code,
+                error_code=error_code,
             )
             return None, persisted_job
         task = self._persist_terminal_task(
@@ -899,19 +941,37 @@ class ExecutionStateCoordinator:
             error=error,
         )
         candidate = self._terminal_job_candidate(job, "FAILED", error=error)
-        candidate.error_code = "LEASE_EXPIRED_MAX_ATTEMPTS"
+        candidate.error_code = error_code
         persisted_job = self._persist_then_replace(candidate)
         self._publish_terminal(task, detail={"error": error, "error_code": candidate.error_code})
+        log_event(
+            logger,
+            "stale_lease_reconciled",
+            task_id=job.task_id,
+            job_id=job.job_id,
+            execution_no=job.execution_no,
+            attempt=job.attempt,
+            worker_id=job.lease_owner,
+            from_status=job.status,
+            to_status=persisted_job.status,
+            error_code=error_code,
+        )
         self._log_terminal_committed(
             task,
             persisted_job,
+            worker_id=job.lease_owner,
             from_status=job.status,
             terminal_reason="EXECUTION_FAILED",
-            error_code=candidate.error_code,
+            error_code=error_code,
         )
         return task, persisted_job
 
-    def _commit_cancel_terminal(self, job: TaskJob) -> tuple[CompareTask, TaskJob]:
+    def _commit_cancel_terminal(
+        self,
+        job: TaskJob,
+        *,
+        log_terminal: bool = True,
+    ) -> tuple[CompareTask, TaskJob]:
         task = self._persist_terminal_task(
             job,
             status="FAILED",
@@ -920,13 +980,14 @@ class ExecutionStateCoordinator:
         )
         persisted_job = self._persist_then_replace(self._terminal_job_candidate(job, "CANCELLED"))
         self._publish_terminal(task)
-        self._log_terminal_committed(
-            task,
-            persisted_job,
-            worker_id=job.lease_owner,
-            from_status=job.status,
-            terminal_reason="CANCELLED",
-        )
+        if log_terminal:
+            self._log_terminal_committed(
+                task,
+                persisted_job,
+                worker_id=job.lease_owner,
+                from_status=job.status,
+                terminal_reason="CANCELLED",
+            )
         return task, persisted_job
 
     @staticmethod
