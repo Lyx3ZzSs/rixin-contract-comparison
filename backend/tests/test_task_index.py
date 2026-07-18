@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
+import threading
 
 import pytest
 
@@ -103,3 +107,77 @@ def test_rebuild_index_is_deterministic_and_skips_invalid_or_extraction_payloads
     assert first == second == 1
     assert first_payload["records"] == second_payload["records"] == {"TVALID": first_payload["records"]["TVALID"]}
     assert list(first_payload["records"]) == ["TVALID"]
+
+
+def test_rebuild_script_runs_from_repository_root(tmp_path: Path) -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        [sys.executable, "backend/scripts/rebuild_task_index.py"],
+        cwd=repository_root,
+        env={**os.environ, "STORAGE_DIR": str(tmp_path / "storage")},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "Rebuilt 0 comparison record index entries.\n"
+
+
+def test_rebuild_does_not_drop_upsert_started_during_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = configure_task_storage(tmp_path)
+    repository.save_compare_task(CompareTask(task_id="TOLD"))
+    index = CompareTaskIndex(settings)
+    snapshot_read_started = threading.Event()
+    resume_rebuild = threading.Event()
+    upsert_started = threading.Event()
+    original_read_text = Path.read_text
+    original_upsert = repository.task_index.upsert
+
+    def pause_snapshot_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == repository.task_json_path("TOLD"):
+            snapshot_read_started.set()
+            resume_rebuild.wait(timeout=5)
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", pause_snapshot_read)
+    rebuild_errors: list[BaseException] = []
+    writer_errors: list[BaseException] = []
+
+    def signal_upsert(task: CompareTask) -> None:
+        upsert_started.set()
+        original_upsert(task)
+
+    monkeypatch.setattr(repository.task_index, "upsert", signal_upsert)
+
+    def rebuild() -> None:
+        try:
+            index.rebuild()
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            rebuild_errors.append(exc)
+
+    rebuild_thread = threading.Thread(target=rebuild)
+    rebuild_thread.start()
+    assert snapshot_read_started.wait(timeout=5)
+
+    def save_task() -> None:
+        try:
+            repository.save_compare_task(CompareTask(task_id="TNEW"))
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            writer_errors.append(exc)
+
+    writer_thread = threading.Thread(target=save_task)
+    writer_thread.start()
+    assert upsert_started.wait(timeout=5)
+    resume_rebuild.set()
+    rebuild_thread.join(timeout=5)
+    writer_thread.join(timeout=5)
+
+    assert not rebuild_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert not rebuild_errors
+    assert not writer_errors
+    assert {record["task_id"] for record in index.list_records()} == {"TOLD", "TNEW"}

@@ -44,19 +44,19 @@ class CompareTaskIndex:
         )
 
     def rebuild(self) -> int:
-        records: dict[str, dict[str, Any]] = {}
-        tasks_dir = self.settings.tasks_dir
-        if tasks_dir is not None and tasks_dir.exists():
-            for path in sorted(tasks_dir.glob("*/task.json"), key=lambda item: item.parent.name):
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                    if not isinstance(payload, dict) or payload.get("task_type") == "extraction":
-                        continue
-                    task = CompareTask(**payload)
-                except (OSError, ValueError, TypeError, UnicodeError, PydanticValidationError):
-                    continue
-                records[task.task_id] = comparison_record_summary(task)
         with _index_lock:
+            records: dict[str, dict[str, Any]] = {}
+            tasks_dir = self.settings.tasks_dir
+            if tasks_dir is not None and tasks_dir.exists():
+                for path in sorted(tasks_dir.glob("*/task.json"), key=lambda item: item.parent.name):
+                    try:
+                        payload = json.loads(path.read_text(encoding="utf-8"))
+                        if not isinstance(payload, dict) or payload.get("task_type") == "extraction":
+                            continue
+                        task = CompareTask(**payload)
+                    except (OSError, ValueError, TypeError, UnicodeError, PydanticValidationError):
+                        continue
+                    records[task.task_id] = comparison_record_summary(task)
             self._write_records(records)
         return len(records)
 
