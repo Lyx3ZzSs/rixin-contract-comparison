@@ -22,10 +22,12 @@ from app.clients import close_clients
 from app.config import settings
 from app.infrastructure.reconciliation import reconcile_startup
 from app.infrastructure.recovery_store import default_recovery_store
+from app.infrastructure.runtime_lock import ApiRuntimeLock
 from app.infrastructure.task_repository import default_task_repository
 from app.infrastructure.task_runner import default_task_runner
-from app.logging_config import setup_logging
+from app.logging_config import log_event, setup_logging
 from app.services.models.setup import register_default_models, teardown_models
+from app.services.quality_workbench import initialize_quality_cases
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -34,38 +36,43 @@ submission_recovery_service = SubmissionRecoveryService(
     recovery_store=default_recovery_store,
     repository=default_task_repository,
 )
+runtime_lock = ApiRuntimeLock(settings.storage_dir)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings.ensure_storage()
-    default_task_repository.resolve()
-    if not submission_recovery_service.recover_all():
-        logger.error("Some pending submission compensation actions remain after startup recovery")
-    reconcile_startup(
-        default_task_repository,
-        default_task_runner.coordinator,
-        recovery_store=default_recovery_store,
-    )
-    default_task_runner.start()
-    register_default_models()
-
+    runtime_lock.acquire()
     try:
-        auth_runtime.prewarm()
-    except IdentityProviderUnavailable:
-        logger.warning("OIDC signing keys are unavailable; authenticated requests will return 503 until recovery")
+        settings.ensure_storage()
+        initialize_quality_cases(settings.quality_cases_dir, settings.quality_cases_seed_dir)
+        default_task_repository.resolve()
+        if not submission_recovery_service.recover_all():
+            logger.error("Some pending submission compensation actions remain after startup recovery")
+        repaired = reconcile_startup(
+            default_task_repository,
+            default_task_runner.coordinator,
+            recovery_store=default_recovery_store,
+        )
+        log_event(logger, "startup_reconciled", recovery_marker="startup", duration_ms=repaired)
+        default_task_runner.start()
+        register_default_models()
 
-    from app.services.progress_bus import ProgressBus
+        try:
+            auth_runtime.prewarm()
+        except IdentityProviderUnavailable:
+            logger.warning("OIDC signing keys are unavailable; authenticated requests will return 503 until recovery")
 
-    ProgressBus.get_instance().bind_loop(asyncio.get_running_loop())
+        from app.services.progress_bus import ProgressBus
 
-    try:
+        ProgressBus.get_instance().bind_loop(asyncio.get_running_loop())
+
         yield
     finally:
         teardown_models()
         default_task_runner.stop(wait=True)
         close_clients()
         auth_runtime.close()
+        runtime_lock.release()
 
 
 app = FastAPI(title="国能日新 · 合同智能审查平台", version="0.1.0", lifespan=lifespan)
@@ -91,14 +98,3 @@ app.include_router(quality_router)
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(
-        "app.main:app",
-        host=os.getenv("HOST", "127.0.0.1"),
-        port=int(os.getenv("PORT", "8000")),
-        reload=os.getenv("RELOAD", "true").lower() in {"1", "true", "yes", "on"},
-    )

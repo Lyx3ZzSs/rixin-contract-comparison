@@ -32,7 +32,8 @@
                                                  (/data/storage)
 ```
 
-- **rixin-backend**: FastAPI + uvicorn，Python 3.12，端口 8000
+- **rixin-backend**: FastAPI + uvicorn，Python 3.12，端口 8000。容器只通过
+  `python scripts/run_api.py` 启动；该包装器强制单个 API 进程。
 - **rixin-frontend**: Nginx 静态托管 React SPA + `/api/*` 反向代理，端口 80
 - **storage_data**: Docker 命名卷，持久化任务元数据、上传文件、OCR 原始数据和报告
 
@@ -147,7 +148,7 @@ docker compose up -d
 
 首次启动会自动构建镜像（如未提前构建）。后端容器会等待 health check 通过后，前端容器才启动。
 
-后端启动 API 前会运行 `python scripts/init_quality_cases.py`。该命令把镜像中经过脱敏和批准的
+后端 API 进程在取得存储目录的单例锁后，会初始化质量案例。它把镜像中经过脱敏和批准的
 `QUALITY_CASES_SEED_DIR` 案例幂等初始化到持久卷内的 `QUALITY_CASES_DIR`，质量运行结果写入
 `QUALITY_RUNS_DIR`。已有同 case ID 的管理员案例不会覆盖；后续启动和重新初始化会原样保留它。
 

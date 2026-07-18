@@ -17,6 +17,7 @@ from app.errors import (
     TaskTransitionConflict,
 )
 from app.models import CompareTask, DiffItem, TaskStatus, TaskTerminalReason
+from app.logging_config import log_event
 
 if TYPE_CHECKING:
     from app.infrastructure.task_runner import TaskJob, TaskJobStatus, TaskJobType
@@ -212,7 +213,19 @@ class ExecutionStateCoordinator:
                 candidate.lease_expires_at = _plus_seconds(lease_seconds)
                 candidate.last_error = ""
                 try:
-                    return self._persist_then_replace(candidate)
+                    claimed = self._persist_then_replace(candidate)
+                    log_event(
+                        logger,
+                        "job_claimed",
+                        task_id=claimed.task_id,
+                        job_id=claimed.job_id,
+                        execution_no=claimed.execution_no,
+                        attempt=claimed.attempt,
+                        worker_id=worker_id,
+                        from_status="QUEUED",
+                        to_status="RUNNING",
+                    )
+                    return claimed
                 except OSError as exc:
                     raise TaskClaimPersistenceError(job, exc) from exc
         return None
@@ -288,7 +301,18 @@ class ExecutionStateCoordinator:
         else:
             raise TaskTransitionConflict(f"执行记录 {candidate.job_id} 不能从 {candidate.status} 请求取消。")
         candidate.updated_at = now
-        return self._persist_then_replace(candidate)
+        requested = self._persist_then_replace(candidate)
+        log_event(
+            logger,
+            "cancellation_requested",
+            task_id=requested.task_id,
+            job_id=requested.job_id,
+            execution_no=requested.execution_no,
+            attempt=requested.attempt,
+            from_status=job.status,
+            to_status=requested.status,
+        )
+        return requested
 
     def _load_active_task_job_locked(
         self,
@@ -372,6 +396,20 @@ class ExecutionStateCoordinator:
             candidate = self._terminal_job_candidate(job, "SUCCEEDED")
             persisted_job = self._persist_then_replace(candidate)
             self._publish_terminal(task)
+            log_event(
+                logger,
+                "terminal_committed",
+                task_id=task.task_id,
+                job_id=persisted_job.job_id,
+                execution_no=persisted_job.execution_no,
+                attempt=persisted_job.attempt,
+                worker_id=worker_id,
+                from_status="RUNNING",
+                to_status="SUCCEEDED",
+                terminal_reason=task.terminal_reason,
+                task_revision=task.revision,
+                report_revision=task.report_revision,
+            )
             return task, persisted_job
 
     def commit_progress(
@@ -435,6 +473,21 @@ class ExecutionStateCoordinator:
             candidate = self._terminal_job_candidate(job, "FAILED", error=error)
             persisted_job = self._persist_then_replace(candidate)
             self._publish_terminal(task, detail={"error": error})
+            log_event(
+                logger,
+                "terminal_committed",
+                task_id=task.task_id,
+                job_id=persisted_job.job_id,
+                execution_no=persisted_job.execution_no,
+                attempt=persisted_job.attempt,
+                worker_id=worker_id,
+                from_status="RUNNING",
+                to_status="FAILED",
+                terminal_reason=task.terminal_reason,
+                task_revision=task.revision,
+                report_revision=task.report_revision,
+                error_type="ExecutionFailure",
+            )
             return task, persisted_job
 
     def commit_cancelled(self, job_id: str, *, worker_id: str) -> tuple[CompareTask, TaskJob]:
@@ -498,6 +551,17 @@ class ExecutionStateCoordinator:
             candidate = self._terminal_job_candidate(job, "FAILED", error="未关联到 Task 的活动或终态执行记录。")
             candidate.error_code = "ORPHANED_JOB"
             self._persist_then_replace(candidate)
+            log_event(
+                logger,
+                "orphan_job_reconciled",
+                task_id=job.task_id,
+                job_id=job.job_id,
+                execution_no=job.execution_no,
+                attempt=job.attempt,
+                from_status=job.status,
+                to_status="FAILED",
+                error_code="ORPHANED_JOB",
+            )
             return True
 
     def reconcile_submission_failure(self, task_id: str, *, error: str) -> bool:
@@ -539,6 +603,16 @@ class ExecutionStateCoordinator:
                 candidate.lease_owner = ""
                 candidate.lease_expires_at = ""
                 self._persist_then_replace(candidate)
+                log_event(
+                    logger,
+                    "stale_lease_reconciled",
+                    task_id=job.task_id,
+                    job_id=job.job_id,
+                    execution_no=job.execution_no,
+                    attempt=job.attempt,
+                    from_status="RUNNING",
+                    to_status="QUEUED",
+                )
                 return True
 
             error = "进程重启时执行已达到最大尝试次数。"
@@ -552,6 +626,17 @@ class ExecutionStateCoordinator:
             candidate = self._terminal_job_candidate(job, "FAILED", error=error)
             candidate.error_code = "PROCESS_RESTART_MAX_ATTEMPTS"
             self._persist_then_replace(candidate)
+            log_event(
+                logger,
+                "stale_lease_reconciled",
+                task_id=job.task_id,
+                job_id=job.job_id,
+                execution_no=job.execution_no,
+                attempt=job.attempt,
+                from_status="RUNNING",
+                to_status="FAILED",
+                error_code="PROCESS_RESTART_MAX_ATTEMPTS",
+            )
             return True
 
     def mark_failed(

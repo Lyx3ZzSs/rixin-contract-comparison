@@ -7,6 +7,10 @@
 - `backend`：FastAPI 后端，监听容器内 `8000`，只暴露在 Docker 内部网络。
 - `frontend`：Nginx + React 静态资源，监听容器内 `8080`，绑定到宿主机 `127.0.0.1:18080`，并代理 `/api/` 和 `/health` 到后端。
 
+后端镜像唯一的启动命令是 `python scripts/run_api.py`。不要使用 `uvicorn`、Gunicorn 或多副本
+进程管理器直接启动 API：共享存储只能由一个 API 运行时持有，`API_WORKERS`、`WEB_CONCURRENCY` 和
+`UVICORN_WORKERS` 只能省略或设为 `1`；其他值会以 `MULTI_API_PROCESS_UNSUPPORTED` 退出。
+
 生产部署时，服务器外层统一入口 Nginx 只需要把项目 URI 前缀转发到 `frontend` 的宿主机端口；后端不需要单独对宿主机或公网开放端口。
 
 PP-OCRV5 和 PP-Structure 不在本 compose 中启动，需要使用外部 HTTP 服务。

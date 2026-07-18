@@ -6,6 +6,7 @@ from app.infrastructure.execution_state import ExecutionStateCoordinator
 from app.infrastructure.recovery_store import RecoveryStore
 from app.infrastructure.task_runner import TERMINAL_JOB_STATUSES
 from app.infrastructure.task_repository import TaskRepository
+from app.logging_config import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,17 @@ def reconcile_terminal_jobs(
             continue
         if coordinator.repair_job_from_terminal_task(task):
             repaired += 1
+            log_event(
+                logger,
+                "manifest_recovered",
+                task_id=task.task_id,
+                job_id=task.terminal_job_id,
+                attempt=task.terminal_attempt,
+                to_status=task.status,
+                terminal_reason=task.terminal_reason,
+                task_revision=task.revision,
+                report_revision=task.report_revision,
+            )
             logger.warning(
                 "Reconciled terminal task job: task_id=%s job_id=%s attempt=%s",
                 task.task_id,

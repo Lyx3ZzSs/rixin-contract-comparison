@@ -28,6 +28,7 @@ from app.infrastructure.execution_state import (
     TaskExecutionContext,
 )
 from app.models import CompareTask
+from app.logging_config import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -538,6 +539,16 @@ class QueuedTaskRunner:
         except TaskCancelled:
             self._mark_job_cancelled(job, worker_id)
         except TaskStaleLeaseError:
+            log_event(
+                logger,
+                "stale_lease_detected",
+                task_id=job.task_id,
+                job_id=job.job_id,
+                execution_no=job.execution_no,
+                attempt=job.attempt,
+                worker_id=worker_id,
+                error_code="STALE_LEASE",
+            )
             logger.warning("Stale task job lease; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id)
         except Exception as exc:
             logger.exception("Task job failed: job_id=%s", job.job_id)
@@ -557,6 +568,16 @@ class QueuedTaskRunner:
         except TaskCancelled:
             self._mark_job_cancelled(job, worker_id)
         except TaskStaleLeaseError:
+            log_event(
+                logger,
+                "stale_lease_detected",
+                task_id=job.task_id,
+                job_id=job.job_id,
+                execution_no=job.execution_no,
+                attempt=job.attempt,
+                worker_id=worker_id,
+                error_code="STALE_LEASE",
+            )
             logger.warning("Stale task job success; worker stopping: job_id=%s worker_id=%s", job.job_id, worker_id)
         except Exception:
             self._log_terminal_commit_failure(job, "success")
@@ -601,6 +622,15 @@ class QueuedTaskRunner:
 
     @staticmethod
     def _log_terminal_commit_failure(job: TaskJob, terminal_path: str) -> None:
+        log_event(
+            logger,
+            "terminal_commit_failed",
+            task_id=job.task_id,
+            job_id=job.job_id,
+            execution_no=job.execution_no,
+            attempt=job.attempt,
+            error_code="TERMINAL_COMMIT_FAILED",
+        )
         logger.exception(
             "Authoritative terminal %s commit failed; startup reconciliation required if Task is terminal: job_id=%s",
             terminal_path,

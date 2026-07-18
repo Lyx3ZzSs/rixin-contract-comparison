@@ -18,6 +18,11 @@ from pydantic import ValidationError as PydanticValidationError
 from app.config import Settings, settings
 from app.infrastructure.atomic_files import atomic_write_json
 from app.models import CompareTask
+from app.logging_config import log_event
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 _index_lock = threading.RLock()
@@ -70,6 +75,7 @@ class CompareTaskIndex:
                             continue
                         records[task.task_id] = comparison_record_summary(task)
                 self._write_records(records)
+        log_event(logger, "index_rebuilt")
         return len(records)
 
     @contextmanager

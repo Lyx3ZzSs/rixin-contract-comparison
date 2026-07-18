@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 import tempfile
@@ -14,7 +15,10 @@ from typing import Protocol
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.infrastructure.atomic_files import atomic_publish_file, atomic_write_json
 from app.models import CompareTask
+from app.logging_config import log_event
 from app.services.report_generator import ReportGenerator
+
+logger = logging.getLogger(__name__)
 
 
 class ReportGeneratorProtocol(Protocol):
@@ -110,6 +114,12 @@ class ReportStore:
                 manifest = _report_manifest(task, final_path)
                 if not _manifest_matches(manifest_path, manifest):
                     atomic_write_json(manifest_path, manifest)
+                log_event(
+                    logger,
+                    "report_reused",
+                    task_id=task.task_id,
+                    report_revision=task.report_revision,
+                )
                 return final_path
             return self._generate(task, final_path, manifest_path)
 
@@ -128,6 +138,12 @@ class ReportStore:
                 raise ValueError("报告生成器未生成有效的非空普通文件。")
             atomic_publish_file(temp_path, final_path)
             atomic_write_json(manifest_path, _report_manifest(task, final_path))
+            log_event(
+                logger,
+                "report_generated",
+                task_id=task.task_id,
+                report_revision=task.report_revision,
+            )
             return final_path
         finally:
             try:

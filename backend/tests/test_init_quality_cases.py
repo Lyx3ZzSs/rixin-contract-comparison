@@ -724,13 +724,13 @@ def test_cli_emits_structured_json_and_meaningful_exit_codes(tmp_path: Path) -> 
     assert json.loads(conflict.stderr)["code"] == "QUALITY_CASES_PATH_CONFLICT"
 
 
-def test_container_and_compose_seed_cases_before_api_startup() -> None:
+def test_container_and_compose_seed_cases_in_the_singleton_api_runtime() -> None:
     dockerfile = (BACKEND_ROOT / "Dockerfile").read_text(encoding="utf-8")
     compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
     assert "COPY resources/quality_cases/ ./resources/quality_cases/" in dockerfile
-    assert "python scripts/init_quality_cases.py" in dockerfile
-    assert dockerfile.index("python scripts/init_quality_cases.py") < dockerfile.index("uvicorn")
+    assert 'CMD ["python", "scripts/run_api.py"]' in dockerfile
+    assert "uvicorn" not in dockerfile.split('CMD ["python", "scripts/run_api.py"]', 1)[1]
     assert "QUALITY_CASES_DIR=/data/storage/quality/cases" in compose
     assert "QUALITY_RUNS_DIR=/data/storage/quality/runs" in compose
     assert "QUALITY_CASES_SEED_DIR=/app/resources/quality_cases" in compose

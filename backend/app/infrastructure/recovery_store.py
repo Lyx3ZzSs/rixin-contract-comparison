@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings, settings
 from app.infrastructure.atomic_files import atomic_write_json
+from app.logging_config import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +310,14 @@ class RecoveryStore:
 
     @staticmethod
     def _log_deferred(exc: RecoveryMarkerLockTimeout | RecoveryMarkerDeferred, *, marker: str) -> None:
+        log_event(
+            logger,
+            "recovery_marker_deferred",
+            task_id=getattr(exc, "task_id", None),
+            recovery_marker=marker,
+            error_type=type(exc).__name__,
+            error_code="RECOVERY_DEFERRED",
+        )
         logger.warning(
             "event=recovery_marker_deferred marker=%s task_id=%s reason=%s detail=%s",
             marker,
@@ -362,6 +371,15 @@ class RecoveryStore:
                     exc_info=True,
                 )
             else:
+                log_event(
+                    logger,
+                    "compensation_failed",
+                    task_id=marker.task_id,
+                    attempt=marker.attempts,
+                    recovery_marker=marker.attempt_id,
+                    error_type=type(exc).__name__,
+                    error_code="RECOVERY_ACTION_FAILED",
+                )
                 logger.error(
                     "Recovery action failed: task_id=%s attempt_id=%s action=%s "
                     "path=%s primary_error=%s action_error=%s",
