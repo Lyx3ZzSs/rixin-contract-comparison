@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import subprocess
@@ -9,10 +10,47 @@ import threading
 
 import pytest
 
-from app.config import settings
+from app.config import Settings, settings
 from app.infrastructure.task_index import CompareTaskIndex
 from app.infrastructure.task_repository import LocalJsonTaskRepository
 from app.models import CompareTask, DiffItem
+
+
+def _rebuild_index_with_paused_snapshot(
+    storage_dir: str,
+    task_id: str,
+    snapshot_read_started: multiprocessing.synchronize.Event,
+    resume_rebuild: multiprocessing.synchronize.Event,
+) -> None:
+    original_read_text = Path.read_text
+
+    def pause_snapshot_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == Path(storage_dir) / "tasks" / task_id / "task.json":
+            snapshot_read_started.set()
+            if not resume_rebuild.wait(timeout=5):
+                raise TimeoutError("test did not resume index rebuild")
+        return original_read_text(path, *args, **kwargs)
+
+    Path.read_text = pause_snapshot_read
+    try:
+        CompareTaskIndex(Settings(storage_dir=Path(storage_dir))).rebuild()
+    finally:
+        Path.read_text = original_read_text
+
+
+def _save_task_while_rebuild_is_paused(
+    storage_dir: str,
+    upsert_started: multiprocessing.synchronize.Event,
+) -> None:
+    repository = LocalJsonTaskRepository(Settings(storage_dir=Path(storage_dir)))
+    original_upsert = repository.task_index.upsert
+
+    def signal_upsert(task: CompareTask) -> None:
+        upsert_started.set()
+        original_upsert(task)
+
+    repository.task_index.upsert = signal_upsert
+    repository.save_compare_task(CompareTask(task_id="TNEW"))
 
 
 def configure_task_storage(tmp_path: Path) -> LocalJsonTaskRepository:
@@ -181,3 +219,33 @@ def test_rebuild_does_not_drop_upsert_started_during_snapshot(
     assert not rebuild_errors
     assert not writer_errors
     assert {record["task_id"] for record in index.list_records()} == {"TOLD", "TNEW"}
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork and fcntl locking")
+def test_multiprocess_rebuild_does_not_drop_upsert_started_during_snapshot(tmp_path: Path) -> None:
+    repository = configure_task_storage(tmp_path)
+    repository.save_compare_task(CompareTask(task_id="TOLD"))
+
+    context = multiprocessing.get_context("fork")
+    snapshot_read_started = context.Event()
+    resume_rebuild = context.Event()
+    upsert_started = context.Event()
+    rebuild_process = context.Process(
+        target=_rebuild_index_with_paused_snapshot,
+        args=(str(settings.storage_dir), "TOLD", snapshot_read_started, resume_rebuild),
+    )
+    writer_process = context.Process(
+        target=_save_task_while_rebuild_is_paused,
+        args=(str(settings.storage_dir), upsert_started),
+    )
+
+    rebuild_process.start()
+    assert snapshot_read_started.wait(timeout=2)
+    writer_process.start()
+    assert upsert_started.wait(timeout=2)
+    resume_rebuild.set()
+    rebuild_process.join(timeout=5)
+    writer_process.join(timeout=5)
+
+    assert [rebuild_process.exitcode, writer_process.exitcode] == [0, 0]
+    assert {record["task_id"] for record in CompareTaskIndex(settings).list_records()} == {"TOLD", "TNEW"}

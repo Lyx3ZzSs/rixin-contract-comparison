@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - index updates require POSIX file locks
+    fcntl = None
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -28,11 +34,16 @@ class CompareTaskIndex:
     def path(self) -> Path:
         return self.settings.storage_dir / "indexes" / "compare_records.json"
 
+    @property
+    def lock_path(self) -> Path:
+        return self.path.with_suffix(".lock")
+
     def upsert(self, task: CompareTask) -> None:
         with _index_lock:
-            records = self._read_records()
-            records[task.task_id] = comparison_record_summary(task)
-            self._write_records(records)
+            with self._exclusive_lock():
+                records = self._read_records()
+                records[task.task_id] = comparison_record_summary(task)
+                self._write_records(records)
 
     def list_records(self) -> list[dict[str, Any]]:
         with _index_lock:
@@ -45,20 +56,33 @@ class CompareTaskIndex:
 
     def rebuild(self) -> int:
         with _index_lock:
-            records: dict[str, dict[str, Any]] = {}
-            tasks_dir = self.settings.tasks_dir
-            if tasks_dir is not None and tasks_dir.exists():
-                for path in sorted(tasks_dir.glob("*/task.json"), key=lambda item: item.parent.name):
-                    try:
-                        payload = json.loads(path.read_text(encoding="utf-8"))
-                        if not isinstance(payload, dict) or payload.get("task_type") == "extraction":
+            with self._exclusive_lock():
+                records: dict[str, dict[str, Any]] = {}
+                tasks_dir = self.settings.tasks_dir
+                if tasks_dir is not None and tasks_dir.exists():
+                    for path in sorted(tasks_dir.glob("*/task.json"), key=lambda item: item.parent.name):
+                        try:
+                            payload = json.loads(path.read_text(encoding="utf-8"))
+                            if not isinstance(payload, dict) or payload.get("task_type") == "extraction":
+                                continue
+                            task = CompareTask(**payload)
+                        except (OSError, ValueError, TypeError, UnicodeError, PydanticValidationError):
                             continue
-                        task = CompareTask(**payload)
-                    except (OSError, ValueError, TypeError, UnicodeError, PydanticValidationError):
-                        continue
-                    records[task.task_id] = comparison_record_summary(task)
-            self._write_records(records)
+                        records[task.task_id] = comparison_record_summary(task)
+                self._write_records(records)
         return len(records)
+
+    @contextmanager
+    def _exclusive_lock(self) -> Iterator[None]:
+        if fcntl is None:
+            raise RuntimeError("Comparison record index operations require POSIX fcntl advisory locks")
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _read_records(self) -> dict[str, dict[str, Any]]:
         try:
