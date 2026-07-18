@@ -538,6 +538,9 @@ class CompareTaskApplication:
     def list_compare_tasks(self) -> list[CompareTask]:
         return self.repository.list_compare_tasks()
 
+    def list_compare_record_summaries(self) -> list[dict[str, Any]]:
+        return self.repository.list_compare_record_summaries()
+
     def load_execution(self, task_id: str) -> TaskJob:
         return self.runner.load_active_job(task_id, task_type="compare")
 

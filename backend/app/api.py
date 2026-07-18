@@ -94,14 +94,20 @@ def list_records(
     if start_date and end_date and start_date > end_date:
         raise HTTPException(status_code=422, detail="开始日期不能晚于结束日期。")
 
-    tasks = task_access_policy.filter_visible(default_compare_task_application.list_compare_tasks(), user)
-    filtered_tasks = [
-        task for task in tasks if _is_task_in_created_date_range(task, start_date=start_date, end_date=end_date)
+    summaries = default_compare_task_application.list_compare_record_summaries()
+    filtered_summaries = [
+        summary
+        for summary in summaries
+        if task_access_policy.can_read_owner_sub(str(summary.get("owner_sub") or ""), user)
+        and _is_record_in_created_date_range(summary, start_date=start_date, end_date=end_date)
     ]
-    total = len(filtered_tasks)
+    total = len(filtered_summaries)
     start_index = (page - 1) * page_size
     end_index = start_index + page_size
-    page_tasks = filtered_tasks[start_index:end_index]
+    page_tasks = [
+        default_compare_task_application.load_compare_task(str(summary["task_id"]))
+        for summary in filtered_summaries[start_index:end_index]
+    ]
     total_pages = ceil(total / page_size) if total else 0
     return compare_record_list_response(
         page_tasks,
@@ -320,12 +326,34 @@ def _is_task_in_created_date_range(
 
 
 def _task_created_date(task: CompareTask) -> date | None:
-    value = task.created_at or task.updated_at
+    return _created_date(task.created_at, task.updated_at)
+
+
+def _is_record_in_created_date_range(
+    record: dict[str, object],
+    *,
+    start_date: date | None,
+    end_date: date | None,
+) -> bool:
+    if start_date is None and end_date is None:
+        return True
+    task_date = _created_date(record.get("created_at"), record.get("updated_at"))
+    if task_date is None:
+        return False
+    if start_date and task_date < start_date:
+        return False
+    if end_date and task_date > end_date:
+        return False
+    return True
+
+
+def _created_date(created_at: object, updated_at: object) -> date | None:
+    value = created_at or updated_at
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
-    except ValueError:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+    except (TypeError, ValueError):
         return None
 
 

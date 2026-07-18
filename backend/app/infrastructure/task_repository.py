@@ -13,6 +13,7 @@ from pydantic import ValidationError as PydanticValidationError
 from app.config import Settings, settings
 from app.errors import TaskRepositoryReadError
 from app.infrastructure.atomic_files import atomic_write_json, update_task_manifest
+from app.infrastructure.task_index import CompareTaskIndex
 from app.models import CompareTask, OcrRawResultPaths
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,9 @@ class TaskRepository(Protocol):
         raise NotImplementedError
 
     def list_compare_tasks(self) -> list[CompareTask]:
+        raise NotImplementedError
+
+    def list_compare_record_summaries(self) -> list[dict[str, Any]]:
         raise NotImplementedError
 
     def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
@@ -48,6 +52,7 @@ class LocalJsonTaskRepository:
     def __init__(self, app_settings: Settings = settings) -> None:
         self.settings = app_settings
         self._lock = threading.RLock()
+        self.task_index = CompareTaskIndex(app_settings)
 
     def save_compare_task(self, task: CompareTask) -> Path:
         data = self._normalize_compare_payload_for_storage(task.task_id, to_jsonable(task))
@@ -82,6 +87,9 @@ class LocalJsonTaskRepository:
                 continue
         return sorted(tasks, key=lambda task: task.created_at or task.updated_at, reverse=True)
 
+    def list_compare_record_summaries(self) -> list[dict[str, Any]]:
+        return self.task_index.list_records()
+
     def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
         with self._lock:
             task = self.load_compare_task(task_id)
@@ -106,6 +114,14 @@ class LocalJsonTaskRepository:
             path.parent.mkdir(parents=True, exist_ok=True)
             # task.json is authoritative; manifest.json is a derived index.
             atomic_write_json(path, data)
+            try:
+                self.task_index.upsert(CompareTask(**self._hydrate_compare_payload(task_id, data)))
+            except (OSError, ValueError, TypeError, PydanticValidationError):
+                logger.warning(
+                    "Comparison record index refresh failed after authoritative task commit: task_id=%s",
+                    task_id,
+                    exc_info=True,
+                )
             try:
                 self._write_manifest(task_id, data)
             except OSError:
@@ -305,6 +321,9 @@ class LazyDefaultTaskRepository:
 
     def list_compare_tasks(self) -> list[CompareTask]:
         return self.resolve().list_compare_tasks()
+
+    def list_compare_record_summaries(self) -> list[dict[str, Any]]:
+        return self.resolve().list_compare_record_summaries()
 
     def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
         return self.resolve().update_compare_task(task_id, mutate)

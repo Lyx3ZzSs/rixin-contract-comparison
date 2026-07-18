@@ -2431,6 +2431,37 @@ def test_compare_records_list_supports_pagination_and_created_time_filter(tmp_pa
     assert [record["task_id"] for record in second_page.json()["records"]] == ["TMAY21"]
 
 
+def test_compare_records_list_loads_only_requested_page_task_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_storage(tmp_path)
+    for index in range(4):
+        save_compare_task_fixture(
+            task_id=f"TBOUNDED{index}",
+            created_at=f"2026-05-{20 + index:02d}T08:00:00+00:00",
+            updated_at=f"2026-05-{20 + index:02d}T10:00:00+00:00",
+            original_filename=f"original-{index}.pdf",
+            compare_filename=f"compare-{index}.pdf",
+            diffs=[DiffItem(diff_id=f"D{index}", diff_type="ADD", original_text="large contract payload")],
+        )
+
+    loads: list[str] = []
+    original_load = LocalJsonTaskRepository.load_compare_task
+
+    def record_load(self: LocalJsonTaskRepository, task_id: str) -> CompareTask:
+        loads.append(task_id)
+        return original_load(self, task_id)
+
+    monkeypatch.setattr(LocalJsonTaskRepository, "load_compare_task", record_load)
+
+    response = TestClient(app).get("/api/compare/records?page=2&page_size=1")
+
+    assert response.status_code == 200, response.text
+    assert [record["task_id"] for record in response.json()["records"]] == ["TBOUNDED2"]
+    assert loads == ["TBOUNDED2"]
+
+
 def save_compare_task_fixture(**kwargs) -> None:
     task = _owned_task(CompareTask(**kwargs))
     save_task(task)
