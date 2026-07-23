@@ -39,7 +39,4 @@ class SubmissionRecoveryService:
             Path(task.original_pdf_path).resolve(),
             Path(task.compare_pdf_path).resolve(),
         }
-        action_paths = {Path(action.path).resolve() for action in final_actions}
-        if action_paths <= persisted_paths:
-            return self.recovery_store.finalize_final_inputs(marker)
-        return marker
+        return self.recovery_store.finalize_committed_final_inputs(marker, persisted_paths)

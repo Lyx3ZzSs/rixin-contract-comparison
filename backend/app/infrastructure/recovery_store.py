@@ -261,6 +261,18 @@ class RecoveryStore:
         """Remove only final-input recovery actions after the Task commit boundary."""
         return self._finalize_actions(marker, scope="final_input")
 
+    def finalize_committed_final_inputs(
+        self,
+        marker: RecoveryMarker,
+        committed_paths: set[Path],
+    ) -> RecoveryMarker | None:
+        """Remove only final-input actions whose paths are committed to the Task."""
+        return self._finalize_actions(
+            marker,
+            scope="final_input",
+            finalized_paths={path.resolve() for path in committed_paths},
+        )
+
     def finalize_attempt_actions(self, marker: RecoveryMarker) -> RecoveryMarker | None:
         """Remove only completed attempt cleanup actions from this marker."""
         return self._finalize_actions(marker, scope="attempt")
@@ -270,13 +282,22 @@ class RecoveryStore:
         marker: RecoveryMarker,
         *,
         scope: Literal["attempt", "final_input"],
+        finalized_paths: set[Path] | None = None,
     ) -> RecoveryMarker | None:
         with self._task_marker_lock(marker.task_id):
             entries = self._load_marker_entries_unlocked(marker.task_id)
             current = next((entry for entry in entries if entry.attempt_id == marker.attempt_id), None)
             if current is None:
                 return None
-            remaining_actions = [action for action in current.actions if action.scope != scope]
+            remaining_actions = [
+                action
+                for action in current.actions
+                if action.scope != scope
+                or (
+                    finalized_paths is not None
+                    and self._validated_action_path(current, action) not in finalized_paths
+                )
+            ]
             if len(remaining_actions) == len(current.actions):
                 return current.model_copy(deep=True)
             if remaining_actions:
