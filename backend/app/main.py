@@ -23,6 +23,7 @@ from app.config import settings
 from app.infrastructure.reconciliation import reconcile_startup
 from app.infrastructure.recovery_store import default_recovery_store
 from app.infrastructure.runtime_lock import ApiRuntimeLock
+from app.infrastructure.task_index import CompareTaskIndex
 from app.infrastructure.task_repository import default_task_repository
 from app.infrastructure.task_runner import default_task_runner
 from app.logging_config import log_event, setup_logging
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI):
     runtime_lock.acquire()
     try:
         settings.ensure_storage()
+        CompareTaskIndex(settings).rebuild_if_missing()
         initialize_quality_cases(settings.quality_cases_dir, settings.quality_cases_seed_dir)
         default_task_repository.resolve()
         if not submission_recovery_service.recover_all():

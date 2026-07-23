@@ -62,18 +62,18 @@ class CompareTaskIndex:
     def rebuild(self) -> int:
         with _index_lock:
             with self._exclusive_lock():
-                records: dict[str, dict[str, Any]] = {}
-                tasks_dir = self.settings.tasks_dir
-                if tasks_dir is not None and tasks_dir.exists():
-                    for path in sorted(tasks_dir.glob("*/task.json"), key=lambda item: item.parent.name):
-                        try:
-                            payload = json.loads(path.read_text(encoding="utf-8"))
-                            if not isinstance(payload, dict) or payload.get("task_type") == "extraction":
-                                continue
-                            task = CompareTask(**payload)
-                        except (OSError, ValueError, TypeError, UnicodeError, PydanticValidationError):
-                            continue
-                        records[task.task_id] = comparison_record_summary(task)
+                records = self._collect_records()
+                self._write_records(records)
+        log_event(logger, "index_rebuilt")
+        return len(records)
+
+    def rebuild_if_missing(self) -> int | None:
+        """Backfill legacy task storage without rewriting an existing index."""
+        with _index_lock:
+            with self._exclusive_lock():
+                if self.path.exists():
+                    return None
+                records = self._collect_records()
                 self._write_records(records)
         log_event(logger, "index_rebuilt")
         return len(records)
@@ -107,6 +107,22 @@ class CompareTaskIndex:
             for task_id, record in raw_records.items()
             if isinstance(record, Mapping) and str(record.get("task_id") or "") == str(task_id)
         }
+
+    def _collect_records(self) -> dict[str, dict[str, Any]]:
+        records: dict[str, dict[str, Any]] = {}
+        tasks_dir = self.settings.tasks_dir
+        if tasks_dir is None or not tasks_dir.exists():
+            return records
+        for path in sorted(tasks_dir.glob("*/task.json"), key=lambda item: item.parent.name):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict) or payload.get("task_type") == "extraction":
+                    continue
+                task = CompareTask(**payload)
+            except (OSError, ValueError, TypeError, UnicodeError, PydanticValidationError):
+                continue
+            records[task.task_id] = comparison_record_summary(task)
+        return records
 
     def _write_records(self, records: Mapping[str, Mapping[str, Any]]) -> None:
         ordered_records = {task_id: dict(records[task_id]) for task_id in sorted(records)}

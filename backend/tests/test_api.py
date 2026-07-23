@@ -226,6 +226,60 @@ def test_lifespan_recovers_submissions_before_reconciliation_and_workers(
     assert events[:4] == ["repository", "recovery", "reconciliation", "workers"]
 
 
+def test_lifespan_backfills_missing_compare_record_index_before_records_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_storage(tmp_path)
+    legacy_task = _owned_task(
+        CompareTask(
+            task_id="TLEGACY_INDEX",
+            status="COMPLETED",
+            created_at="2026-05-21T08:00:00+00:00",
+            updated_at="2026-05-21T10:00:00+00:00",
+            original_filename="legacy-original.pdf",
+            compare_filename="legacy-compare.pdf",
+        )
+    )
+    legacy_path = settings.tasks_dir / legacy_task.task_id / "task.json"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(json.dumps(to_jsonable(legacy_task), ensure_ascii=False), encoding="utf-8")
+    broken_path = settings.tasks_dir / "TBROKEN" / "task.json"
+    broken_path.parent.mkdir(parents=True)
+    broken_path.write_text("{", encoding="utf-8")
+    extraction_path = settings.tasks_dir / "TEXTRACTION" / "task.json"
+    extraction_path.parent.mkdir(parents=True)
+    extraction_path.write_text(
+        json.dumps({"task_id": "TEXTRACTION", "task_type": "extraction", "status": "COMPLETED"}),
+        encoding="utf-8",
+    )
+    index_path = settings.storage_dir / "indexes" / "compare_records.json"
+    assert not index_path.exists()
+
+    main_module = importlib.import_module("app.main")
+    monkeypatch.setattr(main_module.default_task_runner, "start", lambda: None)
+    monkeypatch.setattr(main_module.default_task_runner, "stop", lambda **_kwargs: None)
+    monkeypatch.setattr(main_module, "register_default_models", lambda: None)
+    monkeypatch.setattr(main_module, "teardown_models", lambda: None)
+    monkeypatch.setattr(main_module, "close_clients", lambda: None)
+    monkeypatch.setattr(main_module.auth_runtime, "prewarm", lambda: None)
+    monkeypatch.setattr(main_module.auth_runtime, "close", lambda: None)
+
+    with TestClient(main_module.app) as client:
+        response = client.get("/api/compare/records")
+
+    assert response.status_code == 200, response.text
+    assert [record["task_id"] for record in response.json()["records"]] == ["TLEGACY_INDEX"]
+    first_index_payload = index_path.read_bytes()
+    assert set(json.loads(first_index_payload)["records"]) == {"TLEGACY_INDEX"}
+
+    with TestClient(main_module.app) as client:
+        response = client.get("/api/compare/records")
+
+    assert response.status_code == 200, response.text
+    assert index_path.read_bytes() == first_index_payload
+
+
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork and fcntl locking")
 def test_lifespan_defers_locked_recovery_marker_and_starts(
     tmp_path: Path,
