@@ -196,8 +196,8 @@ class LocalJsonTaskJobRepository:
             if len(duplicates) == 1:
                 merged.append(duplicates[0])
                 continue
-            identities = {(job.job_id, job.status, job.attempt) for job in duplicates}
-            if len(identities) == 1:
+            baseline = duplicates[0].model_dump(mode="json")
+            if all(job.model_dump(mode="json") == baseline for job in duplicates[1:]):
                 # Keep the legacy source for execution 1 so subsequent repairs
                 # update it in place; retries still use jobs/{execution_no}.json.
                 merged.append(min(duplicates, key=lambda job: (Path(job.source_path).name != "job.json", job.source_path)))

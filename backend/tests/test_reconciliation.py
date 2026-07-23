@@ -388,3 +388,44 @@ def test_startup_reconciliation_marks_conflicting_duplicate_execution_unclaimabl
     assert coordinator.claim_next(worker_id="worker", lease_seconds=30) is None
     assert all(job.error_code == "DUPLICATE_JOB_EXECUTION" for job in coordinator.list_jobs())
     assert reconciliation.reconcile_startup(task_repository, coordinator, recovery_store=recovery_store) == 0
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"payload": {"source": "different-contract.pdf"}},
+        {"max_attempts": 3, "next_run_at": "2030-01-01T00:00:00+00:00"},
+        {"lease_owner": "another-worker", "lease_expires_at": "2030-01-01T00:00:00+00:00"},
+        {"error_code": "HANDLER_ERROR", "last_error": "different persisted failure"},
+    ],
+)
+def test_duplicate_legacy_execution_with_any_persisted_semantic_difference_is_unclaimable(
+    tmp_path: Path,
+    changes: dict[str, object],
+) -> None:
+    app_settings = Settings(storage_dir=tmp_path / "storage")
+    repository = LocalJsonTaskJobRepository(app_settings)
+    task_id = "TLEGACY_SEMANTICS"
+    legacy = TaskJob(
+        job_id=f"compare:{task_id}:1",
+        task_id=task_id,
+        task_type="compare",
+        payload={"source": "original-contract.pdf"},
+        lease_owner="worker-a",
+        lease_expires_at="2030-01-01T00:00:00+00:00",
+        error_code="",
+        last_error="",
+    )
+    legacy_path = app_settings.tasks_dir / task_id / "job.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(legacy.model_dump_json(indent=2), encoding="utf-8")
+    new_path = legacy_path.parent / "jobs" / "1.json"
+    new_path.parent.mkdir()
+    new_path.write_text(legacy.model_copy(update=changes).model_dump_json(indent=2), encoding="utf-8")
+
+    jobs = repository.list_jobs()
+
+    assert len(jobs) == 2
+    assert all(job.duplicate_execution for job in jobs)
+    assert all(job.error_code == "DUPLICATE_JOB_EXECUTION" for job in jobs)
+    assert ExecutionStateCoordinator(repository).claim_next(worker_id="worker", lease_seconds=30) is None
