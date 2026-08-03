@@ -1,5 +1,7 @@
 # Golden Set 与质量回归测试使用手册
 
+> 本能力仅用于本地开发和自动化测试，不提供线上页面或 `/api/quality/*` 接口。
+
 ## 目标
 
 本文档说明合同差异比对系统从一次真实比对任务沉淀为 golden set，并在后续代码改动后自动做质量回归测试的完整流程。
@@ -112,151 +114,6 @@ backend/.ocr-compare-quality/baselines/<version>.json
 9. 分析报告
 10. 决定修代码、补 gold case、调整阈值或更新 baseline
 ```
-
-## 可视化工作台推荐流程
-
-如果本地已启动前端和后端服务，可以通过质量工作台完成常见 golden set 操作：
-
-```text
-/quality/workbench
-```
-
-主导航展开后，也可以从：
-
-```text
-合同智能对比 -> 质量工作台
-```
-
-进入页面。
-
-质量工作台适合处理以下高频动作：
-
-- 查看 case 列表、数据集分组、标签、actual/expected 数量。
-- 对 expected diff 执行 `APPROVED`、`DRAFT`、`REJECTED` 标注。
-- 将已确认误报标记为 `should_not_match_again`，用于后续已知误报回归门禁。
-- 人工补录漏报 expected diff。
-- 编辑 `expected_evidence`，沉淀证据级 gold。
-- 直接触发质量评估和质量回归，并查看 precision、recall、已知误报回归和门禁失败结果。
-
-推荐实践：
-
-- 少量快速审核优先使用质量工作台，减少手改 JSON 的格式错误。
-- 大批量整理、脱敏、字段重排仍然可以直接编辑 `expected.json`。
-- 每次通过工作台标注后，仍应运行一次后端回归命令，确认 CLI 与 UI 结果一致。
-- 不要把包含真实敏感合同内容的导出 case 直接提交到仓库；先脱敏，再进入正式 `regression` split。
-
-## 任务级误报复盘
-
-质量工作台支持对已存在的历史任务做只读误报复盘。入口仍然是：
-
-```text
-/quality/workbench
-```
-
-在“任务复盘”区域输入：
-
-```text
-storage/tasks/<task_id>
-```
-
-中的 `<task_id>`，例如：
-
-```text
-fb67bf36-73bd-48c3-a7b3-59696ed4fb12
-```
-
-工作台会读取该任务目录下的 `task.json`，并用当前代码重新运行质量过滤逻辑。它不会重新执行 OCR、条款切分、matcher 或完整比对，也不会改写 `task.json`、`actual.json`、`expected.json` 或任何 golden set 文件。
-
-重点查看：
-
-- `历史 diff 数`：该任务当时输出的差异数量。
-- `保留 diff 数`：当前质量过滤后仍保留的历史差异数量。
-- `抑制 diff 数`：当前质量过滤会过滤掉的历史差异数量。
-- `被抑制 diff`：误报候选及其抑制原因，例如 `clause_ocr_noise` 或 `single_latin_layout_glyph_noise`。
-- `保留 diff`：仍需要人工判断的差异，重点看标题、片段、review flags 和 matcher 分数。
-
-推荐用法：
-
-- 修复某类误报规则后，先用任务复盘确认目标 diff 是否已经被抑制。
-- 如果目标误报仍在“保留 diff”中，继续查看 review flags、证据片段和 debug artifacts，定位规则未命中的原因。
-- 如果任务复盘结果符合预期，再决定是否把该任务脱敏后导出为 golden set。
-- 任务复盘不是回归测试本身；它用于快速排查真实任务，正式质量门禁仍应依赖 golden set 和质量回归命令。
-
-## 从任务复盘导出 Draft Golden Set
-
-当某个历史任务值得沉淀为回归样本时，可以直接在质量工作台中从任务复盘导出 draft golden set。
-
-操作步骤：
-
-```text
-1. 打开 /quality/workbench
-2. 在“任务复盘”区域输入 task_id
-3. 点击“加载任务复盘”
-4. 检查历史 diff、保留 diff、抑制 diff
-5. 在“导出 Draft Golden Set”区域确认或修改 case_id
-6. 点击“导出 Draft Golden Set”
-7. 导出成功后，工作台会刷新 case 列表并打开新 case
-8. 在 expected diff 列表中继续人工标注
-```
-
-导出的 case 仍然只是草稿：
-
-- `actual.json` 是任务实际输出快照。
-- `expected.json` 中的 diff 默认是 `DRAFT`。
-- `DRAFT` 不进入可信质量指标。
-- 必须人工把真实差异标为 `APPROVED`，把误报标为 `REJECTED`。
-- 如果希望误报以后不再出现，再设置 `should_not_match_again: true`。
-
-注意事项：
-
-- 导出不会重新执行 OCR、matcher 或完整合同对比。
-- 导出不会自动判断差异真假。
-- 如果 `case_id` 已存在，工作台会提示冲突；推荐换一个新的 `case_id`，不要直接覆盖已审核 case。
-- 包含真实合同内容的 draft case 不能直接提交到仓库；必须先完成脱敏和人工审核。
-
-## 从 actual diff 标为负向误报
-
-已导出并打开 draft/gold case 后，可以在质量工作台把人工确认的 actual diff 沉淀为负向 Golden Set。这个流程用于记录“系统曾经报出、但人工确认不应再次匹配”的误报样本，后续评估和回归会据此检查同类误报是否复现。
-
-操作步骤：
-
-```text
-1. 打开 /quality/workbench
-2. 打开已有 case，或先从任务复盘导出 draft golden set
-3. 查看 ActualDiffList 中的实际输出差异
-4. 人工确认某条 actual diff 是误报
-5. 点击“标为负向误报”
-6. 在 ExpectedDiffList 中确认新增的 REJECTED 条目
-7. 运行质量评估或质量回归
-8. 如果同类误报再次出现，评估结果会记录 known_false_positive_regression_count
-```
-
-默认创建的 expected diff JSON 会包含以下字段：
-
-```json
-{
-  "review_status": "REJECTED",
-  "should_not_match_again": true,
-  "false_positive_reason": "manual_false_positive",
-  "source_actual_diff_id": "<actual_diff_id>",
-  "diff_type": "<actual_diff.diff_type>",
-  "source_type": "<actual_diff.source_type>",
-  "title_contains": "<actual_diff.title>"
-}
-```
-
-重复保护：
-
-- 同一条 actual diff 只需要标注一次。
-- 工作台会对已标注的 actual diff 显示 `已标为负向误报`，并禁用按钮。
-- 后端会对相同 `source_actual_diff_id` 的负向创建请求做幂等保护；重复请求不会追加第二条 expected diff。
-- 如果历史 case 已经存在重复负向样本，本阶段不会自动删除，需要人工清理。
-
-注意事项：
-
-- 这是人工确认操作，系统不会自动判断某条 actual diff 是否为误报。
-- 不要把真实合同差异标成负向样本，否则后续回归会把应识别的差异当成误报压制。
-- 包含真实合同内容的 draft/gold case 仍需先脱敏，再提交到仓库或纳入正式回归集。
 
 ## 1. 从对比任务导出 draft gold case
 
@@ -768,19 +625,6 @@ Evidence drift
 - 脱敏后的 `expected.json`。
 - 不含敏感内容的 baseline。
 - 文档和脚本。
-
-## 可视化工作台接口
-
-后端质量工作台接口以 `/api/quality` 为前缀。第一期接口用于支持后续前端可视化页面：
-
-- `GET /api/quality/cases`：列出 golden cases。
-- `POST /api/quality/cases/export`：从已完成任务导出 draft golden case。
-- `GET /api/quality/cases/{case_id}`：查看单个 case 的 expected/actual 摘要。
-- `PATCH /api/quality/cases/{case_id}/expected-diffs/{index}`：更新一条 expected diff 标注。
-- `POST /api/quality/cases/{case_id}/expected-diffs`：新增一条 expected diff。
-- `DELETE /api/quality/cases/{case_id}/expected-diffs/{index}`：删除一条 expected diff。
-
-这些接口仍然复用现有 golden set 文件格式；命令行脚本和可视化接口可以并行使用。
 
 ## 相关文档
 

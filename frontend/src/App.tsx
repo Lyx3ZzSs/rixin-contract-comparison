@@ -1,23 +1,21 @@
 import { useMemo } from "react";
-import { useAuth } from "react-oidc-context";
 
-import { buildCurrentUser, hasRole } from "./auth/currentUser";
+import { type CurrentUser } from "./auth/currentUser";
 import { ComparisonRecordsPage } from "./pages/ComparisonRecordsPage";
-import { QualityWorkbenchPage } from "./pages/QualityWorkbenchPage";
 import { ResultPage } from "./pages/ResultPage";
 import { UploadPage } from "./pages/UploadPage";
-import { navigateHome, navigateToComparisonRecords, navigateToQualityWorkbench, navigateToTask } from "./lib/routes";
+import { navigateHome, navigateToComparisonRecords, navigateToTask } from "./lib/routes";
 import { useApp } from "./lib/state";
 
-export function App() {
-  const auth = useAuth();
+interface AppProps {
+  currentUser: CurrentUser;
+  accessToken?: string;
+  onSignOut?: () => void;
+}
+
+export function App({ currentUser, accessToken = "", onSignOut }: AppProps) {
   const { state, dispatch } = useApp();
   const { route, isSidebarExpanded, isComparisonMenuOpen } = state;
-  const currentUser = useMemo(
-    () => auth.user ? buildCurrentUser(auth.user.access_token, auth.user.profile) : null,
-    [auth.user],
-  );
-  const isAdmin = currentUser ? hasRole(currentUser, "agent_admin") : false;
 
   function handleTaskCreated(taskId: string) {
     void taskId;
@@ -32,13 +30,10 @@ export function App() {
   }
 
   const content = useMemo(() => {
-    if (route.name === "task") return <ResultPage taskId={route.taskId} onBack={navigateHome} accessToken={auth.user?.access_token ?? ""} />;
+    if (route.name === "task") return <ResultPage taskId={route.taskId} onBack={navigateHome} accessToken={accessToken} />;
     if (route.name === "records") return <ComparisonRecordsPage onOpenTask={navigateToTask} onCreateComparison={navigateHome} />;
-    if (route.name === "quality") {
-      return isAdmin ? <QualityWorkbenchPage /> : <section>当前用户没有访问质量工作台的权限。</section>;
-    }
     return <UploadPage onTaskCreated={handleTaskCreated} onOpenRecords={navigateToComparisonRecords} />;
-  }, [auth.user?.access_token, isAdmin, route]);
+  }, [accessToken, route]);
 
   return (
     <div className={isSidebarExpanded ? "oa-frame sidebar-expanded" : "oa-frame"}>
@@ -47,7 +42,7 @@ export function App() {
         <nav className="oa-nav">
           <div className={isComparisonMenuOpen ? "oa-nav-group open" : "oa-nav-group"}>
             <button
-              className={route.name === "task" || route.name === "home" || route.name === "records" || route.name === "quality" ? "active" : ""}
+              className={route.name === "task" || route.name === "home" || route.name === "records" ? "active" : ""}
               type="button"
               onClick={handleComparisonMenuClick}
               aria-expanded={isSidebarExpanded ? isComparisonMenuOpen : undefined}
@@ -66,24 +61,18 @@ export function App() {
                   <span className="oa-history-icon" aria-hidden="true" />
                   <span>对比记录</span>
                 </button>
-                {isAdmin && (
-                  <button className={route.name === "quality" ? "active" : ""} type="button" onClick={navigateToQualityWorkbench} aria-current={route.name === "quality" ? "page" : undefined}>
-                    <span className="oa-subnav-dot" aria-hidden="true" />
-                    <span>质量工作台</span>
-                  </button>
-                )}
               </div>
             )}
           </div>
         </nav>
         {isSidebarExpanded && (
           <div className="oa-user-panel" aria-label="当前用户">
-            <span className="oa-user-avatar" aria-hidden="true">{currentUser?.displayName.slice(0, 1).toUpperCase()}</span>
+            <span className="oa-user-avatar" aria-hidden="true">{currentUser.displayName.slice(0, 1).toUpperCase()}</span>
             <div>
-              <small>{currentUser?.departmentName || "当前用户"}</small>
-              <strong>{currentUser?.displayName}</strong>
+              <small>{currentUser.departmentName || "当前用户"}</small>
+              <strong>{currentUser.displayName}</strong>
             </div>
-            <button type="button" onClick={() => void auth.signoutRedirect()}>退出登录</button>
+            {onSignOut && <button type="button" onClick={onSignOut}>退出登录</button>}
           </div>
         )}
         <button

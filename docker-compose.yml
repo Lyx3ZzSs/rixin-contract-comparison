@@ -11,9 +11,6 @@ services:
       - HOST=0.0.0.0
       - PORT=8000
       - STORAGE_DIR=/data/storage
-      - QUALITY_CASES_DIR=/data/storage/quality/cases
-      - QUALITY_RUNS_DIR=/data/storage/quality/runs
-      - QUALITY_CASES_SEED_DIR=/app/resources/quality_cases
       - RELOAD=false
       - API_WORKERS=1
       - FRONTEND_CORS_ORIGINS=http://localhost,http://127.0.0.1
@@ -37,6 +34,10 @@ services:
         VITE_BASE_PATH: ${VITE_BASE_PATH:-/contract}
         VITE_API_BASE_PATH: ${VITE_API_BASE_PATH:-}
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_AUTH_MODE: ${VITE_AUTH_MODE:-oidc}
+        VITE_AUTH_DISABLED_USER_SUB: ${VITE_AUTH_DISABLED_USER_SUB:-local-dev}
+        VITE_AUTH_DISABLED_USER_NAME: ${VITE_AUTH_DISABLED_USER_NAME:-本地开发用户}
+        VITE_AUTH_DISABLED_USER_ROLES: ${VITE_AUTH_DISABLED_USER_ROLES:-agent_admin,agent_manager,agent_user}
         VITE_OIDC_AUTHORITY: ${VITE_OIDC_AUTHORITY:-}
         VITE_OIDC_CLIENT_ID: ${VITE_OIDC_CLIENT_ID:-}
         VITE_OIDC_REDIRECT_URI: ${VITE_OIDC_REDIRECT_URI:-}

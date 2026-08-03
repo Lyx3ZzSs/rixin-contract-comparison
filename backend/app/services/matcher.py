@@ -21,6 +21,7 @@ from app.services.matching.structural_drift import StructuralDriftMixin
 from app.services.matching.types import FlowEdge as _FlowEdge
 from app.services.matching.types import MatchCandidate
 from app.services.normalizer import TextNormalizer
+from app.services.pipeline_metrics import PerformanceRecorder
 
 
 class ClauseMatcher(
@@ -45,6 +46,7 @@ class ClauseMatcher(
         semantic_model: str = "",
         semantic_device: str = "auto",
         semantic_batch_size: int = 32,
+        semantic_max_inflight: int = 3,
         semantic_timeout_seconds: int = 60,
         semantic_max_retries: int = 2,
         semantic_weight: float = 0.08,
@@ -55,6 +57,7 @@ class ClauseMatcher(
         rerank_api_key: str = "",
         rerank_model: str = "",
         rerank_top_k: int = 30,
+        rerank_max_inflight: int = 8,
         rerank_timeout_seconds: int = 30,
         rerank_max_retries: int = 1,
         rerank_weight: float = 0.12,
@@ -87,6 +90,7 @@ class ClauseMatcher(
             model=semantic_model,
             device=semantic_device,
             batch_size=semantic_batch_size,
+            max_inflight=semantic_max_inflight,
             timeout_seconds=semantic_timeout_seconds,
             max_retries=semantic_max_retries,
         )
@@ -95,20 +99,43 @@ class ClauseMatcher(
             base_url=rerank_base_url,
             api_key=rerank_api_key,
             model=rerank_model,
+            max_inflight=rerank_max_inflight,
             timeout_seconds=rerank_timeout_seconds,
             max_retries=rerank_max_retries,
         )
+        self._performance = PerformanceRecorder()
+        self.last_performance_metrics: dict[str, object] = {}
 
     def match(self, original: list[Clause], compare: list[Clause]) -> list[ClausePair]:
+        self._performance = PerformanceRecorder()
+        for provider in (self.semantic_matcher, self.rerank_matcher):
+            set_recorder = getattr(provider, "set_performance_recorder", None)
+            if callable(set_recorder):
+                set_recorder(self._performance)
+        self._performance.set_counter("original_clause_count", len(original))
+        self._performance.set_counter("compare_clause_count", len(compare))
+        try:
+            return self._match_clauses(original, compare)
+        finally:
+            for provider in (self.semantic_matcher, self.rerank_matcher):
+                close = getattr(provider, "close", None)
+                if callable(close):
+                    close()
+
+    def _match_clauses(self, original: list[Clause], compare: list[Clause]) -> list[ClausePair]:
         pairs: list[ClausePair] = []
         matched_original: set[str] = set()
         matched_compare: set[str] = set()
         consumed_original_spans: dict[str, list[tuple[int, int]]] = {}
         consumed_compare_spans: dict[str, list[tuple[int, int]]] = {}
 
-        all_candidates = self._build_candidates(original, compare)
+        with self._performance.measure("candidate_generation"):
+            all_candidates = self._build_candidates(original, compare)
+        self._performance.set_counter("candidate_count", len(all_candidates))
         candidates_by_original = self._candidates_by_original(all_candidates)
-        for candidate in self._select_global_candidates(all_candidates):
+        with self._performance.measure("global_assignment"):
+            global_candidates = self._select_global_candidates(all_candidates)
+        for candidate in global_candidates:
             if candidate.original.clause_id in matched_original or candidate.compare.clause_id in matched_compare:
                 continue
             if not self._candidate_acceptable(candidate):
@@ -136,23 +163,25 @@ class ClauseMatcher(
             )
         )
 
-        structural_pairs = self._match_structural_drift_candidates(
-            original,
-            compare,
-            matched_original,
-            matched_compare,
-            consumed_original_spans,
-            consumed_compare_spans,
-        )
+        with self._performance.measure("structural_drift_matching"):
+            structural_pairs = self._match_structural_drift_candidates(
+                original,
+                compare,
+                matched_original,
+                matched_compare,
+                consumed_original_spans,
+                consumed_compare_spans,
+            )
         pairs.extend(structural_pairs)
 
-        synthetic_pairs = self._match_unmatched_originals_inside_matched_compare(
-            original,
-            compare,
-            pairs,
-            matched_original,
-            consumed_compare_spans,
-        )
+        with self._performance.measure("synthetic_match_recovery"):
+            synthetic_pairs = self._match_unmatched_originals_inside_matched_compare(
+                original,
+                compare,
+                pairs,
+                matched_original,
+                consumed_compare_spans,
+            )
         if consumed_compare_spans:
             pairs = [
                 pair.model_copy(update={"compare": self._redact_clause(pair.compare, consumed_compare_spans)})
@@ -163,12 +192,13 @@ class ClauseMatcher(
             pairs = [pair for pair in pairs if pair.original is not None and pair.compare is not None]
         pairs.extend(synthetic_pairs)
 
-        synthetic_pairs = self._match_contained_numbered_clauses(
-            original,
-            compare,
-            matched_compare,
-            consumed_original_spans,
-        )
+        with self._performance.measure("contained_clause_recovery"):
+            synthetic_pairs = self._match_contained_numbered_clauses(
+                original,
+                compare,
+                matched_compare,
+                consumed_original_spans,
+            )
         if consumed_original_spans:
             pairs = [
                 pair.model_copy(update={"original": self._redact_clause(pair.original, consumed_original_spans)})
@@ -188,7 +218,9 @@ class ClauseMatcher(
                             original=redacted,
                             compare=None,
                             match_method="delete",
-                            match_candidates=self._section_mismatch_summaries(candidates_by_original.get(left.clause_id, [])),
+                            match_candidates=self._section_mismatch_summaries(
+                                candidates_by_original.get(left.clause_id, [])
+                            ),
                         )
                     )
         for right in compare:
@@ -202,6 +234,13 @@ class ClauseMatcher(
                     )
                 )
 
+        self._performance.set_counter("pair_count", len(pairs))
+        self._performance.set_counter("matched_pair_count", sum(1 for pair in pairs if pair.original and pair.compare))
+        self._performance.set_counter(
+            "delete_pair_count", sum(1 for pair in pairs if pair.original and not pair.compare)
+        )
+        self._performance.set_counter("add_pair_count", sum(1 for pair in pairs if pair.compare and not pair.original))
+        self.last_performance_metrics = self._performance.snapshot()
         return pairs
 
 

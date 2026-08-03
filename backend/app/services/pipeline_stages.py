@@ -4,6 +4,10 @@ import hashlib
 import json
 import logging
 import re
+import threading
+import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +48,7 @@ from app.services.header_footer_compare import HeaderFooterComparator
 from app.services.matcher import ClauseMatcher
 from app.services.model_routing import ModelRoutingAnalyzer
 from app.services.native_heading_repair import NativeHeadingRepairService
+from app.services.native_fast_path import NativeFastPathDecision, NativeFastPathEvaluator
 from app.services.ocr_quality import OcrQualityProfiler
 from app.services.ocr_remediation import OcrRemediationPlanner
 from app.services.counterpart_text_recovery import CounterpartTextRecovery
@@ -51,6 +56,7 @@ from app.services.evidence_relocator import EvidenceRelocationResult, EvidenceRe
 from app.services.footer_annotation_visual import FooterAnnotationVisualComparator
 from app.services.page_diff import PageDiffConsolidator
 from app.services.pipeline import PipelineContext
+from app.services.pipeline_metrics import PerformanceRecorder
 from app.services.repeated_overlay_filter import RepeatedOverlayFilter
 from app.services.seal_comparator import build_seal_diffs
 from app.services.signing_region.block_detector import (
@@ -94,6 +100,9 @@ from app.services.text_coordinate_locator import TextCoordinateLocator
 from app.utils.id_utils import generate_diff_id
 
 logger = logging.getLogger(__name__)
+_parallel_extraction_slots = threading.BoundedSemaphore(
+    settings.compare_parallel_extraction_max_inflight,
+)
 
 FINAL_DIFF_EVIDENCE_OVERLAP_THRESHOLD = 0.80
 
@@ -172,6 +181,10 @@ class ExtractionStage:
         structured_extractor: DocumentExtractor | None = None,
         artifact_store: ArtifactStore = default_artifact_store,
         require_structured_ocr: bool | None = None,
+        parallel_extraction_enabled: bool | None = None,
+        extractor_factory: Callable[[], DocumentExtractor] | None = None,
+        native_fast_path_mode: str | None = None,
+        native_fast_path_evaluator: NativeFastPathEvaluator | None = None,
         native_heading_repair: NativeHeadingRepairService | None = None,
         repeated_overlay_filter: RepeatedOverlayFilter | None = None,
     ) -> None:
@@ -179,7 +192,29 @@ class ExtractionStage:
         self.require_structured_ocr = (
             settings.compare_require_structured_ocr if require_structured_ocr is None else require_structured_ocr
         )
-        self.extractor = extractor or build_compare_document_extractor(artifact_store=artifact_store)
+        self.parallel_extraction_enabled = (
+            settings.compare_parallel_extraction_enabled
+            if parallel_extraction_enabled is None
+            else parallel_extraction_enabled
+        )
+        self.native_fast_path_mode = (
+            settings.compare_native_fast_path_mode if native_fast_path_mode is None else native_fast_path_mode
+        )
+        if self.native_fast_path_mode not in {"off", "shadow", "enabled"}:
+            raise ValueError("native_fast_path_mode must be one of: off, shadow, enabled")
+        self.native_fast_path_evaluator = native_fast_path_evaluator or NativeFastPathEvaluator(
+            min_chars_per_page=settings.compare_native_fast_path_min_chars_per_page,
+            min_char_box_coverage=settings.compare_native_fast_path_min_char_box_coverage,
+            max_suspicious_char_ratio=settings.compare_native_fast_path_max_suspicious_char_ratio,
+        )
+        if extractor is None:
+            self.extractor_factory = extractor_factory or (
+                lambda: build_compare_document_extractor(artifact_store=artifact_store)
+            )
+            self.extractor = self.extractor_factory()
+        else:
+            self.extractor = extractor
+            self.extractor_factory = extractor_factory
         self.structured_extractor = structured_extractor
         self.profiler = DocumentProfiler()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
@@ -188,27 +223,82 @@ class ExtractionStage:
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
-        _emit_progress(ctx, 12, self.name, "original_extraction_started")
-        original_extraction = self._extract_side(ctx.original_pdf, task.task_id, "原版文件")
-        _emit_progress(ctx, 22, self.name, "original_extraction_done")
-        _emit_progress(ctx, 24, self.name, "compare_extraction_started")
-        compare_extraction = self._extract_side(ctx.compare_pdf, task.task_id, "新版文件")
-        _emit_progress(ctx, 30, self.name, "compare_extraction_done")
-
-        original_extraction, compare_extraction = self._align_structured_extractions(
-            ctx.original_pdf,
-            ctx.compare_pdf,
-            task.task_id,
-            original_extraction,
-            compare_extraction,
+        recorder = PerformanceRecorder()
+        side_metrics: dict[str, dict[str, Any]] = {}
+        performance = task.metrics.setdefault("performance", {})
+        if not isinstance(performance, dict):
+            performance = {}
+            task.metrics["performance"] = performance
+        performance["extraction"] = {"sides": side_metrics}
+        recorder.set_counter(
+            "parallel_extraction_requested",
+            int(self.parallel_extraction_enabled),
         )
+        recorder.set_counter(
+            "parallel_extraction_max_inflight",
+            settings.compare_parallel_extraction_max_inflight,
+        )
+        recorder.set_counter(
+            "native_fast_path_requested",
+            int(self.native_fast_path_mode != "off"),
+        )
+        with recorder.measure("document_pair_extraction"):
+            native_pair, native_fast_path_metrics = self._try_native_fast_path(ctx)
+            performance["extraction"]["native_fast_path"] = native_fast_path_metrics
+            if native_pair is None:
+                (
+                    original_extraction,
+                    compare_extraction,
+                    extraction_mode,
+                    parallel_fallback_reason,
+                ) = self._extract_pair(
+                    ctx,
+                    side_metrics,
+                )
+            else:
+                original_extraction, compare_extraction = native_pair
+                extraction_mode = "native_fast_path"
+                parallel_fallback_reason = ""
+                self._record_native_side_metrics(
+                    side_metrics,
+                    original_extraction,
+                    native_fast_path_metrics["sides"]["original"],
+                    side="original",
+                    pdf_path=ctx.original_pdf,
+                )
+                self._record_native_side_metrics(
+                    side_metrics,
+                    compare_extraction,
+                    native_fast_path_metrics["sides"]["compare"],
+                    side="compare",
+                    pdf_path=ctx.compare_pdf,
+                )
+        recorder.set_counter(
+            "parallel_extraction_used",
+            int(extraction_mode == "parallel"),
+        )
+        recorder.set_counter(
+            "native_fast_path_hit",
+            int(extraction_mode == "native_fast_path"),
+        )
+
+        with recorder.measure("structured_alignment"):
+            original_extraction, compare_extraction = self._align_structured_extractions(
+                ctx.original_pdf,
+                ctx.compare_pdf,
+                task.task_id,
+                original_extraction,
+                compare_extraction,
+            )
         _emit_progress(ctx, 32, self.name, "structured_alignment_done")
-        original_heading_result = self.native_heading_repair.repair(original_extraction.document)
-        compare_heading_result = self.native_heading_repair.repair(compare_extraction.document)
+        with recorder.measure("native_heading_repair"):
+            original_heading_result = self.native_heading_repair.repair(original_extraction.document)
+            compare_heading_result = self.native_heading_repair.repair(compare_extraction.document)
         original_extraction.warnings.extend(original_heading_result.warnings)
         compare_extraction.warnings.extend(compare_heading_result.warnings)
-        original_overlay_result = self.repeated_overlay_filter.apply(original_extraction.document)
-        compare_overlay_result = self.repeated_overlay_filter.apply(compare_extraction.document)
+        with recorder.measure("repeated_overlay_filter"):
+            original_overlay_result = self.repeated_overlay_filter.apply(original_extraction.document)
+            compare_overlay_result = self.repeated_overlay_filter.apply(compare_extraction.document)
         _write_debug_artifact(
             task,
             "native_heading_repair",
@@ -236,8 +326,9 @@ class ExtractionStage:
             "compare": compare_overlay_result.filtered_block_count,
         }
         _emit_progress(ctx, 33, self.name, "extraction_evidence_normalization_done")
-        original_extraction = self._refresh_profile_after_normalization(original_extraction)
-        compare_extraction = self._refresh_profile_after_normalization(compare_extraction)
+        with recorder.measure("document_profile_refresh"):
+            original_extraction = self._refresh_profile_after_normalization(original_extraction)
+            compare_extraction = self._refresh_profile_after_normalization(compare_extraction)
         _emit_progress(ctx, 34, self.name, "document_profile_done")
 
         task.extractor_used = self._merge_extractor_names(
@@ -279,16 +370,262 @@ class ExtractionStage:
             )
 
         ctx.set_extractions(original_extraction, compare_extraction)
+        extraction_metrics = recorder.snapshot()
+        extraction_metrics["sides"] = side_metrics
+        extraction_metrics["mode"] = extraction_mode
+        extraction_metrics["native_fast_path"] = native_fast_path_metrics
+        if parallel_fallback_reason:
+            extraction_metrics["parallel_fallback_reason"] = parallel_fallback_reason
+        performance["extraction"] = extraction_metrics
 
-    def _extract_side(self, pdf_path: Path, task_id: str, side_label: str) -> ExtractionResult:
+    def _try_native_fast_path(
+        self,
+        ctx: PipelineContext,
+    ) -> tuple[tuple[ExtractionResult, ExtractionResult] | None, dict[str, Any]]:
+        metrics: dict[str, Any] = {
+            "mode": self.native_fast_path_mode,
+            "decision": "not_evaluated",
+            "sides": {},
+        }
+        if self.native_fast_path_mode == "off":
+            return None, metrics
+
+        _emit_progress(ctx, 11, self.name, "native_fast_path_evaluation_started")
         try:
-            result = self.extractor.extract(pdf_path, task_id=task_id)
+            original = self.native_fast_path_evaluator.evaluate(ctx.original_pdf)
+            compare = self.native_fast_path_evaluator.evaluate(ctx.compare_pdf)
+        except Exception:
+            logger.exception("Native fast-path evaluation failed; using structured OCR")
+            metrics["decision"] = "evaluation_failed"
+            _emit_progress(ctx, 12, self.name, "native_fast_path_evaluation_failed")
+            return None, metrics
+        _emit_progress(ctx, 12, self.name, "native_fast_path_evaluation_done")
+        metrics["sides"] = {
+            "original": self._native_decision_metrics(original),
+            "compare": self._native_decision_metrics(compare),
+        }
+        both_accepted = original.accepted and compare.accepted
+        if self.native_fast_path_mode == "shadow":
+            metrics["decision"] = "shadow_eligible" if both_accepted else "shadow_rejected"
+            return None, metrics
+        if not both_accepted:
+            metrics["decision"] = "rejected"
+            return None, metrics
+        if original.extraction is None or compare.extraction is None:
+            metrics["decision"] = "rejected"
+            return None, metrics
+        metrics["decision"] = "accepted"
+        _emit_progress(ctx, 30, self.name, "native_fast_path_extraction_done")
+        return (original.extraction, compare.extraction), metrics
+
+    @staticmethod
+    def _native_decision_metrics(decision: NativeFastPathDecision) -> dict[str, Any]:
+        return {
+            "accepted": decision.accepted,
+            "reasons": list(decision.reasons),
+            **decision.metrics,
+        }
+
+    @staticmethod
+    def _record_native_side_metrics(
+        side_metrics: dict[str, dict[str, Any]],
+        extraction: ExtractionResult,
+        decision_metrics: dict[str, Any],
+        *,
+        side: str,
+        pdf_path: Path,
+    ) -> None:
+        side_metrics[side] = {
+            "file_size_bytes": pdf_path.stat().st_size if pdf_path.exists() else 0,
+            "status": "SUCCEEDED",
+            "duration_seconds": decision_metrics.get("duration_seconds", 0.0),
+            "extractor_used": extraction.extractor_used,
+            "page_count": extraction.document.page_count,
+            "details": extraction.performance,
+        }
+
+    def _extract_pair(
+        self,
+        ctx: PipelineContext,
+        side_metrics: dict[str, dict[str, Any]],
+    ) -> tuple[ExtractionResult, ExtractionResult, str, str]:
+        fallback_reason = ""
+        if not self.parallel_extraction_enabled or self.extractor_factory is None:
+            if self.parallel_extraction_enabled:
+                fallback_reason = "extractor_factory_unavailable"
+            return (
+                *self._extract_pair_serial(ctx, side_metrics),
+                "serial",
+                fallback_reason,
+            )
+
+        try:
+            compare_extractor = self.extractor_factory()
+        except Exception:
+            logger.exception("Failed to build an independent compare-side extractor; using serial extraction")
+            return (
+                *self._extract_pair_serial(ctx, side_metrics),
+                "serial",
+                "extractor_factory_failed",
+            )
+
+        original_extractor = self.extractor
+        _emit_progress(ctx, 12, self.name, "original_extraction_started")
+        _emit_progress(ctx, 14, self.name, "compare_extraction_started")
+        jobs = (
+            (
+                "original",
+                ctx.original_pdf,
+                "原版文件",
+                original_extractor,
+            ),
+            (
+                "compare",
+                ctx.compare_pdf,
+                "新版文件",
+                compare_extractor,
+            ),
+        )
+        results: dict[str, ExtractionResult] = {}
+        failures: dict[str, Exception] = {}
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="compare-extraction") as executor:
+            futures = {
+                side: executor.submit(
+                    self._extract_side_bounded,
+                    pdf_path,
+                    ctx.task.task_id,
+                    side_label,
+                    side=side,
+                    side_metrics=side_metrics,
+                    extractor=side_extractor,
+                )
+                for side, pdf_path, side_label, side_extractor in jobs
+            }
+            for side in ("original", "compare"):
+                try:
+                    results[side] = futures[side].result()
+                except Exception as exc:
+                    failures[side] = exc
+
+        if failures:
+            raise failures.get("original") or failures["compare"]
+        _emit_progress(ctx, 22, self.name, "original_extraction_done")
+        _emit_progress(ctx, 30, self.name, "compare_extraction_done")
+        return results["original"], results["compare"], "parallel", ""
+
+    def _extract_side_bounded(
+        self,
+        pdf_path: Path,
+        task_id: str,
+        side_label: str,
+        *,
+        side: str,
+        side_metrics: dict[str, dict[str, Any]],
+        extractor: DocumentExtractor,
+    ) -> ExtractionResult:
+        queued_at = time.perf_counter()
+        with _parallel_extraction_slots:
+            queue_wait = time.perf_counter() - queued_at
+            try:
+                return self._extract_side_observed(
+                    pdf_path,
+                    task_id,
+                    side_label,
+                    side=side,
+                    side_metrics=side_metrics,
+                    extractor=extractor,
+                )
+            finally:
+                metric = side_metrics.get(side)
+                if metric is not None:
+                    metric["queue_wait_duration_seconds"] = round(queue_wait, 6)
+
+    def _extract_pair_serial(
+        self,
+        ctx: PipelineContext,
+        side_metrics: dict[str, dict[str, Any]],
+    ) -> tuple[ExtractionResult, ExtractionResult]:
+        _emit_progress(ctx, 12, self.name, "original_extraction_started")
+        original = self._extract_side_observed(
+            ctx.original_pdf,
+            ctx.task.task_id,
+            "原版文件",
+            side="original",
+            side_metrics=side_metrics,
+            extractor=self.extractor,
+        )
+        _emit_progress(ctx, 22, self.name, "original_extraction_done")
+        _emit_progress(ctx, 24, self.name, "compare_extraction_started")
+        compare = self._extract_side_observed(
+            ctx.compare_pdf,
+            ctx.task.task_id,
+            "新版文件",
+            side="compare",
+            side_metrics=side_metrics,
+            extractor=self.extractor,
+        )
+        _emit_progress(ctx, 30, self.name, "compare_extraction_done")
+        return original, compare
+
+    def _extract_side(
+        self,
+        pdf_path: Path,
+        task_id: str,
+        side_label: str,
+        *,
+        extractor: DocumentExtractor | None = None,
+    ) -> ExtractionResult:
+        try:
+            result = (extractor or self.extractor).extract(pdf_path, task_id=task_id)
         except DocumentExtractionError as exc:
             raise DocumentExtractionError(f"{side_label}结构化 OCR 失败：{exc}") from exc
         if self.require_structured_ocr and result.extractor_used != "ppstructure_ocr_hybrid":
             raise DocumentExtractionError(
                 f"{side_label}结构化 OCR 失败：提取器返回了非结构化结果 {result.extractor_used or 'unknown'}"
             )
+        return result
+
+    def _extract_side_observed(
+        self,
+        pdf_path: Path,
+        task_id: str,
+        side_label: str,
+        *,
+        side: str,
+        side_metrics: dict[str, dict[str, Any]],
+        extractor: DocumentExtractor | None = None,
+    ) -> ExtractionResult:
+        started_at = time.perf_counter()
+        metric: dict[str, Any] = {
+            "file_size_bytes": pdf_path.stat().st_size if pdf_path.exists() else 0,
+            "status": "PROCESSING",
+        }
+        side_metrics[side] = metric
+        try:
+            result = self._extract_side(
+                pdf_path,
+                task_id,
+                side_label,
+                extractor=extractor,
+            )
+        except Exception as exc:
+            metric.update(
+                {
+                    "status": "FAILED",
+                    "duration_seconds": round(time.perf_counter() - started_at, 6),
+                    "error_type": type(exc).__name__,
+                }
+            )
+            raise
+        metric.update(
+            {
+                "status": "SUCCEEDED",
+                "duration_seconds": round(time.perf_counter() - started_at, 6),
+                "extractor_used": result.extractor_used,
+                "page_count": result.document.page_count,
+                "details": result.performance,
+            }
+        )
         return result
 
     def _ensure_profile(self, extraction: ExtractionResult) -> ExtractionResult:
@@ -448,7 +785,9 @@ class PreClauseDiffStage:
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.header_footer = HeaderFooterComparator()
-        self.footer_visual = FooterAnnotationVisualComparator()
+        self.footer_visual = FooterAnnotationVisualComparator(
+            max_inflight=settings.compare_footer_visual_max_inflight,
+        )
         self.cover_metadata = CoverMetadataComparator()
         self.table_comparator = TableComparator()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
@@ -1701,6 +2040,7 @@ class MatchStage:
             semantic_model=settings.matching.semantic_model,
             semantic_device=settings.matching.semantic_device,
             semantic_batch_size=settings.matching.semantic_batch_size,
+            semantic_max_inflight=settings.matching.semantic_max_inflight,
             semantic_timeout_seconds=settings.matching.semantic_timeout_seconds,
             semantic_max_retries=settings.matching.semantic_max_retries,
             semantic_weight=settings.matching.semantic_weight,
@@ -1711,6 +2051,7 @@ class MatchStage:
             rerank_api_key=settings.matching.rerank_api_key,
             rerank_model=settings.matching.rerank_model,
             rerank_top_k=settings.matching.rerank_top_k,
+            rerank_max_inflight=settings.matching.rerank_max_inflight,
             rerank_timeout_seconds=settings.matching.rerank_timeout_seconds,
             rerank_max_retries=settings.matching.rerank_max_retries,
             rerank_weight=settings.matching.rerank_weight,
@@ -1722,6 +2063,7 @@ class MatchStage:
         clauses = ctx.require_clauses()
         matches = ctx.set_matches(self.matcher.match(clauses.original_clauses, clauses.compare_clauses))
         _emit_progress(ctx, 53, self.name, "clause_match_done")
+        debug_started_at = time.perf_counter()
         _write_debug_artifact(
             ctx.task,
             "clause_matches",
@@ -1732,6 +2074,16 @@ class MatchStage:
             "match_matrix_summary",
             lambda: self.debug_writer.write_match_matrix_summary(ctx.task.task_id, matches.pairs),
         )
+        matching_metrics = dict(self.matcher.last_performance_metrics)
+        matching_metrics["debug_artifact_duration_seconds"] = round(
+            time.perf_counter() - debug_started_at,
+            6,
+        )
+        performance = ctx.task.metrics.setdefault("performance", {})
+        if not isinstance(performance, dict):
+            performance = {}
+            ctx.task.metrics["performance"] = performance
+        performance["matching"] = matching_metrics
         _emit_progress(ctx, 54, self.name, "match_debug_artifact_done")
 
 

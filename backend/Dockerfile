@@ -15,7 +15,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Application source
 COPY app/ ./app/
 COPY scripts/ ./scripts/
-COPY resources/quality_cases/ ./resources/quality_cases/
 
 # Create storage directory (mounted as volume at runtime)
 RUN mkdir -p /data/storage

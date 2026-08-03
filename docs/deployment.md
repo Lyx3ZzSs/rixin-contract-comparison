@@ -124,9 +124,6 @@ TASK_RUNNER_POLL_INTERVAL_SECONDS=0.25
 ```yaml
 environment:
   - STORAGE_DIR=/data/storage
-  - QUALITY_CASES_DIR=/data/storage/quality/cases
-  - QUALITY_RUNS_DIR=/data/storage/quality/runs
-  - QUALITY_CASES_SEED_DIR=/app/resources/quality_cases
   - FRONTEND_CORS_ORIGINS=http://localhost,http://127.0.0.1
 ```
 
@@ -147,10 +144,6 @@ docker compose up -d
 ```
 
 首次启动会自动构建镜像（如未提前构建）。后端容器会等待 health check 通过后，前端容器才启动。
-
-后端 API 进程在取得存储目录的单例锁后，会初始化质量案例。它把镜像中经过脱敏和批准的
-`QUALITY_CASES_SEED_DIR` 案例幂等初始化到持久卷内的 `QUALITY_CASES_DIR`，质量运行结果写入
-`QUALITY_RUNS_DIR`。已有同 case ID 的管理员案例不会覆盖；后续启动和重新初始化会原样保留它。
 
 ### 5.3 查看状态
 
@@ -191,30 +184,7 @@ docker compose up -d                # 滚动重启
       ocr/                 # OCR 原始结果
       debug/               # 调试输出
       reports/             # 生成的 PDF 报告
-  quality/
-    cases/                  # 管理员案例和镜像种子案例
-      seed-manifest.json    # 已应用镜像 seed_version 与案例 ID 元数据
-    runs/                   # 质量评估和回归运行输出
 ```
-
-`seed-manifest.json` 只记录最近成功应用的镜像 seed manifest 版本和清单，不声明目录中只有种子案例，
-也不会赋予初始化器覆盖管理员案例的权限。管理员通过质量工作台导出的案例会追加到同一 cases 目录，
-以后执行初始化仍不会覆盖。
-
-部署人员可以在容器内手工重复执行初始化：
-
-```bash
-docker compose exec backend python scripts/init_quality_cases.py
-```
-
-命令成功或失败都会输出结构化 JSON，并以非零退出码报告失败。`QUALITY_CASES_DIR` 与
-`QUALITY_CASES_SEED_DIR` 的解析结果必须彼此分离，不能相同或互为父子目录（包括符号链接解析后的
-关系）；违反时命令以 `QUALITY_CASES_PATH_CONFLICT` 失败，防止递归复制或修改只读种子。
-API 中不安全的 case、task、run 或 baseline 标识统一返回 HTTP 400 和 `QUALITY_PATH_INVALID`。
-
-初始化和管理员导出会在创建 staging 前、原子发布前以及 seed manifest 写入前重新解析并校验路径，
-从而关闭应用流程内可确定复现的符号链接切换窗口。此机制不承诺抵御已拥有 volume 文件系统写权限的
-恶意并发进程；生产环境仍必须限制 `/data/storage` 和镜像 seed 目录的操作系统写权限。
 
 ### 备份存储卷
 
@@ -368,6 +338,8 @@ services:
 
 ## 11. 安全建议
 
+- 生产环境保持 `AUTH_MODE=oidc` 和 `VITE_AUTH_MODE=oidc`；`disabled` 仅限本地开发或明确隔离的可信内网
+- 前后端认证模式及 `AUTH_DISABLED_USER_*` / `VITE_AUTH_DISABLED_USER_*` 固定身份配置必须一致
 - 不要将 `.env` 提交到 Git（已在 `.gitignore` 中排除）
 - 按部署环境配置 Keycloak 公共 OIDC 客户端的 authority、client ID、精确回调地址、登出回调地址和 Web Origin；前端使用授权码 + PKCE，不得配置 Client Secret
 - 配置 HTTPS（Let's Encrypt 或企业证书）

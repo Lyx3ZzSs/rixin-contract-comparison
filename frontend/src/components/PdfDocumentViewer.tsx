@@ -75,10 +75,10 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
     const hasAccessToken = Boolean(accessToken);
 
     useEffect(() => {
-      if (!src || !hasAccessToken || hidden) {
+      if (!src || hidden) {
         setPdf(null);
-        setLoadState(src && hasAccessToken ? "idle" : "error");
-        setLoadError(src ? "统一身份认证凭证不可用。" : "PDF 文件地址不可用。");
+        setLoadState(src ? "idle" : "error");
+        setLoadError(src ? "" : "PDF 文件地址不可用。");
         setCurrentPage(1);
         return;
       }
@@ -86,7 +86,7 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
       let isMounted = true;
       const loadingTask = pdfjsLib.getDocument({
         url: src,
-        httpHeaders: { Authorization: `Bearer ${accessTokenRef.current}` },
+        ...(hasAccessToken ? { httpHeaders: { Authorization: `Bearer ${accessTokenRef.current}` } } : {}),
       });
       setLoadState("loading");
       setLoadError("");

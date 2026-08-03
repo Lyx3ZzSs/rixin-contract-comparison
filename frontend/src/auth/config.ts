@@ -1,3 +1,7 @@
+import type { CurrentUser } from "./currentUser";
+
+export type AuthMode = "oidc" | "disabled";
+
 export interface AppOidcConfig {
   authority: string;
   client_id: string;
@@ -19,6 +23,39 @@ const requiredNames = [
 ] as const;
 
 export const REAUTH_ATTEMPT_KEY = "rixin_oidc_reauth_attempt";
+
+export function getAuthMode(): AuthMode {
+  const mode = (import.meta.env.VITE_AUTH_MODE?.trim().toLowerCase() || "oidc");
+  if (mode !== "oidc" && mode !== "disabled") {
+    throw new Error("VITE_AUTH_MODE 必须是 oidc 或 disabled。");
+  }
+  return mode;
+}
+
+export function getDisabledCurrentUser(): CurrentUser {
+  const sub = import.meta.env.VITE_AUTH_DISABLED_USER_SUB?.trim() || "local-dev";
+  const displayName = import.meta.env.VITE_AUTH_DISABLED_USER_NAME?.trim() || "本地开发用户";
+  const rawRoles = import.meta.env.VITE_AUTH_DISABLED_USER_ROLES?.trim()
+    || "agent_admin,agent_manager,agent_user";
+  const roles = new Set(rawRoles.split(",").map((role) => role.trim()).filter(Boolean));
+  const supportedRoles = new Set(["agent_admin", "agent_manager", "agent_user"]);
+  const unknownRoles = [...roles].filter((role) => !supportedRoles.has(role));
+  if (unknownRoles.length > 0) {
+    throw new Error(`VITE_AUTH_DISABLED_USER_ROLES 包含不支持的角色：${unknownRoles.join(", ")}`);
+  }
+  if (roles.size === 0) {
+    throw new Error("VITE_AUTH_DISABLED_USER_ROLES 在 disabled 模式下不能为空。");
+  }
+  return {
+    sub,
+    username: sub,
+    displayName,
+    email: "",
+    departmentCode: "",
+    departmentName: "本地模式",
+    roles,
+  };
+}
 
 export function getOidcConfig(): AppOidcConfig {
   const values = Object.fromEntries(requiredNames.map((name) => [name, import.meta.env[name]?.trim() ?? ""]));

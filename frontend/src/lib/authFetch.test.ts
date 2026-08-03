@@ -34,6 +34,19 @@ afterEach(() => {
 });
 
 describe("authorizedFetch", () => {
+  it("does not resolve OIDC state or add a bearer token in disabled mode", async () => {
+    vi.stubEnv("VITE_AUTH_MODE", "disabled");
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authorizedFetch("/api/tasks", { headers: { "X-Request-ID": "request-id" } });
+
+    expect(getUser).not.toHaveBeenCalled();
+    const headers = new Headers(fetchMock.mock.calls[0][1].headers);
+    expect(headers.get("Authorization")).toBeNull();
+    expect(headers.get("X-Request-ID")).toBe("request-id");
+  });
+
   it("adds the current access token while preserving request headers", async () => {
     getUser.mockResolvedValue({ access_token: "access-token", expired: false });
     const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));

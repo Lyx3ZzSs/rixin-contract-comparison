@@ -2,6 +2,10 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, vi } from "vitest";
 
 const oidcEnvironmentVariables = [
+  "VITE_AUTH_MODE",
+  "VITE_AUTH_DISABLED_USER_SUB",
+  "VITE_AUTH_DISABLED_USER_NAME",
+  "VITE_AUTH_DISABLED_USER_ROLES",
   "VITE_OIDC_AUTHORITY",
   "VITE_OIDC_CLIENT_ID",
   "VITE_OIDC_REDIRECT_URI",

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from rapidfuzz.fuzz import ratio
 
@@ -25,6 +28,7 @@ from app.services.extractors.base import DocumentExtractionError, ExtractionResu
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
 from app.services.extractors.ppstructure import PPStructureExtractor
 from app.services.layout_analysis import bbox_area, flow_role_for_region
+from app.services.pipeline_metrics import PerformanceRecorder
 from app.services.reading_order import assign_page_reading_order, reading_order_conflict_count
 from app.services.text_repair import (
     compact_text_for_repair,
@@ -50,6 +54,7 @@ class PPStructureOCRHybridExtractor:
         ocr_extractor: PPOCRV5Extractor | None = None,
         overlap_threshold: float | None = None,
         require_structure: bool = False,
+        component_parallel_enabled: bool | None = None,
         app_settings: Settings = settings,
         client_provider: HttpClientProvider = default_http_client_provider,
         artifact_store: ArtifactStore = default_artifact_store,
@@ -57,6 +62,11 @@ class PPStructureOCRHybridExtractor:
         self.settings = app_settings
         self.artifact_store = artifact_store
         self.require_structure = require_structure
+        self.component_parallel_enabled = (
+            app_settings.hybrid_component_parallel_enabled
+            if component_parallel_enabled is None
+            else component_parallel_enabled
+        )
         self.structure_extractor = structure_extractor or PPStructureExtractor(
             app_settings=app_settings,
             client_provider=client_provider,
@@ -72,36 +82,191 @@ class PPStructureOCRHybridExtractor:
         )
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
-        ocr_result = self.ocr_extractor.extract(path, task_id=task_id)
-        try:
-            structure_result = self.structure_extractor.extract(path, task_id=task_id)
-        except DocumentExtractionError as exc:
+        source_path = Path(path)
+        recorder = PerformanceRecorder()
+        if source_path.exists():
+            recorder.set_counter("file_size_bytes", source_path.stat().st_size)
+        recorder.set_counter(
+            "component_parallel_requested",
+            int(self.component_parallel_enabled),
+        )
+        shared_encoded_file = self._build_shared_encoded_file(source_path, recorder)
+        with recorder.measure("component_extraction"):
+            if self.component_parallel_enabled:
+                ocr_result, structure_result, structure_error = self._extract_components_parallel(
+                    path,
+                    task_id,
+                    recorder,
+                    shared_encoded_file,
+                )
+            else:
+                ocr_result, structure_result, structure_error = self._extract_components_serial(
+                    path,
+                    task_id,
+                    recorder,
+                    shared_encoded_file,
+                )
+        recorder.set_counter(
+            "component_parallel_used",
+            int(self.component_parallel_enabled),
+        )
+        if structure_error is not None:
+            recorder.increment("ppstructure_failure_count")
             if self.require_structure:
-                raise DocumentExtractionError(f"PP-Structure 结构识别失败: {exc}") from exc
+                raise DocumentExtractionError(f"PP-Structure 结构识别失败: {structure_error}") from structure_error
             ocr_result.extractor_used = "ppstructure_ocr_hybrid_ocr_only"
-            ocr_result.warnings.append(f"PP-Structure 结构识别失败，已使用 PP-OCRv5 文本继续处理: {exc}")
+            ocr_result.warnings.append(f"PP-Structure 结构识别失败，已使用 PP-OCRv5 文本继续处理: {structure_error}")
+            ocr_result.performance = {
+                **recorder.snapshot(),
+                "components": {
+                    "ppocrv5": ocr_result.performance,
+                    "ppstructure": {},
+                },
+            }
             return ocr_result
+        assert structure_result is not None
 
-        document = self._merge_documents(ocr_result.document, structure_result.document)
-        quality = self._build_layout_quality(document, structure_result.layout_quality)
+        with recorder.measure("document_merge"):
+            document = self._merge_documents(ocr_result.document, structure_result.document)
+            quality = self._build_layout_quality(document, structure_result.layout_quality)
         raw_result_path = self._merge_raw_paths(structure_result.raw_result_path, ocr_result.raw_result_path)
         if self.settings.save_ocr_raw_result and self.settings.hybrid_save_merged_raw and task_id:
-            merged_raw_path = self._save_merged_raw(
-                document,
-                task_id,
-                Path(path),
-                structure_result.raw_result_path,
-                ocr_result.raw_result_path,
-            )
+            with recorder.measure("merged_raw_result_write"):
+                merged_raw_path = self._save_merged_raw(
+                    document,
+                    task_id,
+                    source_path,
+                    structure_result.raw_result_path,
+                    ocr_result.raw_result_path,
+                )
             raw_result_path = self._merge_raw_paths(raw_result_path, merged_raw_path)
 
+        recorder.set_counter("page_count", document.page_count)
+        recorder.set_counter("text_block_count", sum(len(page.blocks) for page in document.pages))
+        performance = recorder.snapshot()
+        performance["components"] = {
+            "ppocrv5": ocr_result.performance,
+            "ppstructure": structure_result.performance,
+        }
         return ExtractionResult(
             document=document,
             extractor_used=self.name,
             raw_result_path=raw_result_path,
             warnings=[*structure_result.warnings, *ocr_result.warnings],
             layout_quality=quality,
+            performance=performance,
         )
+
+    def _extract_components_serial(
+        self,
+        path: str | Path,
+        task_id: str | None,
+        recorder: PerformanceRecorder,
+        shared_encoded_file: str | None,
+    ) -> tuple[ExtractionResult, ExtractionResult | None, DocumentExtractionError | None]:
+        with recorder.measure("ppocrv5_component"):
+            ocr_result = self._extract_component(
+                self.ocr_extractor,
+                path,
+                task_id,
+                shared_encoded_file,
+            )
+        try:
+            with recorder.measure("ppstructure_component"):
+                structure_result = self._extract_component(
+                    self.structure_extractor,
+                    path,
+                    task_id,
+                    shared_encoded_file,
+                )
+        except DocumentExtractionError as exc:
+            return ocr_result, None, exc
+        return ocr_result, structure_result, None
+
+    def _extract_components_parallel(
+        self,
+        path: str | Path,
+        task_id: str | None,
+        recorder: PerformanceRecorder,
+        shared_encoded_file: str | None,
+    ) -> tuple[ExtractionResult, ExtractionResult | None, DocumentExtractionError | None]:
+        def extract_ocr() -> ExtractionResult:
+            with recorder.measure("ppocrv5_component"):
+                return self._extract_component(
+                    self.ocr_extractor,
+                    path,
+                    task_id,
+                    shared_encoded_file,
+                )
+
+        def extract_structure() -> ExtractionResult:
+            with recorder.measure("ppstructure_component"):
+                return self._extract_component(
+                    self.structure_extractor,
+                    path,
+                    task_id,
+                    shared_encoded_file,
+                )
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="hybrid-ocr") as executor:
+            ocr_future = executor.submit(extract_ocr)
+            structure_future = executor.submit(extract_structure)
+            ocr_error: Exception | None = None
+            structure_error: Exception | None = None
+            try:
+                ocr_result = ocr_future.result()
+            except Exception as exc:
+                ocr_error = exc
+                ocr_result = None
+            try:
+                structure_result = structure_future.result()
+            except Exception as exc:
+                structure_error = exc
+                structure_result = None
+
+        if ocr_error is not None:
+            raise ocr_error
+        assert ocr_result is not None
+        if structure_error is None:
+            return ocr_result, structure_result, None
+        if isinstance(structure_error, DocumentExtractionError):
+            return ocr_result, None, structure_error
+        raise structure_error
+
+    def _build_shared_encoded_file(
+        self,
+        source_path: Path,
+        recorder: PerformanceRecorder,
+    ) -> str | None:
+        supports_shared_payload = all(
+            callable(getattr(extractor, "extract_with_encoded_file", None))
+            for extractor in (self.ocr_extractor, self.structure_extractor)
+        )
+        recorder.set_counter("shared_request_payload_supported", int(supports_shared_payload))
+        if not supports_shared_payload or not source_path.is_file() or source_path.suffix.lower() != ".pdf":
+            recorder.set_counter("shared_request_payload_used", 0)
+            return None
+        with recorder.measure("shared_request_file_encode"):
+            encoded_file = base64.b64encode(source_path.read_bytes()).decode("ascii")
+        recorder.set_counter("shared_request_payload_used", 1)
+        recorder.set_counter("shared_encoded_file_chars", len(encoded_file))
+        return encoded_file
+
+    @staticmethod
+    def _extract_component(
+        extractor: Any,
+        path: str | Path,
+        task_id: str | None,
+        shared_encoded_file: str | None,
+    ) -> ExtractionResult:
+        extract_with_encoded_file = getattr(extractor, "extract_with_encoded_file", None)
+        if shared_encoded_file is not None and callable(extract_with_encoded_file):
+            return extract_with_encoded_file(
+                path,
+                encoded_file=shared_encoded_file,
+                task_id=task_id,
+            )
+        return extractor.extract(path, task_id=task_id)
 
     def _merge_documents(self, ocr_document: Document, structure_document: Document) -> Document:
         structure_pages = {page.page_no: page for page in structure_document.pages}

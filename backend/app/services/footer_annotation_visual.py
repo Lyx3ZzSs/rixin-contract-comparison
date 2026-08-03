@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -210,9 +211,12 @@ class FooterAnnotationVisualComparator:
         self,
         renderer: FooterPageRenderer | None = None,
         registrar: PageRegistrar | None = None,
+        *,
+        max_inflight: int = 1,
     ) -> None:
         self.renderer = renderer or PyMuPdfPageRenderer()
         self.registrar = registrar or OpenCvPageRegistrar()
+        self.max_inflight = max(1, min(16, max_inflight))
 
     def build_diffs(
         self,
@@ -223,21 +227,29 @@ class FooterAnnotationVisualComparator:
     ) -> list[DiffItem]:
         original_pages = {page.page_no for page in original.pages}
         compare_pages = {page.page_no for page in compare.pages}
-        diffs: list[DiffItem] = []
-        next_index = start_index
-        for page_no in sorted(original_pages & compare_pages):
+        shared_pages = sorted(original_pages & compare_pages)
+
+        def compare_page(page_no: int) -> list[DiffItem]:
             original_page = self.renderer.render(str(original.path), page_no)
             compare_page = self.renderer.render(str(compare.path), page_no)
             if original_page is None or compare_page is None:
-                continue
-            page_diffs = self._page_diffs(
+                return []
+            return self._page_diffs(
                 original_page,
                 compare_page,
                 page_no=page_no,
-                start_index=next_index,
+                start_index=1,
             )
-            diffs.extend(page_diffs)
-            next_index += len(page_diffs)
+
+        worker_count = min(self.max_inflight, len(shared_pages))
+        if worker_count <= 1:
+            page_results = [compare_page(page_no) for page_no in shared_pages]
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="footer-visual") as executor:
+                page_results = list(executor.map(compare_page, shared_pages))
+        diffs = [diff for page_diffs in page_results for diff in page_diffs]
+        for offset, diff in enumerate(diffs):
+            diff.diff_id = generate_diff_id(start_index + offset)
         return diffs
 
     def remove_overlapping_ocr_diffs(

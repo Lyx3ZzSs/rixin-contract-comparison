@@ -69,9 +69,6 @@ class Settings(BaseSettings):
     ocr_dir: Path | None = None
     debug_dir: Path | None = None
     cache_dir: Path | None = None
-    quality_cases_dir: Path = Path("/data/storage/quality/cases")
-    quality_runs_dir: Path = Path("/data/storage/quality/runs")
-    quality_cases_seed_dir: Path = Path("/app/resources/quality_cases")
     max_upload_size_mb: int = Field(default=30, ge=1)
 
     # -- Document extraction/OCR ------------------------------------------
@@ -79,6 +76,13 @@ class Settings(BaseSettings):
     document_extractor: str = "auto"
     compare_document_extractor: str = "ppstructure_ocr_hybrid"
     compare_require_structured_ocr: bool = True
+    compare_parallel_extraction_enabled: bool = False
+    compare_parallel_extraction_max_inflight: int = Field(default=2, ge=1, le=16)
+    compare_footer_visual_max_inflight: int = Field(default=4, ge=1, le=16)
+    compare_native_fast_path_mode: str = "off"
+    compare_native_fast_path_min_chars_per_page: int = Field(default=80, ge=1)
+    compare_native_fast_path_min_char_box_coverage: float = Field(default=0.98, ge=0.0, le=1.0)
+    compare_native_fast_path_max_suspicious_char_ratio: float = Field(default=0.01, ge=0.0, le=1.0)
     pymupdf_min_text_chars: int = Field(default=1, ge=0)
     align_structured_extraction: bool = True
     save_ocr_raw_result: bool = True
@@ -109,6 +113,7 @@ class Settings(BaseSettings):
     hybrid_layout_overlap_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     hybrid_layout_center_fallback: bool = True
     hybrid_save_merged_raw: bool = True
+    hybrid_component_parallel_enabled: bool = False
 
     layout_analysis_mode: str = "v2"
 
@@ -142,6 +147,7 @@ class Settings(BaseSettings):
     match_semantic_model: str = ""
     match_semantic_device: str = "auto"
     match_semantic_batch_size: int = Field(default=32, ge=1)
+    match_semantic_max_inflight: int = Field(default=3, ge=1, le=16)
     match_semantic_timeout_seconds: int = Field(default=60, ge=1)
     match_semantic_max_retries: int = Field(default=2, ge=0)
     match_semantic_weight: float = Field(default=0.08, ge=0.0, le=0.3)
@@ -152,6 +158,7 @@ class Settings(BaseSettings):
     match_rerank_api_key: str = ""
     match_rerank_model: str = ""
     match_rerank_top_k: int = Field(default=30, ge=1, le=50)
+    match_rerank_max_inflight: int = Field(default=8, ge=1, le=16)
     match_rerank_timeout_seconds: int = Field(default=30, ge=1)
     match_rerank_max_retries: int = Field(default=1, ge=0)
     match_rerank_weight: float = Field(default=0.12, ge=0.0, le=0.5)
@@ -175,6 +182,10 @@ class Settings(BaseSettings):
 
     # -- OIDC resource server (flat env vars → nested model) ------------
 
+    auth_mode: str = "oidc"
+    auth_disabled_user_sub: str = "local-dev"
+    auth_disabled_user_name: str = "本地开发用户"
+    auth_disabled_user_roles: str = "agent_admin,agent_manager,agent_user"
     oidc_discovery_url: str = ""
     oidc_issuer: str = ""
     oidc_audience: str = ""
@@ -265,6 +276,14 @@ class Settings(BaseSettings):
             raise ValueError("LAYOUT_ANALYSIS_MODE must be one of: v2, v3, v3_shadow, shadow")
         return value
 
+    @field_validator("compare_native_fast_path_mode", mode="before")
+    @classmethod
+    def validate_compare_native_fast_path_mode(cls, value: Any) -> str:
+        mode = str(value or "off").strip().lower()
+        if mode not in {"off", "shadow", "enabled"}:
+            raise ValueError("COMPARE_NATIVE_FAST_PATH_MODE must be one of: off, shadow, enabled")
+        return mode
+
     @field_validator("signing_visual_backend", mode="before")
     @classmethod
     def validate_signing_visual_backend(cls, value: Any) -> str:
@@ -280,6 +299,14 @@ class Settings(BaseSettings):
         if algorithms != "RS256":
             raise ValueError("OIDC_ALLOWED_ALGORITHMS must be exactly RS256")
         return algorithms
+
+    @field_validator("auth_mode", mode="before")
+    @classmethod
+    def validate_auth_mode(cls, value: Any) -> str:
+        mode = str(value or "oidc").strip().lower()
+        if mode not in {"oidc", "disabled"}:
+            raise ValueError("AUTH_MODE must be one of: oidc, disabled")
+        return mode
 
     # -- Model validator: populate nested + storage subdirs --------------
 
@@ -308,6 +335,7 @@ class Settings(BaseSettings):
             semantic_model=self.match_semantic_model,
             semantic_device=self.match_semantic_device,
             semantic_batch_size=self.match_semantic_batch_size,
+            semantic_max_inflight=self.match_semantic_max_inflight,
             semantic_timeout_seconds=self.match_semantic_timeout_seconds,
             semantic_max_retries=self.match_semantic_max_retries,
             semantic_weight=self.match_semantic_weight,
@@ -318,6 +346,7 @@ class Settings(BaseSettings):
             rerank_api_key=self.match_rerank_api_key,
             rerank_model=self.match_rerank_model,
             rerank_top_k=self.match_rerank_top_k,
+            rerank_max_inflight=self.match_rerank_max_inflight,
             rerank_timeout_seconds=self.match_rerank_timeout_seconds,
             rerank_max_retries=self.match_rerank_max_retries,
             rerank_weight=self.match_rerank_weight,
@@ -366,14 +395,19 @@ class Settings(BaseSettings):
             layout_overlap_threshold=self.hybrid_layout_overlap_threshold,
             center_fallback=self.hybrid_layout_center_fallback,
             save_merged_raw=self.hybrid_save_merged_raw,
+            component_parallel_enabled=self.hybrid_component_parallel_enabled,
         )
 
         self.auth = AuthSettings(
+            mode=self.auth_mode,
             discovery_url=self.oidc_discovery_url,
             issuer=self.oidc_issuer,
             audience=self.oidc_audience,
             resource_client_id=self.oidc_resource_client_id,
             allowed_algorithms=tuple(self.oidc_allowed_algorithms.split(",")),
+            disabled_user_sub=self.auth_disabled_user_sub,
+            disabled_user_name=self.auth_disabled_user_name,
+            disabled_user_roles=self.auth_disabled_user_roles,
         )
 
         # Resolve storage paths
@@ -403,20 +437,11 @@ class Settings(BaseSettings):
             self.cache_dir = storage_dir / "cache"
         else:
             self.cache_dir = self._resolve_runtime_path(self.cache_dir)
-        self.quality_cases_dir = self._resolve_quality_path(self.quality_cases_dir)
-        self.quality_runs_dir = self._resolve_quality_path(self.quality_runs_dir)
-        self.quality_cases_seed_dir = self._resolve_quality_path(self.quality_cases_seed_dir)
 
         return self
 
     def _resolve_runtime_path(self, path: Path) -> Path:
         return path if path.is_absolute() else BASE_DIR / path
-
-    def _resolve_quality_path(self, path: Path) -> Path:
-        expanded = path.expanduser()
-        if not expanded.is_absolute():
-            expanded = BASE_DIR / expanded
-        return expanded.resolve()
 
     @property
     def storage_subdirs(self) -> list[Path]:

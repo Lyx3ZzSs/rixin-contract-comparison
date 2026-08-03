@@ -72,7 +72,15 @@ class CandidateRecallMixin:
         def get_semantic_choices() -> dict[int, list[float]]:
             nonlocal semantic_choices
             if semantic_choices is None:
-                semantic_choices = self.semantic_matcher.prepare(compare) if self.semantic_matcher.enabled else {}
+                if not self.semantic_matcher.enabled:
+                    semantic_choices = {}
+                else:
+                    prepare_pair = getattr(self.semantic_matcher, "prepare_pair", None)
+                    semantic_choices = (
+                        prepare_pair(original, compare)
+                        if callable(prepare_pair)
+                        else self.semantic_matcher.prepare(compare)
+                    )
             return semantic_choices
 
         for original_index, left in enumerate(original):
@@ -133,6 +141,7 @@ class CandidateRecallMixin:
             semantic_scoring_choices: dict[int, list[float]] = {}
             semantic_recall_applied = False
             if self._should_apply_semantic_recall(rule_candidate_count):
+                self._performance.increment("semantic_recall_clause_count")
                 semantic_scoring_choices = get_semantic_choices()
                 if semantic_scoring_choices:
                     semantic_recall_applied = True
@@ -192,8 +201,15 @@ class CandidateRecallMixin:
         if not self.rerank_matcher.enabled or not candidates:
             return candidates
         rerank_by_key: dict[tuple[str, str], tuple[float, str]] = {}
-        for group in self._rerank_groups(candidates):
-            rerank_scores = self.rerank_matcher.score_candidates(group)
+        groups = self._rerank_groups(candidates)
+        self._performance.set_counter("rerank_candidate_group_count", len(groups))
+        score_groups = getattr(self.rerank_matcher, "score_candidate_groups", None)
+        grouped_scores = (
+            score_groups(groups)
+            if callable(score_groups)
+            else [self.rerank_matcher.score_candidates(group) for group in groups]
+        )
+        for group, rerank_scores in zip(groups, grouped_scores, strict=False):
             if not any(available for _, available, _ in rerank_scores):
                 continue
             for candidate, (rerank_score, available, reason) in zip(group, rerank_scores, strict=False):
@@ -227,7 +243,9 @@ class CandidateRecallMixin:
             self._apply_matcher_guard_details(details)
             score = self._weighted_score(details)
             method = self._match_method(candidate.original, candidate.compare, details, score)
-            reranked.append(MatchCandidate(candidate.original, candidate.compare, score, method, details, candidate.sources))
+            reranked.append(
+                MatchCandidate(candidate.original, candidate.compare, score, method, details, candidate.sources)
+            )
         reranked.sort(
             key=lambda item: (
                 item.score,

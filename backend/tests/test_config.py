@@ -50,10 +50,19 @@ def test_ensure_storage_only_precreates_tasks_directory(tmp_path: Path) -> None:
 
 
 def test_compare_defaults_to_strict_structured_ocr() -> None:
-    app_settings = Settings()
+    app_settings = Settings(_env_file=None)
 
     assert app_settings.compare_document_extractor == "ppstructure_ocr_hybrid"
     assert app_settings.compare_require_structured_ocr is True
+    assert app_settings.compare_parallel_extraction_enabled is False
+    assert app_settings.compare_parallel_extraction_max_inflight == 2
+    assert app_settings.compare_footer_visual_max_inflight == 4
+    assert app_settings.compare_native_fast_path_mode == "off"
+    assert app_settings.compare_native_fast_path_min_chars_per_page == 80
+    assert app_settings.compare_native_fast_path_min_char_box_coverage == 0.98
+    assert app_settings.compare_native_fast_path_max_suspicious_char_ratio == 0.01
+    assert app_settings.hybrid_component_parallel_enabled is False
+    assert app_settings.hybrid.component_parallel_enabled is False
 
 
 def test_compare_rejects_non_structured_extractor_in_strict_mode() -> None:
@@ -71,6 +80,23 @@ def test_compare_allows_non_structured_extractor_when_strict_mode_is_disabled() 
     )
 
     assert app_settings.compare_document_extractor == "pymupdf"
+
+
+def test_native_fast_path_mode_accepts_rollout_modes() -> None:
+    assert Settings(compare_native_fast_path_mode="shadow").compare_native_fast_path_mode == "shadow"
+    assert Settings(compare_native_fast_path_mode="ENABLED").compare_native_fast_path_mode == "enabled"
+
+
+def test_native_fast_path_mode_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError, match="COMPARE_NATIVE_FAST_PATH_MODE"):
+        Settings(compare_native_fast_path_mode="automatic")
+
+
+def test_hybrid_component_parallel_config_maps_to_nested_settings() -> None:
+    app_settings = Settings(hybrid_component_parallel_enabled=True)
+
+    assert app_settings.hybrid_component_parallel_enabled is True
+    assert app_settings.hybrid.component_parallel_enabled is True
 
 
 def test_layout_analysis_mode_rejects_unknown_value() -> None:
@@ -107,6 +133,7 @@ def test_semantic_matching_config_maps_to_nested_settings() -> None:
         match_semantic_model="bge-small-zh-v1.5",
         match_semantic_device="cpu",
         match_semantic_batch_size=16,
+        match_semantic_max_inflight=4,
         match_semantic_timeout_seconds=30,
         match_semantic_max_retries=1,
         match_semantic_weight=0.1,
@@ -117,6 +144,7 @@ def test_semantic_matching_config_maps_to_nested_settings() -> None:
         match_rerank_api_key="rerank-key",
         match_rerank_model="clause-reranker",
         match_rerank_top_k=25,
+        match_rerank_max_inflight=6,
         match_rerank_timeout_seconds=12,
         match_rerank_max_retries=0,
         match_rerank_weight=0.2,
@@ -130,6 +158,7 @@ def test_semantic_matching_config_maps_to_nested_settings() -> None:
     assert app_settings.matching.semantic_model == "bge-small-zh-v1.5"
     assert app_settings.matching.semantic_device == "cpu"
     assert app_settings.matching.semantic_batch_size == 16
+    assert app_settings.matching.semantic_max_inflight == 4
     assert app_settings.matching.semantic_timeout_seconds == 30
     assert app_settings.matching.semantic_max_retries == 1
     assert app_settings.matching.semantic_weight == 0.1
@@ -140,6 +169,7 @@ def test_semantic_matching_config_maps_to_nested_settings() -> None:
     assert app_settings.matching.rerank_api_key == "rerank-key"
     assert app_settings.matching.rerank_model == "clause-reranker"
     assert app_settings.matching.rerank_top_k == 25
+    assert app_settings.matching.rerank_max_inflight == 6
     assert app_settings.matching.rerank_timeout_seconds == 12
     assert app_settings.matching.rerank_max_retries == 0
     assert app_settings.matching.rerank_weight == 0.2

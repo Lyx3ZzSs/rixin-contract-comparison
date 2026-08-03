@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.errors import DocumentProcessingError
 from app.models import Document, DocumentProfile, LayoutQualityReport
@@ -20,6 +20,7 @@ class ExtractionResult:
     warnings: list[str] = field(default_factory=list)
     profile: DocumentProfile | None = None
     layout_quality: LayoutQualityReport | None = None
+    performance: dict[str, Any] = field(default_factory=dict)
 
 
 class DocumentExtractor(Protocol):

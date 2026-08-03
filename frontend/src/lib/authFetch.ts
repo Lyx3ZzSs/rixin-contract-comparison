@@ -1,4 +1,4 @@
-import { currentInternalPath, REAUTH_ATTEMPT_KEY } from "../auth/config";
+import { currentInternalPath, getAuthMode, REAUTH_ATTEMPT_KEY } from "../auth/config";
 import { getUserManager } from "../auth/userManager";
 
 const statusMessages: Record<number, string> = {
@@ -28,6 +28,9 @@ export async function authorizedFetch(
   const cancellation = mergeAbortSignals(init?.signal ?? undefined, options?.timeoutMs);
   try {
     throwIfAborted(cancellation.signal);
+    if (getAuthMode() === "disabled") {
+      return await fetch(input, { ...init, signal: cancellation.signal });
+    }
     const manager = getUserManager();
     let user = await waitForAbortable(manager.getUser(), cancellation.signal);
     throwIfAborted(cancellation.signal);

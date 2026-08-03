@@ -60,11 +60,23 @@ npm run dev
 
 ## 统一身份认证（Keycloak）
 
+认证由前后端一致的模式开关控制，默认保持 OIDC：
+
+```env
+AUTH_MODE=oidc
+VITE_AUTH_MODE=oidc
+```
+
+本地开发或明确隔离的可信内网可将两项都设为 `disabled`。后端不会移除用户语义，而是使用
+`AUTH_DISABLED_USER_SUB`、`AUTH_DISABLED_USER_NAME` 和 `AUTH_DISABLED_USER_ROLES`
+配置的固定身份；前端使用对应的 `VITE_AUTH_DISABLED_USER_*` 值展示用户与菜单。关闭认证意味着
+后端 API 不再校验访问凭证，不得用于公网或不可信网络。修改 `VITE_*` 后需要重新构建前端。
+
 前端本地开发必须使用 `http://127.0.0.1:5173/`，当前认证注册未授权 `localhost:5173`。未登录访问任意页面会自动跳转 Keycloak，并经 `/callback` 回到同一应用内的安全路径。
 
 前端使用公有客户端 `rixin-contract-comparison-web` 的授权码 + PKCE 流程，所有 OIDC 协议状态只保存在浏览器 `sessionStorage`；不要在前端添加 Client Secret。后端通过 discovery 文档获取签名密钥，验证 RS256 签名、issuer、过期时间和 API audience，并只从 `resource_access.rixin-contract-comparison-api.roles` 读取角色。
 
-- `agent_admin`：管理后台、质量工作台及全部新建任务。
+- `agent_admin`：管理后台及全部新建任务。
 - `agent_manager`、`agent_user`：仅能查看和操作本人创建的任务。
 
 任务所有权以 Keycloak 的 `sub` 固化；无 `owner_sub` 的历史任务不会迁移，并会从列表隐藏且直接访问返回 404（管理员亦然）。测试账号请向认证管理员申请。此前通过非安全渠道暴露的后端凭据应立即轮换；本 Resource Server 的 JWT 校验不需要该凭据。

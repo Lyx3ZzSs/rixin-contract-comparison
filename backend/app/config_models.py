@@ -20,6 +20,7 @@ class HybridSettings(BaseModel):
     layout_overlap_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     center_fallback: bool = True
     save_merged_raw: bool = True
+    component_parallel_enabled: bool = False
 
 
 class PPOCRV5Settings(BaseModel):
@@ -83,6 +84,7 @@ class MatchingSettings(BaseModel):
     semantic_model: str = ""
     semantic_device: str = "auto"
     semantic_batch_size: int = Field(default=32, ge=1)
+    semantic_max_inflight: int = Field(default=3, ge=1, le=16)
     semantic_timeout_seconds: int = Field(default=60, ge=1)
     semantic_max_retries: int = Field(default=2, ge=0)
     semantic_weight: float = Field(default=0.08, ge=0.0, le=0.3)
@@ -93,6 +95,7 @@ class MatchingSettings(BaseModel):
     rerank_api_key: str = ""
     rerank_model: str = ""
     rerank_top_k: int = Field(default=30, ge=1, le=50)
+    rerank_max_inflight: int = Field(default=8, ge=1, le=16)
     rerank_timeout_seconds: int = Field(default=30, ge=1)
     rerank_max_retries: int = Field(default=1, ge=0)
     rerank_weight: float = Field(default=0.12, ge=0.0, le=0.5)

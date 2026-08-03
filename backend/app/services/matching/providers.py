@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
 
 from app.models import Clause
 from app.services.matching.types import MatchCandidate
+from app.services.pipeline_metrics import PerformanceRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,7 @@ class SemanticMatcher:
         model: str = "",
         device: str = "auto",
         batch_size: int = 32,
+        max_inflight: int = 3,
         timeout_seconds: int = 60,
         max_retries: int = 2,
     ) -> None:
@@ -37,16 +41,23 @@ class SemanticMatcher:
         self.model_name = model.strip()
         self.device = device.strip() or "auto"
         self.batch_size = max(1, batch_size)
+        self.max_inflight = max(1, min(16, max_inflight))
         self.timeout_seconds = max(1, timeout_seconds)
         self.max_retries = max(0, max_retries)
         self.local_model = None
         self._cache: dict[str, list[float]] = {}
+        self._http_client: httpx.Client | None = None
+        self._http_client_lock = threading.Lock()
+        self.performance_recorder: PerformanceRecorder | None = None
         if not enabled:
             return
         if self.provider == "openai":
             self._enable_openai()
         else:
             self._enable_local()
+
+    def set_performance_recorder(self, recorder: PerformanceRecorder | None) -> None:
+        self.performance_recorder = recorder
 
     def _enable_local(self) -> None:
         if not self.model_path:
@@ -83,6 +94,21 @@ class SemanticMatcher:
         vectors = self._embeddings(texts)
         return {index: vector for index, vector in enumerate(vectors) if vector}
 
+    def prepare_pair(
+        self,
+        original: list[Clause],
+        compare: list[Clause],
+    ) -> dict[int, list[float]]:
+        """Batch both sides once while returning vectors indexed for compare."""
+        compare_count = len(compare)
+        vectors = self._embeddings(
+            [
+                *(self._semantic_text(clause) for clause in compare),
+                *(self._semantic_text(clause) for clause in original),
+            ]
+        )
+        return {index: vector for index, vector in enumerate(vectors[:compare_count]) if vector}
+
     def top_k(
         self,
         query: Clause,
@@ -93,11 +119,7 @@ class SemanticMatcher:
         score_cutoff: float,
     ) -> list[int]:
         query_vector = self._embedding(self._semantic_text(query))
-        scored = [
-            (self._cosine_score(query_vector, vector), index)
-            for index, vector in choices.items()
-            if vector
-        ]
+        scored = [(self._cosine_score(query_vector, vector), index) for index, vector in choices.items() if vector]
         scored = [(score, index) for score, index in scored if score >= score_cutoff]
         scored.sort(key=lambda item: item[0], reverse=True)
         return [index for _, index in scored[:limit] if index < len(compare)]
@@ -156,10 +178,19 @@ class SemanticMatcher:
     def _embed_openai(self, texts: list[str]) -> list[list[float]]:
         if not self.enabled or not texts:
             return [[] for _ in texts]
-        vectors: list[list[float]] = []
-        for start in range(0, len(texts), self.batch_size):
-            batch = texts[start : start + self.batch_size]
-            vectors.extend(self._post_openai_embeddings(batch))
+        batches = [texts[start : start + self.batch_size] for start in range(0, len(texts), self.batch_size)]
+        worker_count = min(self.max_inflight, len(batches))
+        recorder = self.performance_recorder
+        if recorder is not None:
+            recorder.set_counter("embedding_max_inflight", self.max_inflight)
+            recorder.set_counter("embedding_parallel_worker_count", worker_count)
+        if worker_count <= 1:
+            batch_vectors = [self._post_openai_embeddings(batch) for batch in batches]
+        else:
+            self._get_http_client()
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="semantic-embedding") as executor:
+                batch_vectors = list(executor.map(self._post_openai_embeddings, batches))
+        vectors = [vector for batch in batch_vectors for vector in batch]
         if len(vectors) != len(texts):
             logger.warning("Semantic matching disabled: embedding response count mismatch.")
             self.enabled = False
@@ -174,20 +205,58 @@ class SemanticMatcher:
         body = {"model": self.model_name, "input": texts}
         attempts = self.max_retries + 1
         last_error: Exception | None = None
+        recorder = self.performance_recorder
+        if recorder is not None:
+            recorder.increment("embedding_batch_count")
+            recorder.increment("embedding_input_count", len(texts))
         for _ in range(attempts):
             try:
-                with httpx.Client(timeout=self.timeout_seconds) as client:
-                    response = client.post(endpoint, headers=headers, json=body)
-                    response.raise_for_status()
-                    return self._parse_openai_embeddings(
-                        response.json(),
-                        expected_count=len(texts),
+                if recorder is not None:
+                    recorder.increment("embedding_http_request_count")
+                    with recorder.measure("embedding_http_request"):
+                        response = self._get_http_client().post(
+                            endpoint,
+                            headers=headers,
+                            json=body,
+                        )
+                        response.raise_for_status()
+                        payload = response.json()
+                else:
+                    response = self._get_http_client().post(
+                        endpoint,
+                        headers=headers,
+                        json=body,
                     )
+                    response.raise_for_status()
+                    payload = response.json()
+                return self._parse_openai_embeddings(
+                    payload,
+                    expected_count=len(texts),
+                )
             except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
                 last_error = exc
+                if recorder is not None:
+                    recorder.increment("embedding_http_failure_count")
         logger.warning("Semantic matching disabled: OpenAI-compatible embedding request failed (%s).", last_error)
         self.enabled = False
         return [[] for _ in texts]
+
+    def _get_http_client(self) -> httpx.Client:
+        with self._http_client_lock:
+            if self._http_client is None:
+                self._http_client = httpx.Client(timeout=self.timeout_seconds)
+                if self.performance_recorder is not None:
+                    self.performance_recorder.increment("embedding_http_client_create_count")
+            return self._http_client
+
+    def close(self) -> None:
+        with self._http_client_lock:
+            client = self._http_client
+            self._http_client = None
+        if client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
 
     @staticmethod
     def _parse_openai_embeddings(payload: dict[str, Any], *, expected_count: int) -> list[list[float]]:
@@ -233,6 +302,7 @@ class RerankMatcher:
         base_url: str = "",
         api_key: str = "",
         model: str = "",
+        max_inflight: int = 8,
         timeout_seconds: int = 30,
         max_retries: int = 1,
     ) -> None:
@@ -240,14 +310,21 @@ class RerankMatcher:
         self.base_url = base_url.strip().rstrip("/")
         self.api_key = api_key.strip()
         self.model_name = model.strip()
+        self.max_inflight = max(1, min(16, max_inflight))
         self.timeout_seconds = max(1, timeout_seconds)
         self.max_retries = max(0, max_retries)
+        self._http_client: httpx.Client | None = None
+        self._http_client_lock = threading.Lock()
+        self.performance_recorder: PerformanceRecorder | None = None
         if not enabled:
             return
         if not self.base_url:
             logger.warning("Clause rerank is enabled but MATCH_RERANK_BASE_URL is empty.")
             return
         self.enabled = True
+
+    def set_performance_recorder(self, recorder: PerformanceRecorder | None) -> None:
+        self.performance_recorder = recorder
 
     def score_candidates(self, candidates: list[MatchCandidate]) -> list[tuple[float, bool, str]]:
         if not self.enabled or not candidates:
@@ -267,17 +344,72 @@ class RerankMatcher:
             body["model"] = self.model_name
         attempts = self.max_retries + 1
         last_error: Exception | None = None
+        recorder = self.performance_recorder
+        if recorder is not None:
+            recorder.increment("rerank_group_count")
+            recorder.increment("rerank_document_count", len(documents))
         for _ in range(attempts):
             try:
-                with httpx.Client(timeout=self.timeout_seconds) as client:
-                    response = client.post(endpoint, headers=headers, json=body)
+                if recorder is not None:
+                    recorder.increment("rerank_http_request_count")
+                    with recorder.measure("rerank_http_request"):
+                        response = self._get_http_client().post(
+                            endpoint,
+                            headers=headers,
+                            json=body,
+                        )
+                        response.raise_for_status()
+                        payload = response.json()
+                else:
+                    response = self._get_http_client().post(
+                        endpoint,
+                        headers=headers,
+                        json=body,
+                    )
                     response.raise_for_status()
-                    return self._parse_scores(response.json(), expected_count=len(candidates))
+                    payload = response.json()
+                return self._parse_scores(payload, expected_count=len(candidates))
             except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
                 last_error = exc
+                if recorder is not None:
+                    recorder.increment("rerank_http_failure_count")
         logger.warning("Clause rerank disabled: rerank request failed (%s).", last_error)
         self.enabled = False
         return [(0.0, False, "") for _ in candidates]
+
+    def score_candidate_groups(
+        self,
+        groups: list[list[MatchCandidate]],
+    ) -> list[list[tuple[float, bool, str]]]:
+        if not self.enabled or not groups:
+            return [[(0.0, False, "") for _ in group] for group in groups]
+        worker_count = min(self.max_inflight, len(groups))
+        recorder = self.performance_recorder
+        if recorder is not None:
+            recorder.set_counter("rerank_max_inflight", self.max_inflight)
+            recorder.set_counter("rerank_parallel_worker_count", worker_count)
+        if worker_count <= 1:
+            return [self.score_candidates(group) for group in groups]
+        self._get_http_client()
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="clause-rerank") as executor:
+            return list(executor.map(self.score_candidates, groups))
+
+    def _get_http_client(self) -> httpx.Client:
+        with self._http_client_lock:
+            if self._http_client is None:
+                self._http_client = httpx.Client(timeout=self.timeout_seconds)
+                if self.performance_recorder is not None:
+                    self.performance_recorder.increment("rerank_http_client_create_count")
+            return self._http_client
+
+    def close(self) -> None:
+        with self._http_client_lock:
+            client = self._http_client
+            self._http_client = None
+        if client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
 
     @staticmethod
     def _parse_scores(payload: dict[str, Any], *, expected_count: int) -> list[tuple[float, bool, str]]:

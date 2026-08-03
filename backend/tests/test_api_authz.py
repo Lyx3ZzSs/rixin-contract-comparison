@@ -84,11 +84,11 @@ def test_mutations_require_an_application_role_and_ignore_forged_reviewer(tmp_pa
     assert own.json()["diff"]["reviewed_by"] == USER_A.sub
 
 
-def test_quality_workbench_requires_admin() -> None:
+def test_retired_quality_workbench_returns_not_found() -> None:
     client = TestClient(app)
 
     _as(USER_A)
-    assert client.get("/api/quality/cases").status_code == 403
+    assert client.get("/api/quality/cases").status_code == 404
 
     _as(ADMIN)
-    assert client.get("/api/quality/cases").status_code == 200
+    assert client.get("/api/quality/cases").status_code == 404

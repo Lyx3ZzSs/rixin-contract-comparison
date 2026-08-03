@@ -105,9 +105,6 @@ def configure_storage(tmp_path: Path) -> None:
     settings.reports_dir = settings.storage_dir / "reports"
     settings.ocr_dir = settings.storage_dir / "ocr"
     settings.debug_dir = settings.storage_dir / "debug"
-    settings.quality_cases_dir = settings.storage_dir / "quality" / "cases"
-    settings.quality_runs_dir = settings.storage_dir / "quality" / "runs"
-    settings.quality_cases_seed_dir = Path(__file__).parents[1] / "resources" / "quality_cases"
     settings.document_extractor = "auto"
     settings.compare_document_extractor = "auto"
     settings.compare_require_structured_ocr = False

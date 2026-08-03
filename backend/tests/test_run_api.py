@@ -84,57 +84,6 @@ def test_main_adds_backend_root_before_starting_uvicorn(monkeypatch: pytest.Monk
     assert backend_root in observed_paths[0]
 
 
-def test_main_configures_local_quality_paths_when_not_explicit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    run_api = _run_api_module()
-    observed_environment: list[dict[str, str]] = []
-    fake_uvicorn = SimpleNamespace(
-        run=lambda *_args, **_kwargs: observed_environment.append(dict(run_api.os.environ))
-    )
-    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
-    for name in (
-        "QUALITY_CASES_DIR",
-        "QUALITY_RUNS_DIR",
-        "QUALITY_CASES_SEED_DIR",
-    ):
-        monkeypatch.delenv(name, raising=False)
-
-    run_api.main()
-
-    repository_root = Path(run_api.__file__).resolve().parents[2]
-    assert observed_environment[0]["QUALITY_CASES_DIR"] == str(
-        repository_root / "storage" / "quality" / "cases"
-    )
-    assert observed_environment[0]["QUALITY_RUNS_DIR"] == str(
-        repository_root / "storage" / "quality" / "runs"
-    )
-    assert observed_environment[0]["QUALITY_CASES_SEED_DIR"] == str(
-        repository_root / "backend" / "resources" / "quality_cases"
-    )
-
-
-def test_main_preserves_explicit_quality_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_api = _run_api_module()
-    observed_environment: list[dict[str, str]] = []
-    fake_uvicorn = SimpleNamespace(
-        run=lambda *_args, **_kwargs: observed_environment.append(dict(run_api.os.environ))
-    )
-    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
-    explicit = {
-        "QUALITY_CASES_DIR": "/custom/cases",
-        "QUALITY_RUNS_DIR": "/custom/runs",
-        "QUALITY_CASES_SEED_DIR": "/custom/seeds",
-    }
-    for name, value in explicit.items():
-        monkeypatch.setenv(name, value)
-
-    run_api.main()
-
-    for name, value in explicit.items():
-        assert observed_environment[0][name] == value
-
-
 def test_top_level_docs_only_document_the_supported_run_api_startup() -> None:
     repository_root = Path(__file__).parents[2]
     for name in ("README.md", "CLAUDE.md"):

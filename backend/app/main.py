@@ -14,7 +14,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as compare_router
-from app.api_quality import router as quality_router
 from app.auth.errors import IdentityProviderUnavailable
 from app.auth.runtime import AuthRuntime
 from app.application.submission_recovery import SubmissionRecoveryService
@@ -28,7 +27,6 @@ from app.infrastructure.task_repository import default_task_repository
 from app.infrastructure.task_runner import default_task_runner
 from app.logging_config import log_event, setup_logging
 from app.services.models.setup import register_default_models, teardown_models
-from app.services.quality_workbench import initialize_quality_cases
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -46,7 +44,6 @@ async def lifespan(app: FastAPI):
     try:
         settings.ensure_storage()
         CompareTaskIndex(settings).rebuild_if_missing()
-        initialize_quality_cases(settings.quality_cases_dir, settings.quality_cases_seed_dir)
         default_task_repository.resolve()
         if not submission_recovery_service.recover_all():
             logger.error("Some pending submission compensation actions remain after startup recovery")
@@ -59,10 +56,16 @@ async def lifespan(app: FastAPI):
         default_task_runner.start()
         register_default_models()
 
-        try:
-            auth_runtime.prewarm()
-        except IdentityProviderUnavailable:
-            logger.warning("OIDC signing keys are unavailable; authenticated requests will return 503 until recovery")
+        if settings.auth.is_oidc:
+            try:
+                auth_runtime.prewarm()
+            except IdentityProviderUnavailable:
+                logger.warning("OIDC signing keys are unavailable; authenticated requests will return 503 until recovery")
+        else:
+            logger.warning(
+                "Authentication is disabled; all requests use the fixed local identity sub=%s",
+                settings.auth.disabled_user_sub,
+            )
 
         from app.services.progress_bus import ProgressBus
 
@@ -94,7 +97,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(compare_router)
-app.include_router(quality_router)
 
 
 @app.get("/health")

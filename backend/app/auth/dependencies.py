@@ -18,6 +18,8 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     runtime: AuthRuntime = Depends(get_auth_runtime),
 ) -> CurrentUser:
+    if not runtime.settings.is_oidc:
+        return runtime.settings.disabled_user
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=401,

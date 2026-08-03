@@ -31,6 +31,23 @@ function renderViewer() {
   );
 }
 
+function renderViewerWithoutToken() {
+  return render(
+    <PdfDocumentViewer
+      side="original"
+      src="http://api.test/file.pdf"
+      accessToken=""
+      title="原版"
+      diffs={[]}
+      zoom={1}
+      activeDiffId=""
+      syncEnabled={false}
+      onScrollRatio={vi.fn()}
+      onActivateDiff={vi.fn()}
+    />,
+  );
+}
+
 describe("PdfDocumentViewer load errors", () => {
   it("loads the PDF with the supplied Bearer token", () => {
     getDocument.mockReturnValueOnce({ promise: new Promise(() => undefined), destroy: vi.fn() });
@@ -39,6 +56,12 @@ describe("PdfDocumentViewer load errors", () => {
       url: "http://api.test/file.pdf",
       httpHeaders: { Authorization: "Bearer test-token" },
     });
+  });
+
+  it("loads the PDF without authorization headers in disabled mode", () => {
+    getDocument.mockReturnValueOnce({ promise: new Promise(() => undefined), destroy: vi.fn() });
+    renderViewerWithoutToken();
+    expect(getDocument).toHaveBeenCalledWith({ url: "http://api.test/file.pdf" });
   });
 
   it("does not reload the PDF when silent renewal replaces the access token", () => {

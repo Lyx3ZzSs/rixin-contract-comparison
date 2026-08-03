@@ -8,14 +8,8 @@ import { AppProvider } from "./lib/state";
 vi.mock("./pages/UploadPage", () => ({ UploadPage: () => <div>Mock Upload Page</div> }));
 vi.mock("./pages/ComparisonRecordsPage", () => ({ ComparisonRecordsPage: () => <div>Mock Records Page</div> }));
 vi.mock("./pages/ResultPage", () => ({ ResultPage: () => <div>Mock Result Page</div> }));
-vi.mock("./pages/QualityWorkbenchPage", () => ({ QualityWorkbenchPage: () => <div>Mock Quality Workbench</div> }));
 
 const signoutRedirect = vi.fn().mockResolvedValue(undefined);
-let authUser: { access_token: string; profile: Record<string, unknown> };
-
-vi.mock("react-oidc-context", () => ({
-  useAuth: () => ({ user: authUser, signoutRedirect }),
-}));
 
 function token(roles: string[]): string {
   const payload = btoa(unescape(encodeURIComponent(JSON.stringify({
@@ -29,11 +23,22 @@ function token(roles: string[]): string {
 }
 
 function renderAuthenticatedApp(pathname = "/", roles = ["agent_user"]) {
-  authUser = { access_token: token(roles), profile: {} };
   window.history.pushState({}, "", pathname);
   render(
     <AppProvider>
-      <App />
+      <App
+        currentUser={{
+          sub: "keycloak-user",
+          username: "tester",
+          displayName: "测试用户",
+          email: "",
+          departmentCode: "",
+          departmentName: "信息技术部",
+          roles: new Set(roles),
+        }}
+        accessToken={token(roles)}
+        onSignOut={() => void signoutRedirect()}
+      />
     </AppProvider>,
   );
 }
@@ -47,23 +52,17 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("renders the quality workbench for an administrator", () => {
+  it("routes the retired quality workbench path to home", () => {
     renderAuthenticatedApp("/quality/workbench", ["agent_admin"]);
-    expect(screen.getByText("Mock Quality Workbench")).toBeInTheDocument();
+    expect(screen.getByText("Mock Upload Page")).toBeInTheDocument();
   });
 
-  it("denies the quality workbench direct route to a non-admin", () => {
-    renderAuthenticatedApp("/quality/workbench");
-    expect(screen.getByText("当前用户没有访问质量工作台的权限。")).toBeInTheDocument();
-    expect(screen.queryByText("Mock Quality Workbench")).not.toBeInTheDocument();
-  });
-
-  it("shows the quality menu only to an administrator and logs out through OIDC", async () => {
+  it("logs out through OIDC", async () => {
     const user = userEvent.setup();
     renderAuthenticatedApp("/", ["agent_admin"]);
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
-    expect(screen.getByRole("button", { name: /质量工作台/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /质量工作台/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "退出登录" }));
     expect(signoutRedirect).toHaveBeenCalledTimes(1);
   });
@@ -73,5 +72,27 @@ describe("App", () => {
     renderAuthenticatedApp("/");
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
     expect(window.localStorage.length).toBe(0);
+  });
+
+  it("hides logout when authentication is disabled", async () => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/");
+    render(
+      <AppProvider>
+        <App
+          currentUser={{
+            sub: "local-dev",
+            username: "local-dev",
+            displayName: "本地开发用户",
+            email: "",
+            departmentCode: "",
+            departmentName: "本地模式",
+            roles: new Set(["agent_admin"]),
+          }}
+        />
+      </AppProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
+    expect(screen.queryByRole("button", { name: "退出登录" })).not.toBeInTheDocument();
   });
 });

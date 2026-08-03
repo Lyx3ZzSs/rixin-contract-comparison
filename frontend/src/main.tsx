@@ -1,11 +1,12 @@
 import { StrictMode, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AuthProvider } from "react-oidc-context";
+import { AuthProvider, useAuth } from "react-oidc-context";
 import type { User } from "oidc-client-ts";
 
 import { App } from "./App";
 import { AuthGate } from "./auth/AuthGate";
-import { REAUTH_ATTEMPT_KEY, safeReturnTo } from "./auth/config";
+import { getAuthMode, getDisabledCurrentUser, REAUTH_ATTEMPT_KEY, safeReturnTo } from "./auth/config";
+import { buildCurrentUser, type CurrentUser } from "./auth/currentUser";
 import { getUserManager } from "./auth/userManager";
 import { AppProvider } from "./lib/state";
 import "./styles.css";
@@ -37,16 +38,47 @@ function OidcRoot() {
   return (
     <AuthProvider userManager={result.manager} onSigninCallback={handleSigninCallback}>
       <AuthGate>
-        <AppProvider>
-          <App />
-        </AppProvider>
+        <OidcApplication />
       </AuthGate>
     </AuthProvider>
   );
 }
 
+function OidcApplication() {
+  const auth = useAuth();
+  if (!auth.user?.access_token) return null;
+  const currentUser = buildCurrentUser(auth.user.access_token, auth.user.profile);
+  return (
+    <AppProvider>
+      <App
+        currentUser={currentUser}
+        accessToken={auth.user.access_token}
+        onSignOut={() => void auth.signoutRedirect()}
+      />
+    </AppProvider>
+  );
+}
+
+function DisabledRoot({ currentUser }: { currentUser: CurrentUser }) {
+  return (
+    <AppProvider>
+      <App currentUser={currentUser} />
+    </AppProvider>
+  );
+}
+
+function Root() {
+  try {
+    return getAuthMode() === "disabled"
+      ? <DisabledRoot currentUser={getDisabledCurrentUser()} />
+      : <OidcRoot />;
+  } catch (error) {
+    return <section className="auth-status" role="alert"><p>{error instanceof Error ? error.message : "认证配置无效。"}</p></section>;
+  }
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <OidcRoot />
+    <Root />
   </StrictMode>,
 );

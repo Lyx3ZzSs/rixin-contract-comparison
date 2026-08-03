@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from app.auth.errors import IdentityProviderUnavailable, InvalidBearerToken
-from app.auth.models import AGENT_ADMIN, CurrentUser
+from app.auth.models import AGENT_ADMIN, APP_ROLES, AuthSettings, CurrentUser
 
 from auth_helpers import ADMIN, USER_A
 
@@ -23,7 +23,8 @@ class FakeValidator:
 
 
 class FakeRuntime:
-    def __init__(self) -> None:
+    def __init__(self, settings: AuthSettings | None = None) -> None:
+        self.settings = settings or AuthSettings()
         self.validator = FakeValidator()
 
 
@@ -63,3 +64,32 @@ def test_bearer_dependency_returns_stable_auth_errors_and_role_checks() -> None:
     assert all(response.headers["www-authenticate"] == "Bearer" for response in (missing, basic, invalid))
     assert "valid" not in str(invalid.json())
     assert runtime.validator.tokens == ["valid", "user", "admin", "invalid", "unavailable"]
+
+
+def test_disabled_mode_uses_fixed_identity_without_bearer_token() -> None:
+    from app.auth.dependencies import get_auth_runtime, get_current_user, require_roles
+
+    app = FastAPI()
+
+    @app.get("/me")
+    def me(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+        return user
+
+    @app.get("/admin")
+    def admin(user: CurrentUser = Depends(require_roles(AGENT_ADMIN))) -> CurrentUser:
+        return user
+
+    runtime = FakeRuntime(
+        AuthSettings(
+            mode="disabled",
+            disabled_user_sub="local-dev",
+            disabled_user_name="本地开发用户",
+            disabled_user_roles=APP_ROLES,
+        )
+    )
+    app.dependency_overrides[get_auth_runtime] = lambda: runtime
+    client = TestClient(app)
+
+    assert client.get("/me").json()["sub"] == "local-dev"
+    assert client.get("/admin").status_code == 200
+    assert runtime.validator.tokens == []

@@ -9,15 +9,6 @@ import type {
   DiffReviewPayload,
   DiffReviewResponse,
   DiffItem,
-  ExpectedDiff,
-  QualityCaseDetail,
-  QualityCaseExportRequest,
-  QualityCaseExportResponse,
-  QualityCaseListResponse,
-  QualityRegressionRequest,
-  QualityRunRequest,
-  QualityRunResponse,
-  QualityTaskReviewResponse,
   TaskExecutionResponse,
 } from "../types";
 import {
@@ -143,83 +134,6 @@ export async function updateAuditItemReview(
 export async function getCompareQuality(taskId: string, signal?: AbortSignal): Promise<CompareQualitySummary> {
   const response = await readAuthorizedFetch(`/api/compare/${taskId}/quality`, signal);
   return parseJsonResponse<CompareQualitySummary>(response);
-}
-
-export async function listQualityCases(signal?: AbortSignal): Promise<QualityCaseListResponse> {
-  const response = await readAuthorizedFetch("/api/quality/cases", signal);
-  return parseJsonResponse<QualityCaseListResponse>(response);
-}
-
-export async function exportQualityCase(payload: QualityCaseExportRequest): Promise<QualityCaseExportResponse> {
-  const response = await authorizedFetch(toApiUrl("/api/quality/cases/export"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return parseJsonResponse<QualityCaseExportResponse>(response);
-}
-
-export async function getQualityCase(caseId: string, signal?: AbortSignal): Promise<QualityCaseDetail> {
-  const response = await readAuthorizedFetch(`/api/quality/cases/${encodeURIComponent(caseId)}`, signal);
-  return parseJsonResponse<QualityCaseDetail>(response);
-}
-
-export async function getQualityTaskReview(taskId: string, signal?: AbortSignal): Promise<QualityTaskReviewResponse> {
-  const response = await readAuthorizedFetch(`/api/quality/tasks/${encodeURIComponent(taskId)}/review`, signal);
-  return parseJsonResponse<QualityTaskReviewResponse>(response);
-}
-
-export async function updateQualityExpectedDiff(
-  caseId: string,
-  index: number,
-  payload: Partial<ExpectedDiff>,
-): Promise<QualityCaseDetail> {
-  const response = await authorizedFetch(
-    toApiUrl(`/api/quality/cases/${encodeURIComponent(caseId)}/expected-diffs/${index}`),
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
-  );
-  return parseJsonResponse<QualityCaseDetail>(response);
-}
-
-export async function createQualityExpectedDiff(
-  caseId: string,
-  payload: Partial<ExpectedDiff>,
-): Promise<QualityCaseDetail> {
-  const response = await authorizedFetch(toApiUrl(`/api/quality/cases/${encodeURIComponent(caseId)}/expected-diffs`), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return parseJsonResponse<QualityCaseDetail>(response);
-}
-
-export async function deleteQualityExpectedDiff(caseId: string, index: number): Promise<QualityCaseDetail> {
-  const response = await authorizedFetch(toApiUrl(`/api/quality/cases/${encodeURIComponent(caseId)}/expected-diffs/${index}`), {
-    method: "DELETE",
-  });
-  return parseJsonResponse<QualityCaseDetail>(response);
-}
-
-export async function evaluateQuality(payload: QualityRunRequest): Promise<QualityRunResponse> {
-  const response = await authorizedFetch(toApiUrl("/api/quality/evaluate"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return parseJsonResponse<QualityRunResponse>(response);
-}
-
-export async function runQualityRegression(payload: QualityRegressionRequest): Promise<QualityRunResponse> {
-  const response = await authorizedFetch(toApiUrl("/api/quality/regression"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return parseJsonResponse<QualityRunResponse>(response);
 }
 
 function readAuthorizedFetch(path: string, signal?: AbortSignal): Promise<Response> {

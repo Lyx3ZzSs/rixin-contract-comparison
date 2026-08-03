@@ -111,6 +111,33 @@ def test_visual_footer_diffs_remain_page_specific_during_quality_processing() ->
     assert not any(decision.action == "cross_source_merged" for decision in result.decisions)
 
 
+def test_parallel_page_processing_preserves_serial_diff_order_and_ids() -> None:
+    images: dict[tuple[str, int], np.ndarray] = {}
+    for page_no in (1, 2, 3):
+        original = _blank()
+        compare = _blank()
+        compare[176:196, 20 + page_no * 4 : 34 + page_no * 4] = 0
+        images[("original.pdf", page_no)] = original
+        images[("compare.pdf", page_no)] = compare
+    original_document = _document("original.pdf", page_count=3)
+    compare_document = _document("compare.pdf", page_count=3)
+
+    serial = FooterAnnotationVisualComparator(
+        renderer=_Renderer(images),
+        registrar=_IdentityRegistrar(),
+        max_inflight=1,
+    ).build_diffs(original_document, compare_document, start_index=7)
+    parallel = FooterAnnotationVisualComparator(
+        renderer=_Renderer(images),
+        registrar=_IdentityRegistrar(),
+        max_inflight=3,
+    ).build_diffs(original_document, compare_document, start_index=7)
+
+    assert [diff.model_dump(mode="json") for diff in parallel] == [
+        diff.model_dump(mode="json") for diff in serial
+    ]
+
+
 def test_registered_visual_evidence_replaces_overlapping_footer_ocr_noise() -> None:
     original = _blank()
     compare = _blank()

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getOidcConfig, safeReturnTo } from "./config";
+import { getAuthMode, getDisabledCurrentUser, getOidcConfig, safeReturnTo } from "./config";
 
 const oidcEnv = {
   VITE_OIDC_AUTHORITY: "http://10.8.6.32:18080/realms/company-dev",
@@ -37,6 +37,31 @@ describe("getOidcConfig", () => {
 
   it("does not inherit local OIDC values from the test process", () => {
     expect(() => getOidcConfig()).toThrow("缺少 OIDC 前端配置");
+  });
+});
+
+describe("authentication mode", () => {
+  it("defaults to OIDC and accepts disabled mode case-insensitively", () => {
+    expect(getAuthMode()).toBe("oidc");
+    vi.stubEnv("VITE_AUTH_MODE", " DISABLED ");
+    expect(getAuthMode()).toBe("disabled");
+  });
+
+  it("rejects unsupported modes", () => {
+    vi.stubEnv("VITE_AUTH_MODE", "local");
+    expect(() => getAuthMode()).toThrow("oidc 或 disabled");
+  });
+
+  it("builds the fixed disabled-mode user", () => {
+    vi.stubEnv("VITE_AUTH_DISABLED_USER_SUB", "local-reviewer");
+    vi.stubEnv("VITE_AUTH_DISABLED_USER_NAME", "本地审核员");
+    vi.stubEnv("VITE_AUTH_DISABLED_USER_ROLES", "agent_manager,agent_user");
+
+    expect(getDisabledCurrentUser()).toMatchObject({
+      sub: "local-reviewer",
+      displayName: "本地审核员",
+      roles: new Set(["agent_manager", "agent_user"]),
+    });
   });
 });
 
