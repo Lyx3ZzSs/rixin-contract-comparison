@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 import math
 from numbers import Real
 from pathlib import Path
@@ -56,6 +57,7 @@ def compare_task_response(task: CompareTask, *, retry_eligible: bool = False) ->
             to_jsonable(task.ocr_remediation_summary) if task.ocr_remediation_summary else None
         ),
         "debug_artifact_paths": artifact_filenames(task.debug_artifact_paths),
+        "signing_region_outlines": to_jsonable(task.signing_region_outlines),
         "errors": task.errors,
     }
     data.update(compare_task_artifact_urls(task))
@@ -84,6 +86,28 @@ def compare_task_artifact_urls(task: CompareTask) -> dict[str, str]:
         "original_highlight_pdf_url": "",
         "compare_highlight_pdf_url": "",
     }
+
+
+def compare_record_summary_from_index(record: Mapping[str, Any], *, retry_eligible: bool = False) -> CompareRecordResponse:
+    """Project a record from the lightweight index summary instead of a full CompareTask."""
+    task_id = str(record["task_id"])
+    status = record.get("status") or "QUEUED"
+    return CompareRecordResponse(
+        task_id=task_id,
+        status=status,
+        terminal_reason=record.get("terminal_reason") or "NONE",
+        revision=int(record.get("revision") or 0),
+        report_revision=int(record.get("report_revision") or 0),
+        retry_eligible=retry_eligible,
+        stage=record.get("stage") or "",
+        progress_percent=int(record.get("progress_percent") or 0),
+        created_at=record.get("created_at") or "",
+        updated_at=record.get("updated_at") or "",
+        original_filename=record.get("original_filename") or "",
+        compare_filename=record.get("compare_filename") or "",
+        diff_count=int(record.get("diff_count") or 0),
+        report_url=f"/api/compare/{task_id}/report" if status == "COMPLETED" else "",
+    )
 
 
 def compare_record_summary(task: CompareTask, *, retry_eligible: bool = False) -> CompareRecordResponse:

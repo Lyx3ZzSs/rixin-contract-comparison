@@ -10,6 +10,7 @@ const POLL_INITIAL_DELAY_MS = 1200;
 const POLL_MAX_DELAY_MS = 4800;
 const RESULT_COMPLETION_ANIMATION_MS = 1200;
 const RECORD_COMPLETION_ANIMATION_MS = 900;
+const PROGRESS_THROTTLE_MS = 350;
 
 function normalizeRevision(value: unknown): number | null {
   const revision = typeof value === "number" ? value : Number.NaN;
@@ -18,6 +19,22 @@ function normalizeRevision(value: unknown): number | null {
 
 function isAbortError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
+}
+
+/** Trailing-edge throttle: coalesce rapid calls, delivering only the latest value. */
+function throttleTrailing<T>(fn: (value: T) => void, delayMs: number): (value: T) => void {
+  let pending: T | undefined;
+  let timer: number | undefined;
+  return (value: T) => {
+    pending = value;
+    if (timer !== undefined) return;
+    timer = window.setTimeout(() => {
+      timer = undefined;
+      const latest = pending as T;
+      pending = undefined;
+      fn(latest);
+    }, delayMs);
+  };
 }
 
 interface ProgressSynchronizationOptions {
@@ -287,6 +304,10 @@ export function useRecordProgressSSE(
   const onCompletedRef = useRef(onCompleted);
   onUpdateRef.current = onUpdate;
   onCompletedRef.current = onCompleted;
+  // Coalesce high-frequency progress events into one state update per interval; completion is unaffected.
+  const throttledProgressUpdate = useRef(
+    throttleTrailing((progress: ProgressEvent) => onUpdateRef.current(progress), PROGRESS_THROTTLE_MS),
+  ).current;
 
   const processingKey = useMemo(() => records
     .filter((record) => record.status === "PROCESSING")
@@ -311,7 +332,7 @@ export function useRecordProgressSSE(
         taskId,
         skipInitialLoad: true,
         onTask: (task) => onUpdateRef.current(task),
-        onProgress: (progress) => onUpdateRef.current(progress),
+        onProgress: (progress) => throttledProgressUpdate(progress),
         onTerminalHint(progress) {
           onUpdateRef.current({ ...progress, status: "PROCESSING", stage: "收尾完成中" });
         },

@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -14,9 +15,17 @@ import { bboxToViewportRect } from "../lib/pdfCoordinates";
 import type { ViewportRect } from "../lib/pdfCoordinates";
 import { formatPdfLoadError } from "../lib/pdfLoadError";
 import type { DiffItem, EvidenceBox } from "../types";
-import { getCurrentPageFromScroll } from "./pdfPageScroll";
+import { computeRenderWindow, getCurrentPageFromScroll } from "./pdfPageScroll";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+
+const DEFAULT_PAGE_HEIGHT = 842; // A4 pt, matches pdfjs viewport height at zoom 1
+const RENDER_BUFFER = 800; // pre-render runway above/below the viewport (~1 page)
+
+interface RenderRange {
+  start: number;
+  end: number;
+}
 
 interface PageHighlight {
   diffId: string;
@@ -24,6 +33,7 @@ interface PageHighlight {
   evidence: EvidenceBox;
   fallback: boolean;
   markKind: "fallback" | "seal" | "signing-region" | "table" | "text";
+  recognition?: boolean;
 }
 
 export interface PdfDocumentViewerHandle {
@@ -37,6 +47,7 @@ interface PdfDocumentViewerProps {
   accessToken: string;
   title: string;
   diffs: DiffItem[];
+  recognitionOutlines?: EvidenceBox[];
   zoom: number;
   activeDiffId: string;
   hidden?: boolean;
@@ -53,6 +64,7 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
       accessToken,
       title,
       diffs,
+      recognitionOutlines = [],
       zoom,
       hidden = false,
       syncEnabled,
@@ -66,6 +78,8 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
     const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
     const [loadError, setLoadError] = useState("");
     const [currentPage, setCurrentPage] = useState(1);
+    const [pageHeights, setPageHeights] = useState<Record<number, number>>({});
+    const [renderRange, setRenderRange] = useState<RenderRange>({ start: 1, end: 3 });
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const pageRefs = useRef(new Map<number, HTMLDivElement>());
     const isSyncingRef = useRef(false);
@@ -130,16 +144,32 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
         }))
         .sort((left, right) => left.pageNumber - right.pageNumber);
       setCurrentPage(getCurrentPageFromScroll(scrollNode.scrollTop, scrollNode.clientHeight, pages));
+      setRenderRange(computeRenderWindow(pages, scrollNode.scrollTop, scrollNode.clientHeight, RENDER_BUFFER));
+    }, []);
+
+    const reservedHeight = useMemo(() => {
+      const heights = Object.values(pageHeights);
+      return heights.length > 0 ? heights[heights.length - 1] : DEFAULT_PAGE_HEIGHT * zoom;
+    }, [pageHeights, zoom]);
+
+    const handlePageSized = useCallback((pageNumber: number, height: number) => {
+      setPageHeights((prev) => (prev[pageNumber] === height ? prev : { ...prev, [pageNumber]: height }));
     }, []);
 
     useEffect(() => {
       const frameId = window.requestAnimationFrame(updateCurrentPageFromScroll);
       return () => window.cancelAnimationFrame(frameId);
-    }, [pdf, updateCurrentPageFromScroll, zoom]);
+    }, [pageHeights, pdf, updateCurrentPageFromScroll, zoom]);
+
+    // A new document or a zoom change invalidates previously measured page heights.
+    useEffect(() => {
+      setPageHeights({});
+      setRenderRange({ start: 1, end: 3 });
+    }, [pdf, zoom]);
 
     const scrollToDiff = useCallback(
       (diff: DiffItem) => {
-        const target = getEvidence(diff, side)[0];
+        const target = getScrollTargetEvidence(diff, side);
         const scrollNode = scrollRef.current;
         if (!target || !scrollNode) {
           return;
@@ -149,9 +179,14 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
           return;
         }
         const nextTop = pageNode.offsetTop + target.bbox.y0 * zoom - 96;
-        scrollNode.scrollTo({ top: Math.max(0, nextTop), behavior: "smooth" });
+        isSyncingRef.current = true;
+        scrollNode.scrollTo({ top: Math.max(0, nextTop), behavior: "auto" });
+        updateCurrentPageFromScroll();
+        window.setTimeout(() => {
+          isSyncingRef.current = false;
+        }, 80);
       },
-      [side, zoom],
+      [side, updateCurrentPageFromScroll, zoom],
     );
 
     useImperativeHandle(
@@ -201,24 +236,42 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
           {loadState === "loading" && <div className="empty-pane">正在载入 PDF...</div>}
           {loadState === "error" && <div className="empty-pane">{loadError || "PDF 载入失败"}</div>}
           {pdf &&
-            Array.from({ length: pdf.numPages }, (_, index) => (
-              <PdfPageCanvas
-                key={`${src}-${index + 1}-${zoom}`}
-                ref={(node) => {
-                  if (node) {
-                    pageRefs.current.set(index + 1, node);
-                  } else {
-                    pageRefs.current.delete(index + 1);
-                  }
-                }}
-                pdf={pdf}
-                pageNumber={index + 1}
-                zoom={zoom}
-                highlights={getPageHighlights(diffs, side, index + 1)}
-                activeDiffId={activeDiffId}
-                onActivateDiff={onActivateDiff}
-              />
-            ))}
+            Array.from({ length: pdf.numPages }, (_, index) => {
+              const pageNumber = index + 1;
+              const pageRef = (node: HTMLDivElement | null) => {
+                if (node) {
+                  pageRefs.current.set(pageNumber, node);
+                } else {
+                  pageRefs.current.delete(pageNumber);
+                }
+              };
+              if (pageNumber < renderRange.start || pageNumber > renderRange.end) {
+                return (
+                  <div
+                    key={`ph-${src}-${pageNumber}`}
+                    ref={pageRef}
+                    className="pdf-page-frame pdf-page-placeholder"
+                    data-page-number={pageNumber}
+                    aria-hidden="true"
+                    style={{ height: pageHeights[pageNumber] ?? reservedHeight }}
+                  />
+                );
+              }
+              return (
+                <PdfPageCanvas
+                  key={`${src}-${pageNumber}-${zoom}`}
+                  ref={pageRef}
+                  pdf={pdf}
+                  pageNumber={pageNumber}
+                  zoom={zoom}
+                  initialHeight={reservedHeight}
+                  onSized={handlePageSized}
+                  highlights={getPageHighlights(diffs, side, pageNumber, recognitionOutlines)}
+                  activeDiffId={activeDiffId}
+                  onActivateDiff={onActivateDiff}
+                />
+              );
+            })}
         </div>
         {pdf && loadState === "ready" && (
           <div className="pdf-page-indicator" aria-label="PDF 当前页码">
@@ -236,13 +289,15 @@ const PdfPageCanvas = forwardRef<
     pdf: PDFDocumentProxy;
     pageNumber: number;
     zoom: number;
+    initialHeight: number;
+    onSized: (pageNumber: number, height: number) => void;
     highlights: PageHighlight[];
     activeDiffId: string;
     onActivateDiff: (diffId: string) => void;
   }
->(function PdfPageCanvas({ pdf, pageNumber, zoom, highlights, activeDiffId, onActivateDiff }, ref) {
+>(function PdfPageCanvas({ pdf, pageNumber, zoom, initialHeight, onSized, highlights, activeDiffId, onActivateDiff }, ref) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
+  const [pageSize, setPageSize] = useState({ width: 0, height: initialHeight });
 
   useEffect(() => {
     let isMounted = true;
@@ -267,6 +322,7 @@ const PdfPageCanvas = forwardRef<
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
       setPageSize({ width: viewport.width, height: viewport.height });
+      onSized(pageNumber, viewport.height);
 
       const task = page.render({
         canvas,
@@ -309,17 +365,23 @@ function getEvidence(diff: DiffItem, side: "original" | "compare"): EvidenceBox[
   return side === "original" ? (diff.original_evidence ?? []) : (diff.compare_evidence ?? []);
 }
 
+export function getScrollTargetEvidence(
+  diff: DiffItem,
+  side: "original" | "compare",
+): EvidenceBox | undefined {
+  const evidences = getEvidence(diff, side);
+  return evidences.find((evidence) => evidence.method === "signing_region_visual") ?? evidences[0];
+}
+
 export function getPageHighlights(
   diffs: DiffItem[],
   side: "original" | "compare",
   pageNumber: number,
+  recognitionOutlines: EvidenceBox[] = [],
 ): PageHighlight[] {
   const highlights: PageHighlight[] = [];
   for (const diff of diffs) {
     const pageEvidences = getEvidence(diff, side).filter((evidence) => evidence.page_no === pageNumber);
-    const typedSigningVisualEvidences = pageEvidences.filter(
-      (evidence) => evidence.method.startsWith("signing_region_visual") && Boolean(evidence.highlight_type),
-    );
     const hasTypedSigningEvidence = pageEvidences.some(
       (evidence) => evidence.method.startsWith("signing_region") && Boolean(evidence.highlight_type),
     );
@@ -330,11 +392,7 @@ export function getPageHighlights(
             hasTypedSigningEvidence
             && evidence.method.startsWith("signing_region")
             && !evidence.highlight_type;
-          const isNestedSigningPartyEvidence =
-            evidence.method === "signing_region"
-            && Boolean(evidence.highlight_type)
-            && typedSigningVisualEvidences.some((visual) => bboxContains(visual.bbox, evidence.bbox));
-          return !isUntypedSigningContext && !isNestedSigningPartyEvidence;
+          return !isUntypedSigningContext;
         },
       )
       .sort((left, right) => left.bbox.y0 - right.bbox.y0 || left.bbox.x0 - right.bbox.x0);
@@ -351,16 +409,28 @@ export function getPageHighlights(
       highlights.push({ diffId: diff.diff_id, type, evidence, fallback, markKind });
     }
   }
+  const regionHighlights = recognitionOutlines
+    .filter((evidence) => evidence.page_no === pageNumber)
+    .filter(
+      (evidence) => !highlights.some(
+        (highlight) => highlight.markKind === "signing-region" && sameBBox(highlight.evidence, evidence),
+      ),
+    )
+    .map((evidence, index) => ({
+      diffId: `signing-region-outline-${pageNumber}-${index}`,
+      type: "MODIFY" as const,
+      evidence,
+      fallback: false,
+      markKind: "signing-region" as const,
+      recognition: true,
+    }));
+  highlights.unshift(...regionHighlights);
   return highlights;
 }
 
-function bboxContains(outer: EvidenceBox["bbox"], inner: EvidenceBox["bbox"]): boolean {
-  const tolerance = 2;
-  return (
-    inner.x0 >= outer.x0 - tolerance
-    && inner.y0 >= outer.y0 - tolerance
-    && inner.x1 <= outer.x1 + tolerance
-    && inner.y1 <= outer.y1 + tolerance
+function sameBBox(left: EvidenceBox, right: EvidenceBox): boolean {
+  return ["x0", "y0", "x1", "y1"].every(
+    (axis) => Math.abs(left.bbox[axis as keyof EvidenceBox["bbox"]] - right.bbox[axis as keyof EvidenceBox["bbox"]]) < 0.5,
   );
 }
 
@@ -371,6 +441,9 @@ function highlightMarkKind(evidence: EvidenceBox, fallback: boolean): PageHighli
   }
   if (method === "seal_region") {
     return "seal";
+  }
+  if (method === "signing_region_element") {
+    return "text";
   }
   if (method.startsWith("signing_region")) {
     return "signing-region";
@@ -447,6 +520,27 @@ export function PdfHighlightLayer({
         const rect = highlightRect(highlight, zoom);
         const markKind = highlight.markKind;
         const isActive = activeDiffId === highlight.diffId;
+        const rectangle = (
+          <rect
+            x={rect.x}
+            y={rect.y}
+            width={rect.width}
+            height={rect.height}
+            rx={2.5}
+            ry={2.5}
+          />
+        );
+        if (highlight.recognition) {
+          return (
+            <g
+              key={`${highlight.diffId}-${index}`}
+              className="pdf-highlight-mark signing-region recognition"
+              data-recognition-outline="true"
+            >
+              {rectangle}
+            </g>
+          );
+        }
         return (
           <g
             key={`${highlight.diffId}-${index}`}
@@ -467,14 +561,7 @@ export function PdfHighlightLayer({
               }
             }}
           >
-            <rect
-              x={rect.x}
-              y={rect.y}
-              width={rect.width}
-              height={rect.height}
-              rx={2.5}
-              ry={2.5}
-            />
+            {rectangle}
           </g>
         );
       })}

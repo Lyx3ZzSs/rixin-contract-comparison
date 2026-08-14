@@ -34,6 +34,7 @@ from app.services.text_repair import (
     compact_text_for_repair,
     is_clause_marker_ocr_repair,
     is_delivery_date_placeholder_repair,
+    repair_delivery_date_placeholder_text,
 )
 
 
@@ -675,6 +676,7 @@ class PPStructureOCRHybridExtractor:
         ocr_text = "\n".join(block.text.strip() for block in ordered_children if block.text.strip())
         if not self._should_trust_structure_text(structure_text, ocr_text):
             return None
+        structure_text = repair_delivery_date_placeholder_text(structure_text)
 
         return ordered_children[0].model_copy(
             update={

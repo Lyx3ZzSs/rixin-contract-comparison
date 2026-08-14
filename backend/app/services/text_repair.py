@@ -18,7 +18,7 @@ def compact_text_for_repair(text: str) -> str:
 
 
 def is_delivery_date_placeholder_repair(structure_text: str, ocr_text: str) -> bool:
-    structure = _parse_delivery_date_placeholder(structure_text, allow_day_confusions=False)
+    structure = _parse_delivery_date_placeholder(structure_text, allow_day_confusions=True)
     if structure is None or structure.placeholder != "月日":
         return False
     ocr = _parse_delivery_date_placeholder(ocr_text, allow_day_confusions=True)
@@ -28,6 +28,14 @@ def is_delivery_date_placeholder_repair(structure_text: str, ocr_text: str) -> b
         structure.year == ocr.year
         and ocr.placeholder in {"月日", "日"}
         and compact_text_for_repair(structure_text) != compact_text_for_repair(ocr_text)
+    )
+
+
+def repair_delivery_date_placeholder_text(text: str) -> str:
+    return re.sub(
+        r"(交货日期\s*[:：]?\s*\d{4}\s*年\s*月\s*)[且目曰口](\s*交货)",
+        r"\1日\2",
+        text,
     )
 
 

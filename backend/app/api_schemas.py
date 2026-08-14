@@ -65,6 +65,11 @@ class EvidenceBoxResponse(BaseModel):
     text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
+class SigningRegionOutlinesResponse(BaseModel):
+    original: list[EvidenceBoxResponse] = Field(default_factory=list)
+    compare: list[EvidenceBoxResponse] = Field(default_factory=list)
+
+
 class PageOcrQualityProfileResponse(BaseModel):
     side: OcrQualitySide
     page_no: int
@@ -190,6 +195,7 @@ class CompareTaskResponse(BaseModel):
     ocr_quality_summary: TaskOcrQualitySummaryResponse | None = None
     ocr_remediation_summary: TaskOcrRemediationSummaryResponse | None = None
     debug_artifact_paths: dict[str, str] = Field(default_factory=dict)
+    signing_region_outlines: SigningRegionOutlinesResponse = Field(default_factory=SigningRegionOutlinesResponse)
     report_url: str
     report_filename: str
     original_pdf_url: str

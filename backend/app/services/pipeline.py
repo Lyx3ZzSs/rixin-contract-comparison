@@ -294,6 +294,7 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.ocr_quality_summary = source.ocr_quality_summary
     target.ocr_remediation_summary = source.ocr_remediation_summary
     target.debug_artifact_paths = source.debug_artifact_paths
+    target.signing_region_outlines = source.signing_region_outlines
     target.diff_count = source.diff_count
     target.audit_item_reviews = source.audit_item_reviews
     target.diffs = _merge_review_state(target.diffs, source.diffs)

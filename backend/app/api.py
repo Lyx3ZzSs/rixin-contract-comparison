@@ -18,7 +18,7 @@ from app.auth.policies import TaskAccessPolicy
 from app.api_presenters import (
     audit_item_review_response,
     compare_diff_list_response,
-    compare_record_list_response,
+    compare_record_summary_from_index,
     compare_task_detail_response,
     compare_task_response,
     diff_review_response,
@@ -104,18 +104,20 @@ def list_records(
     total = len(filtered_summaries)
     start_index = (page - 1) * page_size
     end_index = start_index + page_size
-    page_tasks = [
-        default_compare_task_application.load_compare_task(str(summary["task_id"]))
-        for summary in filtered_summaries[start_index:end_index]
-    ]
+    page_summaries = filtered_summaries[start_index:end_index]
     total_pages = ceil(total / page_size) if total else 0
-    return compare_record_list_response(
-        page_tasks,
+    return CompareRecordListResponse(
+        records=[
+            compare_record_summary_from_index(
+                record,
+                retry_eligible=_index_record_retry_eligible(record),
+            )
+            for record in page_summaries
+        ],
         total=total,
         page=page,
         page_size=page_size,
         total_pages=total_pages,
-        retry_eligibility=default_compare_task_application.is_retry_eligible,
     )
 
 
@@ -327,6 +329,17 @@ def _is_task_in_created_date_range(
 
 def _task_created_date(task: CompareTask) -> date | None:
     return _created_date(task.created_at, task.updated_at)
+
+
+_RETRYABLE_TERMINAL_REASONS = frozenset({"EXECUTION_FAILED", "SUBMISSION_FAILED"})
+
+
+def _index_record_retry_eligible(record: dict[str, object]) -> bool:
+    """Retry eligibility from an index summary; only FAILED+retryable-terminal records need the full task."""
+    if record.get("status") != "FAILED" or record.get("terminal_reason") not in _RETRYABLE_TERMINAL_REASONS:
+        return False
+    task = default_compare_task_application.load_compare_task(str(record["task_id"]))
+    return default_compare_task_application.is_retry_eligible(task)
 
 
 def _is_record_in_created_date_range(

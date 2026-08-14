@@ -2485,7 +2485,7 @@ def test_compare_records_list_supports_pagination_and_created_time_filter(tmp_pa
     assert [record["task_id"] for record in second_page.json()["records"]] == ["TMAY21"]
 
 
-def test_compare_records_list_loads_only_requested_page_task_details(
+def test_compare_records_list_served_from_index_without_full_task_loads(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2513,7 +2513,44 @@ def test_compare_records_list_loads_only_requested_page_task_details(
 
     assert response.status_code == 200, response.text
     assert [record["task_id"] for record in response.json()["records"]] == ["TBOUNDED2"]
-    assert loads == ["TBOUNDED2"]
+    # Non-failed records are served straight from the index; no full task.json is loaded.
+    assert loads == []
+
+
+def test_compare_records_list_loads_full_task_only_for_retry_candidate_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_storage(tmp_path)
+    for index in range(4):
+        save_compare_task_fixture(
+            task_id=f"TRETRY{index}",
+            status="FAILED",
+            terminal_reason="EXECUTION_FAILED",
+            created_at=f"2026-05-{20 + index:02d}T08:00:00+00:00",
+            updated_at=f"2026-05-{20 + index:02d}T10:00:00+00:00",
+            original_filename=f"original-{index}.pdf",
+            compare_filename=f"compare-{index}.pdf",
+            diffs=[DiffItem(diff_id=f"D{index}", diff_type="ADD", original_text="large contract payload")],
+        )
+
+    loads: list[str] = []
+    original_load = LocalJsonTaskRepository.load_compare_task
+
+    def record_load(self: LocalJsonTaskRepository, task_id: str) -> CompareTask:
+        loads.append(task_id)
+        return original_load(self, task_id)
+
+    monkeypatch.setattr(LocalJsonTaskRepository, "load_compare_task", record_load)
+
+    response = TestClient(app).get("/api/compare/records?page=1&page_size=10")
+
+    assert response.status_code == 200, response.text
+    # Only FAILED+retryable-terminal records are loaded (for an accurate retry_eligibility check).
+    assert sorted(loads) == sorted(f"TRETRY{index}" for index in range(4))
+    for record in response.json()["records"]:
+        assert record["task_id"] in {f"TRETRY{index}" for index in range(4)}
+        assert record["retry_eligible"] is False
 
 
 def save_compare_task_fixture(**kwargs) -> None:
@@ -3058,6 +3095,26 @@ def test_compare_task_response_includes_ocr_remediation_summary() -> None:
     assert action.changed_evidence is True
     assert action.changed_diff_text is False
     assert action.review_flags_added == ["OCR_REMEDIATION_EVIDENCE_RELOCATED"]
+
+
+def test_compare_task_response_includes_signing_region_outlines_without_creating_diffs() -> None:
+    task = CompareTask(task_id="task-signing-outline", status="COMPLETED")
+    task.signing_region_outlines.original.append(
+        EvidenceBox(
+            page_no=2,
+            bbox=BBox(x0=37, y0=242, x1=556, y1=687),
+            method="signing_region_outline",
+            text="签署栏识别区域",
+            confidence=0.85,
+        )
+    )
+
+    response = compare_task_response(task)
+
+    assert response.diff_count == 0
+    assert response.signing_region_outlines.original[0].page_no == 2
+    assert response.signing_region_outlines.original[0].highlight_type is None
+    assert response.signing_region_outlines.compare == []
 
 
 def test_compare_task_response_projects_item_level_ocr_and_remediation_context() -> None:

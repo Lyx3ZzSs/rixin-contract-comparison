@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 
 from app.models import BBox
-from app.services.signing_region.models import SigningRegion
+from app.services.signing_region.models import SigningElement, SigningElementType, SigningRegion, SigningRegionRole
 from app.services.signing_region.visual import (
     LocalCpuVisualSignatureDetector,
     OpenCvSigningRegionFingerprinter,
@@ -289,6 +289,26 @@ def test_opencv_visual_detector_ignores_tiny_red_speck(monkeypatch: pytest.Monke
     assert result.detections == []
 
 
+def test_opencv_visual_detector_ignores_thin_red_line(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import numpy as np
+
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    image = np.full((240, 240, 3), 255, dtype=np.uint8)
+    image[180:186, 70:150] = [0, 0, 255]
+
+    _patch_opencv_dependencies(monkeypatch, OpenCvVisualSignatureDetector)
+    detector = OpenCvVisualSignatureDetector()
+    monkeypatch.setattr(detector, "_render_region", lambda *_args: image)
+
+    result = detector.detect(pdf_path, [_region()], task_id="task-1")
+
+    assert result.available is True
+    assert result.detections == []
+
+
 def test_opencv_visual_detector_ignores_scattered_red_noise(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     import numpy as np
 
@@ -334,6 +354,67 @@ def test_opencv_visual_detector_detects_handwriting_density(monkeypatch: pytest.
     assert result.detections[0].label == "signature"
     assert result.detections[0].confidence >= 0.55
     assert result.detections[0].raw_data["dark_pixel_ratio"] > 0
+
+
+def test_opencv_visual_detector_probes_below_empty_signature_field() -> None:
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    region = SigningRegion(
+        region_id="SR-13-1",
+        page_no=13,
+        bbox=BBox(x0=60, y0=72, x1=544, y1=551),
+        region_role=SigningRegionRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_reasons=["two_column_layout"],
+        elements=[
+            SigningElement(
+                element_id="signature-label",
+                element_type=SigningElementType.FIELD,
+                page_no=13,
+                bbox=BBox(x0=78, y0=188, x1=230, y1=209),
+                text="",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={
+                    "party_role": "甲方",
+                    "field_key": "legal_representative",
+                    "field_label": "法定代表人或授权代表签字",
+                },
+            )
+        ],
+    )
+
+    probes = OpenCvVisualSignatureDetector._signature_probe_regions(region)
+
+    assert len(probes) == 1
+    assert probes[0].bbox.y0 == 209
+    assert probes[0].bbox.y1 > 209
+    assert probes[0].bbox.x0 <= 78
+    assert probes[0].bbox.x1 > 230
+
+
+def test_opencv_visual_detector_accepts_handwriting_in_focused_signature_probe() -> None:
+    import numpy as np
+
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    image = np.full((120, 188, 3), 255, dtype=np.uint8)
+    for offset in range(45):
+        image[25 + offset : 29 + offset, 55 + offset : 72 + offset] = [20, 20, 20]
+    region = SigningRegion(
+        region_id="SR-13-1",
+        page_no=13,
+        bbox=BBox(x0=60, y0=72, x1=544, y1=551),
+        confidence=0.9,
+    )
+    probe_bbox = BBox(x0=73.5, y0=206, x1=261.5, y1=326)
+
+    detection = OpenCvVisualSignatureDetector()._detect_signature(region, image, render_bbox=probe_bbox)
+
+    assert detection is not None
+    assert detection.label == "signature"
+    assert detection.confidence >= 0.6
+    assert detection.bbox.y0 >= probe_bbox.y0
 
 
 def test_opencv_visual_detector_does_not_treat_dense_printed_glyphs_as_signature(

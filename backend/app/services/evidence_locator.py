@@ -179,6 +179,11 @@ class EvidenceLocator:
             for right_diff, right_index, right in items[left_pos + 1 :]:
                 if (right_diff, right_index) in discarded:
                     continue
+                if (
+                    diffs[left_diff].source_type != diffs[right_diff].source_type
+                    and "signing_region" in {diffs[left_diff].source_type, diffs[right_diff].source_type}
+                ):
+                    continue
                 if not self._evidence_conflicts(left, right):
                     continue
                 winner = self._preferred_evidence(

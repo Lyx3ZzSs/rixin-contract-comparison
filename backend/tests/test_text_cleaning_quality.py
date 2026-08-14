@@ -31,6 +31,49 @@ def test_normalize_for_diff_preserves_decimal_and_version_tokens() -> None:
     assert normalizer.normalize_for_diff("日期") == normalizer.normalize_for_diff("日期：")
 
 
+def test_diff_quality_merges_adjacent_top_cover_annotation_fragments() -> None:
+    diffs = [
+        DiffItem(
+            diff_id="D004",
+            diff_type="ADD",
+            title="封面额外文本",
+            compare_text="Cakilu-7020513",
+            compare_snippet="Cakilu-7020513",
+            source_type="metadata",
+            compare_evidence=[
+                EvidenceBox(
+                    page_no=1,
+                    bbox=BBox(x0=344, y0=4.5, x1=493, y1=58),
+                    method="header_footer",
+                    text="Cakilu-7020513",
+                )
+            ],
+        ),
+        DiffItem(
+            diff_id="D006",
+            diff_type="ADD",
+            title="封面额外文本",
+            compare_text="N2o",
+            compare_snippet="N2o",
+            source_type="metadata",
+            compare_evidence=[
+                EvidenceBox(
+                    page_no=1,
+                    bbox=BBox(x0=493.5, y0=7, x1=540, y1=33),
+                    method="header_footer",
+                    text="N2o",
+                )
+            ],
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+
+    assert len(result.diffs) == 1
+    assert result.diffs[0].compare_text == "Cakilu-7020513N2o"
+    assert len(result.diffs[0].compare_evidence) == 2
+
+
 def test_normalize_for_diff_equates_document_number_year_bracket_styles() -> None:
     normalizer = TextNormalizer()
 
@@ -6455,6 +6498,56 @@ def test_diff_quality_dedupes_exact_cross_source_duplicates() -> None:
     assert [diff.diff_id for diff in result.diffs] == ["D002"]
     assert "CROSS_SOURCE_MERGED" in result.diffs[0].review_flags
     assert result.diffs[0].merged_sources == ["table"]
+
+
+def test_diff_quality_does_not_merge_evidence_from_unchanged_side() -> None:
+    original_text = "2026年4月 日"
+    compare_text = "2026年4月21日"
+    original_evidence = EvidenceBox(
+        page_no=1,
+        bbox=BBox(x0=240, y0=640, x1=380, y1=680),
+        method="text_exact",
+        text=original_text,
+        highlight_type="MODIFY",
+    )
+    diffs = [
+        DiffItem(
+            diff_id="D001_TABLE",
+            diff_type="MODIFY",
+            source_type="table",
+            original_text=original_text,
+            compare_text=compare_text,
+            original_snippet=original_text,
+            compare_snippet="21",
+            original_evidence=[original_evidence],
+        ),
+        DiffItem(
+            diff_id="D002_METADATA",
+            diff_type="MODIFY",
+            source_type="metadata",
+            title="封面字段：签订日期",
+            original_text=original_text,
+            compare_text=compare_text,
+            original_snippet="",
+            compare_snippet="21",
+            compare_evidence=[
+                EvidenceBox(
+                    page_no=1,
+                    bbox=BBox(x0=337, y0=643, x1=365, y1=666),
+                    method="cover_metadata",
+                    text="21",
+                    highlight_type="ADD",
+                )
+            ],
+            compare_change_ranges=[TextRange(start=7, end=9, highlight_type="ADD")],
+            review_flags=["CRITICAL_VALUE_CHANGE", "EVIDENCE_UNRELIABLE", "OCR_REMEDIATION_PLANNED"],
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+
+    assert [diff.diff_id for diff in result.diffs] == ["D002_METADATA"]
+    assert result.diffs[0].original_evidence == []
 
 
 def test_diff_quality_prefers_multi_page_footer_over_metadata_duplicate() -> None:

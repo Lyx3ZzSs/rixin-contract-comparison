@@ -33,7 +33,10 @@ from app.services.signing_region.models import (
     SigningBlock,
     SigningBlockConfidenceLevel,
     SigningBlockRole,
+    SigningElement,
+    SigningElementType,
     SigningRegion,
+    SigningRegionRole,
     VisualDetection,
     VisualDetectionResult,
 )
@@ -137,7 +140,7 @@ def test_signing_region_stage_uses_opencv_detector_by_default(monkeypatch, tmp_p
     assert "opencv_available" in configuration
 
 
-def test_signing_region_stage_skips_when_stamps_are_ignored(tmp_path: Path) -> None:
+def test_signing_region_stage_only_ignores_seals_when_stamps_are_ignored(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, CompareOptions(ignore_stamps=True))
     ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
     ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
@@ -154,13 +157,13 @@ def test_signing_region_stage_skips_when_stamps_are_ignored(tmp_path: Path) -> N
     assert ctx.signing_pages_compare == []
     assert ctx.signing_blocks_original == []
     assert ctx.signing_blocks_compare == []
-    assert ctx.clause_document_original is None
-    assert ctx.clause_document_compare is None
+    assert ctx.clause_document_original is not None
+    assert ctx.clause_document_compare is not None
     assert ctx.signing_regions_original == []
     assert ctx.signing_regions_compare == []
     assert ctx.signing_region_diffs == []
     assert ctx.signing_region_covered_diff_ids == set()
-    assert ctx.signing_region_debug == {"skipped": True}
+    assert ctx.signing_region_debug["skipped"] is False
 
 
 def test_signing_region_stage_skips_when_mode_is_off(tmp_path: Path) -> None:
@@ -175,6 +178,8 @@ def test_signing_region_stage_skips_when_mode_is_off(tmp_path: Path) -> None:
     assert ctx.signing_region_diffs == []
     assert ctx.signing_region_covered_diff_ids == set()
     assert ctx.signing_region_debug == {"skipped": True}
+    assert ctx.task.signing_region_outlines.original == []
+    assert ctx.task.signing_region_outlines.compare == []
 
 
 def test_signing_stage_sets_clause_documents_without_signing_blocks(tmp_path: Path) -> None:
@@ -217,6 +222,13 @@ def test_signing_stage_sets_clause_documents_without_signing_blocks(tmp_path: Pa
     assert ctx.clause_document_original is not None
     assert [block.block_id for block in ctx.clause_document_original.pages[0].blocks] == ["body"]
     assert ctx.signing_region_debug["clause_exclusion"]["original"][0]["block_id"] == "sign"
+    assert ctx.signing_region_diffs == []
+    assert [(item.page_no, item.bbox, item.highlight_type) for item in ctx.task.signing_region_outlines.original] == [
+        (10, ctx.signing_regions_original[0].bbox, None)
+    ]
+    assert [(item.page_no, item.bbox, item.highlight_type) for item in ctx.task.signing_region_outlines.compare] == [
+        (10, ctx.signing_regions_compare[0].bbox, None)
+    ]
 
 
 def test_signing_stage_expands_detected_block_to_nearby_signature_fragments(tmp_path: Path) -> None:
@@ -626,10 +638,7 @@ def test_signing_region_stage_builds_visual_diff_from_detector_and_fingerprint(t
 
     stage.execute(ctx)
 
-    assert len(ctx.signing_region_diffs) == 1
-    diff = ctx.signing_region_diffs[0]
-    assert diff.source_type == "signing_region"
-    assert "SIGNING_VISUAL_CHANGE" in diff.review_flags
+    assert ctx.signing_region_diffs == []
     assert "visual-original" in ctx.signing_region_debug["original_regions"][0]["elements"][-1]["visual_hash"]
     assert ctx.signing_region_debug["visual_adapter_status"]["original"]["available"] is True
     assert ctx.signing_region_debug["configuration"]["visual_enabled"] is True
@@ -1491,6 +1500,49 @@ def test_signing_region_stage_suppresses_low_confidence_visual_detections(tmp_pa
     assert ctx.signing_region_diffs == []
     assert len(ctx.signing_region_debug["suppressed_low_confidence_candidates"]) == 2
     assert ctx.signing_region_debug["suppressed_low_confidence_candidates"][0]["reason"] == "low_visual_confidence"
+
+
+def test_signing_region_stage_marks_signature_slot_uncertain_when_one_side_detection_fails(tmp_path: Path) -> None:
+    def region(region_id: str) -> SigningRegion:
+        return SigningRegion(
+            region_id=region_id,
+            page_no=1,
+            bbox=BBox(x0=60, y0=650, x1=260, y1=780),
+            region_role=SigningRegionRole.PARTY_A,
+            confidence=0.9,
+            elements=[
+                SigningElement(
+                    element_id=f"{region_id}-slot",
+                    element_type=SigningElementType.FIELD,
+                    page_no=1,
+                    bbox=BBox(x0=80, y0=690, x1=220, y1=730),
+                    text="",
+                    confidence=0.9,
+                    source="inferred",
+                    raw_ref={
+                        "party_role": "甲方",
+                        "field_key": "authorized_representative",
+                        "field_label": "授权代表（签字）",
+                    },
+                )
+            ],
+        )
+
+    stage = SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"), visual_enabled=True)
+    comparison = stage.comparator.compare(region("O1"), region("C1"))
+
+    stage._mark_uncertain_signatures(
+        [comparison],
+        {
+            "original": {"available": True},
+            "compare": {"available": False, "error": "render_failed"},
+        },
+    )
+    diff = stage.diff_builder.build_diffs([comparison])[0]
+
+    assert diff.section_type == "signature:signature"
+    assert diff.readable_change.endswith("检测完成 → 无法确认")
+    assert "SIGNING_SIGNATURE_UNCERTAIN" in diff.review_flags
 
 
 def test_clause_diff_stage_counts_signing_region_diffs_before_clause_diffs(tmp_path: Path) -> None:

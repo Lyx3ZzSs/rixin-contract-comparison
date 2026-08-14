@@ -144,6 +144,7 @@ export interface CompareResponse {
   ocr_quality_summary?: TaskOcrQualitySummary | null;
   ocr_remediation_summary?: TaskOcrRemediationSummary | null;
   debug_artifact_paths?: Record<string, string>;
+  signing_region_outlines?: SigningRegionOutlines;
   report_url: string;
   report_filename: string;
   original_pdf_url: string;
@@ -224,6 +225,11 @@ export interface EvidenceBox {
   confidence?: number;
   evidence_quality?: EvidenceQuality;
   text_confidence?: number | null;
+}
+
+export interface SigningRegionOutlines {
+  original: EvidenceBox[];
+  compare: EvidenceBox[];
 }
 
 export interface DiffItem {

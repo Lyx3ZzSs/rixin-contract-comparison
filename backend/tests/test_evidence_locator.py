@@ -38,6 +38,40 @@ def test_evidence_locator_keeps_signing_region_when_text_evidence_overlaps() -> 
     assert result[0].original_evidence == [signing_evidence]
 
 
+def test_evidence_locator_keeps_signing_field_when_table_evidence_overlaps() -> None:
+    signing_evidence = EvidenceBox(
+        page_no=2,
+        bbox=BBox(x0=60, y0=420, x1=290, y1=460),
+        method="signing_region_element",
+        text="单位名称（章）：国能日新科技股份有限公司",
+        highlight_type="DELETE",
+    )
+    table_evidence = EvidenceBox(
+        page_no=2,
+        bbox=BBox(x0=58, y0=418, x1=300, y1=462),
+        method="table_cell",
+        text="单位名称（章）：国能日新科技股份有限公司",
+        highlight_type="DELETE",
+    )
+    signing_diff = DiffItem(
+        diff_id="D012",
+        diff_type="DELETE",
+        source_type="signing_region",
+        original_evidence=[signing_evidence],
+    )
+    table_diff = DiffItem(
+        diff_id="D005",
+        diff_type="DELETE",
+        source_type="table",
+        original_evidence=[table_evidence],
+    )
+
+    EvidenceLocator().locate([signing_diff, table_diff])
+
+    assert signing_diff.original_evidence == [signing_evidence]
+    assert table_diff.original_evidence == [table_evidence]
+
+
 def test_evidence_locator_preserves_signing_region_detector_confidence() -> None:
     evidence = EvidenceBox(
         page_no=2,

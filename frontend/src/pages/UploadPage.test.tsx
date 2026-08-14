@@ -35,8 +35,10 @@ describe("UploadPage", () => {
     expect(screen.queryByRole("button", { name: "使用示例" })).not.toBeInTheDocument();
     expect(screen.queryByText("等待上传两份 PDF 合同")).not.toBeInTheDocument();
     expect(screen.getByRole("group", { name: "排除对比项" })).toBeInTheDocument();
-    expect(screen.getByLabelText("排除签章区域")).not.toBeChecked();
-    expect(screen.getByLabelText("排除签章区域")).toHaveAccessibleDescription("不生成印章、签字等签章区域差异");
+    expect(screen.getByLabelText("排除印章区域")).not.toBeChecked();
+    expect(screen.getByLabelText("排除印章区域")).toHaveAccessibleDescription(
+      "忽略印章及其遮挡差异，不影响签字和签署信息比对",
+    );
     expect(screen.getByLabelText("排除页眉页脚差异项")).not.toBeChecked();
     expect(screen.getByLabelText("排除页眉页脚差异项")).toHaveAccessibleDescription("不生成页眉、页脚、页码等差异");
   });
@@ -74,7 +76,7 @@ describe("UploadPage", () => {
 
     await user.upload(screen.getByLabelText("原版文件"), new File(["original"], "original.pdf", { type: "application/pdf" }));
     await user.upload(screen.getByLabelText("新版文件"), new File(["compare"], "compare.pdf", { type: "application/pdf" }));
-    await user.click(screen.getByLabelText("排除签章区域"));
+    await user.click(screen.getByLabelText("排除印章区域"));
     await user.click(screen.getByRole("button", { name: "开始对比" }));
 
     await waitFor(() => expect(compareContracts).toHaveBeenCalled());

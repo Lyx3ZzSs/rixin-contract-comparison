@@ -471,6 +471,60 @@ def test_header_footer_keeps_structure_repaired_short_handwritten_annotation() -
     assert "HANDWRITTEN_ANNOTATION_REVIEW" in result.diffs[0].review_flags
 
 
+def test_header_footer_keeps_handwritten_single_character_overlapping_full_header() -> None:
+    full_text = "南京国电南自电网自动化有限公司"
+    original = _document(
+        [
+            [
+                _block(
+                    "o-full",
+                    full_text,
+                    x0=361,
+                    y0=97.5,
+                    x1=526.5,
+                    y1=109.5,
+                    block_type="header",
+                    confidence=0.999,
+                )
+            ]
+        ]
+    )
+    compare = _document(
+        [
+            [
+                _block(
+                    "c-full",
+                    full_text,
+                    x0=361,
+                    y0=97.5,
+                    x1=526.5,
+                    y1=109.5,
+                    block_type="header",
+                    confidence=0.999,
+                ),
+                _block(
+                    "c-fragment",
+                    "司",
+                    x0=462.5,
+                    y0=79,
+                    x1=487.5,
+                    y1=100.5,
+                    block_type="header",
+                    source="ppocrv5_layout_matched+ppstructure_short_annotation_repair",
+                    confidence=0.263,
+                ),
+            ]
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+    result = DiffQualityProcessor().process(diffs, original_document=original, compare_document=compare)
+
+    assert len(result.diffs) == 1
+    assert result.diffs[0].compare_snippet == "司"
+    assert "HANDWRITTEN_ANNOTATION_REVIEW" in result.diffs[0].review_flags
+
+
 def test_header_footer_requires_cross_page_sequence_for_bare_page_number() -> None:
     original = _document([[], []])
     compare = _document(

@@ -93,7 +93,8 @@ describe("ComparisonRecordsPage", () => {
     await screen.findByText("task-processing");
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "35");
 
-    // Simulate SSE progress event
+    vi.useFakeTimers();
+    // Simulate SSE progress event (coalesced by the progress throttle before it reaches the UI)
     await act(async () => {
       mockEventSource.onmessage?.({
         data: JSON.stringify({
@@ -103,6 +104,9 @@ describe("ComparisonRecordsPage", () => {
           status: "PROCESSING",
         }),
       } as MessageEvent);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(350);
     });
 
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "55");

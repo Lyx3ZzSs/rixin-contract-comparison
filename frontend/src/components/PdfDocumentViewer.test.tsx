@@ -3,7 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { DiffItem } from "../types";
-import { getPageHighlights, highlightRect, PdfHighlightLayer } from "./PdfDocumentViewer";
+import {
+  getPageHighlights,
+  getScrollTargetEvidence,
+  highlightRect,
+  PdfHighlightLayer,
+} from "./PdfDocumentViewer";
 import { getCurrentPageFromScroll } from "./pdfPageScroll";
 
 const pages = [
@@ -122,6 +127,13 @@ const signingRegionDiff: DiffItem = {
   original_evidence: [],
 };
 
+const signingRegionOutline = {
+  page_no: 2,
+  bbox: { x0: 45, y0: 239, x1: 563, y1: 672 },
+  method: "signing_region_outline",
+  text: "签署栏识别区域",
+};
+
 const signingPartyDiff: DiffItem = {
   ...signingRegionDiff,
   diff_id: "diff-signing-party",
@@ -147,7 +159,9 @@ const signingPartyAndVisualDiff: DiffItem = {
   ...signingPartyDiff,
   diff_id: "diff-signing-party-and-visual",
   original_evidence: [
-    ...(signingPartyDiff.original_evidence ?? []),
+    ...(signingPartyDiff.original_evidence ?? []).map((evidence) =>
+      evidence.highlight_type ? { ...evidence, method: "signing_region_element" } : evidence,
+    ),
     {
       page_no: 53,
       bbox: { x0: 50, y0: 78, x1: 542, y1: 537 },
@@ -159,6 +173,51 @@ const signingPartyAndVisualDiff: DiffItem = {
 };
 
 describe("PDF diff highlights", () => {
+  it("renders an independently recognized signing region when the page has no signing diff", () => {
+    const highlights = getPageHighlights([], "compare", 2, [signingRegionOutline]);
+
+    expect(highlights).toHaveLength(1);
+    expect(highlights[0]).toMatchObject({
+      markKind: "signing-region",
+      recognition: true,
+      evidence: signingRegionOutline,
+    });
+
+    const { container } = render(
+      <PdfHighlightLayer
+        activeDiffId=""
+        highlights={highlights}
+        pageSize={{ width: 597, height: 819 }}
+        zoom={1}
+        onActivateDiff={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('[data-recognition-outline="true"]')).toHaveClass(
+      "pdf-highlight-mark",
+      "signing-region",
+      "recognition",
+    );
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("does not duplicate an independent outline already represented by a signing-region diff", () => {
+    const matchingOutline = signingPartyAndVisualDiff.original_evidence?.find(
+      (evidence) => evidence.method === "signing_region_visual",
+    );
+    expect(matchingOutline).toBeDefined();
+
+    const highlights = getPageHighlights(
+      [signingPartyAndVisualDiff],
+      "original",
+      53,
+      [matchingOutline!],
+    );
+
+    expect(highlights.filter((highlight) => highlight.markKind === "signing-region")).toHaveLength(1);
+    expect(highlights.some((highlight) => highlight.recognition)).toBe(false);
+  });
+
   it("filters evidence by side and page", () => {
     const originalHighlights = getPageHighlights([diff], "original", 1);
     const comparePageOneHighlights = getPageHighlights([diff], "compare", 1);
@@ -288,7 +347,7 @@ describe("PDF diff highlights", () => {
     );
   });
 
-  it.each(["signing_region", "signing_region_element", "signing_region_visual"])(
+  it.each(["signing_region", "signing_region_visual"])(
     "renders %s evidence with the signing region mark kind",
     (method) => {
       const methodDiff: DiffItem = {
@@ -316,6 +375,27 @@ describe("PDF diff highlights", () => {
     },
   );
 
+  it("renders signing region element evidence as a typed diff highlight", () => {
+    const highlight = getPageHighlights([signingRegionDiff], "compare", 1)[0];
+
+    render(
+      <PdfHighlightLayer
+        activeDiffId="diff-signing"
+        highlights={[highlight]}
+        pageSize={{ width: 595, height: 842 }}
+        zoom={1}
+        onActivateDiff={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "定位差异 diff-signing" })).toHaveClass(
+      "pdf-highlight-mark",
+      "modify",
+      "text",
+      "active",
+    );
+  });
+
   it("uses typed signing party evidence instead of the untyped whole-region context", () => {
     const highlights = getPageHighlights([signingPartyDiff], "original", 53);
 
@@ -325,12 +405,23 @@ describe("PDF diff highlights", () => {
     expect(highlights[0].evidence.bbox).toEqual({ x0: 71, y0: 86, x1: 287, y1: 137 });
   });
 
-  it("uses the full signing region without a nested party box when visual changes accompany a party change", () => {
+  it("keeps the visual signing recognition outline with the precise field highlight", () => {
     const highlights = getPageHighlights([signingPartyAndVisualDiff], "original", 53);
 
-    expect(highlights).toHaveLength(1);
-    expect(highlights[0].type).toBe("MODIFY");
-    expect(highlights[0].evidence.method).toBe("signing_region_visual");
-    expect(highlights[0].evidence.bbox).toEqual({ x0: 50, y0: 78, x1: 542, y1: 537 });
+    expect(highlights).toHaveLength(2);
+    expect(highlights.map((highlight) => highlight.evidence.method)).toEqual([
+      "signing_region_visual",
+      "signing_region_element",
+    ]);
+    expect(highlights[0].markKind).toBe("signing-region");
+    expect(highlights[1].markKind).toBe("text");
+    expect(highlights[1].evidence.bbox).toEqual({ x0: 71, y0: 86, x1: 287, y1: 137 });
+  });
+
+  it("locates a signing diff by its visual region instead of an inner field", () => {
+    const target = getScrollTargetEvidence(signingPartyAndVisualDiff, "original");
+
+    expect(target?.method).toBe("signing_region_visual");
+    expect(target?.bbox).toEqual({ x0: 50, y0: 78, x1: 542, y1: 537 });
   });
 });

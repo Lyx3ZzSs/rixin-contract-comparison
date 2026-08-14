@@ -861,13 +861,20 @@ class TestSummaryStage:
         assert [diff.diff_id for diff in ctx.task.diffs] == ["D002"]
         assert ctx.task.diff_count == 1
 
-    def test_ignore_stamps_hides_signing_region_diffs_in_summary(self, tmp_path: Path) -> None:
+    def test_ignore_stamps_only_hides_seal_diffs_in_summary(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         ctx.task.compare_options = CompareOptions(ignore_stamps=True)
         signing_region_diff = DiffItem(
             diff_id="D001",
             diff_type="MODIFY",
             source_type="signing_region",
+            section_type="signature:seal",
+        )
+        signing_field_diff = DiffItem(
+            diff_id="D004",
+            diff_type="MODIFY",
+            source_type="signing_region",
+            section_type="signature:field",
         )
         seal_diff = DiffItem(
             diff_id="D002",
@@ -879,12 +886,12 @@ class TestSummaryStage:
             diff_type="MODIFY",
             source_type="clause",
         )
-        ctx.diffs = [signing_region_diff, seal_diff, clause_diff]
+        ctx.diffs = [signing_region_diff, seal_diff, signing_field_diff, clause_diff]
 
         SummaryStage().execute(ctx)
 
-        assert ctx.task.diffs == [clause_diff]
-        assert ctx.task.diff_count == 1
+        assert {diff.diff_id for diff in ctx.task.diffs} == {signing_field_diff.diff_id, clause_diff.diff_id}
+        assert ctx.task.diff_count == 2
 
     def test_same_id_final_dedupe_merges_evidence_flags_sources_and_review_projection(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
@@ -2029,7 +2036,7 @@ def test_pipeline_result_preserves_ocr_quality_summary_without_terminal_persiste
     assert persisted.ocr_quality_summary is None
 
 
-def test_copy_processing_result_persists_ocr_remediation_summary() -> None:
+def test_copy_processing_result_persists_generated_task_results() -> None:
     target = CompareTask(task_id="task-copy")
     source = CompareTask(task_id="task-copy")
     source.ocr_remediation_summary = TaskOcrRemediationSummary(
@@ -2037,11 +2044,15 @@ def test_copy_processing_result_persists_ocr_remediation_summary() -> None:
         attempted_action_count=1,
         unresolved_action_count=1,
     )
+    source.signing_region_outlines.original.append(
+        EvidenceBox(page_no=2, bbox=BBox(x0=40, y0=240, x1=555, y1=680), method="signing_region_outline")
+    )
 
     _copy_processing_result(target, source)
 
     assert target.ocr_remediation_summary is not None
     assert target.ocr_remediation_summary.attempted_action_count == 1
+    assert target.signing_region_outlines == source.signing_region_outlines
 
 
 class TestPipelineStageFailure:

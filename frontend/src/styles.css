@@ -1857,10 +1857,14 @@ h2 {
 }
 
 .pdf-highlight-mark.signing-region rect {
-  fill: rgba(14, 116, 144, 0.78);
-  fill-opacity: 0.13;
+  fill-opacity: 0;
   stroke: rgba(180, 83, 9, 0.78);
   stroke-dasharray: 3 3;
+}
+
+.pdf-highlight-mark.recognition {
+  pointer-events: none;
+  cursor: default;
 }
 
 .pdf-highlight-mark.active rect,
@@ -1901,7 +1905,7 @@ h2 {
 .pdf-highlight-mark.active.signing-region rect,
 .pdf-highlight-mark.signing-region:hover rect,
 .pdf-highlight-mark.signing-region:focus-visible rect {
-  fill-opacity: 0.25;
+  fill-opacity: 0;
   stroke: rgba(180, 83, 9, 0.96);
   stroke-width: 1.7;
   filter: drop-shadow(0 0 3px rgba(14, 116, 144, 0.22));

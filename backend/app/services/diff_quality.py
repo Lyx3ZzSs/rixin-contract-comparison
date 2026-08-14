@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from app.models import Clause, DiffItem, DiffType, Document, EvidenceBox
+from app.models import Clause, DiffItem, DiffType, Document, EvidenceBox, TextRange
 from app.services.diff.boundary_coverage import BoundaryCoverageContext, ClauseBoundaryCoverageFilter
 from app.services.diff.range_refiner import layout_punctuation_equivalent
 from app.services.red_seal_visual import RedSealVisualInspector
@@ -142,6 +142,7 @@ class DiffQualityProcessor:
         working = [diff.model_copy(deep=True) for diff in diffs]
         decisions: list[DiffQualityDecision] = []
         working = self._dedupe_cross_source(working, decisions)
+        working = self._merge_cover_annotation_fragments(working, decisions)
         self._classify(working, decisions)
         working = self._suppress_low_value_noise(
             working,
@@ -219,8 +220,14 @@ class DiffQualityProcessor:
                     continue
                 remove_ids.add(duplicate.diff_id)
                 merged_sources.add(duplicate.source_type)
-                winner.original_evidence = self._merge_evidence(winner.original_evidence, duplicate.original_evidence)
-                winner.compare_evidence = self._merge_evidence(winner.compare_evidence, duplicate.compare_evidence)
+                if winner.original_snippet or winner.original_change_ranges:
+                    winner.original_evidence = self._merge_evidence(
+                        winner.original_evidence, duplicate.original_evidence
+                    )
+                if winner.compare_snippet or winner.compare_change_ranges:
+                    winner.compare_evidence = self._merge_evidence(
+                        winner.compare_evidence, duplicate.compare_evidence
+                    )
                 winner.review_flags = self._merge_flags(winner.review_flags, duplicate.review_flags)
                 if duplicate.quality_status == "NEEDS_REVIEW":
                     winner.quality_status = "NEEDS_REVIEW"
@@ -235,6 +242,73 @@ class DiffQualityProcessor:
             self._add_flag(winner, "CROSS_SOURCE_MERGED")
 
         return [by_id[diff.diff_id] for diff in diffs if diff.diff_id not in remove_ids]
+
+    def _merge_cover_annotation_fragments(
+        self,
+        diffs: list[DiffItem],
+        decisions: list[DiffQualityDecision],
+    ) -> list[DiffItem]:
+        candidates = [
+            diff
+            for diff in diffs
+            if diff.source_type == "metadata"
+            and diff.title == "封面额外文本"
+            and len([*diff.original_evidence, *diff.compare_evidence]) == 1
+            and ([*diff.original_evidence, *diff.compare_evidence][0].method == "header_footer")
+            and ([*diff.original_evidence, *diff.compare_evidence][0].page_no == 1)
+            and ([*diff.original_evidence, *diff.compare_evidence][0].bbox.y0 <= 96.0)
+        ]
+        remove_ids: set[str] = set()
+        ordered = sorted(
+            candidates,
+            key=lambda diff: (
+                diff.diff_type,
+                [*diff.original_evidence, *diff.compare_evidence][0].bbox.x0,
+            ),
+        )
+        for left, right in zip(ordered, ordered[1:]):
+            if left.diff_id in remove_ids or right.diff_id in remove_ids or left.diff_type != right.diff_type:
+                continue
+            left_evidence = [*left.original_evidence, *left.compare_evidence][0]
+            right_evidence = [*right.original_evidence, *right.compare_evidence][0]
+            left_height = left_evidence.bbox.y1 - left_evidence.bbox.y0
+            right_height = right_evidence.bbox.y1 - right_evidence.bbox.y0
+            same_row = abs(
+                (left_evidence.bbox.y0 + left_evidence.bbox.y1)
+                - (right_evidence.bbox.y0 + right_evidence.bbox.y1)
+            ) / 2 <= max(4.0, min(left_height, right_height) * 0.8)
+            gap = right_evidence.bbox.x0 - left_evidence.bbox.x1
+            if not same_row or gap > max(24.0, max(left_height, right_height) * 1.5):
+                continue
+            side = "original" if left.diff_type == "DELETE" else "compare"
+            merged_text = f"{getattr(left, f'{side}_text')}{getattr(right, f'{side}_text')}"
+            setattr(left, f"{side}_text", merged_text)
+            setattr(left, f"{side}_snippet", merged_text)
+            setattr(
+                left,
+                f"{side}_evidence",
+                self._merge_evidence(
+                    getattr(left, f"{side}_evidence"),
+                    getattr(right, f"{side}_evidence"),
+                ),
+            )
+            setattr(
+                left,
+                f"{side}_change_ranges",
+                [TextRange(start=0, end=len(merged_text), highlight_type=left.diff_type)],
+            )
+            left.readable_change = f"{'删除' if left.diff_type == 'DELETE' else '新增'}封面额外文本：{merged_text}"
+            left.review_flags = self._merge_flags(left.review_flags, right.review_flags)
+            left.merged_sources = sorted(set([*left.merged_sources, *right.merged_sources]))
+            remove_ids.add(right.diff_id)
+            decisions.append(
+                DiffQualityDecision(
+                    action="cover_annotation_fragments_merged",
+                    diff_id=left.diff_id,
+                    detail={"merged_diff_id": right.diff_id},
+                )
+            )
+        return [diff for diff in diffs if diff.diff_id not in remove_ids]
 
     @staticmethod
     def _merge_flags(winner_flags: list[str], duplicate_flags: list[str]) -> list[str]:

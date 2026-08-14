@@ -137,8 +137,8 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
               onChange={(event) => setIgnoreStamps(event.target.checked)}
             />
             <span>
-              <strong id="ignore-stamps-label">排除签章区域</strong>
-              <small id="ignore-stamps-helper">不生成印章、签字等签章区域差异</small>
+              <strong id="ignore-stamps-label">排除印章区域</strong>
+              <small id="ignore-stamps-helper">忽略印章及其遮挡差异，不影响签字和签署信息比对</small>
             </span>
           </label>
           <label className="compare-option">

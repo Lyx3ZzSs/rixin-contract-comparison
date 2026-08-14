@@ -596,6 +596,39 @@ class TestStructuredTableComparison:
         assert contact_diff.diff_type == "DELETE"
         assert contact_diff.compare_text == ""
 
+    def test_contact_row_table_ocr_error_is_covered_by_plain_phone_values(self):
+        original_html = (
+            "<table><tr><td>电 话：010-83458100</td><td>电话：1809718216</td></tr>"
+            "<tr><td>传 真：010-83458107</td><td>传真：</td></tr></table>"
+        )
+        compare_html = (
+            '<table><tr><td colspan="2">电 话：010-83458100 电话：18097182156 传</td></tr>'
+            '<tr><td colspan="2">真：010-83458107 传真：</td></tr></table>'
+        )
+        original_source = "电话：18097182156\n话：010-83458100\n传真：\n真：010-83458107"
+        compare_source = "话：010-83458100\n电话：18097182156\n传真：\n真：010-83458107"
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_raw_table_block("o1", 2, original_html, original_source)]),
+            _make_doc([_make_raw_table_block("c1", 2, compare_html, compare_source)]),
+        )
+
+        assert warnings == []
+        assert diffs == []
+
+    def test_contact_row_real_phone_change_is_preserved(self):
+        original_html = "<table><tr><td>电话：18097182156</td></tr></table>"
+        compare_html = "<table><tr><td>电话：18097182157</td></tr></table>"
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_raw_table_block("o1", 2, original_html, "电话：18097182156")]),
+            _make_doc([_make_raw_table_block("c1", 2, compare_html, "电话：18097182157")]),
+        )
+
+        assert warnings == []
+        assert len(diffs) == 1
+        assert diffs[0].diff_type == "MODIFY"
+
     def test_merged_sequence_with_single_name_and_phantom_continuation(self):
         """OCR merges seq+detail but puts only first name in col 1, pushing
         the second name into phantom row col 0 (e.g. '2 3' | '中期模型' | ... then '短期模型' | '')."""
@@ -613,6 +646,30 @@ class TestStructuredTableComparison:
             "<tr><td>短期模型</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>",
             "<tr><td>4</td><td>超短期模型</td><td>光伏场超短期功率预测模型开发。</td><td>国能日新</td>"
             "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+
+        diffs, warnings = TableComparator().build_diffs(
+            _make_doc([_make_table_block("o1", 1, original_html)]),
+            _make_doc([_make_table_block("c1", 1, compare_html)]),
+        )
+
+        assert warnings == []
+        assert diffs == []
+
+    def test_merged_row_with_sequence_only_phantom_is_split(self):
+        original_html = _product_table([
+            "<tr><td>2</td><td>中期模型</td><td>光伏场中期功率预报 模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+            "<tr><td>3</td><td>短期模型</td><td>光伏场短期功率预报 模型开发。</td><td>国能日新</td>"
+            "<td>套</td><td>1</td><td></td><td></td><td></td></tr>",
+        ])
+        compare_html = _product_table([
+            "<tr><td>2</td><td>中期模型 短期模型</td>"
+            "<td>光伏场中期功率预报 模型开发。 光伏场短期功率预报 模型开发。</td>"
+            "<td>国能日新 国能日新</td><td>套 套</td><td>1 1</td>"
+            "<td></td><td></td><td></td></tr>",
+            "<tr><td>3</td><td></td><td></td><td></td><td></td><td></td>"
+            "<td></td><td></td><td></td></tr>",
         ])
 
         diffs, warnings = TableComparator().build_diffs(

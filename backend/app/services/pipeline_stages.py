@@ -26,6 +26,7 @@ from app.models import (
     OcrRawResultPaths,
     Page,
     ParseWarningDetail,
+    SigningRegionOutlines,
     TextBlock,
 )
 from app.services.compare_debug import CompareDebugWriter
@@ -85,6 +86,7 @@ from app.services.signing_region.models import (
     SigningElement,
     SigningElementType,
     SigningRegion,
+    SigningRegionComparison,
     VisualDetection,
     VisualDetectionResult,
 )
@@ -927,7 +929,8 @@ class SigningRegionStage:
         )
 
     def execute(self, ctx: PipelineContext) -> None:
-        if ctx.task.compare_options.ignore_stamps or ctx.task.compare_options.signing_region_mode == "off":
+        if ctx.task.compare_options.signing_region_mode == "off":
+            ctx.task.signing_region_outlines = SigningRegionOutlines()
             ctx.signing_pages_original = []
             ctx.signing_pages_compare = []
             ctx.signing_blocks_original = []
@@ -1056,9 +1059,11 @@ class SigningRegionStage:
                 match_confidence=match_confidence,
                 original_party_references=original_party_references,
                 compare_party_references=compare_party_references,
+                ignore_seals=ctx.task.compare_options.ignore_stamps,
             )
             for original, compare, match_confidence in matches
         ]
+        self._mark_uncertain_signatures(comparisons, visual_status)
         legacy_diffs = self._legacy_diffs(ctx)
         signing_region_diffs = self.diff_builder.build_diffs(
             comparisons,
@@ -1074,6 +1079,10 @@ class SigningRegionStage:
         ctx.clause_document_compare = compare_clause_doc.document
         ctx.signing_regions_original = original_regions
         ctx.signing_regions_compare = compare_regions
+        ctx.task.signing_region_outlines = SigningRegionOutlines(
+            original=self._region_outlines(original_regions),
+            compare=self._region_outlines(compare_regions),
+        )
         ctx.signing_region_diffs = signing_region_diffs
         ctx.signing_region_covered_diff_ids = coverage.covered_diff_ids
         ctx.signing_region_debug = {
@@ -1132,6 +1141,58 @@ class SigningRegionStage:
             lambda: self.debug_writer.write_signing_region(ctx.task.task_id, ctx.signing_region_debug),
         )
         _emit_progress(ctx, 42, self.name, "signing_region_done")
+
+    @staticmethod
+    def _region_outlines(regions: list[SigningRegion]) -> list[EvidenceBox]:
+        return [
+            EvidenceBox(
+                page_no=region.page_no,
+                bbox=region.bbox,
+                method="signing_region_outline",
+                text="签署栏识别区域",
+                confidence=region.confidence,
+                evidence_quality="HIGH" if region.confidence >= 0.75 else "MEDIUM",
+            )
+            for region in regions
+        ]
+
+    def _mark_uncertain_signatures(
+        self,
+        comparisons: list[SigningRegionComparison],
+        visual_status: dict[str, dict[str, Any]],
+    ) -> None:
+        if not self.visual_enabled:
+            return
+        original_available = bool(visual_status["original"].get("available"))
+        compare_available = bool(visual_status["compare"].get("available"))
+        if original_available and compare_available:
+            return
+        for comparison in comparisons:
+            if comparison.original_region is None or comparison.compare_region is None:
+                continue
+            slots = set(self.comparator._signature_slots(comparison.original_region)) | set(
+                self.comparator._signature_slots(comparison.compare_region)
+            )
+            for role, field_key in sorted(slots):
+                comparison.signature_changes.append(
+                    {
+                        "type": "MODIFY",
+                        "element_type": SigningElementType.SIGNATURE.value,
+                        "party_role": role,
+                        "field_key": field_key,
+                        "field_label": self.comparator._signature_slot_label(
+                            comparison.original_region,
+                            comparison.compare_region,
+                            (role, field_key),
+                        ),
+                        "original_text": "检测完成" if original_available else "无法确认",
+                        "compare_text": "检测完成" if compare_available else "无法确认",
+                        "detail": "签字状态无法确认",
+                    }
+                )
+            if slots:
+                comparison.diff_type = "MODIFY"
+                self.comparator._add_review_flag(comparison, "SIGNING_SIGNATURE_UNCERTAIN")
 
     def _extract_regions_from_structure(
         self,
@@ -1957,6 +2018,7 @@ class SigningRegionStage:
             "visual_enabled": self.visual_enabled,
             "visual_backend": settings.signing_visual_backend,
             "visual_confidence_threshold": self.visual_confidence_threshold,
+            "signature_compare_mode": "presence",
             "visual_detector": type(self.visual_detector).__name__ if self.visual_detector is not None else "",
             "visual_detector_url_configured": bool(settings.signing_visual_detector_url.strip()),
             "visual_local_model_configured": bool(settings.signing_visual_local_model_path.strip()),
@@ -2617,14 +2679,22 @@ def _filter_compare_option_diffs(task: CompareTask, diffs: list[DiffItem]) -> li
     excluded_source_types: set[str] = set()
     if task.compare_options.ignore_stamps:
         excluded_source_types.add("seal")
-        excluded_source_types.add("signing_region")
     if task.compare_options.signing_region_mode == "off":
         excluded_source_types.add("signing_region")
     if task.compare_options.ignore_headers_footers:
         excluded_source_types.add("header_footer")
     if not excluded_source_types:
         return diffs
-    return [diff for diff in diffs if diff.source_type not in excluded_source_types]
+    return [
+        diff
+        for diff in diffs
+        if diff.source_type not in excluded_source_types
+        and not (
+            task.compare_options.ignore_stamps
+            and diff.source_type == "signing_region"
+            and diff.section_type == "signature:seal"
+        )
+    ]
 
 
 def _dedupe_final_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str, str]]:

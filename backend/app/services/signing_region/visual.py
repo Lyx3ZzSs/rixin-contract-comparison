@@ -8,7 +8,12 @@ import httpx
 
 from app.config import settings
 from app.models import BBox
-from app.services.signing_region.models import SigningRegion, VisualDetection, VisualDetectionResult
+from app.services.signing_region.models import (
+    SigningElementType,
+    SigningRegion,
+    VisualDetection,
+    VisualDetectionResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +85,8 @@ class OpenCvVisualSignatureDetector:
     seal_probe_top_margin = 48.0
     min_red_seal_ratio = 0.002
     min_red_pixel_count = 40
+    min_red_component_extent = 12
+    max_red_component_aspect_ratio = 6.0
 
     def __init__(
         self,
@@ -112,7 +119,7 @@ class OpenCvVisualSignatureDetector:
                 continue
 
             rendered_count += 1
-            detection = self._detect_region(region, image, render_bbox=region.bbox)
+            detection = self._detect_region(region, image, render_bbox=region.bbox, allow_handwriting=False)
             if self.detect_red_seal:
                 probe_region = self._seal_probe_region(region)
                 if probe_region.bbox != region.bbox:
@@ -126,13 +133,100 @@ class OpenCvVisualSignatureDetector:
                         )
                         if probe_detection is not None and probe_detection.label == "seal":
                             detection = probe_detection
-            if detection is not None and detection.confidence >= self.min_confidence:
+            if detection is not None and detection.label == "seal" and detection.confidence >= self.min_confidence:
                 detections.append(detection)
+            if self.detect_handwriting:
+                for probe_region in self._signature_probe_regions(region):
+                    probe_image = (
+                        image if probe_region.bbox == region.bbox else self._render_region(pdf_path, probe_region)
+                    )
+                    signature = self._detect_signature(region, probe_image, render_bbox=probe_region.bbox)
+                    if signature is not None and signature.confidence >= self.min_confidence:
+                        detections.append(signature)
 
         if regions and rendered_count == 0:
             return VisualDetectionResult(available=False, model_name="opencv", error="render_failed")
 
         return VisualDetectionResult(available=True, model_name="opencv", detections=detections)
+
+    def _detect_signature(
+        self,
+        region: SigningRegion,
+        image: Any,
+        *,
+        render_bbox: BBox,
+    ) -> VisualDetection | None:
+        metrics = self._visual_metrics(image)
+        dark_pixel_ratio = metrics["handwriting_dark_pixel_ratio"]
+        long_stroke_ratio = metrics["handwriting_long_stroke_ratio"]
+        focused_probe = (
+            render_bbox != region.bbox
+            and render_bbox.y0 > region.bbox.y0
+            and render_bbox.y1 - render_bbox.y0 <= 140.0
+        )
+        focused_handwriting = (
+            focused_probe
+            and dark_pixel_ratio >= 0.008
+            and metrics["handwriting_bbox_x1_ratio"] - metrics["handwriting_bbox_x0_ratio"] >= 0.08
+            and metrics["handwriting_bbox_y1_ratio"] - metrics["handwriting_bbox_y0_ratio"] >= 0.18
+        )
+        if not focused_handwriting and (dark_pixel_ratio < 0.015 or long_stroke_ratio < 0.12):
+            return None
+        confidence = min(0.9, (0.62 if focused_handwriting else 0.5) + dark_pixel_ratio * 5.0)
+        return VisualDetection(
+            page_no=region.page_no,
+            bbox=self._signature_detection_bbox(render_bbox, metrics),
+            label="signature",
+            confidence=round(confidence, 3),
+            model_name="opencv",
+            raw_data={
+                **metrics,
+                "reasons": ["dark_stroke_density"],
+                "source_region_id": region.region_id,
+            },
+        )
+
+    @staticmethod
+    def _signature_probe_regions(region: SigningRegion) -> list[SigningRegion]:
+        signature_fields = [
+            element
+            for element in region.elements
+            if element.element_type == SigningElementType.FIELD
+            and not element.text.strip()
+            and (
+                str(element.raw_ref.get("field_key") or "")
+                in {"authorized_representative", "legal_representative", "signature"}
+                or "签字" in str(element.raw_ref.get("field_label") or "")
+                or "签名" in str(element.raw_ref.get("field_label") or "")
+            )
+        ]
+        if signature_fields:
+            midpoint = (region.bbox.x0 + region.bbox.x1) / 2
+            probes: list[SigningRegion] = []
+            for field in signature_fields:
+                role = str(field.raw_ref.get("party_role") or "")
+                column_x0 = region.bbox.x0 if role != "乙方" else midpoint
+                column_x1 = region.bbox.x1 if role != "甲方" else midpoint
+                probes.append(
+                    region.model_copy(
+                        update={
+                            "bbox": BBox(
+                                x0=max(column_x0, field.bbox.x0 - 8.0),
+                                y0=field.bbox.y1,
+                                x1=min(column_x1, max(field.bbox.x1 + 80.0, field.bbox.x0 + 180.0)),
+                                y1=min(region.bbox.y1, field.bbox.y1 + 120.0),
+                            )
+                        }
+                    )
+                )
+            return probes
+        if region.region_role.value != "both_parties":
+            return [region]
+        midpoint = (region.bbox.x0 + region.bbox.x1) / 2
+        return [
+            region.model_copy(update={"bbox": region.bbox.model_copy(update={"x1": midpoint})}),
+            region.model_copy(update={"bbox": region.bbox.model_copy(update={"x0": midpoint})}),
+        ]
 
     def _detect_region(
         self,
@@ -148,11 +242,16 @@ class OpenCvVisualSignatureDetector:
         confidence = 0.0
 
         red_pixel_ratio = metrics["red_pixel_ratio"]
+        red_width = metrics["red_bbox_width"]
+        red_height = metrics["red_bbox_height"]
+        red_aspect_ratio = max(red_width, red_height) / max(1.0, min(red_width, red_height))
         if (
             self.detect_red_seal
             and red_pixel_ratio >= self.min_red_seal_ratio
             and metrics["red_pixel_count"] >= self.min_red_pixel_count
             and metrics["red_dominant_pixel_count"] >= self.min_red_pixel_count
+            and min(red_width, red_height) >= self.min_red_component_extent
+            and red_aspect_ratio <= self.max_red_component_aspect_ratio
         ):
             label = "seal"
             confidence = min(0.95, 0.55 + red_pixel_ratio * 25.0)
@@ -216,10 +315,13 @@ class OpenCvVisualSignatureDetector:
                 red_bbox_y0_ratio = float(component_y) / height
                 red_bbox_x1_ratio = float(component_x + component_width) / width
                 red_bbox_y1_ratio = float(component_y + component_height) / height
+                red_bbox_width = float(component_width)
+                red_bbox_height = float(component_height)
                 red_dominant_pixel_count = float(component_area)
             else:
                 red_bbox_x0_ratio = red_bbox_y0_ratio = 0.0
                 red_bbox_x1_ratio = red_bbox_y1_ratio = 0.0
+                red_bbox_width = red_bbox_height = 0.0
                 red_dominant_pixel_count = 0.0
 
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -229,9 +331,26 @@ class OpenCvVisualSignatureDetector:
             horizontal_rules = np.count_nonzero(dark_mask, axis=1) >= width * 0.75
             vertical_rules = np.count_nonzero(dark_mask, axis=0) >= height * 0.75
             rule_mask = np.logical_or(horizontal_rules[:, None], vertical_rules[None, :])
-            handwriting_mask = np.logical_and(dark_mask, np.logical_not(rule_mask))
+            handwriting_mask = np.logical_and.reduce((dark_mask, np.logical_not(rule_mask), red_mask == 0))
             handwriting_dark_pixel_ratio = float(np.count_nonzero(handwriting_mask)) / total_pixels
             handwriting_long_stroke_ratio = OpenCvVisualSignatureDetector._longest_dark_stroke_ratio(handwriting_mask)
+            handwriting_component_count, handwriting_component = OpenCvVisualSignatureDetector._dominant_red_component(
+                handwriting_mask.astype("uint8"), cv2
+            )
+            handwriting_bbox = OpenCvVisualSignatureDetector._meaningful_component_bbox(
+                handwriting_mask.astype("uint8"),
+                cv2,
+                min_area=max(4, int(total_pixels * 0.00035)),
+            )
+            if handwriting_bbox is not None:
+                handwriting_x, handwriting_y, handwriting_width, handwriting_height = handwriting_bbox
+                handwriting_bbox_x0_ratio = float(handwriting_x) / width
+                handwriting_bbox_y0_ratio = float(handwriting_y) / height
+                handwriting_bbox_x1_ratio = float(handwriting_x + handwriting_width) / width
+                handwriting_bbox_y1_ratio = float(handwriting_y + handwriting_height) / height
+            else:
+                handwriting_bbox_x0_ratio = handwriting_bbox_y0_ratio = 0.0
+                handwriting_bbox_x1_ratio = handwriting_bbox_y1_ratio = 0.0
             axis_rule_pixel_ratio = float(np.count_nonzero(np.logical_and(dark_mask, rule_mask))) / total_pixels
         except Exception:
             return OpenCvVisualSignatureDetector._empty_visual_metrics()
@@ -245,10 +364,17 @@ class OpenCvVisualSignatureDetector:
             "red_bbox_y0_ratio": red_bbox_y0_ratio,
             "red_bbox_x1_ratio": red_bbox_x1_ratio,
             "red_bbox_y1_ratio": red_bbox_y1_ratio,
+            "red_bbox_width": red_bbox_width,
+            "red_bbox_height": red_bbox_height,
             "dark_pixel_ratio": dark_pixel_ratio,
             "long_stroke_ratio": long_stroke_ratio,
             "handwriting_dark_pixel_ratio": handwriting_dark_pixel_ratio,
             "handwriting_long_stroke_ratio": handwriting_long_stroke_ratio,
+            "handwriting_component_count": float(handwriting_component_count),
+            "handwriting_bbox_x0_ratio": handwriting_bbox_x0_ratio,
+            "handwriting_bbox_y0_ratio": handwriting_bbox_y0_ratio,
+            "handwriting_bbox_x1_ratio": handwriting_bbox_x1_ratio,
+            "handwriting_bbox_y1_ratio": handwriting_bbox_y1_ratio,
             "axis_rule_pixel_ratio": axis_rule_pixel_ratio,
         }
 
@@ -263,10 +389,17 @@ class OpenCvVisualSignatureDetector:
             "red_bbox_y0_ratio": 0.0,
             "red_bbox_x1_ratio": 0.0,
             "red_bbox_y1_ratio": 0.0,
+            "red_bbox_width": 0.0,
+            "red_bbox_height": 0.0,
             "dark_pixel_ratio": 0.0,
             "long_stroke_ratio": 0.0,
             "handwriting_dark_pixel_ratio": 0.0,
             "handwriting_long_stroke_ratio": 0.0,
+            "handwriting_component_count": 0.0,
+            "handwriting_bbox_x0_ratio": 0.0,
+            "handwriting_bbox_y0_ratio": 0.0,
+            "handwriting_bbox_x1_ratio": 0.0,
+            "handwriting_bbox_y1_ratio": 0.0,
             "axis_rule_pixel_ratio": 0.0,
         }
 
@@ -285,6 +418,22 @@ class OpenCvVisualSignatureDetector:
         components = [tuple(int(value) for value in stats[index]) for index in range(1, component_count)]
         return len(components), max(components, key=lambda component: component[4])
 
+    @staticmethod
+    def _meaningful_component_bbox(mask: Any, cv2: Any, *, min_area: int) -> tuple[int, int, int, int] | None:
+        component_count, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        components = [
+            tuple(int(value) for value in stats[index])
+            for index in range(1, component_count)
+            if int(stats[index][4]) >= min_area
+        ]
+        if not components:
+            return None
+        x0 = min(component[0] for component in components)
+        y0 = min(component[1] for component in components)
+        x1 = max(component[0] + component[2] for component in components)
+        y1 = max(component[1] + component[3] for component in components)
+        return x0, y0, x1 - x0, y1 - y0
+
     def _seal_detection_bbox(
         self,
         region_bbox: BBox,
@@ -302,6 +451,19 @@ class OpenCvVisualSignatureDetector:
             y1=render_bbox.y0 + height * metrics["red_bbox_y1_ratio"],
         )
         return red_bbox
+
+    @staticmethod
+    def _signature_detection_bbox(render_bbox: BBox, metrics: dict[str, float]) -> BBox:
+        if metrics.get("handwriting_component_count", 0.0) <= 0:
+            return render_bbox
+        width = max(0.0, render_bbox.x1 - render_bbox.x0)
+        height = max(0.0, render_bbox.y1 - render_bbox.y0)
+        return BBox(
+            x0=render_bbox.x0 + width * metrics["handwriting_bbox_x0_ratio"],
+            y0=render_bbox.y0 + height * metrics["handwriting_bbox_y0_ratio"],
+            x1=render_bbox.x0 + width * metrics["handwriting_bbox_x1_ratio"],
+            y1=render_bbox.y0 + height * metrics["handwriting_bbox_y1_ratio"],
+        )
 
     @staticmethod
     def _longest_dark_stroke_ratio(mask: Any) -> float:

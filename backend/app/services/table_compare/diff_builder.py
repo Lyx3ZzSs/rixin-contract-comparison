@@ -388,6 +388,26 @@ class TableDiffBuilder:
                 if not orig_norm and not comp_norm:
                     continue
 
+                if self._contact_cell_modify_covered_by_plain_source(
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                    orig_text,
+                    comp_text,
+                ):
+                    self._record_suppressed_diff(
+                        "contact_cell_modify_covered_by_plain_source",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
+                    continue
+
                 if self._matcher.is_similar_ocr_noise(orig_norm, comp_norm, self.cell_similarity_threshold):
                     self._record_suppressed_diff(
                         "similar_ocr_noise",
@@ -714,6 +734,27 @@ class TableDiffBuilder:
             and self._all_coverage_tokens_covered(complete_tokens, compare_source)
             and not self._all_coverage_tokens_covered(malformed_tokens, malformed_source)
         )
+
+    @staticmethod
+    def _contact_cell_modify_covered_by_plain_source(
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+        original_text: str,
+        compare_text: str,
+    ) -> bool:
+        if orig_row is None or comp_row is None:
+            return False
+        if not any(marker in utils.normalize(f"{original_text} {compare_text}") for marker in ("电话", "传真", "手机")):
+            return False
+
+        phone_pattern = re.compile(r"(?<!\d)(?:1\d{10}|0\d{2,3}[-－—]\d{7,8})(?!\d)")
+        original_source = TableMatcher.row_plain_source_text(original, orig_row)
+        compare_source = TableMatcher.row_plain_source_text(compare, comp_row)
+        original_phones = set(phone_pattern.findall(original_source))
+        compare_phones = set(phone_pattern.findall(compare_source))
+        return bool(original_phones) and original_phones == compare_phones
 
     def group_cell_diffs(self, cell_diffs: list[CellDiff], orig_table: StructuredTable, comp_table: StructuredTable) -> list[CellDiffGroup]:
         if not cell_diffs:

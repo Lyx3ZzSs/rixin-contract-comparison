@@ -49,24 +49,29 @@ class SigningRegionMatcher:
         return pairs
 
     def _score(self, original: SigningRegion, compare: SigningRegion) -> float:
-        page_score = self._page_score(original, compare)
-        if page_score == 0.0:
-            return 0.0
         text_score = self._text_structure_score(original, compare)
+        page_score = self._page_score(original, compare)
+        same_explicit_role = original.region_role == compare.region_role and original.region_role.value != "unknown"
+        semantic_pair = same_explicit_role and text_score >= 0.65
+        if page_score == 0.0 and not semantic_pair:
+            return 0.0
+        if page_score == 0.0:
+            page_score = 0.25
         iou_score = self._iou(original, compare)
         position_score = self._position_score(original, compare)
         role_score = 1.0 if original.region_role == compare.region_role else 0.4
         if page_score == 1.0 and role_score == 1.0 and iou_score == 1.0 and position_score == 1.0:
             return 1.0
         adjacent_page_shift = abs(original.page_no - compare.page_no) == 1 and text_score >= 0.65
-        if iou_score == 0.0 and position_score < self.strong_position_threshold and not adjacent_page_shift:
+        if (
+            iou_score == 0.0
+            and position_score < self.strong_position_threshold
+            and not adjacent_page_shift
+            and not semantic_pair
+        ):
             return 0.0
         score = round(
-            page_score * 0.25
-            + role_score * 0.2
-            + iou_score * 0.15
-            + position_score * 0.1
-            + text_score * 0.3,
+            page_score * 0.25 + role_score * 0.2 + iou_score * 0.15 + position_score * 0.1 + text_score * 0.3,
             4,
         )
         high_confidence_adjacent_signing_pair = (
@@ -76,6 +81,8 @@ class SigningRegionMatcher:
             and text_score >= 0.65
         )
         if high_confidence_adjacent_signing_pair:
+            return max(score, self.threshold)
+        if semantic_pair and min(original.confidence, compare.confidence) >= 0.7:
             return max(score, self.threshold)
         return score
 

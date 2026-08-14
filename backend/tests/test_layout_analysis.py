@@ -424,6 +424,36 @@ def test_hybrid_trusts_structure_delivery_date_when_ocr_misses_month_fragment() 
     assert result[0].source == "ppstructure_text"
 
 
+def test_hybrid_repairs_day_confusion_in_structure_delivery_date() -> None:
+    extractor = PPStructureOCRHybridExtractor(overlap_threshold=0.5)
+    structure_block = _block(
+        "p5_ppstructure_b19",
+        80,
+        560,
+        290,
+        575,
+        text="交货日期：2026年月且交货",
+    )
+    children = [
+        _block("p5_ppocrv5_b22", 85, 562, 188, 574, text="交货日期：2026年").model_copy(
+            update={"layout_block_id": structure_block.block_id}
+        ),
+        _block("p5_ppocrv5_b23", 255, 562, 288, 575, text="且交货").model_copy(
+            update={"layout_block_id": structure_block.block_id}
+        ),
+    ]
+
+    result = extractor._consolidate_structure_text_blocks(
+        children,
+        {structure_block.block_id: structure_block},
+        set(),
+    )
+
+    assert len(result) == 1
+    assert result[0].text == "交货日期:2026年月日交货"
+    assert result[0].source == "ppstructure_text"
+
+
 def test_hybrid_trusts_structure_clause_marker_when_ocr_reads_ten_as_tu() -> None:
     extractor = PPStructureOCRHybridExtractor(overlap_threshold=0.5)
     structure_block = _block(

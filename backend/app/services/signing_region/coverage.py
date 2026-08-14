@@ -39,10 +39,20 @@ class SigningRegionCoverageBuilder:
             covered: list[str] = []
             reasons: dict[str, str] = {}
             signing_evidence = [*signing_diff.original_evidence, *signing_diff.compare_evidence]
+            if "SIGNING_FIELD_CHANGE" in signing_diff.review_flags:
+                signing_evidence = [item for item in signing_evidence if item.method == "signing_region_element"]
             for legacy in legacy_diffs:
                 if legacy.source_type not in LEGACY_SOURCES:
                     continue
-                if legacy.source_type == "table" and "SIGNING_TABLE_CHANGE" not in signing_diff.review_flags:
+                if legacy.source_type == "table" and not {
+                    "SIGNING_TABLE_CHANGE",
+                    "SIGNING_FIELD_CHANGE",
+                }.intersection(signing_diff.review_flags):
+                    continue
+                if legacy.source_type == "seal" and not {
+                    "SIGNING_SEAL_CHANGE",
+                    "SIGNING_VISUAL_CHANGE",
+                }.intersection(signing_diff.review_flags):
                     continue
                 if not self._looks_signing_related(legacy):
                     continue
@@ -77,7 +87,12 @@ class SigningRegionCoverageBuilder:
     @staticmethod
     def _any_overlap(left: list[EvidenceBox], right: list[EvidenceBox]) -> bool:
         return any(
-            a.page_no == b.page_no and SigningRegionCoverageBuilder._overlap_ratio(a.bbox, b.bbox) >= 0.2
+            a.page_no == b.page_no
+            and max(
+                SigningRegionCoverageBuilder._overlap_ratio(a.bbox, b.bbox),
+                SigningRegionCoverageBuilder._overlap_ratio(b.bbox, a.bbox),
+            )
+            >= 0.2
             for a in left
             for b in right
         )

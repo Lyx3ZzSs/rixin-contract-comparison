@@ -462,6 +462,21 @@ class StructuralRepairMixin:
         current_seq: int,
         col_count: int,
     ) -> list[_LogicalRow] | None:
+        if self._is_sequence_only_row(next_row, current_seq + 1):
+            split_columns = sum(
+                bool(self._split_cell_text_for_row_count(cell.text, 2))
+                for cell in row.cells
+                if cell.col_index != 0
+            )
+            if split_columns >= 3:
+                return self._split_merged_sequence_row(
+                    row,
+                    0,
+                    [str(current_seq), str(current_seq + 1)],
+                    [],
+                    col_count,
+                )
+
         # Signal 1: col 1 of current row contains space-separated tokens
         name_text = self._cell_text_from_row(row, 1)
         name_tokens = self._split_name_tokens(name_text)
@@ -560,6 +575,14 @@ class StructuralRepairMixin:
                 source_text=self._source_text_for_row(row),
             ),
         ]
+
+    def _is_sequence_only_row(self, row: _LogicalRow, expected_sequence: int) -> bool:
+        nonempty = [cell for cell in row.cells if utils.normalize(cell.text)]
+        return (
+            len(nonempty) == 1
+            and nonempty[0].col_index == 0
+            and utils.normalize(nonempty[0].text) == str(expected_sequence)
+        )
 
     def _extract_phantom_candidate_from_source(
         self,

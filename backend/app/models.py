@@ -100,6 +100,11 @@ class EvidenceBox(BaseModel):
     text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
+class SigningRegionOutlines(BaseModel):
+    original: list[EvidenceBox] = Field(default_factory=list)
+    compare: list[EvidenceBox] = Field(default_factory=list)
+
+
 class ParseWarningDetail(BaseModel):
     code: str
     message: str
@@ -454,6 +459,7 @@ class CompareTask(BaseModel):
     audit_item_reviews: dict[str, AuditItemReview] = Field(default_factory=dict)
     audit_item_reviews_normalized: bool = False
     compare_options: CompareOptions = Field(default_factory=CompareOptions)
+    signing_region_outlines: SigningRegionOutlines = Field(default_factory=SigningRegionOutlines)
     diffs: list[DiffItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)

@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-from app.models import DiffItem, EvidenceBox, TextRange
-from app.services.signing_region.models import SigningElementType, SigningRegion, SigningRegionComparison
+from app.models import BBox, DiffItem, EvidenceBox, TextRange
+from app.services.signing_region.models import (
+    SigningElement,
+    SigningElementType,
+    SigningRegion,
+    SigningRegionComparison,
+)
 from app.utils.id_utils import generate_diff_id
 
 
 READABLE_CHANGE_FIELDS = (
+    ("region_changes", "签署栏变化"),
+    ("column_changes", "签署栏变化"),
     ("party_changes", "签署主体变化"),
+    ("field_changes", "签署字段变化"),
     ("seal_changes", "印章文字变化"),
     ("date_changes", "签署日期变化"),
     ("signature_changes", "签字文字变化"),
@@ -23,10 +31,175 @@ class SigningRegionDiffBuilder:
         for comparison in comparisons:
             if comparison.diff_type is None:
                 continue
-            diff = self._to_diff(comparison, next_index)
-            diffs.append(diff)
-            next_index += 1
+            if comparison.region_changes or comparison.original_region is None or comparison.compare_region is None:
+                diffs.append(self._to_diff(comparison, next_index))
+                next_index += 1
+                continue
+            for changes_attr, _ in READABLE_CHANGE_FIELDS:
+                if changes_attr == "region_changes":
+                    continue
+                for change in getattr(comparison, changes_attr):
+                    diffs.append(self._to_change_diff(comparison, changes_attr, change, next_index))
+                    next_index += 1
         return diffs
+
+    def _to_change_diff(
+        self,
+        comparison: SigningRegionComparison,
+        changes_attr: str,
+        change: dict,
+        index: int,
+    ) -> DiffItem:
+        original_text = str(change.get("original_text") or "")
+        compare_text = str(change.get("compare_text") or "")
+        change_type = str(change.get("type") or "MODIFY")
+        role = str(change.get("party_role") or "")
+        label = str(change.get("field_label") or self._change_label(changes_attr))
+        prefix = f"{role} · " if role and role != "unknown" else ""
+        title = f"{prefix}{label}"
+        original_evidence = self._change_evidence(comparison.original_region, change, side="original")
+        compare_evidence = self._change_evidence(comparison.compare_region, change, side="compare")
+        flags = self._change_flags(changes_attr, comparison.review_flags)
+        original_display = self._change_display_text(change, side="original")
+        compare_display = self._change_display_text(change, side="compare")
+        return DiffItem(
+            diff_id=generate_diff_id(index),
+            diff_type=change_type,
+            title=title,
+            original_text=original_text,
+            compare_text=compare_text,
+            original_snippet=original_text,
+            compare_snippet=compare_text,
+            readable_change=f"{title}：{original_display} → {compare_display}",
+            source_type="signing_region",
+            section_type=f"signature:{self._change_kind(changes_attr)}",
+            match_method="signing_region",
+            match_confidence=comparison.match_confidence,
+            review_flags=flags,
+            original_evidence=original_evidence,
+            compare_evidence=compare_evidence,
+            original_change_ranges=[TextRange(start=0, end=len(original_text), highlight_type=change_type)]
+            if original_text
+            else [],
+            compare_change_ranges=[TextRange(start=0, end=len(compare_text), highlight_type=change_type)]
+            if compare_text
+            else [],
+        )
+
+    @staticmethod
+    def _change_display_text(change: dict, *, side: str) -> str:
+        text = str(change.get(f"{side}_text") or change.get(f"{side}_residual_text") or "")
+        residual = str(change.get(f"{side}_residual_text") or "")
+        if residual:
+            return f"主体缺失（仅残留格式文本“{residual}”）"
+        return text or "空白"
+
+    @staticmethod
+    def _change_kind(changes_attr: str) -> str:
+        return {
+            "party_changes": "party",
+            "column_changes": "column",
+            "field_changes": "field",
+            "seal_changes": "seal",
+            "date_changes": "date",
+            "signature_changes": "signature",
+            "label_changes": "label",
+            "table_changes": "table",
+            "visual_changes": "visual",
+        }.get(changes_attr, "field")
+
+    @staticmethod
+    def _change_label(changes_attr: str) -> str:
+        return dict(READABLE_CHANGE_FIELDS).get(changes_attr, "签署字段")
+
+    @staticmethod
+    def _change_flags(changes_attr: str, flags: list[str]) -> list[str]:
+        relevant = {
+            "party_changes": {"SIGNING_PARTY_CHANGE", "CRITICAL_VALUE_CHANGE"},
+            "column_changes": {"SIGNING_COLUMN_CHANGE"},
+            "field_changes": {"SIGNING_FIELD_CHANGE", "CRITICAL_VALUE_CHANGE"},
+            "seal_changes": {"SIGNING_SEAL_CHANGE"},
+            "date_changes": {"SIGNING_DATE_CHANGE", "CRITICAL_VALUE_CHANGE"},
+            "signature_changes": {"SIGNING_SIGNATURE_CHANGE", "SIGNING_SIGNATURE_UNCERTAIN"},
+            "label_changes": {"SIGNING_LABEL_CHANGE"},
+            "table_changes": {"SIGNING_TABLE_CHANGE"},
+            "visual_changes": {"SIGNING_VISUAL_CHANGE"},
+        }.get(changes_attr, set())
+        relevant.add("SIGNING_MATCH_LOW_CONFIDENCE")
+        return [flag for flag in dict.fromkeys(flags) if flag in relevant]
+
+    @staticmethod
+    def _change_evidence(
+        region: SigningRegion | None,
+        change: dict,
+        *,
+        side: str,
+    ) -> list[EvidenceBox]:
+        if region is None:
+            return []
+        change_type = str(change.get("type") or "MODIFY")
+        if (change_type == "ADD" and side == "original") or (change_type == "DELETE" and side == "compare"):
+            return []
+        element_id = str(change.get(f"{side}_element_id") or "")
+        role = str(change.get("party_role") or "")
+        field_key = str(change.get("field_key") or "")
+        element_type = str(change.get("element_type") or "")
+        candidates = [element for element in region.elements if not element_id or element.element_id == element_id]
+        if not element_id:
+            candidates = [
+                element
+                for element in candidates
+                if (not element_type or element.element_type.value == element_type)
+                and (not role or SigningRegionDiffBuilder._element_role(region, element) == role)
+                and (
+                    not field_key
+                    or element.element_type == SigningElementType.SIGNATURE
+                    or str(element.raw_ref.get("field_key") or "") == field_key
+                )
+            ]
+        element = candidates[0] if candidates else None
+        if element is None:
+            return [SigningRegionDiffBuilder._evidence(region, change.get("type") or "MODIFY")]
+        text = str(change.get(f"{side}_text") or change.get(f"{side}_residual_text") or "")
+        if change.get("change_scope") == "value" and not text:
+            return []
+        bboxes = [element.bbox]
+        if change.get("change_scope") == "value":
+            if element.raw_ref.get("value_bboxes"):
+                bboxes = [BBox.model_validate(item) for item in element.raw_ref["value_bboxes"]]
+            elif element.raw_ref.get("value_bbox"):
+                bboxes = [BBox.model_validate(element.raw_ref["value_bbox"])]
+        elif change.get("change_scope") == "field" and element.raw_ref.get("field_bboxes"):
+            bboxes = [BBox.model_validate(item) for item in element.raw_ref["field_bboxes"]]
+        evidence_texts = [text] * len(bboxes)
+        if change.get("change_scope") == "field" and len(element.raw_ref.get("field_segments") or []) == len(bboxes):
+            evidence_texts = [str(item) for item in element.raw_ref["field_segments"]]
+        return [
+            EvidenceBox(
+                page_no=element.page_no,
+                bbox=bbox,
+                method="signing_region_element",
+                text=evidence_text,
+                highlight_type=change.get("type") or "MODIFY",
+                confidence=element.confidence,
+                evidence_quality="HIGH" if element.confidence >= 0.75 else "MEDIUM",
+            )
+            for bbox, evidence_text in zip(bboxes, evidence_texts, strict=True)
+        ]
+
+    @staticmethod
+    def _element_role(region: SigningRegion, element: SigningElement) -> str:
+        explicit = str(element.raw_ref.get("party_role") or "")
+        if explicit:
+            return explicit
+        if region.region_role.value == "party_a":
+            return "甲方"
+        if region.region_role.value == "party_b":
+            return "乙方"
+        if region.region_role.value == "both_parties":
+            midpoint = (region.bbox.x0 + region.bbox.x1) / 2
+            return "甲方" if (element.bbox.x0 + element.bbox.x1) / 2 < midpoint else "乙方"
+        return "unknown"
 
     def _to_diff(self, comparison: SigningRegionComparison, index: int) -> DiffItem:
         original_text = self._summary(comparison.original_region)
@@ -38,14 +211,10 @@ class SigningRegionDiffBuilder:
         compare_evidence = self._party_evidence(comparison, side="compare")
         has_region_level_changes = self._has_region_level_changes(comparison)
         region_highlight_type = (
-            comparison.diff_type
-            if has_region_level_changes or not comparison.party_changes
-            else None
+            comparison.diff_type if has_region_level_changes or not comparison.party_changes else None
         )
         region_evidence_method = (
-            "signing_region_visual"
-            if comparison.party_changes and has_region_level_changes
-            else "signing_region"
+            "signing_region_visual" if comparison.party_changes and has_region_level_changes else "signing_region"
         )
         if comparison.original_region is not None:
             original_evidence.append(
@@ -77,8 +246,16 @@ class SigningRegionDiffBuilder:
             review_flags=list(dict.fromkeys(comparison.review_flags)),
             original_evidence=original_evidence,
             compare_evidence=compare_evidence,
-            original_change_ranges=[TextRange(start=0, end=len(original_text), highlight_type=comparison.diff_type or "MODIFY")] if original_text else [],
-            compare_change_ranges=[TextRange(start=0, end=len(compare_text), highlight_type=comparison.diff_type or "MODIFY")] if compare_text else [],
+            original_change_ranges=[
+                TextRange(start=0, end=len(original_text), highlight_type=comparison.diff_type or "MODIFY")
+            ]
+            if original_text
+            else [],
+            compare_change_ranges=[
+                TextRange(start=0, end=len(compare_text), highlight_type=comparison.diff_type or "MODIFY")
+            ]
+            if compare_text
+            else [],
         )
 
     @staticmethod
@@ -143,7 +320,9 @@ class SigningRegionDiffBuilder:
     @staticmethod
     def _has_region_level_changes(comparison: SigningRegionComparison) -> bool:
         return bool(
-            comparison.seal_changes
+            comparison.region_changes
+            or comparison.column_changes
+            or comparison.seal_changes
             or comparison.date_changes
             or comparison.signature_changes
             or comparison.label_changes
