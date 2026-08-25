@@ -700,43 +700,6 @@ Phase 2C 用于保护合同关键字段变化。它不做 LLM 复核，也不重
 
 命中字段 guard 的 diff 会包含：
 
-```json
-{
-  "match_score_details": {
-    "critical_field_diff_types": ["AMOUNT"],
-    "critical_field_guard_applied": 1.0
-  },
-  "review_flags": [
-    "CRITICAL_FIELD_CHANGE",
-    "CRITICAL_FIELD_AMOUNT_CHANGE",
-    "CRITICAL_VALUE_CHANGE"
-  ]
-}
-```
-
-## 支持字段
-
-| 字段类型 | 示例 | review flag |
-| --- | --- | --- |
-| `AMOUNT` | `1000元` -> `5000元` | `CRITICAL_FIELD_AMOUNT_CHANGE` |
-| `DATE` | `2026年6月30日` -> `2027年7月31日` | `CRITICAL_FIELD_DATE_CHANGE` |
-| `PERCENT_RATE` | `6%` -> `13%` | `CRITICAL_FIELD_PERCENT_RATE_CHANGE` |
-| `DURATION` | `30日` -> `45日` | `CRITICAL_FIELD_DURATION_CHANGE` |
-| `QUANTITY` | `3台` -> `5台` | `CRITICAL_FIELD_QUANTITY_CHANGE` |
-| `PARTY_ROLE` | `甲方` -> `乙方` | `CRITICAL_FIELD_PARTY_ROLE_CHANGE` |
-
-## 使用方式
-
-运行质量回归：
-
-```bash
-cd backend
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p2c-final \
-  --run-id precision-p2c-final \
-  --fail-on-regression
-```
 
 查看实际任务或回归 case 的 diff payload：
 
@@ -744,19 +707,6 @@ python scripts/run_quality_regression.py \
 diffs[].review_flags
 diffs[].match_score_details.critical_field_diff_types
 diffs[].match_score_details.critical_field_guard_applied
-```
-
-## 人工判断建议
-
-- `CRITICAL_FIELD_CHANGE` 表示该 diff 包含业务字段变化，不表示系统已经完成法律风险判断。
-- 如果同时出现 OCR 风险 flag，diff 应保留并进入人工复核，不应被低价值噪声规则删除。
-- 如果字段变化被标记但人工判断为 OCR 噪声，应补充 focused test 收紧对应字段正则。
-- 如果关键字段变化没有被标记，应优先补 `backend/tests/test_critical_field_guard.py` 的最小复现。
-
-## 边界
-
-第一版只处理 clause `MODIFY` diff，不处理整条 `ADD` / `DELETE`。字段级归因聚合不进入 `quality_attribution.json`，后续可作为独立小阶段扩展。
-````
 
 - [ ] **Step 2: Commit Task 4**
 
@@ -777,17 +727,6 @@ Run:
 ```bash
 cd backend
 python -m pytest tests/test_critical_field_guard.py tests/test_diff_match_patch_engine.py tests/test_text_cleaning_quality.py -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 2: Run related regression tests**
-
-Run:
-
-```bash
-cd backend
-python -m pytest tests/test_range_refiner.py tests/test_quality_attribution.py tests/test_run_quality_regression.py -v
 ```
 
 Expected: PASS.
@@ -814,28 +753,6 @@ python -m ruff check .
 
 Expected: `All checks passed!`
 
-- [ ] **Step 5: Run quality regression smoke**
-
-Run:
-
-```bash
-cd backend
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p2c-final \
-  --run-id precision-p2c-final \
-  --fail-on-regression
-```
-
-Expected JSON includes:
-
-```json
-{
-  "status": "PASSED",
-  "run_id": "precision-p2c-final",
-  "failed_gates": []
-}
-```
 
 - [ ] **Step 6: Run full backend tests**
 
@@ -856,22 +773,5 @@ Run:
 git status --short
 ```
 
-Expected: only existing unrelated local files remain outside commits. Do not stage `frontend/src/picture/favicon.ico`, `.agents/`, `backend/.ocr-compare-quality/`, `picture/`, `skills-lock.json`, or `storage/`.
 
 ## Self-Review Checklist
-
-- Spec coverage:
-  - Amount, date, percent, duration, quantity, and party-role detection: Task 1.
-  - Diff payload review flags and debug hints: Task 2.
-  - Low-value suppression protection and `CRITICAL_VALUE_CHANGE`: Task 3.
-  - Chinese workflow documentation: Task 4.
-  - Quality regression and full backend verification: Task 5.
-- Scope:
-  - No LLM review.
-  - No matcher changes.
-  - No `quality_attribution.json` schema change.
-  - No API migration.
-- Type consistency:
-  - `critical_field_diff_types` is a list of strings.
-  - `critical_field_guard_applied` is numeric `1.0`.
-  - Review flags use the exact names listed in this plan.

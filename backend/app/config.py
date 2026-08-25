@@ -59,16 +59,10 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # -- Storage paths (flat, for backward compat) ----------------------
+    # -- Storage ---------------------------------------------------------
 
     base_dir: Path = BASE_DIR
     storage_dir: Path = Field(default_factory=lambda: BASE_DIR / "storage")
-    uploads_dir: Path | None = None
-    tasks_dir: Path | None = None
-    reports_dir: Path | None = None
-    ocr_dir: Path | None = None
-    debug_dir: Path | None = None
-    cache_dir: Path | None = None
     max_upload_size_mb: int = Field(default=30, ge=1)
 
     # -- Document extraction/OCR ------------------------------------------
@@ -175,10 +169,6 @@ class Settings(BaseSettings):
     # -- Pipeline (flat env vars) -----------------------------------------
 
     task_runner_max_workers: int = Field(default=2, ge=1, le=16)
-    task_runner_max_attempts: int = Field(default=1, ge=1, le=5)
-    task_runner_lease_seconds: int = Field(default=3600, ge=30)
-    task_runner_retry_delay_seconds: float = Field(default=2.0, ge=0)
-    task_runner_poll_interval_seconds: float = Field(default=0.25, ge=0.01)
 
     # -- OIDC resource server (flat env vars → nested model) ------------
 
@@ -410,33 +400,7 @@ class Settings(BaseSettings):
             disabled_user_roles=self.auth_disabled_user_roles,
         )
 
-        # Resolve storage paths
-        storage_dir = self._resolve_runtime_path(self.storage_dir)
-        self.storage_dir = storage_dir
-        if self.uploads_dir is None:
-            self.uploads_dir = storage_dir / "uploads"
-        else:
-            self.uploads_dir = self._resolve_runtime_path(self.uploads_dir)
-        if self.tasks_dir is None:
-            self.tasks_dir = storage_dir / "tasks"
-        else:
-            self.tasks_dir = self._resolve_runtime_path(self.tasks_dir)
-        if self.reports_dir is None:
-            self.reports_dir = storage_dir / "reports"
-        else:
-            self.reports_dir = self._resolve_runtime_path(self.reports_dir)
-        if self.ocr_dir is None:
-            self.ocr_dir = storage_dir / "ocr"
-        else:
-            self.ocr_dir = self._resolve_runtime_path(self.ocr_dir)
-        if self.debug_dir is None:
-            self.debug_dir = storage_dir / "debug"
-        else:
-            self.debug_dir = self._resolve_runtime_path(self.debug_dir)
-        if self.cache_dir is None:
-            self.cache_dir = storage_dir / "cache"
-        else:
-            self.cache_dir = self._resolve_runtime_path(self.cache_dir)
+        self.storage_dir = self._resolve_runtime_path(self.storage_dir)
 
         return self
 
@@ -444,14 +408,15 @@ class Settings(BaseSettings):
         return path if path.is_absolute() else BASE_DIR / path
 
     @property
-    def storage_subdirs(self) -> list[Path]:
-        return [
-            self.tasks_dir,
-        ]
+    def tasks_dir(self) -> Path:
+        return self.storage_dir / "tasks"
+
+    @property
+    def task_database_path(self) -> Path:
+        return self.storage_dir / "tasks.sqlite3"
 
     def ensure_storage(self) -> None:
-        for directory in self.storage_subdirs:
-            directory.mkdir(parents=True, exist_ok=True)
+        self.tasks_dir.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

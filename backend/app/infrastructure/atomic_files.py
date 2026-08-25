@@ -3,14 +3,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import threading
-from collections.abc import Mapping
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
-
-_manifest_lock = threading.RLock()
 
 
 def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
@@ -39,41 +33,6 @@ def atomic_publish_file(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     _fsync_file(source)
     _publish_synced_file(source, destination)
-
-
-def update_task_manifest(
-    manifest_path: Path,
-    *,
-    task_id: str,
-    fields: Mapping[str, Any] | None = None,
-    artifact: Mapping[str, Any] | None = None,
-) -> None:
-    """Merge one task metadata/artifact update and publish the manifest atomically."""
-    with _manifest_lock:
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
-        except (OSError, ValueError, TypeError, UnicodeError):
-            manifest = {}
-        if not isinstance(manifest, dict):
-            manifest = {}
-
-        artifacts = {
-            str(item.get("path")): item
-            for item in manifest.get("artifacts", [])
-            if isinstance(item, dict) and item.get("path")
-        }
-        if artifact is not None and artifact.get("path"):
-            artifacts[str(artifact["path"])] = dict(artifact)
-
-        manifest.update(fields or {})
-        manifest.update(
-            {
-                "task_id": task_id,
-                "updated_at": datetime.now(UTC).isoformat(),
-                "artifacts": sorted(artifacts.values(), key=lambda item: str(item["path"])),
-            }
-        )
-        atomic_write_json(manifest_path, manifest)
 
 
 def _publish_synced_file(source: Path, destination: Path) -> None:

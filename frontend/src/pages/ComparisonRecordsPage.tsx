@@ -277,7 +277,7 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
           </div>
         )}
 
-        {!isLoading && !error && (
+        {!isLoading && !error && pagination.total > 0 && (
           <div className="records-pagination" aria-label="对比记录分页">
             <span>
               共 {pagination.total} 条

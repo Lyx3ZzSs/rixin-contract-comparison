@@ -59,6 +59,7 @@ def test_detects_added_footer_handwriting_despite_unrelated_original_footer_text
     diff = diffs[0]
     assert diff.diff_type == "ADD"
     assert diff.title == "第1页左下角手写签注"
+    assert "HANDWRITTEN_ANNOTATION_REVIEW" in diff.review_flags
     assert diff.compare_evidence[0].method == "footer_visual_registered"
     assert diff.compare_evidence[0].bbox.x0 < 30
     assert diff.compare_evidence[0].bbox.x1 < 50
@@ -111,6 +112,28 @@ def test_visual_footer_diffs_remain_page_specific_during_quality_processing() ->
     assert not any(decision.action == "cross_source_merged" for decision in result.decisions)
 
 
+def test_repeated_visual_footer_annotations_remain_page_specific_diffs() -> None:
+    images: dict[tuple[str, int], np.ndarray] = {}
+    for page_no in range(1, 11):
+        original = _blank()
+        compare = _blank()
+        if page_no <= 9:
+            compare[176:196, 22:38] = 0
+        images[("original.pdf", page_no)] = original
+        images[("compare.pdf", page_no)] = compare
+
+    diffs = _comparator(images).build_diffs(
+        _document("original.pdf", page_count=10),
+        _document("compare.pdf", page_count=10),
+    )
+
+    assert len(diffs) == 9
+    assert [diff.title for diff in diffs] == [
+        f"第{page_no}页左下角手写签注" for page_no in range(1, 10)
+    ]
+    assert all("HANDWRITTEN_ANNOTATION_REVIEW" in diff.review_flags for diff in diffs)
+
+
 def test_parallel_page_processing_preserves_serial_diff_order_and_ids() -> None:
     images: dict[tuple[str, int], np.ndarray] = {}
     for page_no in (1, 2, 3):
@@ -133,9 +156,7 @@ def test_parallel_page_processing_preserves_serial_diff_order_and_ids() -> None:
         max_inflight=3,
     ).build_diffs(original_document, compare_document, start_index=7)
 
-    assert [diff.model_dump(mode="json") for diff in parallel] == [
-        diff.model_dump(mode="json") for diff in serial
-    ]
+    assert [diff.model_dump(mode="json") for diff in parallel] == [diff.model_dump(mode="json") for diff in serial]
 
 
 def test_registered_visual_evidence_replaces_overlapping_footer_ocr_noise() -> None:
@@ -165,6 +186,45 @@ def test_registered_visual_evidence_replaces_overlapping_footer_ocr_noise() -> N
     kept = comparator.remove_overlapping_ocr_diffs([ocr_diff], visual_diffs)
 
     assert kept == []
+
+
+def test_short_footer_ocr_fragments_are_deduplicated_against_visual_or_repeated_annotation() -> None:
+    comparator = _comparator({})
+    repeated = DiffItem(
+        diff_id="D001",
+        diff_type="ADD",
+        source_type="header_footer",
+        compare_text="黄科",
+        compare_evidence=[
+            EvidenceBox(page_no=1, bbox=BBox(x0=420, y0=782, x1=493, y1=820), text="黄科"),
+            EvidenceBox(page_no=2, bbox=BBox(x0=416, y0=789, x1=496, y1=825), text="黄科"),
+        ],
+    )
+    right_fragment = DiffItem(
+        diff_id="D002",
+        diff_type="ADD",
+        source_type="header_footer",
+        compare_text="12.",
+        compare_evidence=[EvidenceBox(page_no=2, bbox=BBox(x0=503, y0=808, x1=523, y1=830), text="12.")],
+    )
+    visual = DiffItem(
+        diff_id="D003",
+        diff_type="ADD",
+        source_type="header_footer",
+        review_flags=[comparator.visual_flag],
+        compare_evidence=[EvidenceBox(page_no=3, bbox=BBox(x0=48, y0=807, x1=57, y1=831), text="检测到手写签注")],
+    )
+    left_fragment = DiffItem(
+        diff_id="D004",
+        diff_type="ADD",
+        source_type="header_footer",
+        compare_text="岳",
+        compare_evidence=[EvidenceBox(page_no=3, bbox=BBox(x0=31, y0=799, x1=57, y1=833), text="岳")],
+    )
+
+    kept = comparator.remove_overlapping_ocr_diffs([repeated, right_fragment, left_fragment], [visual])
+
+    assert [diff.diff_id for diff in kept] == ["D001"]
 
 
 def test_keeps_footer_ocr_evidence_when_visual_box_only_covers_a_small_fragment() -> None:

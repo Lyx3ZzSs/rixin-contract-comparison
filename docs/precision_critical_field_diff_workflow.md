@@ -35,18 +35,7 @@ Phase 2C 用于保护合同关键字段变化。它不做 LLM 复核，也不重
 
 ## 使用方式
 
-运行质量回归：
-
-```bash
-cd backend
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p2c-final \
-  --run-id precision-p2c-final \
-  --fail-on-regression
-```
-
-查看实际任务或回归 case 的 diff payload：
+查看实际任务的 diff payload：
 
 ```text
 diffs[].review_flags
@@ -63,4 +52,4 @@ diffs[].match_score_details.critical_field_guard_applied
 
 ## 边界
 
-第一版只处理 clause `MODIFY` diff，不处理整条 `ADD` / `DELETE`。字段级归因聚合不进入 `quality_attribution.json`，后续可作为独立小阶段扩展。table、header/footer、seal 等非 clause diff 即使带有类似 flag，也仍按各自质量规则处理，不会走 clause critical-field 保护路径。
+第一版只处理 clause `MODIFY` diff，不处理整条 `ADD` / `DELETE`。table、header/footer、seal 等非 clause diff 即使带有类似 flag，也仍按各自质量规则处理，不会走 clause critical-field 保护路径。

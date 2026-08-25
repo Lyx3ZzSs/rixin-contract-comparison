@@ -24,28 +24,6 @@
 
 ## File Structure
 
-- Create `backend/app/services/native_heading_repair.py`
-  - Own native PDF line extraction, immutable heading index, path/mtime cache, repair eligibility, block mutation, and repair diagnostics.
-- Create `backend/app/services/repeated_overlay_filter.py`
-  - Own cross-page frequency and position analysis for short repeated scan overlays.
-- Modify `backend/app/services/pipeline_stages.py`
-  - Invoke both services after structured alignment and before document profiling.
-- Modify `backend/app/services/compare_debug.py`
-  - Persist compact repair and overlay diagnostics.
-- Modify `backend/app/services/clause_heading.py`
-  - Treat short numbered title-layout blocks as strong headings.
-- Modify `backend/app/services/diff/boundary_coverage.py`
-  - Reuse native heading evidence for conservative high-risk ADD and title-only MODIFY suppression.
-- Create `backend/tests/test_native_heading_repair.py`
-  - Unit coverage for native heading indexing, repair, ambiguity, geometry, and fail-open behavior.
-- Create `backend/tests/test_repeated_overlay_filter.py`
-  - Unit coverage for repeated overlay detection and protected repeated labels.
-- Modify `backend/tests/test_pipeline.py`
-  - Pipeline wiring and debug artifact coverage.
-- Modify `backend/tests/test_text_cleaning_quality.py`
-  - Splitter and diff-quality regression coverage.
-- Create `backend/tests/test_contract_heading_evidence_repair.py`
-  - Generated, non-sensitive end-to-end clause-tree regression for all nine affected headings.
 
 ---
 

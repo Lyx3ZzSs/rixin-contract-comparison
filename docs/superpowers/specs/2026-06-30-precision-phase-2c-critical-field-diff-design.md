@@ -9,7 +9,7 @@ Phase 2B 已经把 matcher 错配和高风险匹配过度自信的问题向下�
 核心目标：
 
 - 关键字段变化必须稳定出现在 diff 结果中。
-- 关键字段变化应有明确 review flag，方便质量回归和人工审查定位。
+- 关键字段变化应有明确 review flag，方便人工审查定位。
 - 关键字段变化不应被 `DiffQualityProcessor` 的低价值噪声规则误删。
 - 高亮范围尽量落在字段 token 本身，而不是整句或整段。
 - 不把明显 OCR 噪声、排版重排或纯符号变化误升为关键字段变化。
@@ -25,26 +25,10 @@ ClausePair
   -> spatial repair / value coverage repair
   -> DiffItem
   -> DiffQualityProcessor
-  -> quality regression / attribution
 ```
 
 当前关键文件：
 
-- `backend/app/services/diff/builder.py`
-  - `build_modify()` 创建 clause 级 `MODIFY` diff。
-  - `review_flags()` 依据 matcher 和结构风险写入 review flags。
-- `backend/app/services/diff/range_refiner.py`
-  - `changed_snippets()` 生成文本差异片段和 `TextRange`。
-  - 已有 numeric / percent unit range 扩展逻辑。
-- `backend/app/services/diff_quality.py`
-  - `DiffQualityProcessor` 负责低价值噪声抑制、关键变化标记、结构风险降级。
-  - 已有 `CRITICAL_VALUE_CHANGE`、`POSSIBLE_OCR_NOISE`、`suppressed_low_value_noise` 等机制。
-- `backend/tests/test_range_refiner.py`
-  - 覆盖 range refiner 的字段范围、高亮类型和重排噪声。
-- `backend/tests/test_diff_match_patch_engine.py`
-  - 覆盖 end-to-end `DiffEngine().build_diffs()` 的 diff range 行为。
-- `backend/tests/test_quality_attribution.py`
-  - 覆盖质量归因输出，可在后续扩展关键字段 diff attribution。
 
 ## 推荐方案
 
@@ -202,7 +186,6 @@ _is_critical_change()
 
 ### 4. Attribution Boundary
 
-Phase 2C 第一版不改 `quality_attribution.json` schema，避免把 diff payload 归因扩展和字段 guard 实现混在同一阶段。
 
 本阶段只要求字段级信息进入实际 diff payload：
 
@@ -216,7 +199,6 @@ CRITICAL_FIELD_QUANTITY_CHANGE
 CRITICAL_FIELD_PARTY_ROLE_CHANGE
 ```
 
-后续若需要在 `quality_attribution.json` 中聚合字段级 diff 归因，应作为 Phase 2C+ 或 Phase 2D 的独立小阶段处理。
 
 ## 检测策略
 
@@ -302,36 +284,7 @@ backend/tests/test_diff_match_patch_engine.py
 - `match_score_details.critical_field_diff_types` 写入。
 - 关键字段变化 diff 保持 `MODIFY`。
 
-### Diff Quality Tests
-
-新增或扩展：
-
-```text
-backend/tests/test_evaluate_ocr_compare_quality.py
-backend/tests/test_run_quality_regression.py
-```
-
-覆盖：
-
-- 带 `CRITICAL_FIELD_CHANGE` 的 diff 不被 `_suppress_low_value_noise()` 删除。
 - 即使存在 OCR review flag，关键字段 diff 仍保留并进入 `NEEDS_REVIEW` 或 `CRITICAL_VALUE_CHANGE`。
-
-### Regression Smoke
-
-必须运行：
-
-```bash
-cd backend
-python -m pytest tests/test_critical_field_guard.py tests/test_diff_match_patch_engine.py tests/test_quality_attribution.py -v
-python -m compileall app tests
-python -m ruff check .
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p2c-final \
-  --run-id precision-p2c-final \
-  --fail-on-regression
-python -m pytest
-```
 
 ## 成功标准
 
@@ -339,12 +292,6 @@ python -m pytest
 - 金额、日期、比例、期限、数量至少各有 focused tests。
 - 关键字段变化不会被低价值噪声抑制。
 - 纯排版、标点、空格变化不会误升为关键字段变化。
-- 现有质量回归不退化：
-  - `precision` 不下降。
-  - `recall` 不下降。
-  - `evidence_hit_rate` 不下降。
-  - `false_positive_count` 不增加。
-  - `false_negative_count` 不增加。
 - 全量 backend tests 通过。
 
 ## 风险与缓解
@@ -386,7 +333,5 @@ Phase 2C 完成后，后续可选：
 
 1. **Phase 2D：字段级高亮范围优化**
    - 当 range 过粗成为主要问题时，专门优化 `range_refiner`。
-2. **Phase 2E：真实任务关键字段 gold case 扩容**
-   - 从真实任务中脱敏沉淀金额、日期、期限、主体变化样本。
-3. **Phase 3：ClauseSplitter / split-merge 结构漂移调优**
+2. **Phase 3：ClauseSplitter / split-merge 结构漂移调优**
    - 处理切分、合并、拆分导致的漏报误报。

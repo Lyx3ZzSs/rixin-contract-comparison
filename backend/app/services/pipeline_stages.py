@@ -905,6 +905,8 @@ class SigningRegionStage:
     start_progress = 40
     progress = 42
     visual_confidence_threshold = 0.6
+    printed_signature_label_overlap_threshold = 0.85
+    printed_signature_label_max_area_ratio = 6.0
 
     def __init__(
         self,
@@ -1883,6 +1885,22 @@ class SigningRegionStage:
             region = self._matching_region(regions, detection)
             if region is None:
                 continue
+            printed_label = self._printed_signature_label_overlap(region, detection)
+            if printed_label is not None:
+                if suppressed is not None:
+                    suppressed.append(
+                        {
+                            "side": side,
+                            "page_no": detection.page_no,
+                            "bbox": detection.bbox.model_dump(mode="json"),
+                            "label": detection.label,
+                            "confidence": detection.confidence,
+                            "reason": "printed_signature_label_overlap",
+                            "field_label": str(printed_label.raw_ref.get("field_label") or ""),
+                            "field_bbox": printed_label.bbox.model_dump(mode="json"),
+                        }
+                    )
+                continue
             elements.append(
                 (
                     region,
@@ -1901,6 +1919,45 @@ class SigningRegionStage:
                 )
             )
         return elements
+
+    @classmethod
+    def _printed_signature_label_overlap(
+        cls,
+        region: SigningRegion,
+        detection: VisualDetection,
+    ) -> SigningElement | None:
+        if cls._visual_detection_type(detection) != SigningElementType.SIGNATURE:
+            return None
+        detection_area = cls._bbox_area(detection.bbox)
+        if detection_area <= 0:
+            return None
+        for element in region.elements:
+            if element.element_type != SigningElementType.FIELD or element.text.strip():
+                continue
+            field_key = str(element.raw_ref.get("field_key") or "")
+            field_label = str(element.raw_ref.get("field_label") or "")
+            if field_key not in {"authorized_representative", "legal_representative", "signature"} and not any(
+                marker in field_label for marker in ("签字", "签名")
+            ):
+                continue
+            field_area = cls._bbox_area(element.bbox)
+            if field_area > detection_area * cls.printed_signature_label_max_area_ratio:
+                continue
+            overlap_ratio = cls._bbox_intersection_area(element.bbox, detection.bbox) / detection_area
+            if overlap_ratio >= cls.printed_signature_label_overlap_threshold:
+                return element
+        return None
+
+    @staticmethod
+    def _bbox_area(bbox: BBox) -> float:
+        return max(0.0, bbox.x1 - bbox.x0) * max(0.0, bbox.y1 - bbox.y0)
+
+    @staticmethod
+    def _bbox_intersection_area(left: BBox, right: BBox) -> float:
+        return max(0.0, min(left.x1, right.x1) - max(left.x0, right.x0)) * max(
+            0.0,
+            min(left.y1, right.y1) - max(left.y0, right.y0),
+        )
 
     def _visual_fingerprint_elements(
         self, pdf_path: Path, regions: list[SigningRegion]
@@ -2631,8 +2688,7 @@ class VisualizationStage:
         self.artifact_store = artifact_store
 
     def execute(self, ctx: PipelineContext) -> None:
-        ctx.task.original_highlight_pdf_path = None
-        ctx.task.compare_highlight_pdf_path = None
+        pass
 
 
 class SummaryStage:

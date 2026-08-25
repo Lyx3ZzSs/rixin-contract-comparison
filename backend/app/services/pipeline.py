@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from app.errors import PipelineContractError
-from app.infrastructure.execution_state import TaskExecutionContext
+from app.infrastructure.task_runner import TaskExecutionContext
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.models import (
     Clause,
@@ -165,23 +165,6 @@ class PipelineStage(Protocol):
 def _update_progress(ctx: PipelineContext, stage: str, progress: int, repository: TaskRepository) -> None:
     progress = min(max(progress, 0), 99)
 
-    if ctx.execution_context is not None:
-        _raise_if_cancelled(ctx)
-        coordinator = getattr(ctx.execution_context.cancellation_token, "coordinator", None)
-        if coordinator is not None and coordinator.has_terminal_dependencies:
-            persisted = coordinator.commit_progress(
-                ctx.execution_context.job_id,
-                worker_id=ctx.execution_context.worker_id,
-                stage=stage,
-                progress_percent=progress,
-            )
-            ctx.task.stage = persisted.stage
-            ctx.task.progress_percent = persisted.progress_percent
-            ctx.task.updated_at = persisted.updated_at
-            ctx.task.revision = persisted.revision
-            _raise_if_cancelled(ctx)
-            return
-
     def mutate(task: CompareTask) -> None:
         task.stage = stage
         task.progress_percent = max(task.progress_percent, progress)
@@ -205,6 +188,7 @@ def _update_progress(ctx: PipelineContext, stage: str, progress: int, repository
             stage=ctx.task.stage,
             progress_percent=ctx.task.progress_percent,
             status="PROCESSING",
+            revision=ctx.task.revision,
         )
     )
 
@@ -283,8 +267,6 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.compare_filename = source.compare_filename
     target.original_pdf_path = source.original_pdf_path
     target.compare_pdf_path = source.compare_pdf_path
-    target.original_highlight_pdf_path = source.original_highlight_pdf_path
-    target.compare_highlight_pdf_path = source.compare_highlight_pdf_path
     target.extractor_used = source.extractor_used
     target.ocr_raw_result_path = source.ocr_raw_result_path
     target.ocr_raw_result_paths = source.ocr_raw_result_paths

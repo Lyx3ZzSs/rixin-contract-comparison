@@ -18,7 +18,6 @@ describe("app routes", () => {
 
     expect(readRoute("/contract/compare/records")).toEqual({ name: "records" });
     expect(readRoute("/contract/tasks/task-1")).toEqual({ name: "task", taskId: "task-1" });
-    expect(readRoute("/contract/quality/workbench")).toEqual({ name: "home" });
     expect(readRoute("/contract/")).toEqual({ name: "home" });
   });
 

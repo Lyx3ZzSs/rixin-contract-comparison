@@ -928,12 +928,6 @@ Expected: all Vitest tests pass and production build exits 0.
 
 Run:
 
-```bash
-cd backend && python scripts/evaluate_ocr_compare_quality.py tests/fixtures/ocr_compare_cases --output .ocr-compare-quality/ocr_compare_quality.json --html-output .ocr-compare-quality/html --fail-on-threshold
-cd backend && jq '{threshold_failures, aggregate: .aggregate}' .ocr-compare-quality/ocr_compare_quality.json
-```
-
-Expected: `threshold_failures` is `[]`; precision, recall, and evidence_hit_rate remain at the current fixture baseline.
 
 - [ ] **Step 5: Run full backend tests**
 
@@ -967,4 +961,3 @@ After final review passes, use `superpowers:finishing-a-development-branch` and 
 3. Keep the branch as-is
 4. Discard this work
 ```
-

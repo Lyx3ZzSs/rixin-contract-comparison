@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import logging
 import uuid
+import unicodedata
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,9 +25,14 @@ class FileValidationError(ValidationError):
 
 
 def safe_filename(filename: str) -> str:
-    name = Path(filename or "contract.pdf").name
-    name = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", name)
-    return name or "contract.pdf"
+    if not filename or filename in {".", ".."}:
+        raise FileValidationError("文件名不合法。")
+    if "/" in filename or "\\" in filename or any(unicodedata.category(char).startswith("C") for char in filename):
+        raise FileValidationError("文件名不合法。")
+    if len(filename.encode("utf-8")) > 255:
+        raise FileValidationError("文件名过长。")
+    ensure_pdf_filename(filename)
+    return filename
 
 
 def ensure_pdf_filename(filename: str) -> None:

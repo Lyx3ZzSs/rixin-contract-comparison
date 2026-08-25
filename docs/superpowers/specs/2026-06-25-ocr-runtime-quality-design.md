@@ -281,16 +281,6 @@ npm test
 npm run build
 ```
 
-Phase 1 evaluator should continue to pass the smoke gate:
-
-```bash
-cd backend
-python scripts/evaluate_ocr_compare_quality.py tests/fixtures/ocr_compare_cases \
-  --output .ocr-compare-quality/ocr_compare_quality.json \
-  --html-output .ocr-compare-quality/html \
-  --fail-on-threshold
-```
-
 ## Acceptance Criteria
 
 - OCR quality profiles are generated without calling OCR again.
@@ -300,7 +290,6 @@ python scripts/evaluate_ocr_compare_quality.py tests/fixtures/ocr_compare_cases 
 - `/api/compare/{task_id}/quality` reports OCR risk page count and affected diff count.
 - Existing public API paths remain compatible.
 - Backend and frontend tests pass.
-- Phase 1 evaluator still passes the smoke gate.
 
 ## Out Of Scope
 
@@ -309,4 +298,3 @@ python scripts/evaluate_ocr_compare_quality.py tests/fixtures/ocr_compare_cases 
 - LLM/VLM-based OCR correction.
 - Rewriting diff text based on OCR quality.
 - Complex page heatmaps or a new diagnostics UI.
-

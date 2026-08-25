@@ -37,7 +37,7 @@ interface PageHighlight {
 }
 
 export interface PdfDocumentViewerHandle {
-  scrollToDiff: (diff: DiffItem) => void;
+  scrollToDiff: (diff: DiffItem) => number | null;
   syncScrollFrom: (ratio: number) => void;
 }
 
@@ -172,19 +172,22 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
         const target = getScrollTargetEvidence(diff, side);
         const scrollNode = scrollRef.current;
         if (!target || !scrollNode) {
-          return;
+          return null;
         }
         const pageNode = pageRefs.current.get(target.page_no);
         if (!pageNode) {
-          return;
+          return null;
         }
         const nextTop = pageNode.offsetTop + target.bbox.y0 * zoom - 96;
+        const maxScroll = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
+        const targetTop = Math.min(maxScroll, Math.max(0, nextTop));
         isSyncingRef.current = true;
-        scrollNode.scrollTo({ top: Math.max(0, nextTop), behavior: "auto" });
+        scrollNode.scrollTo({ top: targetTop, behavior: "auto" });
         updateCurrentPageFromScroll();
         window.setTimeout(() => {
           isSyncingRef.current = false;
         }, 80);
+        return maxScroll > 0 ? targetTop / maxScroll : 0;
       },
       [side, updateCurrentPageFromScroll, zoom],
     );
@@ -409,6 +412,7 @@ export function getPageHighlights(
       highlights.push({ diffId: diff.diff_id, type, evidence, fallback, markKind });
     }
   }
+  highlights.sort((left, right) => highlightArea(right) - highlightArea(left));
   const regionHighlights = recognitionOutlines
     .filter((evidence) => evidence.page_no === pageNumber)
     .filter(
@@ -424,14 +428,18 @@ export function getPageHighlights(
       markKind: "signing-region" as const,
       recognition: true,
     }));
-  highlights.unshift(...regionHighlights);
-  return highlights;
+  return [...regionHighlights, ...highlights];
 }
 
 function sameBBox(left: EvidenceBox, right: EvidenceBox): boolean {
   return ["x0", "y0", "x1", "y1"].every(
     (axis) => Math.abs(left.bbox[axis as keyof EvidenceBox["bbox"]] - right.bbox[axis as keyof EvidenceBox["bbox"]]) < 0.5,
   );
+}
+
+function highlightArea(highlight: PageHighlight): number {
+  const { x0, y0, x1, y1 } = highlight.evidence.bbox;
+  return Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
 }
 
 function highlightMarkKind(evidence: EvidenceBox, fallback: boolean): PageHighlight["markKind"] {

@@ -1,4 +1,4 @@
-from app.models import BBox, Document, Page, TextBlock
+from app.models import BBox, CharBox, Document, Page, TextBlock
 from app.services.signing_region.extractor import SigningRegionExtractor
 from app.services.signing_region.models import (
     SigningElement,
@@ -66,6 +66,122 @@ def _document(blocks: list[TextBlock], *, page_no: int = 1) -> Document:
         page_count=1,
         pages=[Page(page_no=page_no, width=595, height=842, blocks=blocks)],
     )
+
+
+def test_date_component_ref_locates_only_filled_day_value() -> None:
+    text = "2026年5月6日"
+    source = TextBlock(
+        block_id="date",
+        page_no=1,
+        text=text,
+        bbox=BBox(x0=100, y0=700, x1=210, y1=720),
+        char_boxes=[
+            CharBox(
+                char=char,
+                page_no=1,
+                bbox=BBox(x0=100 + index * 10, y0=700, x1=110 + index * 10, y1=720),
+                text_index=index,
+            )
+            for index, char in enumerate(text)
+        ],
+    )
+
+    ref = SigningRegionExtractor._date_component_ref(source)
+
+    assert ref["date_components"] == {"year": "2026", "month": "5", "day": "6"}
+    assert BBox.model_validate(ref["date_component_bboxes"]["day"]) == BBox(
+        x0=170,
+        y0=700,
+        x1=180,
+        y1=720,
+    )
+
+
+def test_date_component_ref_preserves_blank_day_slot() -> None:
+    source = TextBlock(
+        block_id="date",
+        page_no=1,
+        text="2026 年5月 日",
+        bbox=BBox(x0=100, y0=700, x1=220, y1=720),
+    )
+
+    ref = SigningRegionExtractor._date_component_ref(source)
+
+    assert ref["date_components"] == {"year": "2026", "month": "5", "day": ""}
+    assert "day" not in ref["date_component_bboxes"]
+
+
+def test_date_component_ref_recovers_value_bbox_from_table_ocr_chars() -> None:
+    structured_text = "签订时间：2026年5月158"
+    ocr_text = "签订时间：2026年5月15日"
+    source = TextBlock(
+        block_id="date-table-cell",
+        page_no=13,
+        text=structured_text,
+        bbox=BBox(x0=80, y0=480, x1=310, y1=508),
+        source="signing_table_cell",
+        char_boxes=[
+            CharBox(
+                char=char,
+                page_no=13,
+                bbox=BBox(x0=90 + index * 10, y0=482, x1=100 + index * 10, y1=505),
+                text_index=334 + index,
+            )
+            for index, char in enumerate(ocr_text)
+        ],
+    )
+
+    ref = SigningRegionExtractor._date_component_ref(source)
+
+    assert ref["date_components"] == {"year": "2026", "month": "5", "day": "15"}
+    assert BBox.model_validate(ref["date_value_bbox"]) == BBox(
+        x0=140,
+        y0=482,
+        x1=240,
+        y1=505,
+    )
+
+
+def test_date_component_ref_recovers_value_bbox_when_table_and_ocr_month_disagree() -> None:
+    structured_text = "签订时间：2026年5月150"
+    ocr_text = "签订时间：2026年51月15日"
+    source = TextBlock(
+        block_id="date-table-cell",
+        page_no=13,
+        text=structured_text,
+        bbox=BBox(x0=300, y0=480, x1=512, y1=508),
+        source="signing_table_cell",
+        char_boxes=[
+            CharBox(
+                char=char,
+                page_no=13,
+                bbox=BBox(x0=310 + index * 10, y0=482, x1=320 + index * 10, y1=505),
+                text_index=350 + index,
+            )
+            for index, char in enumerate(ocr_text)
+        ],
+    )
+
+    ref = SigningRegionExtractor._date_component_ref(source)
+
+    assert ref["date_components"] == {"year": "2026", "month": "5", "day": "15"}
+    assert BBox.model_validate(ref["date_value_bbox"]) == BBox(
+        x0=360,
+        y0=482,
+        x1=470,
+        y1=505,
+    )
+
+
+def test_date_component_ref_does_not_apply_ocr_suffix_repair_outside_table_cells() -> None:
+    source = TextBlock(
+        block_id="plain-text",
+        page_no=1,
+        text="签订时间：2026年5月10",
+        bbox=BBox(x0=100, y0=700, x1=260, y1=720),
+    )
+
+    assert SigningRegionExtractor._date_component_ref(source) == {}
 
 
 def test_extractor_detects_seal_label_and_date_region() -> None:
@@ -212,6 +328,25 @@ def test_extractor_builds_role_scoped_standard_and_custom_fields() -> None:
     assert all(BBox.model_validate(field.raw_ref["value_bbox"]).x0 > field.bbox.x0 for field in fields)
 
 
+def test_extractor_classifies_signature_date_as_date_field() -> None:
+    date = _block("date", "签字日期：2026年05月22日", _bbox(60, 650, 240, 675))
+    signing_block = SigningBlock(
+        block_id="SB-1",
+        page_no=1,
+        bbox=_bbox(40, 620, 555, 760),
+        block_role=SigningBlockRole.PARTY_A,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        source_block_ids=["date"],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document([date]))[0]
+    field = next(element for element in region.elements if element.element_type == SigningElementType.FIELD)
+
+    assert field.raw_ref["field_key"] == "date"
+    assert field.text == "2026年05月22日"
+
+
 def test_extractor_splits_two_addresses_merged_into_one_ocr_line() -> None:
     party_a = _block("party-a", "甲方：南京瑞尚电力科技有限公司", _bbox(60, 123, 268, 139))
     party_b = _block("party-b", "乙方：国能日新科技股份有限公司", _bbox(289, 120, 502, 139))
@@ -288,8 +423,7 @@ def test_extractor_keeps_merged_fields_in_their_columns_and_joins_credit_code_li
     fields = {
         (element.raw_ref["party_role"], element.raw_ref["field_key"]): element.text
         for element in region.elements
-        if element.element_type == SigningElementType.FIELD
-        and element.raw_ref["field_key"] in {"email", "credit_code"}
+        if element.element_type == SigningElementType.FIELD and element.raw_ref["field_key"] in {"email", "credit_code"}
     }
 
     assert fields == {
@@ -488,6 +622,187 @@ def test_extractor_uses_geometry_for_two_column_block_mislabeled_as_party_a() ->
     assert [(field.raw_ref["party_role"], field.text) for field in fields] == [
         ("甲方", "025-12345678"),
         ("乙方", ""),
+    ]
+
+
+def test_extractor_infers_two_columns_when_scan_ocr_misses_party_b_label() -> None:
+    blocks = [
+        _block("left-address", "地址：随州市淅河镇", _bbox(60, 220, 270, 250)),
+        _block("right-address", "地址：北京市海淀区", _bbox(320, 220, 540, 250)),
+        _block("left-postal", "邮编：441300", _bbox(60, 260, 270, 290)),
+        _block("right-postal", "邮编：100096", _bbox(320, 260, 540, 290)),
+    ]
+    signing_block = SigningBlock(
+        block_id="SB-SCAN",
+        page_no=1,
+        bbox=_bbox(40, 100, 555, 500),
+        block_role=SigningBlockRole.PARTY_A,
+        confidence=0.8,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["party_label"],
+        source_block_ids=[block.block_id for block in blocks],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document(blocks))[0]
+    fields = [element for element in region.elements if element.element_type == SigningElementType.FIELD]
+
+    assert "two_column_layout" in region.confidence_reasons
+    assert {(field.raw_ref["party_role"], field.raw_ref["field_key"]) for field in fields} == {
+        ("甲方", "address"),
+        ("乙方", "address"),
+        ("甲方", "postal_code"),
+        ("乙方", "postal_code"),
+    }
+
+
+def test_extractor_uses_shared_table_border_as_two_column_midpoint() -> None:
+    table = TextBlock(
+        block_id="table",
+        page_no=1,
+        text="地址：随州市淅河镇\n地址：北京市海淀区\n邮编：441300\n邮编：100096",
+        bbox=_bbox(66, 180, 523, 300),
+        block_type="table",
+        raw_html=(
+            "<table><tr><td>地址：随州市淅河镇</td><td>地址：北京市海淀区</td></tr>"
+            "<tr><td>邮编：441300</td><td>邮编：100096</td></tr></table>"
+        ),
+        table_cell_bboxes=[
+            [66, 180, 307.1, 240],
+            [307, 180, 523, 240],
+            [66, 240, 307.1, 300],
+            [307, 240, 523, 300],
+        ],
+    )
+    signing_block = SigningBlock(
+        block_id="SB-TABLE",
+        page_no=1,
+        bbox=_bbox(46, 140, 543, 320),
+        block_role=SigningBlockRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["paired_parties", "two_column_layout"],
+        source_block_ids=["table"],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document([table]))[0]
+    fields = [element for element in region.elements if element.element_type == SigningElementType.FIELD]
+
+    assert [(field.raw_ref["party_role"], field.text) for field in fields] == [
+        ("甲方", "随州市淅河镇"),
+        ("乙方", "北京市海淀区"),
+        ("甲方", "441300"),
+        ("乙方", "100096"),
+    ]
+
+
+def test_extractor_rejects_noisy_table_edge_as_column_midpoint() -> None:
+    cells = [
+        _block("left-name", "单位名称：甲公司 单位地址：北京", _bbox(58, 420, 315, 457)),
+        _block("right-name", "单位名称：乙公司 单位地址：青海", _bbox(293, 421, 536, 459)),
+        _block("left-address", "27号", _bbox(60, 455, 311, 482)),
+        _block("right-address", "1号楼", _bbox(274, 450, 536, 487)),
+    ]
+    for cell in cells:
+        cell.source = "signing_table_cell"
+    signing_block = SigningBlock(
+        block_id="SB-NOISY-TABLE",
+        page_no=1,
+        bbox=_bbox(37, 242, 556, 687),
+        block_role=SigningBlockRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["two_column_layout"],
+        source_block_ids=[cell.block_id for cell in cells],
+    )
+
+    midpoint = SigningRegionExtractor._two_column_midpoint(signing_block, cells)
+
+    assert midpoint == 296.5
+
+
+def test_extractor_uses_table_char_boxes_for_multiline_field_bbox() -> None:
+    text = "单位名称：甲公司单位地址：北京市海淀区"
+    chars = [
+        CharBox(
+            char=char,
+            page_no=1,
+            bbox=_bbox(60 + index * 10, 420 if index < 8 else 450, 69 + index * 10, 462 if index < 8 else 462),
+            text_index=index,
+        )
+        for index, char in enumerate(text)
+    ]
+    table = TextBlock(
+        block_id="table",
+        page_no=1,
+        text=text,
+        bbox=_bbox(58, 418, 315, 465),
+        block_type="table",
+        raw_html="<table><tr><td>单位名称：甲公司 单位地址：北京市海淀区</td></tr></table>",
+        table_cell_bboxes=[[58, 418, 315, 465]],
+        char_boxes=chars,
+    )
+
+    cell = SigningRegionExtractor._expand_table_field_blocks([table])[0]
+    address_start = cell.text.index("单位地址")
+    bbox = SigningRegionExtractor._field_bbox(cell, address_start, len(cell.text))
+
+    assert bbox.y0 == 450
+    assert bbox.x0 >= 140
+
+
+def test_extractor_uses_table_char_boxes_for_address_continuation_bbox() -> None:
+    address = _block("address", "单位地址：北京市海淀区", _bbox(60, 420, 315, 458))
+    continuation = _block("continuation", "创业孵化基地1号楼0814室", _bbox(59, 449, 315, 487))
+    for block in (address, continuation):
+        block.source = "signing_table_cell"
+    continuation.char_boxes = [
+        CharBox(char=char, page_no=1, bbox=_bbox(90 + index * 8, 466, 97 + index * 8, 475), text_index=index)
+        for index, char in enumerate(continuation.text)
+    ]
+    signing_block = SigningBlock(
+        block_id="SB-ADDRESS",
+        page_no=1,
+        bbox=_bbox(40, 400, 555, 520),
+        block_role=SigningBlockRole.PARTY_A,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        source_block_ids=[address.block_id, continuation.block_id],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document([address, continuation]))[0]
+    field = next(element for element in region.elements if element.raw_ref.get("field_key") == "address")
+    continuation_bbox = BBox.model_validate(field.raw_ref["field_bboxes"][1])
+
+    assert continuation_bbox == _bbox(90, 466, 201, 475)
+
+
+def test_extractor_infers_stacked_party_rows_and_standalone_dates() -> None:
+    blocks = [
+        _block("a-sign", "法定代表人（负责人）：", _bbox(90, 170, 360, 195)),
+        _block("a-date", "2026年5月8日", _bbox(110, 210, 330, 238)),
+        _block("b-sign", "法定代表人（负责人）：", _bbox(90, 350, 360, 375)),
+        _block("b-date", "2026年5月8日", _bbox(110, 390, 330, 418)),
+    ]
+    signing_block = SigningBlock(
+        block_id="SB-STACKED",
+        page_no=1,
+        bbox=_bbox(70, 90, 410, 430),
+        block_role=SigningBlockRole.PARTY_A,
+        confidence=0.8,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["party_label"],
+        source_block_ids=[block.block_id for block in blocks],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document(blocks))[0]
+    fields = [element for element in region.elements if element.element_type == SigningElementType.FIELD]
+
+    assert "stacked_party_layout" in region.confidence_reasons
+    assert [(field.raw_ref["party_role"], field.raw_ref["field_key"], field.text) for field in fields] == [
+        ("甲方", "legal_representative", ""),
+        ("乙方", "legal_representative", ""),
+        ("甲方", "date", "2026年5月8日"),
+        ("乙方", "date", "2026年5月8日"),
     ]
 
 

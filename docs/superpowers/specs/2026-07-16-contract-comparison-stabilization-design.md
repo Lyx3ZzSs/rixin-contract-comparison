@@ -9,34 +9,6 @@
 
 ## Review 闭环索引
 
-| # | 处理结论 | 设计定位 |
-| --- | --- | --- |
-| 1 | Task 取消采用兼容投影，Job 保留独立取消终态 | [任务状态模型](#task-state-model) |
-| 2 | Coordinator-backed Token 通过 ExecutionContext 逐层传递 | [取消协议](#cancellation-protocol) |
-| 3 | Job 终态 mark 增加状态、owner 和 lease 前置条件 | [取消协议](#cancellation-protocol) |
-| 4 | 证据覆盖重叠率阈值固定为 0.80 | [Diff 去重规则](#diff-deduplication) |
-| 5 | canonical diff_id 采用字典序最小 ID | [Diff 去重规则](#diff-deduplication) |
-| 6 | 前端展示并更新独立 AuditItem 审核状态 | [AuditItem 审核模型](#audit-item-review-model) |
-| 7 | 报告按 report revision 分片互斥并原子发布 | [Revision 化报告](#revisioned-reports) |
-| 8 | 单 API 进程、多 Worker 线程统一使用共享 RLock | [队列互斥与 Worker 模型](#queue-locking) |
-| 9 | 补偿失败写 recovery marker 并支持幂等恢复 | [流式上传和补偿](#upload-compensation) |
-| 10 | 增加 TaskStaleLeaseError 且禁止旧 Worker 写回 | [错误模型](#error-observability) |
-| 11 | 原子写入抽取为 Infrastructure 公共原语 | [文件存储原子性](#atomic-storage) |
-| 12 | 增加取消竞态、阈值、报告并发和崩溃恢复边界测试 | [测试策略](#test-strategy) |
-| 13 | 使用稳定显式 anchor 建立章节交叉引用 | 本索引及各目标章节 |
-| 14 | 定义结构化事件、公共字段、错误字段和脱敏示例 | [结构化日志](#structured-logging) |
-| P1 | Job 终态不可变；Task 仅允许显式失败重试转换 | [任务状态模型](#task-state-model) |
-| P2 | 只保护正确 golden 行为，允许修正已确认的 bug 基线 | [Golden 保护政策](#golden-test-policy) |
-| P3 | 生产启动包装器前置拒绝多 worker，单实例锁仅作兜底 | [部署约束](#single-api-deployment) |
-| P4 | 镜像携带脱敏种子案例，首次启动幂等初始化到 volume | [质量案例供给](#quality-case-supply) |
-| P5 | 历史 Diff 审核广播到该 Diff 的全部缺省 AuditItem | [历史审核迁移](#legacy-review-projection) |
-| P6 | Token 读取 Coordinator 内存快照，持久化文件负责重启恢复 | [取消协议](#cancellation-protocol) |
-| R1 | 启动 reconciliation 统一处理终态缺口和孤立 Job | [文件存储原子性](#atomic-storage) |
-| R2 | SSE 终态在队列内 sticky；传输失败由轮询确认兜底 | [终态事件顺序](#terminal-event-ordering) |
-| R3 | mark_cancelled 明确接受 QUEUED 和 CANCEL_REQUESTED | [取消协议](#cancellation-protocol) |
-| R4 | attempt 在每次 claim/lease takeover 时递增并受 max_attempts 约束 | [任务状态模型](#task-state-model) |
-| R5 | 审核 revision、响应、恢复写入和去重取舍形成明确 checklist | [Audit](#audit-item-review-model)、[补偿](#upload-compensation)、[去重](#diff-deduplication) |
-| R6 | 质量目录必须分离；legacy/new Job 路径合并读取 | [兼容与迁移](#compatibility-migration) |
 
 ## 1. 背景与问题定义
 
@@ -47,17 +19,6 @@
 合同对比主流程已经具备上传、异步处理、结果展示、人工审核和 PDF 报告能力，但整体 Review
 发现以下系统性问题：
 
-- 运行中取消仅改变 Job 状态，执行链仍可继续并最终写入成功状态。
-- SSE 在任务终态持久化前发布终态事件，前端可能读取并缓存旧的处理中状态。
-- SSE 异常后的轮询降级不完整，网络错误可能让结果页永久停留在处理中。
-- 差异去重键缺少页码、条款路径和证据位置，可能误合并不同位置的相同文本。
-- 没有类型化证据的 Diff 不会生成 AuditItem，导致审计表和报告遗漏真实差异。
-- Diff 审核状态和 AuditItem 审核状态并存，统计口径会随数据形态变化。
-- 上传、任务保存和 Job 入队之间没有补偿机制，失败时会产生孤儿文件或孤儿任务。
-- 本地 JSON 队列只适用于进程内线程，但各 Repository 锁彼此独立，尚未统一保护 Task/Job/manifest
-  终态更新；当前也没有明确拒绝多 API 进程配置。
-- 报告文件固定路径并发覆盖，缓存没有和任务审核 revision 绑定。
-- 质量工作台运行时读取测试 fixture，生产镜像因不包含测试目录而不可用。
 
 ## 2. 目标与非目标
 
@@ -464,27 +425,6 @@ Diff DTO 以向后兼容的可选字段补充：
 
 <a id="quality-case-supply"></a>
 
-#### 5.3.3 质量工作台和前端请求
-
-- 新增可配置 `QUALITY_CASES_DIR`，生产默认位置位于 storage 下。
-- 运行时代码不再从 `backend/tests/fixtures` 加载质量案例。
-- 测试通过依赖注入使用临时目录；测试 fixture 仍可作为测试数据存在。
-- 仓库新增非 tests 路径 `backend/resources/quality_cases/`，只存放经过脱敏和授权的最小种子案例；
-  Docker 镜像复制到只读 `QUALITY_CASES_SEED_DIR=/app/resources/quality_cases`。
-- 启动时要求 `QUALITY_CASES_DIR` 与 `QUALITY_CASES_SEED_DIR` 的 resolve 结果互不相同且不存在父子
-  包含关系；冲突时以 `QUALITY_CASES_PATH_CONFLICT` 失败，防止初始化覆盖只读 seed 或递归复制自身。
-- 生产启动包装器在启动 API 前执行幂等初始化：目标 volume 中不存在同 case_id 时，将 seed case 原子
-  复制到 `QUALITY_CASES_DIR=/data/storage/quality/cases`；已有 case 永不覆盖，并保存 seed manifest
-  version。复制先进入同目录隐藏 staging 目录，校验 `expected.json` 后再 rename 发布；空 volume 首次
-  启动后至少具有镜像内置基线案例。
-- 管理员可以继续通过现有质量案例导出能力，把经过审批的已完成 Task 导出到 `QUALITY_CASES_DIR`；
-  本轮不新增匿名上传入口。独立 `scripts/init_quality_cases.py` 支持部署人员手工预置或重新执行初始化。
-- 质量运行输出使用 `QUALITY_RUNS_DIR=/data/storage/quality/runs`，不再写源码目录
-  `.ocr-compare-quality`。
-- Docker 镜像无需复制 tests 目录即可运行应用和具有基线数据的质量工作台。
-- 前端普通 HTTP 请求统一支持超时、AbortSignal 和卸载取消。
-- OIDC 前端测试显式清理或模拟环境变量，避免本地 `.env` 改变测试结果。
-
 ### 5.4 第四批：单机部署一致性
 
 <a id="atomic-storage"></a>
@@ -498,10 +438,6 @@ Task、Job、artifact 和 report manifest 通过统一 Repository/Store 入口�
 3. 使用原子 replace 发布；
 4. 必要时 fsync 目录。
 
-以上逻辑提取为 Infrastructure 公共原语，例如 `atomic_write_text`、`atomic_write_json`、
-`atomic_publish_file`，统一处理同目录唯一临时文件、flush/fsync、replace 和异常清理。Task Repository、
-Job Repository、Artifact Store、质量案例和 manifest 不再各自维护 `.tmp` 写法；公共原语本身不更新
-manifest，避免递归副作用。
 
 启动时检查 storage 目录可写性、关键 manifest 可解析性，并清理可确认未被引用的陈旧临时文件。
 Task 终态同时记录 `terminal_job_id` 和 `terminal_attempt`。Worker 启动前，reconciliation 在取得
@@ -750,30 +686,4 @@ cd frontend && npm run build
 
 <a id="golden-test-policy"></a>
 
-### 9.1 Golden test 保护政策
-
-Golden tests 保护已确认的正确产品行为，不把历史 bug 固化为不可变契约：
-
-- 与本次改造无关、且编码正确行为的 OCR、匹配和报告期望必须保持不变。
-- 如果失败期望能够由已批准设计和最小缺陷复现证明是在编码 bug，例如跨页相同文本被错误合并，
-  则必须把 golden 更新为正确结果，否则修复无法交付。
-- Golden 更新只改受该缺陷直接影响的条目、数量或报告片段，并在测试名或 fixture 说明中记录缺陷规则；
-  不允许用整份重新生成的快照掩盖无关变化。
-- 提交时同时提供修复前失败的定向回归测试、golden 差异和完整回归结果；该批 SubAgent Review 必须
-  单独确认每一处 golden 变更与已批准规则一致。
-
 ## 10. 完成标准
-
-- 字段提取产品逻辑、接口描述和前端入口全部移除，合同对比解析/OCR 能力正常。
-- 取消、失败、重试和成功状态不存在互相覆盖，前端最终状态可收敛。
-- 每次用户 Retry 创建独立 Job，历史 Job 终态不可变；只有白名单 Task 失败原因可回到 PROCESSING。
-- Diff 不会因缺少位置维度而误合并，每个 Diff 均进入 AuditItem 和报告。
-- AuditItem 是审核、统计和报告的唯一业务口径，历史审核可以兼容迁移。
-- 上传和入队失败不会留下不可解释的孤儿任务或永久处理中状态。
-- 补偿不完整时存在可重试的 recovery marker，不会静默遗留未知文件。
-- 报告与 report revision 对齐，同 revision 只生成一次且不会损坏或覆盖其他 revision。
-- 文件队列在单进程多 Worker 线程下不会重复领取任务，旧 lease owner 不能覆盖新 owner，记录分页
-  不再加载全部历史差异。
-- 生产启动入口在 pre-fork 前拒绝多 API worker，绕过入口的第二进程被 singleton guard 明确拒绝。
-- 全新生产 volume 自动获得脱敏基线质量案例，且不会覆盖管理员已有案例。
-- 后端编译、lint、完整测试以及前端测试和生产构建全部通过。

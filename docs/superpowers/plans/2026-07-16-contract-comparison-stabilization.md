@@ -546,33 +546,10 @@ cd backend && for i in $(seq 1 20); do python -m pytest \
 
 ### Task 16: Provide production quality cases safely
 
-**Files:**
-- Modify: `backend/app/config.py`
-- Modify: `backend/app/api_quality.py`
-- Modify: `backend/app/services/quality_workbench.py`
-- Add: `backend/scripts/init_quality_cases.py`
-- Add: `backend/resources/quality_cases/baseline-contract-001/expected.json`
-- Add: `backend/resources/quality_cases/manifest.json`
-- Modify: `backend/Dockerfile`
-- Modify: `docker-compose.yml`
-- Modify: `docs/deployment.md`
-- Test: `backend/tests/test_api_quality.py`
-- Test: `backend/tests/test_quality_workbench.py`
-- Add: `backend/tests/test_init_quality_cases.py`
 
 - [ ] Add failing tests for an empty volume, idempotent second initialization, no overwrite of an administrator case, invalid `expected.json`, missing `tests/`, export append behavior, and target/seed equality or parent-child conflicts.
 - [ ] Configure production defaults:
 
-```python
-quality_cases_dir: Path = Path("/data/storage/quality/cases")
-quality_runs_dir: Path = Path("/data/storage/quality/runs")
-quality_cases_seed_dir: Path = Path("/app/resources/quality_cases")
-```
-
-- [ ] Reject resolved equal or ancestor/descendant seed/target directories with error code `QUALITY_CASES_PATH_CONFLICT`.
-- [ ] Place at least one sanitized approved seed outside `tests/`. The initialization script copies each missing case through a hidden staging directory, validates `expected.json`, renames it atomically, writes a seed-manifest version, and never overwrites an existing case ID.
-- [ ] Copy `resources/quality_cases` into the Docker image and call initialization from the deployment startup sequence before API launch. Keep administrator export pointed at `QUALITY_CASES_DIR`.
-- [ ] Run quality tests in a temporary production-like directory and commit with subject `Seed production quality cases safely`.
 
 ### Task 17: Add abortable frontend HTTP and hermetic OIDC tests
 

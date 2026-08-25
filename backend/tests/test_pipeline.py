@@ -11,13 +11,8 @@ import pytest
 from app.config import Settings, settings
 from app.errors import PipelineContractError, TaskCancelled
 from app.infrastructure.artifact_store import LocalArtifactStore
-from app.infrastructure.execution_state import (
-    CancellationToken,
-    ExecutionStateCoordinator,
-    TaskExecutionContext,
-)
-from app.infrastructure.task_repository import LocalJsonTaskRepository
-from app.infrastructure.task_runner import LocalJsonTaskJobRepository, TaskJob
+from app.infrastructure.task_repository import SQLiteTaskRepository
+from app.infrastructure.task_runner import CancellationToken, TaskExecutionContext, TaskJob
 from app.models import (
     AuditItemReview,
     BBox,
@@ -147,11 +142,6 @@ def make_ctx(tmp_path: Path) -> PipelineContext:
 
 def configure_storage(tmp_path: Path) -> None:
     settings.storage_dir = tmp_path / "storage"
-    settings.uploads_dir = settings.storage_dir / "uploads"
-    settings.tasks_dir = settings.storage_dir / "tasks"
-    settings.reports_dir = settings.storage_dir / "reports"
-    settings.ocr_dir = settings.storage_dir / "ocr"
-    settings.debug_dir = settings.storage_dir / "debug"
     settings.ensure_storage()
 
 
@@ -1876,7 +1866,7 @@ class TestComparePipeline:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         ctx = make_ctx(tmp_path)
-        repository = LocalJsonTaskRepository(settings)
+        repository = SQLiteTaskRepository(settings)
         repository.save_compare_task(ctx.task)
         events: list[object] = []
         monkeypatch.setattr(ProgressBus.get_instance(), "publish", events.append)
@@ -1923,7 +1913,7 @@ class TestComparePipeline:
 
     def test_pipeline_completion_preserves_existing_review_state(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        repository = LocalJsonTaskRepository(settings)
+        repository = SQLiteTaskRepository(settings)
         repository.save_compare_task(
             CompareTask(
                 task_id=ctx.task.task_id,
@@ -1999,7 +1989,7 @@ class TestComparePipeline:
 
 def test_pipeline_result_preserves_ocr_quality_summary_without_terminal_persistence(tmp_path: Path) -> None:
     ctx = make_ctx(tmp_path)
-    repository = LocalJsonTaskRepository(settings)
+    repository = SQLiteTaskRepository(settings)
     repository.save_compare_task(CompareTask(task_id=ctx.task.task_id, status="PROCESSING"))
 
     class OcrQualitySummaryStage:
@@ -2219,7 +2209,9 @@ def test_ocr_remediation_stage_plans_actions_and_marks_diffs(tmp_path: Path) -> 
     assert task.ocr_remediation_summary is not None
     assert task.ocr_remediation_summary.attempted_action_count == 1
     artifact_path = Path(task.debug_artifact_paths["ocr_remediation"])
-    assert artifact_path == tmp_path / "storage" / "tasks" / "task-remediation" / "debug" / "ocr_remediation.json"
+    assert artifact_path == (
+        tmp_path / "storage" / "tasks" / "task-remediation" / "diagnostics" / "debug" / "ocr_remediation.json"
+    )
     assert artifact_path.exists()
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert payload["attempted_action_count"] == 1
@@ -2306,7 +2298,9 @@ def test_model_routing_stage_writes_debug_artifact_without_mutating_diffs(tmp_pa
 
     assert [item.model_dump(mode="json") for item in ctx.diffs] == before_diff_payload
     artifact_path = Path(task.debug_artifact_paths["ocr_model_routing"])
-    assert artifact_path == tmp_path / "storage" / "tasks" / "task-model-routing" / "debug" / "ocr_model_routing.json"
+    assert artifact_path == (
+        tmp_path / "storage" / "tasks" / "task-model-routing" / "diagnostics" / "debug" / "ocr_model_routing.json"
+    )
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert payload["status"] == "RETRY_RECOMMENDED"
     assert payload["routes"][0]["recommended_route"] == "HIGH_DPI_PAGE_RETRY"
@@ -2764,27 +2758,26 @@ def test_ocr_quality_survives_diff_quality_cross_source_merge(tmp_path: Path) ->
 def _attach_running_execution(
     ctx: PipelineContext,
     tmp_path: Path,
-) -> tuple[ExecutionStateCoordinator, TaskJob]:
-    repository = LocalJsonTaskJobRepository(Settings(storage_dir=tmp_path / "execution-state"))
-    coordinator = ExecutionStateCoordinator(repository)
-    job = coordinator.enqueue(
-        TaskJob(
-            job_id=f"compare:{ctx.task.task_id}:1",
-            task_id=ctx.task.task_id,
-            task_type="compare",
-        )
-    )
-    claimed = coordinator.claim_next(worker_id="pipeline-worker", lease_seconds=30)
-    assert claimed is not None
+) -> tuple[object, TaskJob]:
+    del tmp_path
+    job = TaskJob(job_id=f"compare:{ctx.task.task_id}:1", task_id=ctx.task.task_id)
+
+    class Controller:
+        def __init__(self) -> None:
+            self.event = threading.Event()
+
+        def request_cancel(self, *_args: object, **_kwargs: object) -> None:
+            self.event.set()
+
+        def mark_cancelled(self, *_args: object, **_kwargs: object) -> TaskJob:
+            return job.model_copy(update={"status": "CANCELLED"})
+
+    coordinator = Controller()
     ctx.execution_context = TaskExecutionContext(
         job_id=job.job_id,
         task_id=job.task_id,
         worker_id="pipeline-worker",
-        cancellation_token=CancellationToken(
-            job_id=job.job_id,
-            worker_id="pipeline-worker",
-            coordinator=coordinator,
-        ),
+        cancellation_token=CancellationToken(coordinator.event),
     )
     return coordinator, job
 
@@ -2817,7 +2810,7 @@ def test_pipeline_rechecks_cancellation_after_progress_write_before_stage(
 ) -> None:
     ctx = make_ctx(tmp_path)
     coordinator, job = _attach_running_execution(ctx, tmp_path)
-    repository = LocalJsonTaskRepository(Settings(storage_dir=tmp_path / "pipeline-tasks"))
+    repository = SQLiteTaskRepository(Settings(storage_dir=tmp_path / "pipeline-tasks"))
     entered_progress = threading.Event()
     release_progress = threading.Event()
     executed: list[str] = []
@@ -2863,7 +2856,7 @@ def test_pipeline_rechecks_cancellation_after_stage_end_progress_persistence_bef
 ) -> None:
     ctx = make_ctx(tmp_path)
     coordinator, job = _attach_running_execution(ctx, tmp_path)
-    repository = LocalJsonTaskRepository(Settings(storage_dir=tmp_path / "pipeline-tasks"))
+    repository = SQLiteTaskRepository(Settings(storage_dir=tmp_path / "pipeline-tasks"))
     entered_stage_end_progress = threading.Event()
     release_stage_end_progress = threading.Event()
     errors: list[BaseException] = []
@@ -3037,7 +3030,7 @@ def test_compare_service_passes_execution_context_into_pipeline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task_repository = LocalJsonTaskRepository(Settings(storage_dir=tmp_path / "task-store"))
+    task_repository = SQLiteTaskRepository(Settings(storage_dir=tmp_path / "task-store"))
     service = CompareService(repository=task_repository)
     seed_ctx = PipelineContext(
         task=CompareTask(task_id="TSERVICE_CONTEXT"),
@@ -3066,7 +3059,7 @@ def test_compare_service_passes_execution_context_into_pipeline(
 
 
 def test_compare_service_progress_callback_checks_cancellation_before_writing(tmp_path: Path) -> None:
-    task_repository = LocalJsonTaskRepository(Settings(storage_dir=tmp_path / "task-store"))
+    task_repository = SQLiteTaskRepository(Settings(storage_dir=tmp_path / "task-store"))
     task_repository.save_compare_task(CompareTask(task_id="TPROGRESS_CANCEL", stage="before", progress_percent=10))
     service = CompareService(repository=task_repository)
     seed_ctx = PipelineContext(

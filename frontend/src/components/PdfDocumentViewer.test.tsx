@@ -232,6 +232,39 @@ describe("PDF diff highlights", () => {
     expect(comparePageTwoHighlights[0].evidence.text).toBe("新增说明 补充");
   });
 
+  it("renders smaller overlapping highlights last so precise boxes receive pointer events", () => {
+    const large: DiffItem = {
+      ...diff,
+      diff_id: "diff-large",
+      compare_evidence: [
+        {
+          page_no: 1,
+          bbox: { x0: 80, y0: 180, x1: 360, y1: 430 },
+          method: "signing_region",
+          text: "签署区",
+          highlight_type: "MODIFY",
+        },
+      ],
+    };
+    const precise: DiffItem = {
+      ...diff,
+      diff_id: "diff-precise",
+      compare_evidence: [
+        {
+          page_no: 1,
+          bbox: { x0: 180, y0: 380, x1: 330, y1: 410 },
+          method: "signing_region_element",
+          text: "2026年5月6日",
+          highlight_type: "MODIFY",
+        },
+      ],
+    };
+
+    const highlights = getPageHighlights([precise, large], "compare", 1);
+
+    expect(highlights.map((highlight) => highlight.diffId)).toEqual(["diff-large", "diff-precise"]);
+  });
+
   it("scales highlight coordinates with zoom", () => {
     const highlight = getPageHighlights([diff], "original", 1)[0];
     expect(highlightRect(highlight, 1.5)).toEqual({

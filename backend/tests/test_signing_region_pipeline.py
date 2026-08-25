@@ -1502,6 +1502,145 @@ def test_signing_region_stage_suppresses_low_confidence_visual_detections(tmp_pa
     assert ctx.signing_region_debug["suppressed_low_confidence_candidates"][0]["reason"] == "low_visual_confidence"
 
 
+def test_signing_region_stage_suppresses_visual_detection_inside_printed_signature_label(tmp_path: Path) -> None:
+    label = SigningElement(
+        element_id="signature-label",
+        element_type=SigningElementType.FIELD,
+        page_no=2,
+        bbox=BBox(x0=390, y0=503, x1=419, y1=520),
+        text="",
+        confidence=0.99,
+        source="inferred",
+        raw_ref={"party_role": "乙方", "field_key": "signature", "field_label": "(签字)"},
+    )
+    region = SigningRegion(
+        region_id="SR-2-1",
+        page_no=2,
+        bbox=BBox(x0=37, y0=242, x1=556, y1=687),
+        region_role=SigningRegionRole.BOTH_PARTIES,
+        confidence=0.9,
+        elements=[label],
+    )
+    detection = VisualDetection(
+        page_no=2,
+        bbox=BBox(x0=395, y0=509, x1=416, y1=515),
+        label="signature",
+        confidence=0.786,
+        model_name="opencv",
+    )
+    suppressed: list[dict] = []
+    stage = SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"), visual_enabled=True)
+
+    elements = stage._visual_detection_elements(
+        [region],
+        VisualDetectionResult(available=True, model_name="opencv", detections=[detection]),
+        side="original",
+        suppressed=suppressed,
+    )
+
+    assert elements == []
+    assert suppressed == [
+        {
+            "side": "original",
+            "page_no": 2,
+            "bbox": detection.bbox.model_dump(mode="json"),
+            "label": "signature",
+            "confidence": 0.786,
+            "reason": "printed_signature_label_overlap",
+            "field_label": "(签字)",
+            "field_bbox": label.bbox.model_dump(mode="json"),
+        }
+    ]
+
+
+def test_signing_region_stage_keeps_signature_detection_extending_beyond_printed_label(tmp_path: Path) -> None:
+    region = SigningRegion(
+        region_id="SR-2-1",
+        page_no=2,
+        bbox=BBox(x0=37, y0=242, x1=556, y1=687),
+        region_role=SigningRegionRole.BOTH_PARTIES,
+        confidence=0.9,
+        elements=[
+            SigningElement(
+                element_id="signature-label",
+                element_type=SigningElementType.FIELD,
+                page_no=2,
+                bbox=BBox(x0=390, y0=503, x1=419, y1=520),
+                text="",
+                confidence=0.99,
+                source="inferred",
+                raw_ref={"party_role": "乙方", "field_key": "signature", "field_label": "(签字)"},
+            )
+        ],
+    )
+    detection = VisualDetection(
+        page_no=2,
+        bbox=BBox(x0=410, y0=509, x1=470, y1=520),
+        label="signature",
+        confidence=0.82,
+        model_name="opencv",
+    )
+    suppressed: list[dict] = []
+    stage = SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"), visual_enabled=True)
+
+    elements = stage._visual_detection_elements(
+        [region],
+        VisualDetectionResult(available=True, model_name="opencv", detections=[detection]),
+        side="original",
+        suppressed=suppressed,
+    )
+
+    assert len(elements) == 1
+    assert elements[0][1].bbox == detection.bbox
+    assert suppressed == []
+
+
+def test_signing_region_stage_keeps_signature_inside_seal_polluted_field_bbox(tmp_path: Path) -> None:
+    region = SigningRegion(
+        region_id="SR-13-1",
+        page_no=13,
+        bbox=BBox(x0=37, y0=70, x1=556, y1=520),
+        region_role=SigningRegionRole.BOTH_PARTIES,
+        confidence=0.9,
+        elements=[
+            SigningElement(
+                element_id="seal-polluted-signature-field",
+                element_type=SigningElementType.FIELD,
+                page_no=13,
+                bbox=BBox(x0=89.89, y0=208.52, x1=309.72, y1=259.85),
+                text="",
+                confidence=0.99,
+                source="inferred",
+                raw_ref={
+                    "party_role": "甲方",
+                    "field_key": "legal_representative",
+                    "field_label": "法定代表负责人3002406授权代表",
+                },
+            )
+        ],
+    )
+    detection = VisualDetection(
+        page_no=13,
+        bbox=BBox(x0=228.15, y0=218.39, x1=263.41, y1=259.19),
+        label="signature",
+        confidence=0.819,
+        model_name="opencv",
+    )
+    suppressed: list[dict] = []
+    stage = SigningRegionStage(artifact_store=_TestArtifactStore(tmp_path / "artifacts"), visual_enabled=True)
+
+    elements = stage._visual_detection_elements(
+        [region],
+        VisualDetectionResult(available=True, model_name="opencv", detections=[detection]),
+        side="compare",
+        suppressed=suppressed,
+    )
+
+    assert len(elements) == 1
+    assert elements[0][1].bbox == detection.bbox
+    assert suppressed == []
+
+
 def test_signing_region_stage_marks_signature_slot_uncertain_when_one_side_detection_fails(tmp_path: Path) -> None:
     def region(region_id: str) -> SigningRegion:
         return SigningRegion(

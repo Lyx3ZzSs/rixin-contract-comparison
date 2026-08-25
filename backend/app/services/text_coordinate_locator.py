@@ -62,6 +62,7 @@ class TextCoordinateLocator:
             "header_footer",
             "seal_region",
             "signing_region",
+            "signing_region_element",
             "page_region",
             "text_exact",
         }

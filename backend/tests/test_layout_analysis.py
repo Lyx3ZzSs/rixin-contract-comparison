@@ -365,7 +365,6 @@ def test_extraction_stage_persists_layout_quality_debug_and_warnings(
 ) -> None:
     storage = tmp_path / "storage"
     monkeypatch.setattr(settings, "storage_dir", storage)
-    monkeypatch.setattr(settings, "tasks_dir", storage / "tasks")
     warning = ParseWarningDetail(
         code="LAYOUT_LOW_MATCH_RATE",
         message="layout match rate is low",

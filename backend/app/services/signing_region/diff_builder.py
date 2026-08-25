@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.models import BBox, DiffItem, EvidenceBox, TextRange
+from app.services.signing_region.comparator import SigningRegionComparator
 from app.services.signing_region.models import (
     SigningElement,
     SigningElementType,
@@ -59,7 +60,7 @@ class SigningRegionDiffBuilder:
         title = f"{prefix}{label}"
         original_evidence = self._change_evidence(comparison.original_region, change, side="original")
         compare_evidence = self._change_evidence(comparison.compare_region, change, side="compare")
-        flags = self._change_flags(changes_attr, comparison.review_flags)
+        flags = self._change_flags(changes_attr, comparison.review_flags, change)
         original_display = self._change_display_text(change, side="original")
         compare_display = self._change_display_text(change, side="compare")
         return DiffItem(
@@ -113,7 +114,7 @@ class SigningRegionDiffBuilder:
         return dict(READABLE_CHANGE_FIELDS).get(changes_attr, "签署字段")
 
     @staticmethod
-    def _change_flags(changes_attr: str, flags: list[str]) -> list[str]:
+    def _change_flags(changes_attr: str, flags: list[str], change: dict) -> list[str]:
         relevant = {
             "party_changes": {"SIGNING_PARTY_CHANGE", "CRITICAL_VALUE_CHANGE"},
             "column_changes": {"SIGNING_COLUMN_CHANGE"},
@@ -125,6 +126,8 @@ class SigningRegionDiffBuilder:
             "table_changes": {"SIGNING_TABLE_CHANGE"},
             "visual_changes": {"SIGNING_VISUAL_CHANGE"},
         }.get(changes_attr, set())
+        if changes_attr == "field_changes" and not change.get("critical"):
+            relevant.discard("CRITICAL_VALUE_CHANGE")
         relevant.add("SIGNING_MATCH_LOW_CONFIDENCE")
         return [flag for flag in dict.fromkeys(flags) if flag in relevant]
 
@@ -159,19 +162,40 @@ class SigningRegionDiffBuilder:
             ]
         element = candidates[0] if candidates else None
         if element is None:
-            return [SigningRegionDiffBuilder._evidence(region, change.get("type") or "MODIFY")]
+            return []
         text = str(change.get(f"{side}_text") or change.get(f"{side}_residual_text") or "")
         if change.get("change_scope") == "value" and not text:
             return []
         bboxes = [element.bbox]
+        evidence_texts: list[str] | None = None
         if change.get("change_scope") == "value":
-            if element.raw_ref.get("value_bboxes"):
+            changed_date_components = change.get("changed_date_components") or []
+            date_component_bboxes = element.raw_ref.get("date_component_bboxes") or {}
+            date_components = element.raw_ref.get("date_components") or {}
+            date_value_bbox = element.raw_ref.get("date_value_bbox")
+            full_date_change = set(changed_date_components) == {"year", "month", "day"}
+            if field_key == "date" and date_value_bbox and (
+                not changed_date_components or full_date_change
+            ):
+                bboxes = [BBox.model_validate(date_value_bbox)]
+                evidence_texts = [text]
+            elif field_key == "date" and changed_date_components and date_component_bboxes:
+                located_components = [
+                    name for name in changed_date_components if name in date_component_bboxes
+                ]
+                if located_components:
+                    bboxes = [
+                        BBox.model_validate(date_component_bboxes[name]) for name in located_components
+                    ]
+                    evidence_texts = [str(date_components.get(name) or text) for name in located_components]
+            elif element.raw_ref.get("value_bboxes"):
                 bboxes = [BBox.model_validate(item) for item in element.raw_ref["value_bboxes"]]
             elif element.raw_ref.get("value_bbox"):
                 bboxes = [BBox.model_validate(element.raw_ref["value_bbox"])]
         elif change.get("change_scope") == "field" and element.raw_ref.get("field_bboxes"):
             bboxes = [BBox.model_validate(item) for item in element.raw_ref["field_bboxes"]]
-        evidence_texts = [text] * len(bboxes)
+        if evidence_texts is None:
+            evidence_texts = [text] * len(bboxes)
         if change.get("change_scope") == "field" and len(element.raw_ref.get("field_segments") or []) == len(bboxes):
             evidence_texts = [str(item) for item in element.raw_ref["field_segments"]]
         return [
@@ -192,14 +216,7 @@ class SigningRegionDiffBuilder:
         explicit = str(element.raw_ref.get("party_role") or "")
         if explicit:
             return explicit
-        if region.region_role.value == "party_a":
-            return "甲方"
-        if region.region_role.value == "party_b":
-            return "乙方"
-        if region.region_role.value == "both_parties":
-            midpoint = (region.bbox.x0 + region.bbox.x1) / 2
-            return "甲方" if (element.bbox.x0 + element.bbox.x1) / 2 < midpoint else "乙方"
-        return "unknown"
+        return SigningRegionComparator.role_for_bbox(region, element.bbox)
 
     def _to_diff(self, comparison: SigningRegionComparison, index: int) -> DiffItem:
         original_text = self._summary(comparison.original_region)

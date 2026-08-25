@@ -518,7 +518,7 @@ if task.compare_options.signing_region_mode == "off":
 ```bash
 python -m pytest backend/tests/test_signing_region_comparison.py -v       # 12 passed
 python -m pytest backend/tests/test_seal_comparator.py -v                 # 必须全部通过
-python -m pytest backend/tests/ -v --ignore=backend/tests/test_run_quality_regression.py  # 无回归
+python -m pytest backend/tests/ -v                                      # 无回归
 ```
 
 ---

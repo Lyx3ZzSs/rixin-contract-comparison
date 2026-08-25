@@ -119,22 +119,23 @@ class OpenCvVisualSignatureDetector:
                 continue
 
             rendered_count += 1
-            detection = self._detect_region(region, image, render_bbox=region.bbox, allow_handwriting=False)
             if self.detect_red_seal:
-                probe_region = self._seal_probe_region(region)
-                if probe_region.bbox != region.bbox:
-                    probe_image = self._render_region(pdf_path, probe_region)
-                    if probe_image is not None:
-                        probe_detection = self._detect_region(
-                            region,
-                            probe_image,
-                            render_bbox=probe_region.bbox,
-                            allow_handwriting=False,
-                        )
-                        if probe_detection is not None and probe_detection.label == "seal":
-                            detection = probe_detection
-            if detection is not None and detection.label == "seal" and detection.confidence >= self.min_confidence:
-                detections.append(detection)
+                for probe_region in self._seal_probe_regions(region):
+                    probe_image = (
+                        image if probe_region.bbox == region.bbox else self._render_region(pdf_path, probe_region)
+                    )
+                    detection = self._detect_region(
+                        region,
+                        probe_image,
+                        render_bbox=probe_region.bbox,
+                        allow_handwriting=False,
+                    )
+                    if (
+                        detection is not None
+                        and detection.label == "seal"
+                        and detection.confidence >= self.min_confidence
+                    ):
+                        detections.append(detection)
             if self.detect_handwriting:
                 for probe_region in self._signature_probe_regions(region):
                     probe_image = (
@@ -160,13 +161,12 @@ class OpenCvVisualSignatureDetector:
         dark_pixel_ratio = metrics["handwriting_dark_pixel_ratio"]
         long_stroke_ratio = metrics["handwriting_long_stroke_ratio"]
         focused_probe = (
-            render_bbox != region.bbox
-            and render_bbox.y0 > region.bbox.y0
-            and render_bbox.y1 - render_bbox.y0 <= 140.0
+            render_bbox != region.bbox and render_bbox.y0 > region.bbox.y0 and render_bbox.y1 - render_bbox.y0 <= 140.0
         )
         focused_handwriting = (
             focused_probe
             and dark_pixel_ratio >= 0.008
+            and not (metrics["handwriting_bbox_x0_ratio"] <= 0.02 and long_stroke_ratio < 0.12)
             and metrics["handwriting_bbox_x1_ratio"] - metrics["handwriting_bbox_x0_ratio"] >= 0.08
             and metrics["handwriting_bbox_y1_ratio"] - metrics["handwriting_bbox_y0_ratio"] >= 0.18
         )
@@ -188,37 +188,122 @@ class OpenCvVisualSignatureDetector:
 
     @staticmethod
     def _signature_probe_regions(region: SigningRegion) -> list[SigningRegion]:
+        signature_field_keys = {"authorized_representative", "legal_representative", "signature"}
         signature_fields = [
             element
             for element in region.elements
             if element.element_type == SigningElementType.FIELD
             and not element.text.strip()
             and (
-                str(element.raw_ref.get("field_key") or "")
-                in {"authorized_representative", "legal_representative", "signature"}
+                str(element.raw_ref.get("field_key") or "") in signature_field_keys
                 or "签字" in str(element.raw_ref.get("field_label") or "")
                 or "签名" in str(element.raw_ref.get("field_label") or "")
             )
         ]
+        field_priorities = {"signature": 2, "authorized_representative": 1}
+        preferred_priority_by_role: dict[str, int] = {}
+        for field in signature_fields:
+            role = str(field.raw_ref.get("party_role") or "")
+            priority = field_priorities.get(str(field.raw_ref.get("field_key") or ""), 0)
+            preferred_priority_by_role[role] = max(preferred_priority_by_role.get(role, 0), priority)
+        signature_fields = [
+            field
+            for field in signature_fields
+            if field_priorities.get(str(field.raw_ref.get("field_key") or ""), 0)
+            == preferred_priority_by_role[str(field.raw_ref.get("party_role") or "")]
+        ]
         if signature_fields:
             midpoint = (region.bbox.x0 + region.bbox.x1) / 2
+            stacked_layout = "stacked_party_layout" in region.confidence_reasons
             probes: list[SigningRegion] = []
             for field in signature_fields:
                 role = str(field.raw_ref.get("party_role") or "")
-                column_x0 = region.bbox.x0 if role != "乙方" else midpoint
-                column_x1 = region.bbox.x1 if role != "甲方" else midpoint
-                probes.append(
-                    region.model_copy(
-                        update={
-                            "bbox": BBox(
-                                x0=max(column_x0, field.bbox.x0 - 8.0),
-                                y0=field.bbox.y1,
-                                x1=min(column_x1, max(field.bbox.x1 + 80.0, field.bbox.x0 + 180.0)),
-                                y1=min(region.bbox.y1, field.bbox.y1 + 120.0),
-                            )
-                        }
+                field_key = str(field.raw_ref.get("field_key") or "")
+                if stacked_layout:
+                    column_x0 = region.bbox.x0
+                    column_x1 = region.bbox.x1
+                else:
+                    column_x0 = region.bbox.x0 if role != "乙方" else midpoint
+                    column_x1 = region.bbox.x1 if role != "甲方" else midpoint
+                column_width = max(1.0, column_x1 - column_x0)
+                field_width = field.bbox.x1 - field.bbox.x0
+                field_height = field.bbox.y1 - field.bbox.y0
+                table_field = any("table" in str(block_id) for block_id in field.raw_ref.get("source_block_ids", []))
+                table_field_has_writable_area = table_field and field_width >= column_width * 0.45
+                available_right = max(0.0, column_x1 - field.bbox.x1)
+                right_probe_min_width = field_height * 1.5
+                field_label = str(field.raw_ref.get("field_label") or "")
+                if table_field_has_writable_area:
+                    bbox = BBox(
+                        x0=field.bbox.x0 + field_width * 0.52,
+                        y0=field.bbox.y0,
+                        x1=min(column_x1, field.bbox.x1),
+                        y1=field.bbox.y1,
                     )
+                elif field_width >= 150.0 and field_height >= 32.0:
+                    bbox = BBox(
+                        x0=field.bbox.x0 + field_width * 0.52,
+                        y0=field.bbox.y0,
+                        x1=field.bbox.x1,
+                        y1=field.bbox.y1,
+                    )
+                elif (
+                    stacked_layout
+                    and field_key == "legal_representative"
+                    and not any(marker in field_label for marker in ("签字", "签名"))
+                ):
+                    bbox = BBox(
+                        x0=max(column_x0, field.bbox.x0 + field_width * 0.57),
+                        y0=max(region.bbox.y0, field.bbox.y0 - field_height * 2.25),
+                        x1=min(column_x1, field.bbox.x1 + field_height * 1.5),
+                        y1=field.bbox.y0,
+                    )
+                elif (
+                    (
+                        field_key in {"authorized_representative", "signature"}
+                        or (field_key == "legal_representative" and stacked_layout)
+                    )
+                    and available_right >= right_probe_min_width
+                ):
+                    vertical_margin = field_height * (
+                        1.5 if field_key in {"legal_representative", "signature"} else 0.5
+                    )
+                    bbox = BBox(
+                        x0=max(column_x0, field.bbox.x1),
+                        y0=max(region.bbox.y0, field.bbox.y0 - vertical_margin),
+                        x1=column_x1,
+                        y1=min(region.bbox.y1, field.bbox.y1 + vertical_margin),
+                    )
+                else:
+                    bbox = BBox(
+                        x0=max(column_x0, field.bbox.x0 - 8.0),
+                        y0=field.bbox.y1,
+                        x1=min(column_x1, max(field.bbox.x1 + 80.0, field.bbox.x0 + 180.0)),
+                        y1=min(region.bbox.y1, field.bbox.y1 + 120.0),
+                    )
+                neighboring_fields = [
+                    element
+                    for element in region.elements
+                    if element.element_type == SigningElementType.FIELD
+                    and str(element.raw_ref.get("party_role") or "") == role
+                    and str(element.raw_ref.get("field_key") or "") not in signature_field_keys
+                    and min(element.bbox.x1, bbox.x1) > max(element.bbox.x0, bbox.x0)
+                ]
+                preceding_field_y1 = max(
+                    (element.bbox.y1 for element in neighboring_fields if element.bbox.y1 <= field.bbox.y0),
+                    default=bbox.y0,
                 )
+                following_field_y0 = min(
+                    (element.bbox.y0 for element in neighboring_fields if element.bbox.y0 > field.bbox.y1),
+                    default=bbox.y1,
+                )
+                bbox = bbox.model_copy(
+                    update={
+                        "y0": max(bbox.y0, preceding_field_y1),
+                        "y1": min(bbox.y1, following_field_y0),
+                    }
+                )
+                probes.append(region.model_copy(update={"bbox": bbox}))
             return probes
         if region.region_role.value != "both_parties":
             return [region]
@@ -227,6 +312,23 @@ class OpenCvVisualSignatureDetector:
             region.model_copy(update={"bbox": region.bbox.model_copy(update={"x1": midpoint})}),
             region.model_copy(update={"bbox": region.bbox.model_copy(update={"x0": midpoint})}),
         ]
+
+    def _seal_probe_regions(self, region: SigningRegion) -> list[SigningRegion]:
+        if "two_column_layout" in region.confidence_reasons:
+            midpoint = (region.bbox.x0 + region.bbox.x1) / 2
+            regions = [
+                region.model_copy(update={"bbox": region.bbox.model_copy(update={"x1": midpoint})}),
+                region.model_copy(update={"bbox": region.bbox.model_copy(update={"x0": midpoint})}),
+            ]
+        elif "stacked_party_layout" in region.confidence_reasons:
+            midpoint = (region.bbox.y0 + region.bbox.y1) / 2
+            regions = [
+                region.model_copy(update={"bbox": region.bbox.model_copy(update={"y1": midpoint})}),
+                region.model_copy(update={"bbox": region.bbox.model_copy(update={"y0": midpoint})}),
+            ]
+        else:
+            regions = [region]
+        return [self._seal_probe_region(item) for item in regions]
 
     def _detect_region(
         self,
@@ -428,11 +530,40 @@ class OpenCvVisualSignatureDetector:
         ]
         if not components:
             return None
-        x0 = min(component[0] for component in components)
-        y0 = min(component[1] for component in components)
-        x1 = max(component[0] + component[2] for component in components)
-        y1 = max(component[1] + component[3] for component in components)
+        height, width = mask.shape[:2]
+        interior_components = [
+            component
+            for component in components
+            if component[0] > 0
+            and component[1] > 0
+            and component[0] + component[2] < width
+            and component[1] + component[3] < height
+        ]
+        dominant = max(interior_components or components, key=lambda component: component[4])
+        relative_min_area = max(min_area, int(dominant[4] * 0.12))
+        candidates = [
+            component
+            for component in interior_components
+            if component[4] >= relative_min_area
+        ]
+        if not candidates:
+            candidates = [dominant]
+        clustered = [
+            component
+            for component in candidates
+            if OpenCvVisualSignatureDetector._component_gap(component, dominant)
+            <= max(dominant[2], dominant[3]) * 0.6
+        ]
+        x0 = min(component[0] for component in clustered)
+        y0 = min(component[1] for component in clustered)
+        x1 = max(component[0] + component[2] for component in clustered)
+        y1 = max(component[1] + component[3] for component in clustered)
         return x0, y0, x1 - x0, y1 - y0
+
+    @staticmethod
+    def _component_gap(left: tuple[int, int, int, int, int], right: tuple[int, int, int, int, int]) -> float:
+        vertical = max(0, max(left[1], right[1]) - min(left[1] + left[3], right[1] + right[3]))
+        return float(vertical)
 
     def _seal_detection_bbox(
         self,

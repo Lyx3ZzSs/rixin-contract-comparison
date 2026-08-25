@@ -34,38 +34,6 @@
 
 这些字段用于定位可能导致误报或漏报的条款错配。
 
-## 回归验证
-
-每次调整条款对齐逻辑后运行：
-
-```bash
-cd backend
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p1 \
-  --run-id precision-p1 \
-  --fail-on-regression
-```
-
-如果已有 baseline：
-
-```bash
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --baseline .ocr-compare-quality/baselines/v0.0.2.json \
-  --output-dir .ocr-compare-quality/runs/precision-p1 \
-  --run-id precision-p1 \
-  --fail-on-regression
-```
-
-重点确认：
-
-- `precision` 不下降。
-- `recall` 不下降。
-- `false_positive_count` 不增加。
-- `false_negative_count` 不增加。
-- `evidence_hit_rate` 不下降。
-
 ## 使用原则
 
 本阶段遵循“先诊断，后干预”。低置信对齐先进入 debug 和质量分析，不直接等同于法律风险结论。

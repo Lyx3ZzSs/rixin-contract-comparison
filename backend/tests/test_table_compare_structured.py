@@ -163,6 +163,29 @@ def test_low_quality_table_does_not_add_isolated_single_character_fragment() -> 
     assert not any(diff.compare_text == "川" and diff.diff_type == "ADD" for diff in diffs)
 
 
+def test_table_sequence_uses_plain_ocr_when_structure_misreads_one_as_chinese_one() -> None:
+    original_html = (
+        "<table><tr><td>序号</td><td>场站名称</td><td>类型</td></tr>"
+        "<tr><td>1</td><td>广核淮阴风电</td><td>风电</td></tr></table>"
+    )
+    compare_html = original_html.replace("<td>1</td>", "<td>一</td>")
+    source_text = "序号 场站名称 类型 1 广核淮阴风电 风电"
+
+    diffs, _ = TableComparator().build_diffs(
+        _make_doc([_make_raw_table_block("o1", 1, original_html, source_text)]),
+        _make_doc([_make_raw_table_block("c1", 1, compare_html, source_text)]),
+    )
+
+    assert diffs == []
+
+    real_diffs, _ = TableComparator().build_diffs(
+        _make_doc([_make_raw_table_block("o1", 1, original_html, source_text)]),
+        _make_doc([_make_raw_table_block("c1", 1, compare_html, source_text.replace(" 1 ", " 一 "))]),
+    )
+
+    assert [(diff.original_snippet, diff.compare_snippet) for diff in real_diffs] == [("1", "一")]
+
+
 def test_severe_conflict_table_does_not_delete_cross_page_continuation_covered_by_compare_source() -> None:
     compare_source = (
         "李江城 国能日新 科技股份 有限公司 男 1991.9 工程师 "

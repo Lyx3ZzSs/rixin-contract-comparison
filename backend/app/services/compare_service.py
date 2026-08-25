@@ -6,7 +6,7 @@ from pathlib import Path
 from app.config import settings
 from app.errors import TaskTransitionConflict
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
-from app.infrastructure.execution_state import TaskExecutionContext
+from app.infrastructure.task_runner import TaskExecutionContext
 from app.infrastructure.report_store import ReportStore
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.models import CompareOptions, CompareTask
@@ -114,16 +114,6 @@ class CompareService:
 
             if execution_context is not None:
                 execution_context.cancellation_token.raise_if_cancelled()
-                coordinator = getattr(execution_context.cancellation_token, "coordinator", None)
-                if coordinator is not None and coordinator.has_terminal_dependencies:
-                    coordinator.commit_progress(
-                        execution_context.job_id,
-                        worker_id=execution_context.worker_id,
-                        stage=stage,
-                        progress_percent=percent,
-                        detail=detail,
-                    )
-                    return
             progress = min(max(percent, 0), 99)
 
             def mutate(task: CompareTask) -> None:
@@ -145,6 +135,7 @@ class CompareService:
                     progress_percent=task.progress_percent,
                     status="PROCESSING",
                     detail=detail,
+                    revision=task.revision,
                 )
             )
 
@@ -171,19 +162,6 @@ class CompareService:
                     f"任务 {task.task_id} 不允许从 {task.status}/{task.terminal_reason} 重新进入执行。"
                 )
 
-        coordinator = (
-            getattr(execution_context.cancellation_token, "coordinator", None)
-            if execution_context is not None
-            else None
-        )
-        if coordinator is not None and coordinator.has_terminal_dependencies:
-            return coordinator.commit_progress(
-                execution_context.job_id,
-                worker_id=execution_context.worker_id,
-                stage="文档解析中",
-                progress_percent=8,
-            )
-
         task.status = "PROCESSING"
         task.stage = "文档解析中"
         task.progress_percent = 8
@@ -199,18 +177,6 @@ class CompareService:
         return task
 
     def ensure_report(self, task: CompareTask) -> CompareTask:
-        report_revision = task.report_revision
         report_path = self.report_store.ensure_report(task)
-
-        def persist_report_path(persisted: CompareTask) -> None:
-            if persisted.report_revision != report_revision:
-                raise TaskTransitionConflict(
-                    f"任务 {task.task_id} 的报告版本已从 {report_revision} 更新为 {persisted.report_revision}。"
-                )
-            persisted.report_pdf_path = str(report_path)
-            persisted.stage = "已完成"
-            persisted.progress_percent = 100
-
-        # ReportStore has already committed the PDF and manifest. Task path
-        # persistence failure must not delete that reusable report artifact.
-        return self.repository.update_compare_task(task.task_id, persist_report_path)
+        task.report_pdf_path = str(report_path)
+        return task

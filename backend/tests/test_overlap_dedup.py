@@ -54,3 +54,31 @@ def test_overlap_dedup_preserves_signing_region_modify_evidence() -> None:
     deduped_signing = next(diff for diff in result if diff.diff_id == "D007")
     assert deduped_signing.original_snippet == original_text
     assert deduped_signing.original_evidence == signing_diff.original_evidence
+
+
+def test_overlap_dedup_does_not_shrink_signing_add_to_missing_clause_number() -> None:
+    signing_diff = DiffItem(
+        diff_id="D068",
+        diff_type="ADD",
+        source_type="signing_region",
+        section_type="signature:field",
+        title="甲方 · 签订时间",
+        compare_text="2026年5月15日",
+        compare_snippet="2026年5月15日",
+        readable_change="甲方 · 签订时间：空白 → 2026年5月15日",
+        compare_evidence=[_evidence("2026年5月15日", "ADD")],
+    )
+    clause_diff = DiffItem(
+        diff_id="D090",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="签订时间：甲方 · 签订时间",
+        compare_text="签订时间：2026年5月15日",
+        original_evidence=[_evidence("甲方 · 签订时间", "DELETE")],
+    )
+
+    result = deduplicate_overlaps([signing_diff, clause_diff])
+
+    preserved = next(diff for diff in result if diff.diff_id == "D068")
+    assert preserved.compare_snippet == "2026年5月15日"
+    assert preserved.readable_change == "甲方 · 签订时间：空白 → 2026年5月15日"

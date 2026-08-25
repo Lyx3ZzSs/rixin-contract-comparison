@@ -109,8 +109,9 @@ def build_document_extractor(
 
     if False:  # extraction cache disabled (extraction feature removed)
         from app.infrastructure.extraction_cache import CachedExtractor, FileExtractionCache
+
         cache = FileExtractionCache(
-            cache_dir=settings.cache_dir,
+            cache_dir=settings.storage_dir / "cache",
             default_ttl_hours=24,
         )
         fingerprint = _extractor_config_fingerprint(

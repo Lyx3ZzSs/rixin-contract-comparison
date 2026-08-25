@@ -52,17 +52,11 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("routes the retired quality workbench path to home", () => {
-    renderAuthenticatedApp("/quality/workbench", ["agent_admin"]);
-    expect(screen.getByText("Mock Upload Page")).toBeInTheDocument();
-  });
-
   it("logs out through OIDC", async () => {
     const user = userEvent.setup();
     renderAuthenticatedApp("/", ["agent_admin"]);
 
     await user.click(screen.getByRole("button", { name: "展开侧边栏" }));
-    expect(screen.queryByRole("button", { name: /质量工作台/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "退出登录" }));
     expect(signoutRedirect).toHaveBeenCalledTimes(1);
   });

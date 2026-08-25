@@ -318,6 +318,9 @@ describe("ComparisonRecordsPage", () => {
       endDate: "2026-05-22",
     }, expect.any(AbortSignal));
     expect(await screen.findByText("暂无对比记录")).toBeInTheDocument();
+    expect(screen.queryByLabelText("对比记录分页")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "上一页" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "下一页" })).not.toBeInTheDocument();
   });
 
   it("loads the next page of records", async () => {
@@ -330,6 +333,7 @@ describe("ComparisonRecordsPage", () => {
     render(<ComparisonRecordsPage onOpenTask={vi.fn()} onCreateComparison={vi.fn()} />);
 
     await screen.findByText("task-completed");
+    expect(screen.getByLabelText("对比记录分页")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "下一页" }));
 
     expect(getCompareRecords).toHaveBeenLastCalledWith({

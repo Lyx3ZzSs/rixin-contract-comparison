@@ -78,10 +78,13 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
       const isCurrentSameDiff = auditItems.some((item) => item.id === currentId && item.diffId === diffId);
       return isCurrentSameDiff ? currentId : auditItems.find((item) => item.diffId === diffId)?.id ?? "";
     });
-    if (isOriginalVisible) {
-      originalViewerRef.current?.scrollToDiff(diff);
+    const originalRatio = originalViewerRef.current?.scrollToDiff(diff) ?? null;
+    const compareRatio = compareViewerRef.current?.scrollToDiff(diff) ?? null;
+    if (originalRatio === null && compareRatio !== null) {
+      originalViewerRef.current?.syncScrollFrom(compareRatio);
+    } else if (compareRatio === null && originalRatio !== null) {
+      compareViewerRef.current?.syncScrollFrom(originalRatio);
     }
-    compareViewerRef.current?.scrollToDiff(diff);
   }
 
   function focusAuditItem(item: AuditChangeItem) {

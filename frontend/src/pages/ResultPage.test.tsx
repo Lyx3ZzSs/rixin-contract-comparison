@@ -4,11 +4,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getDiffs, getTask, updateAuditItemReview } from "../lib/api";
 import { createProgressEventSource } from "../lib/api_sse";
-import type { AuditItem, CompareTask, DiffItem, DiffType } from "../types";
+import type { AuditItem, CompareTask, DiffItem, DiffType, EvidenceBox } from "../types";
 import { ResultPage } from "./ResultPage";
 
-const { downloadAuthenticatedFile } = vi.hoisted(() => ({
+const {
+  compareScrollToDiff,
+  compareSyncScrollFrom,
+  downloadAuthenticatedFile,
+  originalScrollToDiff,
+  originalSyncScrollFrom,
+} = vi.hoisted(() => ({
+  compareScrollToDiff: vi.fn(() => null as number | null),
+  compareSyncScrollFrom: vi.fn(),
   downloadAuthenticatedFile: vi.fn().mockResolvedValue(undefined),
+  originalScrollToDiff: vi.fn(() => null as number | null),
+  originalSyncScrollFrom: vi.fn(),
 }));
 
 vi.mock("../lib/authFetch", () => ({ downloadAuthenticatedFile }));
@@ -23,17 +33,25 @@ vi.mock("../components/PdfDocumentViewer", async () => {
           src: string;
           title: string;
           zoom: number;
+          recognitionOutlines?: EvidenceBox[];
           hidden?: boolean;
           onActivateDiff: (diffId: string) => void;
         },
         ref,
       ) => {
+        const scrollToDiff = props.side === "original" ? originalScrollToDiff : compareScrollToDiff;
+        const syncScrollFrom = props.side === "original" ? originalSyncScrollFrom : compareSyncScrollFrom;
         React.useImperativeHandle(ref, () => ({
-          scrollToDiff: vi.fn(),
-          syncScrollFrom: vi.fn(),
+          scrollToDiff,
+          syncScrollFrom,
         }));
         return (
-          <article aria-label={`${props.title}PDF 在线预览`} data-side={props.side} data-src={props.src}>
+          <article
+            aria-label={`${props.title}PDF 在线预览`}
+            data-side={props.side}
+            data-src={props.src}
+            data-recognition-outline-count={props.recognitionOutlines?.length ?? 0}
+          >
             <span>{Math.round(props.zoom * 100)}%</span>
             {props.hidden ? <span>原版已隐藏</span> : <button onClick={() => props.onActivateDiff("diff-1")}>定位差异</button>}
           </article>
@@ -587,6 +605,21 @@ function makeBottomAxisDiff(index: number): DiffItem {
 }
 
 describe("ResultPage", () => {
+  it("passes recognized signing-region outlines to both PDF viewers", async () => {
+    vi.mocked(getTask).mockResolvedValueOnce({
+      ...mockTask,
+      signing_region_outlines: {
+        original: [{ page_no: 10, bbox: { x0: 48, y0: 612, x1: 501, y1: 744 }, method: "signing_region_outline", text: "签署栏识别区域" }],
+        compare: [{ page_no: 11, bbox: { x0: 57, y0: 54, x1: 524, y1: 191 }, method: "signing_region_outline", text: "签署栏识别区域" }],
+      },
+    });
+
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    expect(await screen.findByLabelText("原版PDF 在线预览")).toHaveAttribute("data-recognition-outline-count", "1");
+    expect(screen.getByLabelText("新版PDF 在线预览")).toHaveAttribute("data-recognition-outline-count", "1");
+  });
+
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
@@ -990,6 +1023,33 @@ describe("ResultPage", () => {
     await user.click(mixedModifyMarker);
 
     expect(mixedModifyMarker).toHaveClass("active");
+  });
+
+  it("syncs the evidence-less original viewer for an added diff", async () => {
+    const user = userEvent.setup();
+    compareScrollToDiff.mockReturnValueOnce(0.35);
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: "定位新增改动 diff-2:ADD" }));
+
+    expect(originalScrollToDiff).toHaveBeenCalledWith(mockDiffs[1]);
+    expect(compareScrollToDiff).toHaveBeenCalledWith(mockDiffs[1]);
+    expect(originalSyncScrollFrom).toHaveBeenCalledWith(0.35);
+    expect(compareSyncScrollFrom).not.toHaveBeenCalled();
+  });
+
+  it("uses hidden original evidence to sync the compare viewer for a deleted diff", async () => {
+    const user = userEvent.setup();
+    originalScrollToDiff.mockReturnValueOnce(0.72);
+    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: "隐藏原版" }));
+    await user.click(screen.getByRole("button", { name: "定位删除改动 diff-3:DELETE" }));
+
+    expect(originalScrollToDiff).toHaveBeenCalledWith(mockDiffs[2]);
+    expect(compareScrollToDiff).toHaveBeenCalledWith(mockDiffs[2]);
+    expect(compareSyncScrollFrom).toHaveBeenCalledWith(0.72);
+    expect(originalSyncScrollFrom).not.toHaveBeenCalled();
   });
 
   it("spreads clustered comparison axis markers away from the bottom boundary", async () => {

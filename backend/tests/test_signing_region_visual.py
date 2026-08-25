@@ -380,7 +380,17 @@ def test_opencv_visual_detector_probes_below_empty_signature_field() -> None:
                     "field_key": "legal_representative",
                     "field_label": "法定代表人或授权代表签字",
                 },
-            )
+            ),
+            SigningElement(
+                element_id="date",
+                element_type=SigningElementType.FIELD,
+                page_no=13,
+                bbox=BBox(x0=78, y0=280, x1=230, y1=302),
+                text="2026年5月6日",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={"party_role": "甲方", "field_key": "date", "field_label": "签署日期"},
+            ),
         ],
     )
 
@@ -388,9 +398,315 @@ def test_opencv_visual_detector_probes_below_empty_signature_field() -> None:
 
     assert len(probes) == 1
     assert probes[0].bbox.y0 == 209
-    assert probes[0].bbox.y1 > 209
+    assert probes[0].bbox.y1 == 280
     assert probes[0].bbox.x0 <= 78
     assert probes[0].bbox.x1 > 230
+
+
+def test_opencv_visual_detector_stops_signature_probe_before_following_date() -> None:
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    region = SigningRegion(
+        region_id="SR-53-3",
+        page_no=53,
+        bbox=BBox(x0=71.5, y0=65.5, x1=513.5, y1=541.5),
+        region_role=SigningRegionRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_reasons=["two_column_layout"],
+        elements=[
+            SigningElement(
+                element_id="email",
+                element_type=SigningElementType.FIELD,
+                page_no=53,
+                bbox=BBox(x0=92, y0=407.5, x1=234, y1=423),
+                text="12048144@ceic.com",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={"party_role": "甲方", "field_key": "email", "field_label": "邮箱"},
+            ),
+            SigningElement(
+                element_id="signature-label",
+                element_type=SigningElementType.FIELD,
+                page_no=53,
+                bbox=BBox(x0=91.5, y0=439, x1=148, y1=459.5),
+                text="",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={"party_role": "甲方", "field_key": "signature", "field_label": "代表签字"},
+            ),
+            SigningElement(
+                element_id="date",
+                element_type=SigningElementType.FIELD,
+                page_no=53,
+                bbox=BBox(x0=88.5, y0=502, x1=195, y1=527.5),
+                text="2026年5月6日",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={"party_role": "甲方", "field_key": "date", "field_label": "签署日期"},
+            ),
+        ],
+    )
+
+    probe = OpenCvVisualSignatureDetector._signature_probe_regions(region)[0]
+
+    assert probe.bbox.x0 == 148
+    assert probe.bbox.x1 == 292.5
+    assert probe.bbox.y0 >= 423
+    assert probe.bbox.y1 <= 502
+
+
+def test_opencv_visual_detector_uses_full_width_for_stacked_signature_rows() -> None:
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    region = SigningRegion(
+        region_id="SR-29-2",
+        page_no=29,
+        bbox=BBox(x0=93.5, y0=89.5, x1=410, y1=428.5),
+        region_role=SigningRegionRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_reasons=["stacked_party_layout"],
+        elements=[
+            SigningElement(
+                element_id="legal-signature",
+                element_type=SigningElementType.FIELD,
+                page_no=29,
+                bbox=BBox(x0=117.5, y0=174, x1=365, y1=198),
+                text="",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={
+                    "party_role": "甲方",
+                    "field_key": "legal_representative",
+                    "field_label": "法定代表人（负责人）/授权代表（签字）",
+                },
+            ),
+            SigningElement(
+                element_id="date",
+                element_type=SigningElementType.FIELD,
+                page_no=29,
+                bbox=BBox(x0=110.5, y0=211, x1=335.5, y1=237.5),
+                text="2026年5月8日",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={"party_role": "甲方", "field_key": "date", "field_label": "时间"},
+            ),
+        ],
+    )
+
+    probe = OpenCvVisualSignatureDetector._signature_probe_regions(region)[0]
+
+    assert probe.bbox.x0 == 365
+    assert probe.bbox.x1 == 410
+    assert probe.bbox.y0 < 174
+    assert probe.bbox.y1 > 211
+
+
+def test_opencv_visual_detector_probes_above_truncated_stacked_legal_label() -> None:
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    region = SigningRegion(
+        region_id="SR-29-2",
+        page_no=29,
+        bbox=BBox(x0=93.5, y0=89.5, x1=410, y1=428.5),
+        region_role=SigningRegionRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_reasons=["stacked_party_layout"],
+        elements=[
+            SigningElement(
+                element_id="legal-signature",
+                element_type=SigningElementType.FIELD,
+                page_no=29,
+                bbox=BBox(x0=113, y0=348, x1=247.5, y1=369.5),
+                text="",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={
+                    "party_role": "乙方",
+                    "field_key": "legal_representative",
+                    "field_label": "法定代表人（负责人）",
+                },
+            ),
+            SigningElement(
+                element_id="date",
+                element_type=SigningElementType.FIELD,
+                page_no=29,
+                bbox=BBox(x0=107.5, y0=386, x1=336.5, y1=413),
+                text="2026年5月8日",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={"party_role": "乙方", "field_key": "date", "field_label": "时间"},
+            ),
+        ],
+    )
+
+    probe = OpenCvVisualSignatureDetector._signature_probe_regions(region)[0]
+
+    assert probe.bbox.x0 == pytest.approx(189.665)
+    assert probe.bbox.x1 == 279.75
+    assert probe.bbox.y0 == pytest.approx(299.625)
+    assert probe.bbox.y1 == 348
+
+
+def test_opencv_handwriting_bbox_ignores_probe_edge_printed_fragment() -> None:
+    import cv2
+    import numpy as np
+
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    mask = np.zeros((80, 145), dtype=np.uint8)
+    mask[20:50, 0:20] = 1
+    mask[18:62, 46:88] = 1
+
+    bbox = OpenCvVisualSignatureDetector._meaningful_component_bbox(mask, cv2, min_area=4)
+
+    assert bbox is not None
+    assert bbox[0] == 46
+    assert bbox[2] == 42
+
+
+def test_opencv_visual_detector_prefers_explicit_signature_fields() -> None:
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    elements = []
+    for role, x0 in (("甲方", 78), ("乙方", 320)):
+        elements.extend(
+            [
+                SigningElement(
+                    element_id=f"{role}-legal-representative",
+                    element_type=SigningElementType.FIELD,
+                    page_no=9,
+                    bbox=BBox(x0=x0, y0=236, x1=x0 + 152, y1=257),
+                    text="",
+                    confidence=0.9,
+                    source="inferred",
+                    raw_ref={
+                        "party_role": role,
+                        "field_key": "legal_representative",
+                        "field_label": "法人代表或授权代表",
+                    },
+                ),
+                SigningElement(
+                    element_id=f"{role}-signature",
+                    element_type=SigningElementType.FIELD,
+                    page_no=9,
+                    bbox=BBox(x0=x0, y0=269, x1=x0 + 152, y1=292),
+                    text="",
+                    confidence=0.9,
+                    source="inferred",
+                    raw_ref={
+                        "party_role": role,
+                        "field_key": "signature",
+                        "field_label": "(签字)",
+                    },
+                ),
+            ]
+        )
+    region = SigningRegion(
+        region_id="SR-9-1",
+        page_no=9,
+        bbox=BBox(x0=60, y0=72, x1=544, y1=551),
+        region_role=SigningRegionRole.BOTH_PARTIES,
+        confidence=0.9,
+        elements=elements,
+    )
+
+    probes = OpenCvVisualSignatureDetector._signature_probe_regions(region)
+
+    assert len(probes) == 2
+    assert {(probe.bbox.x0, probe.bbox.x1) for probe in probes} == {
+        (230, 302),
+        (472, 544),
+    }
+    assert all(probe.bbox.y0 < 269 and probe.bbox.y1 > 292 for probe in probes)
+
+
+def test_opencv_visual_detector_excludes_narrow_printed_table_signature_label() -> None:
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    label_bbox = BBox(x0=390, y0=503, x1=419, y1=520)
+    region = SigningRegion(
+        region_id="SR-2-1",
+        page_no=2,
+        bbox=BBox(x0=37, y0=242, x1=556, y1=687),
+        region_role=SigningRegionRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_reasons=["two_column_layout"],
+        elements=[
+            SigningElement(
+                element_id="signature-label",
+                element_type=SigningElementType.FIELD,
+                page_no=2,
+                bbox=label_bbox,
+                text="",
+                confidence=0.99,
+                source="inferred",
+                raw_ref={
+                    "party_role": "乙方",
+                    "field_key": "signature",
+                    "field_label": "(签字)",
+                    "source_block_ids": ["p2-table-1-4-1"],
+                },
+            )
+        ],
+    )
+
+    probe = OpenCvVisualSignatureDetector._signature_probe_regions(region)[0]
+
+    assert probe.bbox.x0 == label_bbox.x1
+    assert probe.bbox.x1 == region.bbox.x1
+    assert probe.bbox.y0 < label_bbox.y0
+    assert probe.bbox.y1 > label_bbox.y1
+    assert probe.bbox != label_bbox
+
+
+def test_opencv_visual_detector_probes_authorized_signature_inline() -> None:
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    region = SigningRegion(
+        region_id="SR-12-1",
+        page_no=12,
+        bbox=BBox(x0=60, y0=79, x1=544, y1=555),
+        region_role=SigningRegionRole.BOTH_PARTIES,
+        confidence=0.9,
+        elements=[
+            SigningElement(
+                element_id="legal-representative",
+                element_type=SigningElementType.FIELD,
+                page_no=12,
+                bbox=BBox(x0=90, y0=210, x1=224, y1=226),
+                text="",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={
+                    "party_role": "甲方",
+                    "field_key": "legal_representative",
+                    "field_label": "法定代表人（负责人）或",
+                },
+            ),
+            SigningElement(
+                element_id="authorized-signature",
+                element_type=SigningElementType.FIELD,
+                page_no=12,
+                bbox=BBox(x0=91, y0=232, x1=206, y1=249),
+                text="",
+                confidence=0.9,
+                source="inferred",
+                raw_ref={
+                    "party_role": "甲方",
+                    "field_key": "authorized_representative",
+                    "field_label": "授权代表（签字）",
+                },
+            ),
+        ],
+    )
+
+    probes = OpenCvVisualSignatureDetector._signature_probe_regions(region)
+
+    assert len(probes) == 1
+    assert probes[0].bbox.x0 == 206
+    assert probes[0].bbox.x1 == 302
+    assert probes[0].bbox.y0 < 232
+    assert probes[0].bbox.y1 > 249
 
 
 def test_opencv_visual_detector_accepts_handwriting_in_focused_signature_probe() -> None:
@@ -415,6 +731,34 @@ def test_opencv_visual_detector_accepts_handwriting_in_focused_signature_probe()
     assert detection.label == "signature"
     assert detection.confidence >= 0.6
     assert detection.bbox.y0 >= probe_bbox.y0
+
+
+def test_opencv_visual_detector_rejects_printed_label_leak_at_probe_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.signing_region.visual import OpenCvVisualSignatureDetector
+
+    detector = OpenCvVisualSignatureDetector()
+    monkeypatch.setattr(
+        detector,
+        "_visual_metrics",
+        lambda _image: {
+            "handwriting_dark_pixel_ratio": 0.01705,
+            "handwriting_long_stroke_ratio": 0.0,
+            "handwriting_bbox_x0_ratio": 0.0,
+            "handwriting_bbox_x1_ratio": 0.28,
+            "handwriting_bbox_y0_ratio": 0.08,
+            "handwriting_bbox_y1_ratio": 0.79,
+        },
+    )
+
+    detection = detector._detect_signature(
+        _region(),
+        object(),
+        render_bbox=BBox(x0=230, y0=245, x1=302, y1=316),
+    )
+
+    assert detection is None
 
 
 def test_opencv_visual_detector_does_not_treat_dense_printed_glyphs_as_signature(

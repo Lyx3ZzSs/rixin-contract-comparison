@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter
+from datetime import date
 from itertools import zip_longest
 
 from app.models import BBox, Document
@@ -152,8 +153,8 @@ class SigningRegionComparator:
         compare_party_references: dict[str, str],
         excluded_roles: set[str],
     ) -> None:
-        original_fields = self._structured_fields(original)
-        compare_fields = self._structured_fields(compare)
+        original_fields = self._structured_fields(original, compare)
+        compare_fields = self._structured_fields(compare, original)
         for slot in sorted(set(original_fields) | set(compare_fields)):
             role, field_key = slot
             if role in excluded_roles:
@@ -193,6 +194,14 @@ class SigningRegionComparator:
                     field_key, original_text
                 ) != self._normalized_field_value(field_key, compare_text)
                 label_changed = not self._field_labels_equivalent(field_key, original_label, compare_label)
+                if label_changed and self._is_seal_occluded_signature_label_conflict(
+                    field_key,
+                    original_element,
+                    compare_element,
+                    original,
+                    compare,
+                ):
+                    label_changed = False
                 if not value_changed and not label_changed:
                     continue
                 if self._is_seal_occluded_address_ocr_conflict(
@@ -218,6 +227,14 @@ class SigningRegionComparator:
                     change_scope = "value" if value_changed and not label_changed else "label"
                     original_change_text = original_text if value_changed else original_label
                     compare_change_text = compare_text if value_changed else compare_label
+                if field_key == "date" and value_changed:
+                    original_change_text = self._display_date_value(original_text)
+                    compare_change_text = self._display_date_value(compare_text)
+                changed_date_components = (
+                    self._changed_date_components(original_element, compare_element)
+                    if field_key == "date" and value_changed
+                    else []
+                )
                 element = original_element or compare_element
                 comparison.field_changes.append(
                     {
@@ -229,6 +246,9 @@ class SigningRegionComparator:
                         "change_scope": change_scope,
                         "original_text": original_change_text,
                         "compare_text": compare_change_text,
+                        "changed_date_components": changed_date_components,
+                        "critical": field_key
+                        in {"account", "credit_code", "party", "party_name", "date"},
                         "original_element_id": original_element.element_id if original_element is not None else "",
                         "compare_element_id": compare_element.element_id if compare_element is not None else "",
                     }
@@ -357,6 +377,8 @@ class SigningRegionComparator:
             return False
         left = cls._normalized_field_value(field_key, original_text)
         right = cls._normalized_field_value(field_key, compare_text)
+        if cls._single_character_substitution(left, right):
+            return True
         short, long = sorted((left, right), key=len)
         if len(short) > max(6, len(long) // 2) or len(short) < 4:
             return False
@@ -407,7 +429,10 @@ class SigningRegionComparator:
         original_seals = self._role_scoped_elements(original, SigningElementType.SEAL)
         compare_seals = self._role_scoped_elements(compare, SigningElementType.SEAL)
         role_order = {"甲方": 0, "乙方": 1, "丙方": 2, "丁方": 3, "unknown": 4}
-        scoped = "two_column_layout" in original.confidence_reasons or "two_column_layout" in compare.confidence_reasons
+        scoped = bool(
+            {"two_column_layout", "stacked_party_layout"}
+            & set([*original.confidence_reasons, *compare.confidence_reasons])
+        )
         for role in sorted(set(original_seals) | set(compare_seals), key=lambda value: role_order.get(value, 5)):
             for original_element, compare_element in zip_longest(
                 original_seals.get(role, []), compare_seals.get(role, [])
@@ -444,7 +469,7 @@ class SigningRegionComparator:
         for element in region.elements:
             if element.element_type != element_type:
                 continue
-            role = str(element.raw_ref.get("party_role") or cls._role_for_bbox(region, element.bbox))
+            role = str(element.raw_ref.get("party_role") or cls.role_for_bbox(region, element.bbox))
             elements.setdefault(role, []).append(element)
         return elements
 
@@ -454,8 +479,8 @@ class SigningRegionComparator:
         compare: SigningRegion,
         comparison: SigningRegionComparison,
     ) -> set[str]:
-        original_roles = self._column_roles(original)
-        compare_roles = self._column_roles(compare)
+        original_roles = self._column_roles(original, compare)
+        compare_roles = self._column_roles(compare, original)
         missing_roles = original_roles ^ compare_roles
         for role in sorted(missing_roles):
             deleted = role in original_roles
@@ -472,25 +497,49 @@ class SigningRegionComparator:
             self._add_review_flag(comparison, "SIGNING_COLUMN_CHANGE")
         return missing_roles
 
-    @staticmethod
-    def _column_roles(region: SigningRegion) -> set[str]:
-        return {
+    @classmethod
+    def _column_roles(cls, region: SigningRegion, peer: SigningRegion | None = None) -> set[str]:
+        roles = {
             str(element.raw_ref.get("party_role") or "")
             for element in region.elements
             if element.element_type in {SigningElementType.FIELD, SigningElementType.PARTY_FIELD}
             and str(element.raw_ref.get("party_role") or "") not in {"", "unknown"}
         }
+        roles.update(role for role, _field_key in cls._structured_fields(region, peer) if role != "unknown")
+        return roles
 
-    @staticmethod
-    def _structured_fields(region: SigningRegion) -> dict[tuple[str, str], list]:
-        fields: dict[tuple[str, str], list] = {}
+    @classmethod
+    def _structured_fields(
+        cls,
+        region: SigningRegion,
+        peer: SigningRegion | None = None,
+    ) -> dict[tuple[str, str], list[SigningElement]]:
+        peer_roles: dict[tuple[str, str], set[str]] = {}
+        if peer is not None:
+            for element in peer.elements:
+                role = str(element.raw_ref.get("party_role") or "unknown")
+                field_key = str(element.raw_ref.get("field_key") or "")
+                value = cls._normalized_field_value(field_key, element.text)
+                if element.element_type == SigningElementType.FIELD and field_key and value and role != "unknown":
+                    peer_roles.setdefault((field_key, value), set()).add(role)
+
+        fields: dict[tuple[str, str], list[SigningElement]] = {}
         for element in region.elements:
             if element.element_type != SigningElementType.FIELD:
                 continue
             field_key = str(element.raw_ref.get("field_key") or "")
             if not field_key:
                 continue
+            if (
+                field_key in {"legal_representative", "authorized_representative", "signature"}
+                and not element.text.strip()
+            ):
+                field_key = "signature"
             role = str(element.raw_ref.get("party_role") or "unknown")
+            if role == "unknown":
+                matching_roles = peer_roles.get((field_key, cls._normalized_field_value(field_key, element.text)), set())
+                if len(matching_roles) == 1:
+                    role = next(iter(matching_roles))
             fields.setdefault((role, field_key), []).append(element)
         return fields
 
@@ -502,9 +551,57 @@ class SigningRegionComparator:
     def _normalized_field_value(field_key: str, value: str) -> str:
         normalized = unicodedata.normalize("NFKC", value or "")
         normalized = re.sub(r"\s+", "", normalized).replace(":", "：")
+        if field_key == "date":
+            parts = SigningRegionComparator._date_parts(normalized)
+            if parts is not None:
+                return "-".join(str(item) for item in parts)
         if field_key in {"account", "phone", "fax", "credit_code"}:
             normalized = re.sub(r"[-‐‑‒–—_]", "", normalized)
         return normalized
+
+    @staticmethod
+    def _date_parts(value: str) -> tuple[int, int, int] | None:
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", value or ""))
+        match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", compact)
+        if match is None:
+            match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})[08oO](?!\d)", compact)
+        if match is None:
+            return None
+        parts = tuple(int(item) for item in match.groups())
+        try:
+            date(*parts)
+        except ValueError:
+            return None
+        return parts
+
+    @staticmethod
+    def _changed_date_components(
+        original_element: SigningElement | None,
+        compare_element: SigningElement | None,
+    ) -> list[str]:
+        if original_element is None or compare_element is None:
+            return []
+        original = original_element.raw_ref.get("date_components") or {}
+        compare = compare_element.raw_ref.get("date_components") or {}
+        if not isinstance(original, dict) or not isinstance(compare, dict) or not (original or compare):
+            return []
+
+        def normalized(value: object) -> str:
+            return re.sub(r"[\s_＿]", "", unicodedata.normalize("NFKC", str(value or "")))
+
+        return [
+            name
+            for name in ("year", "month", "day")
+            if normalized(original.get(name)) != normalized(compare.get(name))
+        ]
+
+    @classmethod
+    def _display_date_value(cls, value: str) -> str:
+        parts = cls._date_parts(value)
+        if parts is None:
+            return value
+        year, month, day = parts
+        return f"{year}年{month}月{day}日"
 
     @staticmethod
     def _field_label(element: SigningElement | None) -> str:
@@ -533,6 +630,52 @@ class SigningRegionComparator:
         return len(short) >= 5 and long.startswith(short)
 
     @classmethod
+    def _is_seal_occluded_signature_label_conflict(
+        cls,
+        field_key: str,
+        original_element: SigningElement | None,
+        compare_element: SigningElement | None,
+        original_region: SigningRegion,
+        compare_region: SigningRegion,
+    ) -> bool:
+        if field_key != "signature" or original_element is None or compare_element is None:
+            return False
+        if original_element.text.strip() or compare_element.text.strip():
+            return False
+        labels = (
+            cls._normalized_field_label(cls._field_label(original_element)),
+            cls._normalized_field_label(cls._field_label(compare_element)),
+        )
+        if (
+            not all(cls._looks_like_signature_label(label) for label in labels)
+            or labels[0] == labels[1]
+        ):
+            return False
+        occluded = (
+            cls._seal_overlaps_element(original_region, original_element),
+            cls._seal_overlaps_element(compare_region, compare_element),
+        )
+        if not any(occluded):
+            return False
+        shorter_index = 0 if len(labels[0]) < len(labels[1]) else 1
+        if labels[1 - shorter_index].startswith(labels[shorter_index]) and occluded[shorter_index]:
+            return True
+        stems = tuple(cls._signature_label_stem(label) for label in labels)
+        return bool(
+            min(map(len, stems)) >= 4
+            and (stems[0] in labels[1] or stems[1] in labels[0])
+            and any(occluded)
+        )
+
+    @staticmethod
+    def _looks_like_signature_label(label: str) -> bool:
+        return bool(label) and bool(re.search(r"法定代表人|法人代表|授权代表|负责人|签字|签名", label))
+
+    @staticmethod
+    def _signature_label_stem(label: str) -> str:
+        return re.sub(r"签字|签名|[/\\_＿—－-]", "", label or "")
+
+    @classmethod
     def _signature_slots(cls, region: SigningRegion) -> dict[tuple[str, str], bool]:
         slots: dict[tuple[str, str], bool] = {}
         signature_fields = [
@@ -547,40 +690,24 @@ class SigningRegionComparator:
         ]
         for element in signature_fields:
             role = str(element.raw_ref.get("party_role") or "unknown")
-            field_key = str(element.raw_ref.get("field_key") or "signature")
-            slots[(role, field_key)] = False
+            slots[(role, "signature")] = False
 
         visual_signatures = [
             element for element in region.elements if element.element_type == SigningElementType.SIGNATURE
         ]
         for element in visual_signatures:
-            role = str(element.raw_ref.get("party_role") or cls._role_for_bbox(region, element.bbox))
-            field_key = str(element.raw_ref.get("field_key") or "")
-            candidates = [
-                field
-                for field in signature_fields
-                if str(field.raw_ref.get("party_role") or "unknown") == role
-            ]
-            if field_key:
-                slot = (role, field_key)
-            elif candidates:
-                anchor = min(
-                    candidates,
-                    key=lambda field: abs(
-                        (field.bbox.y0 + field.bbox.y1) - (element.bbox.y0 + element.bbox.y1)
-                    ),
-                )
-                slot = (role, str(anchor.raw_ref.get("field_key") or "signature"))
-            else:
-                slot = (role, "signature")
-            slots[slot] = True
+            role = str(element.raw_ref.get("party_role") or cls.role_for_bbox(region, element.bbox))
+            slots[(role, "signature")] = True
         return slots
 
     @classmethod
-    def _role_for_bbox(cls, region: SigningRegion, bbox) -> str:
+    def role_for_bbox(cls, region: SigningRegion, bbox: BBox) -> str:
         if "two_column_layout" in region.confidence_reasons:
             midpoint = cls._column_midpoint(region)
             return "甲方" if (bbox.x0 + bbox.x1) / 2 < midpoint else "乙方"
+        if "stacked_party_layout" in region.confidence_reasons:
+            midpoint = cls._stacked_midpoint(region)
+            return "甲方" if (bbox.y0 + bbox.y1) / 2 < midpoint else "乙方"
         if region.region_role.value == "party_a":
             return "甲方"
         if region.region_role.value == "party_b":
@@ -589,6 +716,22 @@ class SigningRegionComparator:
             midpoint = (region.bbox.x0 + region.bbox.x1) / 2
             return "甲方" if (bbox.x0 + bbox.x1) / 2 < midpoint else "乙方"
         return "unknown"
+
+    @staticmethod
+    def _stacked_midpoint(region: SigningRegion) -> float:
+        fallback = (region.bbox.y0 + region.bbox.y1) / 2
+        fields = [
+            element.bbox
+            for element in region.elements
+            if element.element_type == SigningElementType.FIELD
+            and str(element.raw_ref.get("field_key") or "")
+            in {"legal_representative", "authorized_representative", "signature", "date"}
+        ]
+        centers = sorted((bbox.y0 + bbox.y1) / 2 for bbox in fields)
+        if len(centers) < 2:
+            return fallback
+        left, right = max(zip(centers, centers[1:]), key=lambda pair: pair[1] - pair[0])
+        return (left + right) / 2
 
     @staticmethod
     def _column_midpoint(region: SigningRegion) -> float:
@@ -617,16 +760,37 @@ class SigningRegionComparator:
         compare: SigningRegion,
         slot: tuple[str, str],
     ) -> str:
-        role, field_key = slot
+        role, _field_key = slot
+        candidates: list[SigningElement] = []
+        visual_signatures: list[SigningElement] = []
         for region in (original, compare):
             for element in region.elements:
-                if (
-                    element.element_type == SigningElementType.FIELD
-                    and str(element.raw_ref.get("party_role") or "unknown") == role
-                    and str(element.raw_ref.get("field_key") or "") == field_key
-                ):
-                    return str(element.raw_ref.get("field_label") or "签字")
-        return "签字"
+                element_role = str(element.raw_ref.get("party_role") or "unknown")
+                if element_role != role:
+                    continue
+                if element.element_type == SigningElementType.SIGNATURE:
+                    visual_signatures.append(element)
+                elif element.element_type == SigningElementType.FIELD:
+                    key = str(element.raw_ref.get("field_key") or "")
+                    label = str(element.raw_ref.get("field_label") or "")
+                    if key in {"legal_representative", "authorized_representative", "signature"} or any(
+                        marker in label for marker in ("签字", "签名")
+                    ):
+                        candidates.append(element)
+        if not candidates:
+            return "签字"
+        if visual_signatures:
+            visual = visual_signatures[0]
+            candidates.sort(
+                key=lambda element: max(
+                    element.bbox.y0 - visual.bbox.y1,
+                    visual.bbox.y0 - element.bbox.y1,
+                    0.0,
+                )
+            )
+        else:
+            candidates.sort(key=lambda element: str(element.raw_ref.get("field_key") or "") == "signature")
+        return str(candidates[0].raw_ref.get("field_label") or "签字")
 
     def _compare_party_fields(
         self,
@@ -796,6 +960,17 @@ class SigningRegionComparator:
             if element.element_type == SigningElementType.SEAL
             and (element.source == "visual_model" or "seal" in element.text.lower())
         )
+
+    @classmethod
+    def _seal_overlaps_element(cls, region: SigningRegion, element: SigningElement) -> bool:
+        bboxes = [element.bbox]
+        source_bbox = element.raw_ref.get("source_bbox")
+        if source_bbox:
+            bboxes.append(BBox.model_validate(source_bbox))
+        bboxes.extend(
+            BBox.model_validate(item) for item in element.raw_ref.get("field_bboxes", [])
+        )
+        return any(cls._seal_overlaps_bbox(region, bbox, tolerance=8.0) for bbox in bboxes)
 
     @staticmethod
     def _bboxes_overlap(left: BBox, right: BBox, *, tolerance: float = 0.0) -> bool:

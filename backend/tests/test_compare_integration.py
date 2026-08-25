@@ -11,9 +11,8 @@ from reportlab.pdfgen import canvas
 from app.config import settings
 from app.errors import TaskTransitionConflict
 from app.infrastructure.artifact_store import ArtifactStore, LocalArtifactStore
-from app.infrastructure.execution_state import CancellationToken, ExecutionStateCoordinator, TaskExecutionContext
-from app.infrastructure.task_repository import LocalJsonTaskRepository
-from app.infrastructure.task_runner import LocalJsonTaskJobRepository, TaskJob
+from app.infrastructure.task_repository import SQLiteTaskRepository
+from app.infrastructure.task_runner import CancellationToken, TaskExecutionContext
 from app.models import BBox, Clause, ClausePair, CompareTask, Document, Page, TextBlock
 from app.services.compare_debug import CompareDebugWriter
 from app.services.compare_service import CompareService
@@ -36,11 +35,6 @@ def make_pdf(path: Path, lines: list[str]) -> None:
 
 def configure_storage(tmp_path: Path) -> None:
     settings.storage_dir = tmp_path / "storage"
-    settings.uploads_dir = settings.storage_dir / "uploads"
-    settings.tasks_dir = settings.storage_dir / "tasks"
-    settings.reports_dir = settings.storage_dir / "reports"
-    settings.ocr_dir = settings.storage_dir / "ocr"
-    settings.debug_dir = settings.storage_dir / "debug"
     settings.document_extractor = "auto"
     settings.compare_document_extractor = "ppstructure_ocr_hybrid"
     settings.compare_require_structured_ocr = True
@@ -121,10 +115,9 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
         for diff in task.diffs
         for evidence in [*diff.original_evidence, *diff.compare_evidence]
     )
-    assert task.original_highlight_pdf_path is None
-    assert task.compare_highlight_pdf_path is None
     assert task.report_pdf_path is None
-    assert (settings.tasks_dir / "TTEST000001" / "task.json").exists()
+    assert settings.task_database_path.exists()
+    assert not (settings.tasks_dir / "TTEST000001" / "task.json").exists()
 
     task = service.ensure_report(task)
 
@@ -139,7 +132,7 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
 
 def test_compare_service_progress_callback_persists_monotonic_progress(tmp_path: Path) -> None:
     configure_storage(tmp_path)
-    repository = LocalJsonTaskRepository(settings)
+    repository = SQLiteTaskRepository(settings)
     repository.save_compare_task(
         CompareService(repository=repository)._load_or_create_task(
             task_id="TPROGRESS_CALLBACK",
@@ -167,7 +160,7 @@ def test_compare_service_progress_callback_persists_monotonic_progress(tmp_path:
 
 def test_compare_service_progress_callback_clamps_processing_progress_below_complete(tmp_path: Path) -> None:
     configure_storage(tmp_path)
-    repository = LocalJsonTaskRepository(settings)
+    repository = SQLiteTaskRepository(settings)
     task = CompareService(repository=repository)._load_or_create_task(
         task_id="TPROGRESS_CLAMP",
         original_pdf=tmp_path / "original.pdf",
@@ -185,7 +178,7 @@ def test_compare_service_progress_callback_clamps_processing_progress_below_comp
 
 def test_compare_service_does_not_reset_terminal_task_to_processing(tmp_path: Path) -> None:
     configure_storage(tmp_path)
-    repository = LocalJsonTaskRepository(settings)
+    repository = SQLiteTaskRepository(settings)
     task = CompareTask(task_id="TTERMINAL_ENTRY", status="COMPLETED", stage="已完成", progress_percent=100)
     repository.save_compare_task(task)
     before = repository.load_compare_task(task.task_id)
@@ -204,50 +197,30 @@ def test_compare_service_does_not_reset_terminal_task_to_processing(tmp_path: Pa
     assert repository.load_compare_task(task.task_id) == before
 
 
-def test_compare_service_execution_progress_delegates_to_coordinator(
+def test_compare_service_execution_progress_persists_to_sqlite(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configure_storage(tmp_path)
-    repository = LocalJsonTaskRepository(settings)
-    job_repository = LocalJsonTaskJobRepository(settings)
+    repository = SQLiteTaskRepository(settings)
     events: list[object] = []
     monkeypatch.setattr(ProgressBus.get_instance(), "publish", events.append)
-    coordinator = ExecutionStateCoordinator(
-        job_repository,
-        task_repository=repository,
-        progress_publisher=ProgressBus.get_instance(),
-    )
-    job = coordinator.enqueue(
-        TaskJob(job_id="compare:TSERVICE_PROGRESS:1", task_id="TSERVICE_PROGRESS", task_type="compare")
-    )
-    repository.save_compare_task(CompareTask(task_id=job.task_id, active_job_id=job.job_id))
-    claimed = coordinator.claim_next(worker_id="worker-1", lease_seconds=30)
-    assert claimed is not None
+    repository.save_compare_task(CompareTask(task_id="TSERVICE_PROGRESS"))
+    cancellation_event = __import__("threading").Event()
     execution_context = TaskExecutionContext(
-        job_id=job.job_id,
-        task_id=job.task_id,
+        job_id="compare:TSERVICE_PROGRESS:1",
+        task_id="TSERVICE_PROGRESS",
         worker_id="worker-1",
-        cancellation_token=CancellationToken(job.job_id, "worker-1", coordinator),
+        cancellation_token=CancellationToken(cancellation_event),
     )
-    commit_progress = coordinator.commit_progress
-    calls = 0
 
-    def record_progress(*args: object, **kwargs: object) -> CompareTask:
-        nonlocal calls
-        calls += 1
-        return commit_progress(*args, **kwargs)
-
-    monkeypatch.setattr(coordinator, "commit_progress", record_progress)
-
-    CompareService(repository=repository)._make_progress_callback(job.task_id, execution_context)(
+    CompareService(repository=repository)._make_progress_callback("TSERVICE_PROGRESS", execution_context)(
         42,
         "条款匹配中",
         {"matched": 3},
     )
 
-    task = repository.load_compare_task(job.task_id)
-    assert calls == 1
+    task = repository.load_compare_task("TSERVICE_PROGRESS")
     assert (task.stage, task.progress_percent) == ("条款匹配中", 42)
     assert events[-1].revision == task.revision
 
@@ -319,7 +292,7 @@ def test_compare_service_leaves_terminal_failure_to_execution_coordinator(tmp_pa
     compare = tmp_path / "compare.pdf"
     make_pdf(original, ["Original"])
     make_pdf(compare, ["Compare"])
-    repository = LocalJsonTaskRepository(settings)
+    repository = SQLiteTaskRepository(settings)
     service = CompareService(extractor=FailingStructuredExtractor(), repository=repository)
 
     with pytest.raises(DocumentExtractionError, match="原版文件结构化 OCR 失败"):

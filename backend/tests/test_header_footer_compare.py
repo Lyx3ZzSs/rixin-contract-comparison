@@ -104,6 +104,34 @@ def test_header_footer_deduplicates_repeated_headers() -> None:
     assert [evidence.page_no for evidence in diffs[0].compare_evidence] == [1, 2, 3, 4]
 
 
+def test_header_footer_preserves_repeated_handwritten_overlay_as_document_difference() -> None:
+    compare_pages: list[list[TextBlock]] = []
+    for page_no in range(1, 6):
+        block = _block(
+            f"c{page_no}",
+            "黄科",
+            x0=420,
+            y0=784,
+            x1=500,
+            y1=826,
+            block_type="footer",
+            page_no=page_no,
+            source="ppocrv5+repeated_overlay_filter",
+        )
+        block.enter_clause_compare = False
+        block.flow_role = "noise"
+        compare_pages.append([block])
+
+    diffs = HeaderFooterComparator().build_diffs(
+        _document([[] for _ in range(5)]),
+        _document(compare_pages),
+    )
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "ADD"
+    assert len(diffs[0].compare_evidence) == 5
+
+
 def test_header_footer_fuzzy_matches_one_page_ocr_variant_to_repeated_header() -> None:
     original = _document(
         [

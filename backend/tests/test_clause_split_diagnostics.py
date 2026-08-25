@@ -86,9 +86,4 @@ def test_clause_split_quality_reports_diagnostic_distributions(tmp_path: Path) -
 
 def _configure_storage(tmp_path: Path) -> None:
     settings.storage_dir = tmp_path / "storage"
-    settings.uploads_dir = settings.storage_dir / "uploads"
-    settings.tasks_dir = settings.storage_dir / "tasks"
-    settings.reports_dir = settings.storage_dir / "reports"
-    settings.ocr_dir = settings.storage_dir / "ocr"
-    settings.debug_dir = settings.storage_dir / "debug"
     settings.ensure_storage()

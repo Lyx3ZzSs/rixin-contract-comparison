@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -14,45 +15,31 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as compare_router
+from app.application.compare_tasks import requires_diagnostic_retention
 from app.auth.errors import IdentityProviderUnavailable
 from app.auth.runtime import AuthRuntime
-from app.application.submission_recovery import SubmissionRecoveryService
 from app.clients import close_clients
 from app.config import settings
-from app.infrastructure.reconciliation import reconcile_startup
-from app.infrastructure.recovery_store import default_recovery_store
-from app.infrastructure.runtime_lock import ApiRuntimeLock
-from app.infrastructure.task_index import CompareTaskIndex
+from app.infrastructure.artifact_store import default_artifact_store
 from app.infrastructure.task_repository import default_task_repository
 from app.infrastructure.task_runner import default_task_runner
-from app.logging_config import log_event, setup_logging
+from app.logging_config import setup_logging
 from app.services.models.setup import register_default_models, teardown_models
 
 setup_logging()
 logger = logging.getLogger(__name__)
 auth_runtime = AuthRuntime(settings.auth)
-submission_recovery_service = SubmissionRecoveryService(
-    recovery_store=default_recovery_store,
-    repository=default_task_repository,
-)
-runtime_lock = ApiRuntimeLock(settings.storage_dir)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    runtime_lock.acquire()
     try:
         settings.ensure_storage()
-        CompareTaskIndex(settings).rebuild_if_missing()
         default_task_repository.resolve()
-        if not submission_recovery_service.recover_all():
-            logger.error("Some pending submission compensation actions remain after startup recovery")
-        repaired = reconcile_startup(
-            default_task_repository,
-            default_task_runner.coordinator,
-            recovery_store=default_recovery_store,
-        )
-        log_event(logger, "startup_reconciled", recovery_marker="startup", duration_ms=repaired)
+        interrupted = default_task_repository.fail_interrupted_tasks()
+        if interrupted:
+            logger.warning("Marked %s interrupted tasks as failed", interrupted)
+        _cleanup_task_files()
         default_task_runner.start()
         register_default_models()
 
@@ -60,7 +47,9 @@ async def lifespan(app: FastAPI):
             try:
                 auth_runtime.prewarm()
             except IdentityProviderUnavailable:
-                logger.warning("OIDC signing keys are unavailable; authenticated requests will return 503 until recovery")
+                logger.warning(
+                    "OIDC signing keys are unavailable; authenticated requests will return 503 until recovery"
+                )
         else:
             logger.warning(
                 "Authentication is disabled; all requests use the fixed local identity sub=%s",
@@ -77,7 +66,7 @@ async def lifespan(app: FastAPI):
         default_task_runner.stop(wait=True)
         close_clients()
         auth_runtime.close()
-        runtime_lock.release()
+        default_task_repository.close()
 
 
 app = FastAPI(title="国能日新 · 合同智能审查平台", version="0.1.0", lifespan=lifespan)
@@ -101,4 +90,20 @@ app.include_router(compare_router)
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    default_task_repository.healthcheck()
     return {"status": "ok"}
+
+
+def _cleanup_task_files() -> None:
+    diagnostics_cutoff = datetime.now(UTC) - timedelta(days=7)
+    for task in default_task_repository.list_compare_tasks():
+        default_artifact_store.remove_expired_staging(task.task_id)
+        if not requires_diagnostic_retention(task):
+            default_artifact_store.remove_diagnostics(task.task_id)
+            continue
+        try:
+            updated_at = datetime.fromisoformat(task.updated_at)
+        except ValueError:
+            continue
+        if updated_at < diagnostics_cutoff:
+            default_artifact_store.remove_diagnostics(task.task_id)

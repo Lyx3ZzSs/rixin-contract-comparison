@@ -218,21 +218,6 @@ Frontend badge behavior can remain compact:
 
 If Phase 3B updates action statuses, current frontend badge mapping should already show `已自动处置` for successful actions.
 
-## Evaluation
-
-Add focused backend tests before a standalone evaluator.
-
-Key metrics:
-
-- number of executed `RELOCATE_EVIDENCE` actions
-- success count
-- unresolved count
-- evidence confidence delta
-- evidence method change
-- no change to diff text
-
-The existing OCR compare quality gate should continue to pass. This phase should not require a new threshold gate until there are enough relocation fixtures.
-
 ## Delivery Plan
 
 ### Phase 3B.1: Relocation Service
@@ -288,4 +273,3 @@ Frontend tests should cover:
 - Diffs are not hidden, deleted, or suppressed by remediation execution.
 - Action status and before/after quality are visible in API responses.
 - Existing compatibility and quality gates pass.
-

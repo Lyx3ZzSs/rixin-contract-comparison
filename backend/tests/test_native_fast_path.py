@@ -11,7 +11,6 @@ from app.services.extractors.base import ExtractionResult
 from app.services.native_fast_path import NativeFastPathDecision, NativeFastPathEvaluator
 from app.services.pipeline import PipelineContext
 from app.services.pipeline_stages import ExtractionStage
-from scripts.benchmark_native_fast_path import evaluate_pairs
 
 
 def _write_text_pdf(
@@ -149,31 +148,6 @@ def test_native_fast_path_rejects_red_vector_graphics(tmp_path: Path) -> None:
 
     assert decision.accepted is False
     assert "red_vector_graphics" in decision.reasons
-
-
-def test_native_fast_path_benchmark_reports_pair_eligibility(tmp_path: Path) -> None:
-    clean_original = tmp_path / "clean-original.pdf"
-    clean_compare = tmp_path / "clean-compare.pdf"
-    unsafe_original = tmp_path / "unsafe-original.pdf"
-    unsafe_compare = tmp_path / "unsafe-compare.pdf"
-    _write_text_pdf(clean_original, _plain_text())
-    _write_text_pdf(clean_compare, _plain_text())
-    _write_text_pdf(unsafe_original, _plain_text())
-    _write_text_pdf(unsafe_compare, f"{_plain_text()}\nSignature page")
-
-    report = evaluate_pairs(
-        [
-            (clean_original, clean_compare),
-            (unsafe_original, unsafe_compare),
-        ],
-        NativeFastPathEvaluator(min_chars_per_page=80),
-    )
-
-    assert report["pair_count"] == 2
-    assert report["eligible_pair_count"] == 1
-    assert report["rejected_pair_count"] == 1
-    assert report["eligible_pair_rate"] == 0.5
-    assert report["rejection_reason_counts"]["signing_region_text"] == 1
 
 
 class _FakeNativeEvaluator:

@@ -154,6 +154,8 @@ class ClauseBoundaryCoverageFilter:
         return kept, decisions
 
     def _suppression_reason(self, diff: DiffItem, context: BoundaryCoverageContext) -> str:
+        if "FINANCIAL_UPPERCASE_AMOUNT_CHANGE" in diff.review_flags:
+            return ""
         if self._short_appendix_heading_covered(diff, context):
             return "short_appendix_heading_covered"
         if self._heading_text_present_on_opposite_page(diff, context):

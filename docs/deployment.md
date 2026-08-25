@@ -111,10 +111,6 @@ SAVE_OCR_RAW_RESULT=true
 
 ```
 TASK_RUNNER_MAX_WORKERS=2
-TASK_RUNNER_MAX_ATTEMPTS=1
-TASK_RUNNER_LEASE_SECONDS=3600
-TASK_RUNNER_RETRY_DELAY_SECONDS=2
-TASK_RUNNER_POLL_INTERVAL_SECONDS=0.25
 ```
 
 ### 4.7 Docker Compose 环境变量覆盖
@@ -175,28 +171,16 @@ docker compose up -d                # 滚动重启
 
 ```text
 /data/storage/
+  tasks.sqlite3              # 任务与当前执行状态
   tasks/
     {task_id}/
-      task.json            # 任务元数据
-      job.json             # 队列执行元数据
-      manifest.json        # 产物索引
-      uploads/             # 原始上传文件
-      ocr/                 # OCR 原始结果
-      debug/               # 调试输出
-      reports/             # 生成的 PDF 报告
+      input/                 # 原始上传文件
+      report/                # 当前修订版 PDF 报告
+      diagnostics/           # 失败/低质量任务的临时 OCR 与调试输出
+      staging/               # 上传和处理中间文件
 ```
 
-### 备份存储卷
-
-```bash
-# 创建备份
-docker run --rm -v rixin-contract-comparison_storage_data:/data -v $(pwd):/backup alpine \
-    tar czf /backup/storage-backup-$(date +%Y%m%d).tar.gz -C /data .
-
-# 恢复备份
-docker run --rm -v rixin-contract-comparison_storage_data:/data -v $(pwd):/backup alpine \
-    tar xzf /backup/storage-backup-YYYYMMDD.tar.gz -C /data
-```
+当前开发部署暂不提供备份流程。生产部署前需要单独设计 SQLite 一致性备份，并同时备份 `tasks.sqlite3` 与 `tasks/` 文件目录；不能在服务运行时直接打包数据库文件替代 SQLite 在线备份。
 
 ## 7. 验证部署
 

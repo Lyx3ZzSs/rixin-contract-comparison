@@ -4431,6 +4431,10 @@ def test_diff_quality_suppresses_heading_layer_mismatch_when_both_pages_contain_
 
 
 def test_diff_quality_keeps_real_amount_uppercase_change_with_same_numeric_value() -> None:
+    page_text = (
+        "1、确定费用及支付方式\n4.1 合同价格\n"
+        "4.1.1 本合同为固定总价合同，总价为人民币（大写）柒万叁仟元整（￥73000.00元）。"
+    )
     diff = DiffItem(
         diff_id="D032",
         diff_type="MODIFY",
@@ -4445,9 +4449,14 @@ def test_diff_quality_keeps_real_amount_uppercase_change_with_same_numeric_value
         quality_status="NEEDS_REVIEW",
     )
 
-    result = DiffQualityProcessor().process([diff])
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_document=_quality_document(33, page_text),
+        compare_document=_quality_document(33, page_text),
+    )
 
     assert [item.diff_id for item in result.diffs] == ["D032"]
+    assert "FINANCIAL_UPPERCASE_AMOUNT_CHANGE" in result.diffs[0].review_flags
 
 
 def test_diff_quality_keeps_reference_punctuation_change_but_trims_edge_annotation() -> None:
@@ -5807,6 +5816,40 @@ def test_diff_quality_suppresses_single_latin_edge_noise_but_not_body_letter() -
     )
 
 
+def test_diff_quality_suppresses_accented_latin_edge_noise() -> None:
+    diff = DiffItem(
+        diff_id="D015",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="双方应遵守本条款。",
+        compare_text="à\n双方应遵守本条款。",
+        original_snippet="",
+        compare_snippet="à",
+        match_score=100,
+        review_flags=["LAYOUT_MISMATCH_RISK", "OCR_REMEDIATION_PLANNED"],
+        quality_status="NEEDS_REVIEW",
+        compare_evidence=[
+            EvidenceBox(
+                page_no=15,
+                bbox=BBox(x0=24.2, y0=175.2, x1=26.8, y1=182.3),
+                method="char_exact",
+                text="à",
+                confidence=0.98,
+                evidence_quality="HIGH",
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert result.diffs == []
+    assert any(
+        decision.action == "suppressed_low_value_noise"
+        and decision.detail["reason"] == "single_latin_layout_glyph_noise"
+        for decision in result.decisions
+    )
+
+
 def test_diff_quality_suppresses_layout_reflow_punctuation_equivalent_clause_change() -> None:
     diff = DiffItem(
         diff_id="D001",
@@ -6699,3 +6742,245 @@ def test_diff_quality_flags_clause_add_matching_opposite_cross_source_text() -> 
 
     assert clause.quality_status == "NEEDS_REVIEW"
     assert "POSSIBLE_STRUCTURAL_MISCLASSIFICATION" in clause.review_flags
+
+
+def test_diff_quality_suppresses_scan_only_unit_separator_loss() -> None:
+    diff = DiffItem(
+        diff_id="D068",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="应按照100万元/人次的标准向甲方支付违约金。",
+        compare_text="应按照100万元人次的标准向甲方支付违约金。",
+        original_snippet="/",
+        review_flags=["CRITICAL_FIELD_AMOUNT_CHANGE", "CRITICAL_FIELD_CHANGE", "OCR_REMEDIATION_PLANNED"],
+    )
+    compare_document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="scan",
+                        page_no=1,
+                        text=diff.compare_text,
+                        bbox=BBox(x0=60, y0=100, x1=520, y1=140),
+                        source="ppocrv5",
+                    )
+                ],
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_document=compare_document)
+
+    assert result.diffs == []
+    assert result.decisions[-1].detail["reason"] == "unit_separator_ocr_loss"
+
+
+def test_diff_quality_reconciles_attachment_catalog_boundary_drift() -> None:
+    catalog = "附件一:安全生产管理协议\n附件二:廉洁协议书\n附件三:谈判纪要\n附件一"
+    body = "安全生产管理协议(模板)\n项目名称:新能源项目\n双方应遵守安全生产管理要求。"
+    diffs = [
+        DiffItem(
+            diff_id="D101",
+            diff_type="MODIFY",
+            source_type="clause",
+            section_type="appendix",
+            original_text=f"{catalog}\n{body}\n项目管理工作。",
+            compare_text=f"{body}\n项目管理工作。",
+        ),
+        DiffItem(
+            diff_id="D118",
+            diff_type="ADD",
+            source_type="clause",
+            section_type="appendix",
+            compare_text=catalog,
+        ),
+    ]
+
+    result = DiffQualityProcessor().process(diffs)
+
+    assert result.diffs == []
+    assert result.decisions[0].action == "attachment_boundary_drift_reconciled"
+
+
+def test_diff_quality_suppresses_short_character_omission_on_scanned_page() -> None:
+    original = "5.9 若项目提前竣工，乙方可向甲方提交书面申请，经甲方核查确认后退还保函原件。"
+    compare = "5.9 若项目提前竣工，乙方可甲方提交书面申请，经甲方查确认后退还保函原件。"
+    diff = DiffItem(
+        diff_id="D104",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text=original,
+        compare_text=compare,
+        match_score=100,
+        match_score_details={"body_score": 98.6},
+        original_evidence=[EvidenceBox(page_no=1, bbox=BBox(x0=60, y0=100, x1=520, y1=160), text="向核")],
+        review_flags=["CRITICAL_FIELD_CHANGE"],
+    )
+    compare_document = Document(
+        filename="scan.pdf",
+        path="scan.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="scan",
+                        page_no=1,
+                        text=compare,
+                        bbox=BBox(x0=60, y0=100, x1=520, y1=160),
+                        source="ppocrv5",
+                    )
+                ],
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff], compare_document=compare_document)
+
+    assert result.diffs == []
+    assert result.decisions[-1].detail["reason"] == "scan_ocr_character_omission"
+
+
+def test_diff_quality_reclassifies_appendix_signing_date_and_drops_footer_pollution() -> None:
+    diff = DiffItem(
+        diff_id="D111",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="附件五:技术协议\n甲方:A公司\n乙方:B公司\n签订日期:2026年 月日",
+        compare_text="附件五:技术协议\n甲方:A公司\n乙方:B公司\n签订日期:2026年5月6日\n奇绿",
+        original_snippet="附件五",
+        compare_snippet="56奇绿",
+        review_flags=["CRITICAL_FIELD_CHANGE", "CRITICAL_FIELD_DATE_CHANGE", "OCR_REMEDIATION_PLANNED"],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert len(result.diffs) == 1
+    processed = result.diffs[0]
+    assert processed.source_type == "metadata"
+    assert processed.diff_type == "ADD"
+    assert processed.compare_snippet == "20260506"
+    assert "奇绿" not in processed.readable_change
+
+
+def test_diff_quality_normalizes_financial_uppercase_ocr_glyphs() -> None:
+    diff = DiffItem(
+        diff_id="D091",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text="总价为人民币(大写)柒万捌仟元整(￥73000.00元)",
+        compare_text="总价为人民币(大写)柒万叁任元整(￥73000.00元)",
+        original_snippet="捌仟仟",
+        compare_snippet="叁任任",
+        match_score=100,
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    assert [(item.original_snippet, item.compare_snippet) for item in result.diffs] == [("捌", "叁")]
+    assert result.diffs[0].title == "合同总价（大写）"
+    assert result.diffs[0].readable_change == "原文：捌\n修改后：叁"
+
+
+def test_diff_quality_reclassifies_scanned_participant_handwriting_without_ocr_names() -> None:
+    diff = DiffItem(
+        diff_id="D107",
+        diff_type="MODIFY",
+        source_type="clause",
+        section_type="main_contract",
+        original_text="15.3 在争议解决期间，未涉及争议的条款仍须履行。\n参与人员：",
+        compare_text="15.3 在争议解决期间，未涉及争议的条款仍须履行。\n参与人员：共 评静\n44意",
+        compare_snippet="共 评静44意",
+        readable_change="原文：\n修改后：共 评静44意",
+        review_flags=["OCR_REMEDIATION_PLANNED", "CRITICAL_FIELD_CHANGE"],
+        compare_evidence=[
+            EvidenceBox(
+                page_no=34,
+                bbox=BBox(x0=139.7, y0=438.7, x1=244.3, y1=488.3),
+                method="char_exact",
+                text="共 评静",
+            )
+        ],
+    )
+
+    result = DiffQualityProcessor().process([diff])
+
+    processed = result.diffs[0]
+    assert (processed.source_type, processed.section_type, processed.diff_type) == ("metadata", "signature", "ADD")
+    assert processed.title == "参与人员手写签名"
+    assert processed.readable_change == "参与人员手写签名：未签 → 已签"
+    assert "共 评静44意" not in processed.readable_change
+    assert "HANDWRITTEN_PARTICIPANT_SIGNATURE_CHANGE" in processed.review_flags
+
+
+def test_diff_quality_suppresses_choice_numeral_ocr_error_when_rendered_glyphs_match(tmp_path: Path) -> None:
+    original_document = _choice_stroke_document(tmp_path / "original.pdf", 2)
+    compare_document = _choice_stroke_document(tmp_path / "compare.pdf", 2)
+    diff = _choice_numeral_diff("一/", "二")
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_document=original_document,
+        compare_document=compare_document,
+    )
+
+    assert result.diffs == []
+    assert any(decision.detail.get("reason") == "rendered_choice_numeral_equivalent" for decision in result.decisions)
+
+
+def test_diff_quality_keeps_real_choice_numeral_change_when_rendered_glyphs_differ(tmp_path: Path) -> None:
+    original_document = _choice_stroke_document(tmp_path / "original.pdf", 1)
+    compare_document = _choice_stroke_document(tmp_path / "compare.pdf", 2)
+    diff = _choice_numeral_diff("一", "二")
+
+    result = DiffQualityProcessor().process(
+        [diff],
+        original_document=original_document,
+        compare_document=compare_document,
+    )
+
+    assert [item.diff_id for item in result.diffs] == ["D104"]
+
+
+def _choice_stroke_document(path: Path, stroke_count: int) -> Document:
+    pdf = fitz.open()
+    page = pdf.new_page(width=595, height=842)
+    y_positions = {1: [115], 2: [108, 122], 3: [105, 115, 125]}[stroke_count]
+    for y in y_positions:
+        page.draw_line(fitz.Point(102, y), fitz.Point(118, y), color=(0, 0, 0), width=1.5)
+    pdf.save(path)
+    pdf.close()
+    return Document(
+        filename=path.name,
+        path=str(path),
+        page_count=1,
+        pages=[Page(page_no=1, width=595, height=842, blocks=[])],
+    )
+
+
+def _choice_numeral_diff(original_snippet: str, compare_snippet: str) -> DiffItem:
+    original_numeral = next(character for character in original_snippet if character in "一二三")
+    compare_numeral = next(character for character in compare_snippet if character in "一二三")
+    bbox = BBox(x0=100, y0=100, x1=120, y1=130)
+    return DiffItem(
+        diff_id="D104",
+        diff_type="MODIFY",
+        source_type="clause",
+        original_text=f"15.2 若争议仍无法解决，按以下第{original_numeral}种方式处理。",
+        compare_text=f"15.2 若争议仍无法解决，按以下第{compare_numeral}种方式处理。",
+        original_snippet=original_snippet,
+        compare_snippet=compare_snippet,
+        review_flags=["CRITICAL_FIELD_CHANGE", "READING_ORDER_RISK"],
+        original_evidence=[EvidenceBox(page_no=1, bbox=bbox, text=original_numeral)],
+        compare_evidence=[EvidenceBox(page_no=1, bbox=bbox, text=compare_numeral)],
+    )

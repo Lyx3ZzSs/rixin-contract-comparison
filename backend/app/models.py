@@ -14,6 +14,7 @@ EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 TaskTerminalReason = Literal["NONE", "EXECUTION_FAILED", "SUBMISSION_FAILED", "CANCELLED"]
+TaskExecutionStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
 DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal", "page", "signing_region"]
 LayoutMatchStatus = Literal[
@@ -421,9 +422,14 @@ class CompareTask(BaseModel):
     revision: int = 0
     status: TaskStatus = "PROCESSING"
     terminal_reason: TaskTerminalReason = "NONE"
-    active_job_id: str = ""
-    terminal_job_id: str = ""
-    terminal_attempt: int = 0
+    execution_id: str = ""
+    execution_no: int = Field(default=0, ge=0)
+    execution_status: TaskExecutionStatus = "QUEUED"
+    execution_queued_at: str = ""
+    execution_started_at: str = ""
+    execution_finished_at: str = ""
+    execution_error_code: str = ""
+    execution_last_error: str = ""
     report_revision: int = Field(default=0, ge=0)
     stage: str = "已创建"
     progress_percent: int = Field(default=0, ge=0, le=100)
@@ -438,8 +444,6 @@ class CompareTask(BaseModel):
     compare_filename: str = ""
     original_pdf_path: str = ""
     compare_pdf_path: str = ""
-    original_highlight_pdf_path: str | None = None
-    compare_highlight_pdf_path: str | None = None
     report_pdf_path: str | None = None
     extractor_used: str = ""
     ocr_raw_result_path: str = ""
@@ -479,11 +483,7 @@ class CompareTask(BaseModel):
             )
         if normalized.get("report_revision") is None:
             normalized["report_revision"] = 1 if status == "COMPLETED" else 0
-        for key in [
-            "original_highlight_pdf_path",
-            "compare_highlight_pdf_path",
-            "report_pdf_path",
-        ]:
+        for key in ["report_pdf_path"]:
             if normalized.get(key) == "":
                 normalized[key] = None
         if not normalized.get("ocr_raw_result_paths") and normalized.get("ocr_raw_result_path"):
@@ -503,7 +503,6 @@ class CompareTask(BaseModel):
         target_status: TaskStatus,
         *,
         terminal_reason: TaskTerminalReason = "NONE",
-        job_id: str = "",
         validated_inputs_exist: bool = False,
     ) -> bool:
         if self.status == "PROCESSING":
@@ -512,8 +511,6 @@ class CompareTask(BaseModel):
             if target_status == "COMPLETED" and terminal_reason != "NONE":
                 return False
             if target_status == "FAILED" and terminal_reason == "NONE":
-                return False
-            if job_id != self.active_job_id:
                 return False
             return True
 
@@ -530,13 +527,11 @@ class CompareTask(BaseModel):
         target_status: TaskStatus,
         *,
         terminal_reason: TaskTerminalReason = "NONE",
-        job_id: str = "",
         validated_inputs_exist: bool = False,
     ) -> None:
         if self.is_transition_allowed(
             target_status,
             terminal_reason=terminal_reason,
-            job_id=job_id,
             validated_inputs_exist=validated_inputs_exist,
         ):
             return

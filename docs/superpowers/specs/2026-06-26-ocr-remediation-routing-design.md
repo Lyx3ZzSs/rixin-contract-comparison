@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Phase 3 turns OCR quality risk from a passive warning into an operational loop. Phase 1 established OCR comparison quality evaluation. Phase 2 added runtime OCR quality profiling and propagated OCR risk to affected diffs. Phase 3 should decide what to do with those risks, execute low-risk remediation where deterministic, and collect evidence for future model routing decisions.
+Phase 3 turns OCR quality risk from a passive warning into an operational loop. Runtime OCR quality profiling already propagates OCR risk to affected diffs; this phase decides what to do with those risks and executes low-risk remediation where deterministic.
 
 The goal is not to replace the current comparison pipeline or introduce broad agentic judgment. The goal is to make OCR risk handling measurable, auditable, and incremental.
 
@@ -13,7 +13,7 @@ The goal is not to replace the current comparison pipeline or introduce broad ag
 - Record before/after quality signals for every attempted action.
 - Expose remediation summaries through existing compare and quality APIs without breaking existing clients.
 - Add lightweight frontend visibility for remediation status and manual review decisions.
-- Build a model-routing experiment framework that can compare OCR/layout/table strategies by page type and quality outcome.
+- Record model-routing diagnostics by page type and quality outcome.
 
 ## Non-Goals
 
@@ -34,7 +34,7 @@ When a comparison task completes OCR quality profiling, the pipeline should clas
 - `RETRY_OCR_PAGE`: queue or execute page-level OCR retry through an abstract retry adapter.
 - `ESCALATE_MANUAL_REVIEW`: risk is too severe or remediation failed.
 
-The initial implementation should be conservative. It may generate action plans before executing all action types. Action planning is useful by itself because it creates a stable contract for API, frontend, evaluation, and future execution.
+The initial implementation should be conservative. It may generate action plans before executing all action types. Action planning is useful by itself because it creates a stable contract for API, frontend, and future execution.
 
 ## Architecture
 
@@ -104,8 +104,8 @@ Owns page classification and experiment recording.
 Initial scope:
 
 - Classify pages into text-heavy, table-heavy, scan-low-quality, seal/signature-heavy, or mixed.
-- Select candidate routes for offline evaluation.
-- Record route inputs, outputs, quality deltas, and runtime cost.
+- Select candidate routes.
+- Record route inputs, outputs, quality signals, and runtime cost.
 
 ### `review_feedback.py`
 
@@ -215,27 +215,6 @@ Add a summary area near existing quality information:
 
 Manual feedback should be explicit and reversible in later phases, but Phase 3 can start with append-only feedback if that matches existing persistence patterns.
 
-## Evaluation
-
-Add a repeatable evaluator:
-
-```text
-backend/scripts/evaluate_ocr_remediation_quality.py
-```
-
-It should report:
-
-- risk pages before remediation
-- risk pages after remediation
-- affected diffs before remediation
-- unresolved diffs after remediation
-- evidence hit rate delta
-- precision/recall delta where golden labels exist
-- runtime cost per action type
-- manual review rate
-
-The first acceptance threshold should be conservative: remediation must not reduce precision or evidence hit rate on golden fixtures. Once enough fixtures exist, add minimum improvement thresholds.
-
 ## Delivery Plan
 
 ### Phase 3A: Remediation Planning
@@ -254,19 +233,17 @@ The first acceptance threshold should be conservative: remediation must not redu
 - Preserve diff text and original evidence history.
 - Add tests for action success, failure, and no-op behavior.
 
-### Phase 3C: Page Retry and Model Routing Experiments
+### Phase 3C: Page Retry and Model Routing
 
 - Add page-level retry adapter abstraction.
 - Add model route classification.
-- Add offline route comparison evaluator.
-- Record route quality deltas without changing the production default path.
+- Record route diagnostics without changing the production default path.
 
 ### Phase 3D: Manual Review Feedback Loop
 
 - Add review feedback persistence.
 - Add API endpoints for feedback.
 - Add frontend feedback controls.
-- Add export path from feedback to evaluation fixtures.
 
 ## Testing Strategy
 
@@ -303,4 +280,3 @@ Evaluation tests should cover:
 - Quality artifacts include OCR remediation details.
 - Frontend exposes remediation status without disrupting current result page flow.
 - Full backend tests, frontend tests, build, and OCR quality gates pass.
-

@@ -247,18 +247,6 @@ python -m compileall app tests
 python -m ruff check .
 ```
 
-最终收口前应运行：
-
-```bash
-cd backend
-python -m pytest
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p2d-final \
-  --run-id precision-p2d-final \
-  --fail-on-regression
-```
-
 ## 风险和缓解
 
 ### 风险 1：过度合并相邻条款
@@ -297,5 +285,4 @@ python scripts/run_quality_regression.py \
 - 跨页续段在 clause 层稳定合并。
 - 明确新条款、标题、签署页不被误合并。
 - 合并后的 clause 保留 evidence 和页码。
-- 现有 matcher、diff、质量回归测试不回退。
-- 质量回归 smoke gate 通过。
+- 现有 matcher 和 diff 测试不回退。

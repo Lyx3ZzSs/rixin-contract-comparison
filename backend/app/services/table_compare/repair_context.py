@@ -237,6 +237,12 @@ class BusinessChangeProtector:
         return cls.protected_change_reason(original_text, compare_text) is not None
 
     @classmethod
+    def same_business_scalar(cls, original_text: str, compare_text: str) -> bool:
+        original = cls._business_scalar(original_text)
+        compare = cls._business_scalar(compare_text)
+        return bool(original and original == compare)
+
+    @classmethod
     def _business_scalar(cls, text: str) -> str:
         compact = re.sub(r"\s+", "", text or "")
         if compact in cls._YES_NO_VALUES:

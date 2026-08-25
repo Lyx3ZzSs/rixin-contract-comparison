@@ -24,7 +24,6 @@ STRUCTURED_EVENT_FIELDS = (
     "report_revision",
     "error_type",
     "error_code",
-    "recovery_marker",
     "duration_ms",
 )
 _EVENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -89,10 +88,7 @@ def _contains_secret(value: str) -> bool:
 
 def _safe_error_type(value: str) -> str | None:
     candidate = value.split(":", 1)[0]
-    normalized = "".join(
-        part if part.isupper() else part.capitalize()
-        for part in re.findall(r"[A-Za-z]+", candidate)
-    )
+    normalized = "".join(part if part.isupper() else part.capitalize() for part in re.findall(r"[A-Za-z]+", candidate))
     return normalized or None
 
 

@@ -24,9 +24,7 @@ class PageRegistration:
     @property
     def reliable(self) -> bool:
         return (
-            self.match_count >= 24
-            and self.inlier_count >= 12
-            and self.inlier_count / max(self.match_count, 1) >= 0.15
+            self.match_count >= 24 and self.inlier_count >= 12 and self.inlier_count / max(self.match_count, 1) >= 0.15
         )
 
 
@@ -110,11 +108,7 @@ class OpenCvPageRegistrar:
                 compare_descriptors,
                 k=2,
             )
-            matches = [
-                first
-                for first, second in pairs
-                if first.distance < self.ratio_threshold * second.distance
-            ]
+            matches = [first for first, second in pairs if first.distance < self.ratio_threshold * second.distance]
             if len(matches) < 8:
                 return PageRegistration(None, len(matches), 0)
             source = np.float32([original_points[item.queryIdx].pt for item in matches])
@@ -257,12 +251,20 @@ class FooterAnnotationVisualComparator:
         ocr_diffs: list[DiffItem],
         visual_diffs: list[DiffItem],
     ) -> list[DiffItem]:
-        visual_original = self._group_visual_evidences(
-            [diff.original_evidence for diff in visual_diffs]
-        )
-        visual_compare = self._group_visual_evidences(
-            [diff.compare_evidence for diff in visual_diffs]
-        )
+        visual_original = self._group_visual_evidences([diff.original_evidence for diff in visual_diffs])
+        visual_compare = self._group_visual_evidences([diff.compare_evidence for diff in visual_diffs])
+        dominant_original = [
+            evidence
+            for diff in ocr_diffs
+            if len({item.page_no for item in diff.original_evidence}) > 1
+            for evidence in diff.original_evidence
+        ]
+        dominant_compare = [
+            evidence
+            for diff in ocr_diffs
+            if len({item.page_no for item in diff.compare_evidence}) > 1
+            for evidence in diff.compare_evidence
+        ]
         kept: list[DiffItem] = []
         for source in ocr_diffs:
             if self.visual_flag in source.review_flags:
@@ -273,8 +275,24 @@ class FooterAnnotationVisualComparator:
             had_compare_evidence = bool(diff.compare_evidence)
             if diff.diff_type in {"DELETE", "MODIFY"}:
                 diff.original_evidence = self._without_overlaps(diff.original_evidence, visual_original)
+                diff.original_evidence = self._without_short_adjacent_fragments(
+                    diff.original_evidence,
+                    [
+                        *visual_original,
+                        *([] if len({item.page_no for item in source.original_evidence}) > 1 else dominant_original),
+                    ],
+                    diff.original_snippet or diff.original_text,
+                )
             if diff.diff_type in {"ADD", "MODIFY"}:
                 diff.compare_evidence = self._without_overlaps(diff.compare_evidence, visual_compare)
+                diff.compare_evidence = self._without_short_adjacent_fragments(
+                    diff.compare_evidence,
+                    [
+                        *visual_compare,
+                        *([] if len({item.page_no for item in source.compare_evidence}) > 1 else dominant_compare),
+                    ],
+                    diff.compare_snippet or diff.compare_text,
+                )
             if diff.diff_type == "ADD" and had_compare_evidence and not diff.compare_evidence:
                 continue
             if diff.diff_type == "DELETE" and had_original_evidence and not diff.original_evidence:
@@ -288,6 +306,42 @@ class FooterAnnotationVisualComparator:
                 continue
             kept.append(diff)
         return kept
+
+    @classmethod
+    def _without_short_adjacent_fragments(
+        cls,
+        evidences: list[EvidenceBox],
+        references: list[EvidenceBox],
+        text: str,
+    ) -> list[EvidenceBox]:
+        compact = "".join((text or "").split())
+        if not compact or len(compact) > 3:
+            return evidences
+        return [
+            evidence
+            for evidence in evidences
+            if not any(
+                evidence is not reference
+                and evidence.page_no == reference.page_no
+                and cls._bbox_is_short_fragment_of(evidence.bbox, reference.bbox)
+                for reference in references
+            )
+        ]
+
+    @staticmethod
+    def _bbox_is_short_fragment_of(fragment: BBox, reference: BBox) -> bool:
+        intersection_width = max(0.0, min(fragment.x1, reference.x1) - max(fragment.x0, reference.x0))
+        intersection_height = max(0.0, min(fragment.y1, reference.y1) - max(fragment.y0, reference.y0))
+        fragment_width = max(1.0, fragment.x1 - fragment.x0)
+        fragment_height = max(1.0, fragment.y1 - fragment.y0)
+        if intersection_width / fragment_width >= 0.30 and intersection_height / fragment_height >= 0.50:
+            return True
+        horizontal_gap = max(0.0, max(fragment.x0, reference.x0) - min(fragment.x1, reference.x1))
+        vertical_overlap = intersection_height / min(
+            fragment_height,
+            max(1.0, reference.y1 - reference.y0),
+        )
+        return horizontal_gap <= 12.0 and vertical_overlap >= 0.45
 
     def remove_overlapping_diffs(self, diffs: list[DiffItem]) -> list[DiffItem]:
         visual_diffs = [diff for diff in diffs if self.visual_flag in diff.review_flags]
@@ -358,12 +412,8 @@ class FooterAnnotationVisualComparator:
         except Exception:
             return []
 
-        compare_components = self._annotation_regions(
-            self._one_sided_components(compare_image, aligned_original)
-        )
-        original_components = self._annotation_regions(
-            self._one_sided_components(original_image, aligned_compare)
-        )
+        compare_components = self._annotation_regions(self._one_sided_components(compare_image, aligned_original))
+        original_components = self._annotation_regions(self._one_sided_components(original_image, aligned_compare))
         diffs: list[DiffItem] = []
         next_index = start_index
         if original_components:
@@ -421,10 +471,8 @@ class FooterAnnotationVisualComparator:
         left_center = (left.y0 + left.y1) / 2
         right_center = (right.y0 + right.y1) / 2
         horizontal_gap = max(0, right.x0 - left.x1)
-        return (
-            abs(left_center - right_center) <= max_height * 0.5
-            and horizontal_gap
-            <= max(18, int(max_height * cls.annotation_horizontal_gap_height_ratio))
+        return abs(left_center - right_center) <= max_height * 0.5 and horizontal_gap <= max(
+            18, int(max_height * cls.annotation_horizontal_gap_height_ratio)
         )
 
     @staticmethod
@@ -458,10 +506,7 @@ class FooterAnnotationVisualComparator:
                         ]
                     )
                 )
-                if (
-                    seed_pixels < self.min_ink_pixels
-                    and component.x1 - component.x0 < self.min_faint_width_pixels
-                ):
+                if seed_pixels < self.min_ink_pixels and component.x1 - component.x0 < self.min_faint_width_pixels:
                     continue
                 source_area = source_mask[component.y0 : component.y1, component.x0 : component.x1] > 0
                 opposite_area = opposite_mask[component.y0 : component.y1, component.x0 : component.x1] > 0
@@ -474,10 +519,7 @@ class FooterAnnotationVisualComparator:
                     ink_pixels=component.ink_pixels,
                     novel_pixels=novel_pixels,
                 )
-                if (
-                    enriched.novel_pixels >= self.min_novel_pixels
-                    and enriched.novel_ratio >= self.min_novel_ratio
-                ):
+                if enriched.novel_pixels >= self.min_novel_pixels and enriched.novel_ratio >= self.min_novel_ratio:
                     result.append(enriched)
             return result
         except Exception:
@@ -609,7 +651,11 @@ class FooterAnnotationVisualComparator:
             compare_snippet=text if diff_type == "ADD" else "",
             readable_change=f"{label}左下角手写签注：第{page_no}页",
             source_type="header_footer",
-            review_flags=["HEADER_FOOTER_REVIEW", self.visual_flag],
+            review_flags=[
+                "HEADER_FOOTER_REVIEW",
+                "HANDWRITTEN_ANNOTATION_REVIEW",
+                self.visual_flag,
+            ],
             quality_status="NEEDS_REVIEW",
             original_evidence=evidences if diff_type == "DELETE" else [],
             compare_evidence=evidences if diff_type == "ADD" else [],
@@ -634,9 +680,7 @@ class FooterAnnotationVisualComparator:
         )
         confidence = min(
             0.97,
-            0.62
-            + component.novel_ratio * 0.22
-            + registration.inlier_count / max(registration.match_count, 1) * 0.13,
+            0.62 + component.novel_ratio * 0.22 + registration.inlier_count / max(registration.match_count, 1) * 0.13,
         )
         return EvidenceBox(
             page_no=page_no,
@@ -705,12 +749,16 @@ class FooterAnnotationVisualComparator:
         vertical_coverage = intersection_height / left_height
         visual_horizontal_coverage = intersection_width / right_width
         visual_vertical_coverage = intersection_height / right_height
-        return area_coverage >= cls.ocr_overlap_coverage_threshold or (
-            horizontal_coverage >= cls.ocr_horizontal_coverage_threshold
-            and vertical_coverage >= cls.ocr_vertical_coverage_threshold
-        ) or (
-            visual_horizontal_coverage >= cls.visual_containment_threshold
-            and visual_vertical_coverage >= cls.visual_containment_threshold
-            and horizontal_coverage >= cls.contained_visual_horizontal_ratio
-            and vertical_coverage >= cls.contained_visual_vertical_ratio
+        return (
+            area_coverage >= cls.ocr_overlap_coverage_threshold
+            or (
+                horizontal_coverage >= cls.ocr_horizontal_coverage_threshold
+                and vertical_coverage >= cls.ocr_vertical_coverage_threshold
+            )
+            or (
+                visual_horizontal_coverage >= cls.visual_containment_threshold
+                and visual_vertical_coverage >= cls.visual_containment_threshold
+                and horizontal_coverage >= cls.contained_visual_horizontal_ratio
+                and vertical_coverage >= cls.contained_visual_vertical_ratio
+            )
         )

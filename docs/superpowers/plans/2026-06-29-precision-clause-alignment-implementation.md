@@ -2,11 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 构建条款 fingerprint 与对齐诊断基础设施，使合同差异比对能解释条款匹配依据、标记低置信对齐，并通过 Phase 5 质量回归验证不退化。
 
 **Architecture:** 新增 `app/services/clause_alignment.py` 作为独立、无外部依赖的条款对齐特征与诊断模块。`ClauseSplitter` 只负责把稳定 `clause_key` 写入 `Clause`；`ClauseMatcher` 继续保留现有匹配算法，只把 alignment diagnostics 写入 `ClausePair.score_details` 并在必要时降低 `match_confidence`；`CompareDebugWriter` 扩展现有 debug artifact，不改变 `/api/compare/*` 兼容结构。
 
-**Tech Stack:** Python 3.12、Pydantic models、pytest、现有 `ClauseSplitter` / `ClauseMatcher` / `CompareDebugWriter` / Phase 5 `run_quality_regression.py`。
 
 ---
 
@@ -29,7 +27,7 @@
 - Modify: `backend/tests/test_compare_integration.py`
   - 职责：覆盖 debug artifact 中的 alignment summary。
 - Create: `docs/precision_clause_alignment_workflow.md`
-  - 职责：中文说明本阶段对齐诊断的使用、回归验证方式和风险解释。
+  - 职责：中文说明本阶段对齐诊断的使用和风险解释。
 
 ## Task 1: 新增 Clause Alignment Fingerprint
 
@@ -749,109 +747,6 @@ git add backend/app/services/compare_debug.py backend/tests/test_compare_integra
 git commit -m "feat: summarize clause alignment risks"
 ```
 
-## Task 6: 中文说明和回归验证
-
-**Files:**
-- Create: `docs/precision_clause_alignment_workflow.md`
-
-- [ ] **Step 1: 写中文说明**
-
-Create `docs/precision_clause_alignment_workflow.md`:
-
-```markdown
-# Precision Phase 1 条款级对齐说明
-
-## 目的
-
-本阶段用于提升合同差异比对中的条款级对齐稳定性。它不引入 LLM，也不重写 diff 引擎，而是为每个条款匹配结果提供 fingerprint、对齐诊断和低置信风险标记。
-
-## 关键输出
-
-条款匹配结果会在 `score_details.alignment` 中包含：
-
-- `number_match`
-- `title_match`
-- `body_similarity`
-- `critical_token_overlap`
-- `section_type_match`
-- `page_distance`
-- `risk_flags`
-
-当出现金额、日期、编号或标题等冲突时，`risk_flags` 会记录潜在风险，例如：
-
-- `CRITICAL_TOKEN_MISMATCH`
-- `TEXT_MATCH_NUMBER_MISMATCH`
-- `TITLE_MATCH_TEXT_MISMATCH`
-- `POSSIBLE_CLAUSE_MISALIGNMENT`
-
-## Debug Artifact
-
-`clause_matches.json` 可以查看每个条款对的对齐依据。
-
-`match_matrix_summary.json` 可以查看：
-
-- `low_confidence_alignment_count`
-- `alignment_risk_flag_counts`
-
-这些字段用于定位可能导致误报或漏报的条款错配。
-
-## 回归验证
-
-每次调整条款对齐逻辑后运行：
-
-```bash
-cd backend
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p1 \
-  --fail-on-regression
-```
-
-如果已有 baseline：
-
-```bash
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --baseline .ocr-compare-quality/baselines/v0.0.2.json \
-  --output-dir .ocr-compare-quality/runs/precision-p1 \
-  --fail-on-regression
-```
-
-重点确认：
-
-- `precision` 不下降。
-- `recall` 不下降。
-- `false_positive_count` 不增加。
-- `false_negative_count` 不增加。
-- `evidence_hit_rate` 不下降。
-
-## 使用原则
-
-本阶段遵循“先诊断，后干预”。低置信对齐先进入 debug 和质量分析，不直接等同于法律风险结论。
-```
-
-- [ ] **Step 2: 运行回归 smoke**
-
-Run:
-
-```bash
-cd backend
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p1 \
-  --run-id precision-p1 \
-  --fail-on-regression
-```
-
-Expected: exit 0, summary status `PASSED`, `failed_gates` is `[]`.
-
-- [ ] **Step 3: 提交**
-
-```bash
-git add docs/precision_clause_alignment_workflow.md
-git commit -m "docs: add clause alignment workflow"
-```
-
 ## Task 7: 全量验证与收尾
 
 **Files:**
@@ -906,20 +801,6 @@ python -m pytest
 
 Expected: PASS。
 
-- [ ] **Step 5: 运行 Phase 5 质量回归 smoke**
-
-Run:
-
-```bash
-cd backend
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p1-final \
-  --run-id precision-p1-final \
-  --fail-on-regression
-```
-
-Expected: exit 0, status `PASSED`, failed gates empty。
 
 - [ ] **Step 6: 运行 frontend 验证，确认兼容**
 
@@ -952,9 +833,6 @@ git log --oneline --decorate --max-count=16
 
 Expected:
 
-- Precision Phase 1 相关源码、测试、文档已经提交。
-- `.ocr-compare-quality/` 等本地运行产物保持未跟踪，不纳入提交。
-- 不处理用户已有的 `frontend/src/picture/favicon.ico` 修改，除非用户明确要求。
 
 - [ ] **Step 8: 最终 code review**
 

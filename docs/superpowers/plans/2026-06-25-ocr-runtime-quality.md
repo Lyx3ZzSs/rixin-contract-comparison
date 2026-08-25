@@ -1431,25 +1431,6 @@ npm run build
 
 Expected: both commands exit 0.
 
-- [ ] **Step 5: Run Phase 1 evaluator smoke gate**
-
-Run:
-
-```bash
-cd backend
-python scripts/evaluate_ocr_compare_quality.py tests/fixtures/ocr_compare_cases \
-  --output .ocr-compare-quality/ocr_compare_quality.json \
-  --html-output .ocr-compare-quality/html \
-  --fail-on-threshold
-```
-
-Expected:
-
-- command exits 0
-- `.ocr-compare-quality/ocr_compare_quality.json` exists
-- `.ocr-compare-quality/html/index.html` exists
-- JSON contains `"threshold_failures": []`
-
 - [ ] **Step 6: Commit verification fixes only if needed**
 
 If any command fails and the fix is in scope for Phase 2, fix it and commit:

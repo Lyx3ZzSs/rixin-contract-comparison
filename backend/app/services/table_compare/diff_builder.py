@@ -140,6 +140,26 @@ class TableDiffBuilder:
                     filter_orig_row = cell_diff.original_row if cell_diff.original_row is not None else orig_row
                     filter_comp_row = cell_diff.compare_row if cell_diff.compare_row is not None else comp_row
                     filter_col = cell_diff.original_col if cell_diff.original_col is not None else cell_diff.compare_col
+                    if filter_col is not None and self._sequence_cell_covered_by_plain_source(
+                        original,
+                        compare,
+                        filter_orig_row,
+                        filter_comp_row,
+                        filter_col,
+                        cell_diff.original_text,
+                        cell_diff.compare_text,
+                    ):
+                        self._record_suppressed_diff(
+                            "sequence_scalar_covered_by_plain_source",
+                            original,
+                            compare,
+                            filter_orig_row,
+                            filter_comp_row,
+                            col=filter_col,
+                            original_text=cell_diff.original_text,
+                            compare_text=cell_diff.compare_text,
+                        )
+                        continue
                     if filter_col is not None and self._summary.is_covered_duplicate_amount_cell(
                         original,
                         compare,
@@ -388,6 +408,27 @@ class TableDiffBuilder:
                 if not orig_norm and not comp_norm:
                     continue
 
+                if self._sequence_cell_covered_by_plain_source(
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                    c,
+                    orig_text,
+                    comp_text,
+                ):
+                    self._record_suppressed_diff(
+                        "sequence_scalar_covered_by_plain_source",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
+                    continue
+
                 if self._contact_cell_modify_covered_by_plain_source(
                     original,
                     compare,
@@ -557,6 +598,48 @@ class TableDiffBuilder:
                 ))
 
         return diffs
+
+    @staticmethod
+    def _sequence_cell_covered_by_plain_source(
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+        col: int,
+        original_text: str,
+        compare_text: str,
+    ) -> bool:
+        if col != 0 or orig_row is None or comp_row is None:
+            return False
+        if not BusinessChangeProtector.same_business_scalar(original_text, compare_text):
+            return False
+        value = next(
+            (text.strip() for text in (original_text, compare_text) if re.fullmatch(r"\d{1,2}", text.strip())),
+            "",
+        )
+        if not value:
+            return False
+        pattern = rf"(?<!\d){re.escape(value)}(?!\d)"
+        anchors = []
+        for anchor_col in range(1, min(original.col_count, compare.col_count)):
+            original_cell = original.get_cell(orig_row, anchor_col)
+            compare_cell = compare.get_cell(comp_row, anchor_col)
+            original_anchor = utils.normalize(original_cell.text if original_cell else "")
+            compare_anchor = utils.normalize(compare_cell.text if compare_cell else "")
+            if original_anchor == compare_anchor and len(original_anchor) >= 3 and not utils.is_number_like(original_anchor):
+                anchors.append(original_anchor)
+        if not anchors:
+            return False
+        anchor = max(anchors, key=len)
+
+        def source_supports(table: StructuredTable, row: int) -> bool:
+            source = utils.normalize(TableMatcher.row_plain_source_text(table, row))
+            return any(
+                re.search(pattern, source[max(0, match.start() - 20):match.end() + 20])
+                for match in re.finditer(re.escape(anchor), source)
+            )
+
+        return source_supports(original, orig_row) and source_supports(compare, comp_row)
 
     def _matched_short_residual_row_side(
         self,

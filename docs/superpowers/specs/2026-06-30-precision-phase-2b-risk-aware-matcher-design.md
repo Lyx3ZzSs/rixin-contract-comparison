@@ -2,21 +2,13 @@
 
 ## 目的
 
-Precision Phase 2B 用于把 Phase 2A 的质量归因结果转化为可回归、可解释的 matcher 风险感知调优。
-
-本阶段不改名为 lite。它仍然是正式的 matcher 调优阶段，但调优输入采用组合方式：
-
-- 现有 gold case。
-- Phase 2A 生成的 `quality_attribution.json`。
-- 后续真实合同任务导出的 debug artifacts。
-
-真实任务 debug artifacts 只用于本地分析，不提交仓库。有价值的真实失败样本必须脱敏或抽象后，再沉淀为可提交的 gold case 或构造型 matcher fixture。
+Precision Phase 2B 用于实现可解释的 matcher 风险感知调优。真实任务 debug artifacts 只用于本地分析，不提交仓库；有价值的失败样本必须脱敏或抽象为构造型 matcher fixture。
 
 核心目标：
 
 - 降低 matcher 错配导致的误报和漏报。
 - 降低高风险候选的过度自信。
-- 让 matcher 的关键决策能被 `score_details`、`match_confidence` 和 Phase 2A attribution 解释。
+- 让 matcher 的关键决策能被 `score_details` 和 `match_confidence` 解释。
 
 ## 成功标准
 
@@ -25,8 +17,6 @@ Precision Phase 2B 用于把 Phase 2A 的质量归因结果转化为可回归、
 - `body_weighted_similarity` 不再对关键字段冲突候选给出过高信心。
 - `same_clause_no_low_similarity`、`section_mismatch_blocked` 等风险方法能进入低置信或可疑样本分析。
 - 新增 guard 都有 focused tests。
-- 质量回归不退化：`precision`、`recall`、`evidence_hit_rate` 不下降，误报/漏报门禁不失败。
-- Phase 2A attribution 能解释本阶段新增策略的作用。
 
 ## 当前基础
 
@@ -43,7 +33,7 @@ ClauseSplitter -> ClauseMatcher -> DiffEngine -> DiffQuality -> Report
 - `_candidate_acceptable()`：决定候选是否可进入匹配。
 - `_match_method()`：给匹配打方法标签，例如 `same_clause_key_weighted`、`body_weighted_similarity`。
 - `_match_confidence()`：输出 `LOW`、`MEDIUM`、`NORMAL`。
-- `match_candidates`：保留候选摘要和 `score_details`，可被 debug artifact 与 Phase 2A attribution 读取。
+- `match_candidates`：保留候选摘要和 `score_details`，可被 debug artifact 读取。
 
 Phase 1 已提供：
 
@@ -55,23 +45,13 @@ Phase 1 已提供：
 - `match_matrix_summary.low_confidence_alignment_count`
 - `alignment_risk_flag_counts`
 
-Phase 2A 已提供：
-
-- `quality_attribution.json`
-- `suspicious_matches`
-- `attribution_tags`
-- `SAME_KEY_LOW_BODY_COVERAGE`
-- `BODY_ONLY_MATCH`
-- `KEY_TOKEN_CONFLICT`
-- `LOW_CONFIDENCE_ALIGNMENT`
-
 ## 推荐方案
 
 采用“风险感知 guard 层”方案，而不是大规模重写 matcher 权重。
 
 ```text
 existing score details
-  -> risk guard evaluation
+  -> risk guard assessment
   -> guarded score / confidence / method
   -> existing match output and debug artifacts
 ```
@@ -102,34 +82,7 @@ existing score details
 
 ## 调优输入策略
 
-### 1. 现有 gold case
-
-用于验证不退化。每次实现后必须跑质量回归。
-
-### 2. Phase 2A attribution report
-
-用于决定优先治理的风险类型。Phase 2B 实施前应先运行：
-
-```bash
-cd backend
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p2b-input \
-  --run-id precision-p2b-input \
-  --fail-on-regression
-
-python scripts/analyze_quality_attribution.py \
-  --run-dir .ocr-compare-quality/runs/precision-p2b-input
-```
-
-重点看：
-
-- `aggregate.attribution_counts`
-- `aggregate.alignment_risk_flag_counts`
-- `aggregate.match_method_counts`
-- `cases[].suspicious_matches`
-
-### 3. 后续真实任务 debug artifacts
+### 真实任务 debug artifacts
 
 真实任务用于发现问题，不直接进入仓库。
 
@@ -145,7 +98,6 @@ storage/tasks/<task-id>/debug/match_matrix_summary.json
 - 原合同。
 - 新合同。
 - 包含真实条款文本的 debug artifact。
-- 由真实合同生成且未脱敏的 expected/gold case。
 
 可提交：
 
@@ -296,17 +248,6 @@ _apply_matcher_guards(details, weighted_score)
 - `SAME_NUMBER_LOW_BODY_SIMILARITY`：`LOW`
 - `BODY_ONLY_ALIGNMENT_RISK`：`LOW`
 
-### 4. Attribution Compatibility
-
-Phase 2A 需要能看到本阶段 guard。
-
-建议在 `analyze_quality_attribution.py` 中后续识别：
-
-- `score_details.matcher_risk_flags`
-- `matcher_guard_applied`
-
-但这可以作为 Phase 2B 的后半段任务，不必和 matcher 第一刀强耦合。
-
 ## 测试策略
 
 新增或扩展 `backend/tests/test_matcher_optimization.py`：
@@ -318,37 +259,17 @@ Phase 2A 需要能看到本阶段 guard。
 - body weighted similarity + alignment risk 标记 LOW。
 - section mismatch 仍被阻止或只进入可疑候选。
 
-扩展 `backend/tests/test_quality_attribution.py`：
-
-- 能统计 `matcher_risk_flags`。
-- 能把 `SAME_KEY_LOW_BODY_COVERAGE`、`BODY_ONLY_ALIGNMENT_RISK` 等归因标签写入 `quality_attribution.json`。
-
-回归验证：
-
 ```bash
 cd backend
-python -m pytest tests/test_matcher_optimization.py tests/test_quality_attribution.py -v
-python -m pytest tests/test_run_quality_regression.py tests/test_evaluate_ocr_compare_quality.py -v
+python -m pytest tests/test_matcher_optimization.py -v
 python -m ruff check .
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p2b \
-  --run-id precision-p2b \
-  --fail-on-regression
-python scripts/analyze_quality_attribution.py \
-  --run-dir .ocr-compare-quality/runs/precision-p2b
 ```
 
 ## 回滚策略
 
 每个 guard 应独立提交，便于回滚。
 
-如果质量回归失败：
-
-1. 查看 `quality.json` 和 `quality_attribution.json`。
-2. 判断失败来自 recall 下降、precision 下降，还是 evidence drift。
-3. 只回滚导致失败的 guard，不回滚 Phase 1/2A 基础设施。
-4. 若失败来自 gold case 过窄或标注问题，先补 gold case，再继续调优。
+出现问题时只回滚对应 guard，不回滚其他 matcher 基础设施。
 
 ## 风险与缓解
 
@@ -364,7 +285,7 @@ python scripts/analyze_quality_attribution.py \
 
 缓解：
 
-- 使用 Phase 2A attribution 作为输入，不只依赖人工想象。
+- 使用真实任务诊断作为输入，不只依赖人工想象。
 - 真实任务样本只做本地分析，脱敏后再沉淀为 fixture。
 
 ### 风险 3：matcher 复杂度继续上升
@@ -386,8 +307,7 @@ python scripts/analyze_quality_attribution.py \
 
 ## 下一阶段承接
 
-Phase 2B 完成后，根据 attribution 结果决定：
+Phase 2B 完成后，根据实际问题决定：
 
 - 若关键字段仍漏检，进入 Phase 2C：关键字段差异保护。
-- 若 gold case 覆盖不足，进入 Phase 2D：真实样本脱敏和 gold case 扩充。
 - 若 matcher 风险明显下降，再考虑 Phase 3 的 diff 粒度和证据定位优化。

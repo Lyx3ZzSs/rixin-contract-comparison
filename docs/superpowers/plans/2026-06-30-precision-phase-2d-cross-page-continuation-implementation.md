@@ -641,18 +641,9 @@ python -m pytest
 
 Expected: all backend tests pass.
 
-- [ ] **Step 3: Run quality regression smoke**
 
 Run:
 
-```bash
-cd backend
-python scripts/run_quality_regression.py \
-  --case-root tests/fixtures/ocr_compare_cases \
-  --output-dir .ocr-compare-quality/runs/precision-p2d-final \
-  --run-id precision-p2d-final \
-  --fail-on-regression
-```
 
 Expected JSON includes:
 

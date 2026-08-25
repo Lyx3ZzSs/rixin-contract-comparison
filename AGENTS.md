@@ -11,7 +11,7 @@ Current structure:
 - `backend/app/infrastructure/` for replaceable adapters such as task persistence, artifact storage, and task execution.
 - `backend/app/services/` for document extraction, comparison, risk analysis, PDF artifacts, and report generation.
 - `backend/tests/` for backend tests.
-- `backend/scripts/` for repeatable utilities such as quality evaluation.
+- `backend/scripts/` for repeatable local utilities.
 - `frontend/src/` for React pages, components, API client, and shared types.
 - `frontend/src/**/*.test.*` for frontend tests.
 - `docs/` for architecture notes, user-facing documentation, and examples.
