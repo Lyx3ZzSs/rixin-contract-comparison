@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Ban, ChevronRight, Download, Eye, EyeOff, PanelRightOpen, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 
 import { PdfDocumentViewer, type PdfDocumentViewerHandle } from "../components/PdfDocumentViewer";
@@ -6,7 +6,6 @@ import { ProgressRing } from "../components/ProgressRing";
 import { toApiUrl, updateAuditItemReview } from "../lib/api";
 import { downloadAuthenticatedFile } from "../lib/authFetch";
 import { useTaskProgress } from "../lib/hooks";
-import { navigateToComparisonRecords } from "../lib/routes";
 import { canRetryTask, taskStatusLabel } from "../lib/taskStatus";
 import type { AuditItem, DiffItem, DiffType, ReviewStatus } from "../types";
 
@@ -864,11 +863,6 @@ function diffTypeLabel(type: DiffFilter): string {
     return "修改";
   }
   return "全部";
-}
-
-function diffSummary(diff: DiffItem): string {
-  const summary = diff.readable_change || diff.compare_snippet || diff.original_snippet || diff.compare_text || diff.original_text;
-  return compactText(summary || "暂无摘要");
 }
 
 function compactText(value: string): string {

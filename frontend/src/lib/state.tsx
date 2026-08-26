@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useReducer, type ReactNode } from "react";
 
-import { readRoute, navigateHome, type AppRoute } from "./routes";
+import { readRoute, type AppRoute } from "./routes";
 
 export interface AppState {
   route: AppRoute;
