@@ -190,9 +190,9 @@ class SigningRegionComparator:
                 compare_text = compare_element.text.strip() if compare_element is not None else ""
                 original_label = self._field_label(original_element)
                 compare_label = self._field_label(compare_element)
-                value_changed = field_key != "signature" and self._normalized_field_value(
-                    field_key, original_text
-                ) != self._normalized_field_value(field_key, compare_text)
+                original_value = self._normalized_field_value(field_key, original_text)
+                compare_value = self._normalized_field_value(field_key, compare_text)
+                value_changed = field_key != "signature" and original_value != compare_value
                 label_changed = not self._field_labels_equivalent(field_key, original_label, compare_label)
                 if label_changed and self._is_seal_occluded_signature_label_conflict(
                     field_key,
@@ -217,19 +217,19 @@ class SigningRegionComparator:
                     change_scope = "field"
                     original_change_text = self._full_field_text(original_element)
                     compare_change_text = self._full_field_text(compare_element)
-                elif label_changed or (original_text and compare_text):
+                elif label_changed or (original_value and compare_value):
                     change_type = "MODIFY"
                     change_scope = "value" if value_changed and not label_changed else "label"
                     original_change_text = original_text if value_changed else original_label
                     compare_change_text = compare_text if value_changed else compare_label
                 else:
-                    change_type = "DELETE" if original_text else "ADD"
+                    change_type = "DELETE" if original_value else "ADD"
                     change_scope = "value" if value_changed and not label_changed else "label"
                     original_change_text = original_text if value_changed else original_label
                     compare_change_text = compare_text if value_changed else compare_label
                 if field_key == "date" and value_changed:
-                    original_change_text = self._display_date_value(original_text)
-                    compare_change_text = self._display_date_value(compare_text)
+                    original_change_text = self._display_date_value(original_text) if original_value else ""
+                    compare_change_text = self._display_date_value(compare_text) if compare_value else ""
                 changed_date_components = (
                     self._changed_date_components(original_element, compare_element)
                     if field_key == "date" and value_changed
@@ -555,6 +555,8 @@ class SigningRegionComparator:
             parts = SigningRegionComparator._date_parts(normalized)
             if parts is not None:
                 return "-".join(str(item) for item in parts)
+            if normalized and re.fullmatch(r"[年月日]+", normalized):
+                return ""
         if field_key in {"account", "phone", "fax", "credit_code"}:
             normalized = re.sub(r"[-‐‑‒–—_]", "", normalized)
         return normalized

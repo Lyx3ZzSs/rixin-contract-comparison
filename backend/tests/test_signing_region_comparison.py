@@ -437,7 +437,7 @@ def test_date_addition_highlights_only_changed_day_component() -> None:
 def test_full_date_addition_highlights_contiguous_date_value() -> None:
     original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
     compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
-    original_date = _field("o-date", "甲方", "date", "签订时间", "")
+    original_date = _field("o-date", "甲方", "date", "签订时间", "年 月 日")
     compare_date = _field("c-date", "甲方", "date", "签订时间", "2026年5月15日")
     original_date.raw_ref.update({"date_components": {}, "date_component_bboxes": {}})
     value_bbox = BBox(x0=150, y0=480, x1=244, y1=505)
@@ -459,8 +459,51 @@ def test_full_date_addition_highlights_contiguous_date_value() -> None:
     diffs = SigningRegionDiffBuilder().build_diffs([comparison])
 
     assert comparison.field_changes[0]["changed_date_components"] == ["year", "month", "day"]
+    assert diffs[0].diff_type == "ADD"
+    assert diffs[0].original_text == ""
+    assert diffs[0].original_evidence == []
+    assert diffs[0].original_change_ranges == []
     assert [evidence.bbox for evidence in diffs[0].compare_evidence] == [value_bbox]
     assert diffs[0].compare_evidence[0].text == "2026年5月15日"
+    assert diffs[0].compare_evidence[0].highlight_type == "ADD"
+
+
+def test_date_placeholder_is_equivalent_to_an_empty_field() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements = [_field("o-date", "甲方", "date", "签字日期", "年月日")]
+    compare.elements = [_field("c-date", "甲方", "date", "签字日期", "")]
+
+    comparison = SigningRegionComparator().compare(original, compare)
+
+    assert comparison.field_changes == []
+    assert comparison.diff_type is None
+
+
+@pytest.mark.parametrize(
+    ("original_text", "compare_text", "expected_type", "expected_original", "expected_compare"),
+    [
+        ("2026年5月21日", "2026年5月22日", "MODIFY", "2026年5月21日", "2026年5月22日"),
+        ("2026年5月22日", "年月日", "DELETE", "2026年5月22日", ""),
+    ],
+)
+def test_comparator_classifies_effective_date_value_changes(
+    original_text: str,
+    compare_text: str,
+    expected_type: str,
+    expected_original: str,
+    expected_compare: str,
+) -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements = [_field("o-date", "甲方", "date", "签字日期", original_text)]
+    compare.elements = [_field("c-date", "甲方", "date", "签字日期", compare_text)]
+
+    diff = SigningRegionDiffBuilder().build_diffs([SigningRegionComparator().compare(original, compare)])[0]
+
+    assert diff.diff_type == expected_type
+    assert diff.original_text == expected_original
+    assert diff.compare_text == expected_compare
 
 
 def test_diff_builder_keeps_field_highlight_separate_from_recognition_outline() -> None:
