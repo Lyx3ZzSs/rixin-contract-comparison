@@ -299,6 +299,70 @@ def test_hybrid_keeps_structure_only_seal_and_assigns_reading_order() -> None:
     assert result.layout_quality.matched_ocr_block_count == 1
 
 
+def test_hybrid_preserves_ppocr_and_ppstructure_text_as_source_evidence() -> None:
+    structure = ExtractionResult(
+        document=Document(
+            filename="scan.pdf",
+            path="scan.pdf",
+            page_count=1,
+            pages=[
+                Page(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    blocks=[
+                        _block(
+                            "structure-field",
+                            50,
+                            100,
+                            320,
+                            140,
+                            "text",
+                            "法人代表或授权委托人：郑伟",
+                        )
+                    ],
+                )
+            ],
+        ),
+        extractor_used="ppstructure",
+        layout_quality=LayoutQualityReport(page_count=1, region_count=1),
+    )
+    ocr = ExtractionResult(
+        document=Document(
+            filename="scan.pdf",
+            path="scan.pdf",
+            page_count=1,
+            pages=[
+                Page(
+                    page_no=1,
+                    width=600,
+                    height=800,
+                    blocks=[
+                        _block(
+                            "ocr-field",
+                            52,
+                            101,
+                            321,
+                            141,
+                            "text",
+                            "法人代表或授权委托人：伟",
+                        )
+                    ],
+                )
+            ],
+        ),
+        extractor_used="ppocrv5",
+    )
+
+    result = PPStructureOCRHybridExtractor(_StaticExtractor(structure), _StaticExtractor(ocr)).extract("scan.pdf")
+
+    evidence = result.document.pages[0].blocks[0].source_evidence
+    assert [(item.source, item.raw_text) for item in evidence] == [
+        ("ppocrv5", "法人代表或授权委托人：伟"),
+        ("ppstructure", "法人代表或授权委托人：郑伟"),
+    ]
+
+
 def test_v3_hybrid_classifies_ambiguous_meaningful_and_noise_matches() -> None:
     structure = ExtractionResult(
         document=Document(

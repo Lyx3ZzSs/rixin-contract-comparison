@@ -31,6 +31,125 @@ def test_normalize_for_diff_preserves_decimal_and_version_tokens() -> None:
     assert normalizer.normalize_for_diff("日期") == normalizer.normalize_for_diff("日期：")
 
 
+def test_document_preparer_keeps_strong_numbered_clause_misclassified_as_footnote() -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="clause-10-1",
+                        page_no=1,
+                        text="10.1 因现场违章行为导致人员微伤事故，对事故单位处罚1万元；",
+                        block_type="footnote",
+                        bbox=BBox(x0=72, y0=180, x1=520, y1=210),
+                        layout_order=1,
+                    ),
+                    TextBlock(
+                        block_id="clause-10-2",
+                        page_no=1,
+                        text="10.2 因现场违章导致停工的，责任方应承担相应损失。",
+                        block_type="text",
+                        bbox=BBox(x0=72, y0=220, x1=520, y1=250),
+                        layout_order=2,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    result = DocumentPreparer().prepare(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert document.pages[0].blocks[0].block_type == "text"
+    assert document.pages[0].blocks[0].block_role != "body_footnote"
+    assert any(item.reason == "strong_clause_overrides_footnote" for item in result.decisions)
+    assert [clause.clause_no for clause in clauses] == ["10.1", "10.2"]
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "删除[赵培淞]: 贰万叁仟",
+        "设置格式[赵培淞]: 突出显示",
+    ],
+)
+def test_document_preparer_excludes_strict_rendered_word_revision_artifact(artifact: str) -> None:
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[
+                    TextBlock(
+                        block_id="body",
+                        page_no=1,
+                        text="第二条 合同价款及支付方式",
+                        bbox=BBox(x0=70, y0=100, x1=500, y1=130),
+                        layout_order=1,
+                    ),
+                    TextBlock(
+                        block_id="revision",
+                        page_no=1,
+                        text=artifact,
+                        bbox=BBox(x0=450, y0=145, x1=575, y1=170),
+                        layout_order=2,
+                    ),
+                    TextBlock(
+                        block_id="body-2",
+                        page_no=1,
+                        text="合同总价为70000元。",
+                        bbox=BBox(x0=70, y0=180, x1=500, y1=210),
+                        layout_order=3,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    result = DocumentPreparer().prepare(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+
+    artifact_block = document.pages[0].blocks[1]
+    assert artifact_block.enter_clause_compare is False
+    assert artifact_block.block_role == "revision_artifact"
+    assert any(item.reason == "rendered_word_revision_artifact" for item in result.decisions)
+    assert all(artifact not in clause.text for clause in clauses)
+
+
+def test_document_preparer_does_not_remove_contract_sentence_containing_delete_word() -> None:
+    text = "3.2 甲方要求删除错误数据时，乙方应在两个工作日内完成处理。"
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=595,
+                height=842,
+                blocks=[TextBlock(block_id="body", page_no=1, text=text, bbox=BBox(x0=70, y0=100, x1=520, y1=130))],
+            )
+        ],
+    )
+
+    DocumentPreparer().prepare(document, "original")
+    clauses = ClauseSplitter().split(document, "O")
+
+    assert document.pages[0].blocks[0].enter_clause_compare is not False
+    assert len(clauses) == 1
+    assert "删除错误数据" in clauses[0].text
+
+
 def test_diff_quality_merges_adjacent_top_cover_annotation_fragments() -> None:
     diffs = [
         DiffItem(

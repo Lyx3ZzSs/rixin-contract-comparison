@@ -63,6 +63,9 @@ class SigningRegionDiffBuilder:
         flags = self._change_flags(changes_attr, comparison.review_flags, change)
         original_display = self._change_display_text(change, side="original")
         compare_display = self._change_display_text(change, side="compare")
+        content_status = str(change.get("content_recognition_status") or "CONFIRMED")
+        content_reason = str(change.get("content_recognition_reason") or "")
+        content_candidates = [dict(item) for item in change.get("content_candidates") or [] if isinstance(item, dict)]
         return DiffItem(
             diff_id=generate_diff_id(index),
             diff_type=change_type,
@@ -71,12 +74,24 @@ class SigningRegionDiffBuilder:
             compare_text=compare_text,
             original_snippet=original_text,
             compare_snippet=compare_text,
-            readable_change=f"{title}：{original_display} → {compare_display}",
+            readable_change=self._change_readable_text(
+                title,
+                change,
+                original_display=original_display,
+                compare_display=compare_display,
+            ),
             source_type="signing_region",
             section_type=f"signature:{self._change_kind(changes_attr)}",
             match_method="signing_region",
             match_confidence=comparison.match_confidence,
+            match_score_details={
+                "field_key": str(change.get("field_key") or ""),
+                "change_decision": str(change.get("change_decision") or "CANDIDATE"),
+            },
             review_flags=flags,
+            content_recognition_status=content_status,
+            content_recognition_reason=content_reason,
+            content_candidates=content_candidates,
             original_evidence=original_evidence,
             compare_evidence=compare_evidence,
             original_change_ranges=[TextRange(start=0, end=len(original_text), highlight_type=change_type)]
@@ -94,6 +109,29 @@ class SigningRegionDiffBuilder:
         if residual:
             return f"主体缺失（仅残留格式文本“{residual}”）"
         return text or "空白"
+
+    @staticmethod
+    def _change_readable_text(
+        title: str,
+        change: dict,
+        *,
+        original_display: str,
+        compare_display: str,
+    ) -> str:
+        if change.get("fill_state_change") == "filled":
+            if str(change.get("field_key") or "") in {
+                "legal_representative",
+                "authorized_representative",
+                "signature",
+            }:
+                if change.get("content_recognition_reason") == "CONFLICTING_VALUE_CANDIDATES":
+                    return f"{title}：新增手写填写（内容识别需复核）"
+                suffix = "（内容识别需复核）" if change.get("content_recognition_status") == "NEEDS_REVIEW" else ""
+                return f"{title}：新增手写填写“{compare_display}”{suffix}"
+            return f"{title}字段由未填写变为填写：{compare_display}"
+        if change.get("fill_state_change") == "cleared":
+            return f"{title}字段由填写变为未填写：{original_display}"
+        return f"{title}：{original_display} → {compare_display}"
 
     @staticmethod
     def _change_kind(changes_attr: str) -> str:
@@ -118,7 +156,7 @@ class SigningRegionDiffBuilder:
         relevant = {
             "party_changes": {"SIGNING_PARTY_CHANGE", "CRITICAL_VALUE_CHANGE"},
             "column_changes": {"SIGNING_COLUMN_CHANGE"},
-            "field_changes": {"SIGNING_FIELD_CHANGE", "CRITICAL_VALUE_CHANGE"},
+            "field_changes": {"SIGNING_FIELD_CHANGE", "SIGNING_DATE_FILLED", "CRITICAL_VALUE_CHANGE"},
             "seal_changes": {"SIGNING_SEAL_CHANGE"},
             "date_changes": {"SIGNING_DATE_CHANGE", "CRITICAL_VALUE_CHANGE"},
             "signature_changes": {"SIGNING_SIGNATURE_CHANGE", "SIGNING_SIGNATURE_UNCERTAIN"},
@@ -129,7 +167,13 @@ class SigningRegionDiffBuilder:
         if changes_attr == "field_changes" and not change.get("critical"):
             relevant.discard("CRITICAL_VALUE_CHANGE")
         relevant.add("SIGNING_MATCH_LOW_CONFIDENCE")
-        return [flag for flag in dict.fromkeys(flags) if flag in relevant]
+        selected = [flag for flag in dict.fromkeys(flags) if flag in relevant]
+        if changes_attr == "field_changes" and change.get("fill_state_change") != "filled":
+            selected = [flag for flag in selected if flag != "SIGNING_DATE_FILLED"]
+        decision_reason = str(change.get("decision_reason") or "")
+        if decision_reason:
+            selected.append(decision_reason)
+        return list(dict.fromkeys(selected))
 
     @staticmethod
     def _change_evidence(
@@ -164,7 +208,11 @@ class SigningRegionDiffBuilder:
         if element is None:
             return []
         text = str(change.get(f"{side}_text") or change.get(f"{side}_residual_text") or "")
-        if change.get("change_scope") == "value" and not text:
+        if (
+            change.get("change_scope") == "value"
+            and not text
+            and change.get("content_recognition_status") != "NEEDS_REVIEW"
+        ):
             return []
         bboxes = [element.bbox]
         evidence_texts: list[str] | None = None
@@ -174,28 +222,31 @@ class SigningRegionDiffBuilder:
             date_components = element.raw_ref.get("date_components") or {}
             date_value_bbox = element.raw_ref.get("date_value_bbox")
             full_date_change = set(changed_date_components) == {"year", "month", "day"}
-            if field_key == "date" and date_value_bbox and (
-                not changed_date_components or full_date_change
-            ):
+            if field_key == "date" and date_value_bbox and (not changed_date_components or full_date_change):
                 bboxes = [BBox.model_validate(date_value_bbox)]
                 evidence_texts = [text]
             elif field_key == "date" and changed_date_components and date_component_bboxes:
-                located_components = [
-                    name for name in changed_date_components if name in date_component_bboxes
-                ]
+                located_components = [name for name in changed_date_components if name in date_component_bboxes]
                 if located_components:
-                    bboxes = [
-                        BBox.model_validate(date_component_bboxes[name]) for name in located_components
-                    ]
+                    bboxes = [BBox.model_validate(date_component_bboxes[name]) for name in located_components]
                     evidence_texts = [str(date_components.get(name) or text) for name in located_components]
             elif element.raw_ref.get("value_bboxes"):
                 bboxes = [BBox.model_validate(item) for item in element.raw_ref["value_bboxes"]]
+            elif (
+                element.raw_ref.get("display_value_bbox") and change.get("content_recognition_status") == "NEEDS_REVIEW"
+            ):
+                bboxes = [BBox.model_validate(element.raw_ref["display_value_bbox"])]
             elif element.raw_ref.get("value_bbox"):
                 bboxes = [BBox.model_validate(element.raw_ref["value_bbox"])]
+            elif field_key == "date":
+                # A value-level change must never be drawn on the field label.
+                # If extraction has no value geometry, omit the evidence box
+                # instead of presenting a misleading, precisely located diff.
+                return []
         elif change.get("change_scope") == "field" and element.raw_ref.get("field_bboxes"):
             bboxes = [BBox.model_validate(item) for item in element.raw_ref["field_bboxes"]]
         if evidence_texts is None:
-            evidence_texts = [text] * len(bboxes)
+            evidence_texts = [text or "手写填写（内容识别需复核）"] * len(bboxes)
         if change.get("change_scope") == "field" and len(element.raw_ref.get("field_segments") or []) == len(bboxes):
             evidence_texts = [str(item) for item in element.raw_ref["field_segments"]]
         return [

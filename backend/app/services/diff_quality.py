@@ -14,6 +14,7 @@ from app.models import Clause, DiffItem, DiffType, Document, EvidenceBox, TextRa
 from app.services.diff.boundary_coverage import BoundaryCoverageContext, ClauseBoundaryCoverageFilter
 from app.services.diff.range_refiner import layout_punctuation_equivalent
 from app.services.red_seal_visual import RedSealVisualInspector
+from app.services.text_evidence import EvidenceConsensusDecision, EvidenceConsensusEvaluator
 
 
 def _is_signing_contact_table_label_loss(diff: DiffItem, flags: set[str]) -> bool:
@@ -140,10 +141,15 @@ class DiffQualityProcessor:
         "trailing_scan_annotation_noise",
         "unit_separator_ocr_loss",
         "table_scan_single_character_substitution",
+        "CROSS_PAGE_FIELD_CONFIRMED",
+        "NARROW_OCR_CONTINUATION_NOISE",
+        "seal_occluded_party_label_noise",
+        "cross_source_table_text_confirmed",
     }
 
     def __init__(self) -> None:
         self.boundary_coverage_filter = ClauseBoundaryCoverageFilter()
+        self.evidence_consensus = EvidenceConsensusEvaluator()
 
     def process(
         self,
@@ -182,8 +188,155 @@ class DiffQualityProcessor:
             DiffQualityDecision(action=decision.action, diff_id=decision.diff_id, detail=decision.detail)
             for decision in boundary_decisions
         )
+        working = self._suppress_confirmed_equivalent_evidence(
+            working,
+            decisions,
+            original_document=original_document,
+            compare_document=compare_document,
+        )
+        self._apply_admission_status(
+            working,
+            decisions,
+            original_document=original_document,
+            compare_document=compare_document,
+        )
+        self._apply_content_recognition_semantics(working, decisions)
         self._propagate_text_confidence(working)
         return DiffQualityResult(diffs=working, decisions=decisions)
+
+    def _suppress_confirmed_equivalent_evidence(
+        self,
+        diffs: list[DiffItem],
+        decisions: list[DiffQualityDecision],
+        *,
+        original_document: Document | None,
+        compare_document: Document | None,
+    ) -> list[DiffItem]:
+        kept: list[DiffItem] = []
+        for diff in diffs:
+            if diff.diff_type != "MODIFY" or not diff.original_text or not diff.compare_text:
+                kept.append(diff)
+                continue
+            consensus = self.evidence_consensus.assess(diff, original_document, compare_document)
+            if consensus.verdict != "EQUIVALENT":
+                kept.append(diff)
+                continue
+            decisions.append(
+                DiffQualityDecision(
+                    action="suppressed_noise",
+                    diff_id=diff.diff_id,
+                    detail=self._consensus_detail(consensus),
+                )
+            )
+        return kept
+
+    def _apply_admission_status(
+        self,
+        diffs: list[DiffItem],
+        decisions: list[DiffQualityDecision],
+        *,
+        original_document: Document | None,
+        compare_document: Document | None,
+    ) -> None:
+        for diff in diffs:
+            flags = set(diff.review_flags) | set(diff.structural_flags)
+            critical = (
+                self._is_critical_change(diff)
+                or "CRITICAL_VALUE_CHANGE" in flags
+                or any(flag.startswith("CRITICAL_FIELD_") for flag in flags)
+            )
+            if not critical:
+                continue
+            consensus = self.evidence_consensus.assess(diff, original_document, compare_document)
+            if consensus.verdict == "DIFFERENT":
+                self._add_flag(diff, "CRITICAL_VALUE_CHANGE")
+                self._set_change_decision(diff, "CONFIRMED")
+                decisions.append(
+                    DiffQualityDecision(
+                        action="confirmed_diff",
+                        diff_id=diff.diff_id,
+                        detail=self._consensus_detail(consensus),
+                    )
+                )
+                continue
+            unreliable = bool(flags.intersection(self.ocr_quality_review_flags))
+            if consensus.verdict == "CONFLICT" or unreliable:
+                reason = (
+                    consensus.reason
+                    if consensus.reason == "CRITICAL_IDENTIFIER_SOURCE_CONFLICT"
+                    else "CRITICAL_ENTITY_SOURCE_CONFLICT"
+                    if "CRITICAL_FIELD_PARTY_ROLE_CHANGE" in flags
+                    else "CRITICAL_NUMERIC_SOURCE_CONFLICT"
+                )
+                self._add_flag(diff, reason)
+                diff.quality_status = "NEEDS_REVIEW"
+                self._set_change_decision(diff, "NEEDS_REVIEW")
+                detail = self._consensus_detail(consensus)
+                detail["reason"] = reason
+                detail["reliability_flags"] = sorted(flags.intersection(self.ocr_quality_review_flags))
+                decisions.append(DiffQualityDecision(action="review_required", diff_id=diff.diff_id, detail=detail))
+                continue
+            self._set_change_decision(diff, "CONFIRMED")
+            decisions.append(
+                DiffQualityDecision(
+                    action="confirmed_diff",
+                    diff_id=diff.diff_id,
+                    detail={
+                        "reason": "RELIABLE_EXTRACTION_DIFFERENCE",
+                        "verdict": consensus.verdict,
+                        "sources": sorted(
+                            {
+                                evidence.method
+                                for evidence in [*diff.original_evidence, *diff.compare_evidence]
+                                if evidence.method
+                            }
+                        ),
+                    },
+                )
+            )
+
+    @staticmethod
+    def _set_change_decision(diff: DiffItem, decision: str) -> None:
+        diff.match_score_details = {**diff.match_score_details, "change_decision": decision}
+
+    @staticmethod
+    def _apply_content_recognition_semantics(
+        diffs: list[DiffItem],
+        decisions: list[DiffQualityDecision],
+    ) -> None:
+        for diff in diffs:
+            if (
+                diff.source_type != "signing_region"
+                or diff.diff_type not in {"ADD", "DELETE"}
+                or diff.content_recognition_status != "NEEDS_REVIEW"
+                or diff.match_score_details.get("change_decision") != "CONFIRMED"
+                or not diff.content_candidates
+            ):
+                continue
+            diff.quality_status = "NORMAL"
+            if "CONTENT_RECOGNITION_NEEDS_REVIEW" not in diff.review_flags:
+                diff.review_flags.append("CONTENT_RECOGNITION_NEEDS_REVIEW")
+            decisions.append(
+                DiffQualityDecision(
+                    action="confirmed_change_content_review",
+                    diff_id=diff.diff_id,
+                    detail={
+                        "reason": diff.content_recognition_reason or "CONTENT_RECOGNITION_NEEDS_REVIEW",
+                        "change_decision": "CONFIRMED",
+                        "content_recognition_status": "NEEDS_REVIEW",
+                        "content_candidates": diff.content_candidates,
+                    },
+                )
+            )
+
+    @staticmethod
+    def _consensus_detail(consensus: EvidenceConsensusDecision) -> dict[str, Any]:
+        return {
+            "reason": consensus.reason,
+            "verdict": consensus.verdict,
+            "sources": list(consensus.sources),
+            **consensus.detail,
+        }
 
     def _dedupe_cross_source(
         self,
@@ -533,6 +686,18 @@ class DiffQualityProcessor:
         original_document: Document | None = None,
         compare_document: Document | None = None,
     ) -> str:
+        if "CROSS_PAGE_FIELD_CONFIRMED" in diff.review_flags:
+            return "CROSS_PAGE_FIELD_CONFIRMED"
+        if "NARROW_OCR_CONTINUATION_NOISE" in diff.review_flags:
+            return "NARROW_OCR_CONTINUATION_NOISE"
+        if self._looks_like_seal_occluded_party_label_noise(diff):
+            return "seal_occluded_party_label_noise"
+        if self._looks_like_cross_source_table_text_confirmed(
+            diff,
+            original_document=original_document,
+            compare_document=compare_document,
+        ):
+            return "cross_source_table_text_confirmed"
         if self._looks_like_cover_annotation_noise(diff):
             return "cover_annotation_noise"
         if {
@@ -609,6 +774,186 @@ class DiffQualityProcessor:
         if diff.source_type == "clause" and self._looks_like_short_symbol_noise(diff):
             return "short_symbol_noise"
         return ""
+
+    @staticmethod
+    def _looks_like_seal_occluded_party_label_noise(diff: DiffItem) -> bool:
+        if diff.source_type != "table" or diff.diff_type != "MODIFY":
+            return False
+        flags = set(diff.review_flags) | set(diff.structural_flags)
+        if not flags.intersection({"SEAL_OR_SIGNATURE_RISK", "PAGE_UNRELIABLE", "OCR_REMEDIATION_PLANNED"}):
+            return False
+        left = re.sub(r"\s+", "", unicodedata.normalize("NFKC", diff.original_text or ""))
+        right = re.sub(r"\s+", "", unicodedata.normalize("NFKC", diff.compare_text or ""))
+        short, long = sorted((left, right), key=len)
+        if short not in {"甲方", "乙方", "丙方", "丁方"}:
+            return False
+        return len(long) <= len(short) + 2 and long[0] == short[0] and long[-1] == "方"
+
+    @classmethod
+    def _looks_like_cross_source_table_text_confirmed(
+        cls,
+        diff: DiffItem,
+        *,
+        original_document: Document | None,
+        compare_document: Document | None,
+    ) -> bool:
+        if diff.source_type != "table" or diff.diff_type not in {"ADD", "DELETE", "MODIFY"}:
+            return False
+        candidates: list[tuple[str, str, Document | None, list[EvidenceBox]]] = []
+        if diff.diff_type == "ADD":
+            candidates.append((diff.compare_text, "", original_document, diff.compare_evidence))
+        elif diff.diff_type == "DELETE":
+            candidates.append((diff.original_text, "", compare_document, diff.original_evidence))
+        else:
+            candidates.extend(
+                [
+                    (diff.compare_text, diff.original_text, original_document, diff.original_evidence),
+                    (diff.original_text, diff.compare_text, compare_document, diff.compare_evidence),
+                ]
+            )
+        for present_text, rejected_text, missing_document, evidence in candidates:
+            if cls._document_supports_table_text(
+                present_text,
+                rejected_text=rejected_text,
+                document=missing_document,
+                evidences=evidence,
+                title=diff.title,
+            ):
+                return True
+        return False
+
+    @classmethod
+    def _document_supports_table_text(
+        cls,
+        text: str,
+        *,
+        rejected_text: str,
+        document: Document | None,
+        evidences: list[EvidenceBox],
+        title: str,
+    ) -> bool:
+        if not text or document is None:
+            return False
+        page_numbers = {item.page_no for item in evidences}
+        if not page_numbers and "封面" in (title or ""):
+            page_numbers = {1}
+        target = cls._table_text_key(text)
+        rejected = cls._table_text_key(rejected_text)
+        if not target or not page_numbers:
+            return False
+
+        # The parsed document is an independent layout/OCR source.  Restrict
+        # short-value recovery to the same page and geometry so a year or party
+        # label elsewhere on the page cannot accidentally prove equivalence.
+        for page in document.pages:
+            if page.page_no not in page_numbers:
+                continue
+            for block in page.blocks:
+                block_key = cls._table_text_key(block.text)
+                if target not in block_key or (rejected and rejected in block_key):
+                    continue
+                if len(target) >= 8 or cls._block_overlaps_evidence(block.bbox, evidences, page.page_no):
+                    return True
+
+        pdf_path = Path(document.path or "")
+        if not pdf_path.is_file():
+            return False
+        try:
+            with fitz.open(pdf_path) as pdf:
+                for page_no in page_numbers:
+                    if not 1 <= page_no <= len(pdf):
+                        continue
+                    page = pdf[page_no - 1]
+                    native_key = cls._table_text_key(page.get_text())
+                    if rejected and rejected in native_key:
+                        continue
+                    if len(target) >= 8 and (
+                        target in native_key or cls._table_tokens_in_order(text, page.get_text())
+                    ):
+                        return True
+                    if len(target) < 8 and (
+                        cls._short_native_word_overlaps(page, target, evidences)
+                        or cls._short_native_phrase_overlaps(page, target, evidences)
+                    ):
+                        return True
+        except Exception:
+            return False
+        return False
+
+    @staticmethod
+    def _block_overlaps_evidence(bbox: Any, evidences: list[EvidenceBox], page_no: int) -> bool:
+        center_x = (bbox.x0 + bbox.x1) / 2
+        center_y = (bbox.y0 + bbox.y1) / 2
+        return any(
+            item.page_no == page_no
+            and item.bbox.x0 - 16 <= center_x <= item.bbox.x1 + 16
+            and item.bbox.y0 - 16 <= center_y <= item.bbox.y1 + 16
+            for item in evidences
+        )
+
+    @classmethod
+    def _table_tokens_in_order(cls, text: str, native_text: str) -> bool:
+        tokens = [cls._table_text_key(item) for item in re.split(r"[|｜\s]+", text or "")]
+        tokens = [item for item in tokens if len(item) >= 2]
+        if len(tokens) < 2:
+            return False
+        native = cls._table_text_key(native_text)
+        position = 0
+        for token in tokens:
+            found = native.find(token, position)
+            if found < 0:
+                return False
+            position = found + len(token)
+        return True
+
+    @staticmethod
+    def _table_text_key(text: str) -> str:
+        return re.sub(r"[\s|｜:：,，。；;（）()]+", "", unicodedata.normalize("NFKC", text or "")).casefold()
+
+    @classmethod
+    def _short_native_word_overlaps(
+        cls,
+        page: fitz.Page,
+        target: str,
+        evidences: list[EvidenceBox],
+    ) -> bool:
+        relevant = [item for item in evidences if item.page_no == page.number + 1]
+        if not relevant:
+            return False
+        for x0, y0, x1, y1, text, *_ in page.get_text("words"):
+            if cls._table_text_key(str(text)) != target:
+                continue
+            center_x = (float(x0) + float(x1)) / 2
+            center_y = (float(y0) + float(y1)) / 2
+            if any(
+                evidence.bbox.x0 - 12 <= center_x <= evidence.bbox.x1 + 12
+                and evidence.bbox.y0 - 12 <= center_y <= evidence.bbox.y1 + 12
+                for evidence in relevant
+            ):
+                return True
+        return False
+
+    @classmethod
+    def _short_native_phrase_overlaps(
+        cls,
+        page: fitz.Page,
+        target: str,
+        evidences: list[EvidenceBox],
+    ) -> bool:
+        relevant = [item for item in evidences if item.page_no == page.number + 1]
+        if not relevant:
+            return False
+        for evidence in relevant:
+            words = [
+                (float(x0), float(y0), str(text))
+                for x0, y0, x1, y1, text, *_ in page.get_text("words")
+                if evidence.bbox.x0 - 24 <= (float(x0) + float(x1)) / 2 <= evidence.bbox.x1 + 24
+                and evidence.bbox.y0 - 16 <= (float(y0) + float(y1)) / 2 <= evidence.bbox.y1 + 16
+            ]
+            phrase = "".join(item[2] for item in sorted(words, key=lambda item: (round(item[1] / 4), item[0])))
+            if target in cls._table_text_key(phrase):
+                return True
+        return False
 
     @staticmethod
     def _is_layout_punctuation_equivalent_clause_change(diff: DiffItem) -> bool:
@@ -1612,7 +1957,13 @@ class DiffQualityProcessor:
         for text in self._changed_evidence_texts_near_page_edge(diff):
             compact = self._compact(text)
             if compact and len(compact) <= 4 and not self.business_token_pattern.search(compact):
-                updated = updated.replace(text, "")
+                if compact in {"/", "／"}:
+                    # A slash can also be meaningful inside a title.  Edge
+                    # evidence for an empty form line may remove only that
+                    # standalone line, never every slash in the clause.
+                    updated = re.sub(rf"(?m)^\s*{re.escape(text)}\s*$\n?", "", updated)
+                else:
+                    updated = updated.replace(text, "")
         updated = updated.strip()
         if not updated or updated == changed:
             return False

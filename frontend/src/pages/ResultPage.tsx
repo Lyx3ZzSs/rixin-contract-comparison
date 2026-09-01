@@ -38,7 +38,13 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
   const axisMarkers = useMemo(() => buildAxisMarkers(auditItems), [auditItems]);
   const auditStats = useMemo(() => buildAuditStats(auditItems), [auditItems]);
   const filteredAuditItems = useMemo(
-    () => sortAuditItems(diffFilter === "ALL" ? auditItems : auditItems.filter((item) => item.type === diffFilter)),
+    () => sortAuditItems(
+      diffFilter === "ALL"
+        ? auditItems
+        : diffFilter === "NEEDS_REVIEW"
+          ? auditItems.filter((item) => item.qualityStatus === "NEEDS_REVIEW")
+          : auditItems.filter((item) => item.qualityStatus !== "NEEDS_REVIEW" && item.type === diffFilter),
+    ),
     [auditItems, diffFilter],
   );
 
@@ -354,13 +360,14 @@ export function ResultPage({ taskId, onBack, accessToken = "" }: ResultPageProps
   );
 }
 
-type DiffFilter = "ALL" | DiffType;
+type DiffFilter = "ALL" | "NEEDS_REVIEW" | DiffType;
 
 interface DiffStats {
   all: number;
   add: number;
   delete: number;
   modify: number;
+  needsReview: number;
 }
 
 interface AxisMarkerItem {
@@ -384,6 +391,9 @@ interface AuditChangeItem {
   reviewStatus: ReviewStatus;
   reviewComment: string;
   qualityStatus: DiffItem["quality_status"];
+  contentRecognitionStatus: "CONFIRMED" | "NEEDS_REVIEW";
+  contentRecognitionReason: string;
+  contentCandidates: Record<string, unknown>[];
   reviewFlags: string[];
   ocrBadge: { className: string; label: string } | null;
   remediationBadge: { className: string; label: string } | null;
@@ -503,6 +513,9 @@ function toAuditChangeItem(
     reviewStatus: item.review_status,
     reviewComment: item.review_comment,
     qualityStatus: item.quality_status,
+    contentRecognitionStatus: item.content_recognition_status ?? "CONFIRMED",
+    contentRecognitionReason: item.content_recognition_reason ?? "",
+    contentCandidates: item.content_candidates ?? [],
     reviewFlags: item.review_flags,
     ocrBadge: item.ocr_context.affected ? { className: "needs-review", label: "OCR 质量风险" } : null,
     remediationBadge: remediationBadgeForItem(item),
@@ -560,6 +573,10 @@ function auditGroup(item: Pick<AuditItem, "source_type" | "section_type" | "revi
 function buildAuditStats(items: AuditChangeItem[]): DiffStats {
   const stats = items.reduce(
     (nextStats, item) => {
+      if (item.qualityStatus === "NEEDS_REVIEW") {
+        nextStats.needsReview += 1;
+        return nextStats;
+      }
       if (item.type === "ADD") {
         nextStats.add += 1;
       } else if (item.type === "DELETE") {
@@ -569,7 +586,7 @@ function buildAuditStats(items: AuditChangeItem[]): DiffStats {
       }
       return nextStats;
     },
-    { all: 0, add: 0, delete: 0, modify: 0 },
+    { all: 0, add: 0, delete: 0, modify: 0, needsReview: 0 },
   );
   stats.all = items.length;
   return stats;
@@ -636,9 +653,10 @@ function AuditPanel({
 }) {
   const statItems: Array<{ filter: DiffFilter; label: string; value: number }> = [
     { filter: "ALL", label: "全部", value: stats.all },
-    { filter: "DELETE", label: "删除", value: stats.delete },
-    { filter: "ADD", label: "新增", value: stats.add },
-    { filter: "MODIFY", label: "修改", value: stats.modify },
+    { filter: "DELETE", label: "确定删除", value: stats.delete },
+    { filter: "ADD", label: "确定新增", value: stats.add },
+    { filter: "MODIFY", label: "确定修改", value: stats.modify },
+    { filter: "NEEDS_REVIEW", label: "待复核", value: stats.needsReview },
   ];
   const hiddenTabIndex = isOpen ? undefined : -1;
 
@@ -745,7 +763,9 @@ function AuditDiffCard({
         onClick={() => onSelect(item)}
       >
         <span className="audit-card-badges">
-          <span className={`audit-type-badge ${item.type.toLowerCase()}`}>{diffTypeLabel(item.type)}</span>
+          <span className={`audit-type-badge ${item.type.toLowerCase()}`}>
+            {item.qualityStatus === "NEEDS_REVIEW" ? `疑似${diffTypeLabel(item.type)}` : diffTypeLabel(item.type)}
+          </span>
           <span className={`audit-group-badge ${item.group.toLowerCase()}`}>{auditGroupLabels[item.group]}</span>
           <span className={`audit-review-badge ${item.reviewStatus.toLowerCase()}`}>
             {reviewStatusLabel(item.reviewStatus)}
@@ -755,6 +775,11 @@ function AuditDiffCard({
               {badge.label}
             </span>
           ))}
+          {item.contentRecognitionStatus === "NEEDS_REVIEW" ? (
+            <span className="audit-quality-badge needs-review" title={contentRecognitionTitle(item)}>
+              内容识别待复核
+            </span>
+          ) : null}
           {item.ocrBadge ? (
             <span className={`audit-quality-badge ${item.ocrBadge.className}`}>{item.ocrBadge.label}</span>
           ) : null}
@@ -862,7 +887,18 @@ function diffTypeLabel(type: DiffFilter): string {
   if (type === "MODIFY") {
     return "修改";
   }
+  if (type === "NEEDS_REVIEW") {
+    return "待复核";
+  }
   return "全部";
+}
+
+function contentRecognitionTitle(item: AuditChangeItem): string {
+  const candidates = item.contentCandidates
+    .map((candidate) => String(candidate.text ?? candidate.value ?? "").trim())
+    .filter(Boolean);
+  const suffix = candidates.length > 0 ? `；候选：${Array.from(new Set(candidates)).join(" / ")}` : "";
+  return `${item.contentRecognitionReason || "内容识别来源不一致"}${suffix}`;
 }
 
 function compactText(value: string): string {

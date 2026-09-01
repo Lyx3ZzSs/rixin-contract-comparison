@@ -12,6 +12,7 @@ AuditContextScope = Literal["ITEM", "DIFF", "NONE"]
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
+ContentRecognitionStatus = Literal["CONFIRMED", "NEEDS_REVIEW"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
 OcrQualityStatus = Literal[
     "OK",
@@ -157,6 +158,9 @@ class AuditItemResponse(BaseModel):
     compare_evidence: list[EvidenceBoxResponse] = Field(default_factory=list)
     evidence_state: Literal["LOCATED", "UNLOCATED"] = "UNLOCATED"
     quality_status: DiffQualityStatus = "NORMAL"
+    content_recognition_status: ContentRecognitionStatus = "CONFIRMED"
+    content_recognition_reason: str = ""
+    content_candidates: list[dict[str, Any]] = Field(default_factory=list)
     structural_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     text_confidence: float | None = None
@@ -276,6 +280,9 @@ class CompareDiffResponse(BaseModel):
     structural_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     quality_status: DiffQualityStatus = "NORMAL"
+    content_recognition_status: ContentRecognitionStatus = "CONFIRMED"
+    content_recognition_reason: str = ""
+    content_candidates: list[dict[str, Any]] = Field(default_factory=list)
     text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     merged_sources: list[str] = Field(default_factory=list)
     review_status: ReviewStatus = "UNREVIEWED"

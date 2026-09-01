@@ -7,6 +7,8 @@ import fitz
 from app.models import BBox, Document, Page, TextBlock
 from app.services.audit_summary import build_audit_items
 from app.services.cover.facade import CoverMetadataComparator
+from app.services.cover.comparator import _native_pdf_field_values
+from app.services.diff_quality import DiffQualityProcessor
 
 
 def _block(
@@ -208,6 +210,73 @@ def test_cover_title_missing_from_ocr_is_not_reported_when_present_in_opposite_b
     diffs = CoverMetadataComparator().build_diffs(original, compare)
 
     assert [diff.title for diff in diffs] == ["封面字段：合同编号（甲方）"]
+
+
+def test_cover_party_garbled_value_uses_same_document_signing_evidence() -> None:
+    company = "辽宁新能源科技有限公司"
+    original = _multi_page_document(
+        [
+            [_block("o-cover", "甲方：□□□□", 100, 180, 480, 210)],
+            [_block("o-signing", f"甲方：{company}", 70, 650, 300, 680)],
+        ]
+    )
+    compare = _multi_page_document(
+        [
+            [_block("c-cover", f"甲方：{company}", 100, 180, 480, 210)],
+            [_block("c-signing", f"甲方：{company}", 70, 650, 300, 680)],
+        ]
+    )
+
+    raw_diffs = CoverMetadataComparator().build_diffs(original, compare)
+    result = DiffQualityProcessor().process(
+        raw_diffs,
+        original_document=original,
+        compare_document=compare,
+    )
+
+    assert "CROSS_PAGE_FIELD_CONFIRMED" in next(
+        diff for diff in raw_diffs if diff.title == "封面字段：甲方"
+    ).review_flags
+    assert not [diff for diff in result.diffs if diff.title == "封面字段：甲方"]
+    assert any(
+        item.detail.get("reason") == "CROSS_PAGE_FIELD_CONFIRMED" for item in result.decisions
+    )
+
+
+def test_cover_party_real_change_is_not_hidden_by_cross_page_evidence() -> None:
+    original_company = "辽宁新能源科技有限公司"
+    compare_company = "铁岭新能源科技有限公司"
+    original = _multi_page_document(
+        [
+            [_block("o-cover", "甲方：□□□□", 100, 180, 480, 210)],
+            [_block("o-signing", f"甲方：{original_company}", 70, 650, 300, 680)],
+        ]
+    )
+    compare = _multi_page_document(
+        [
+            [_block("c-cover", f"甲方：{compare_company}", 100, 180, 480, 210)],
+            [_block("c-signing", f"甲方：{compare_company}", 70, 650, 300, 680)],
+        ]
+    )
+
+    diffs = CoverMetadataComparator().build_diffs(original, compare)
+    party_diff = next(diff for diff in diffs if diff.title == "封面字段：甲方")
+
+    assert party_diff.diff_type == "MODIFY"
+    assert party_diff.original_text == "□□□□"
+    assert party_diff.compare_text == compare_company
+
+
+def test_cover_blank_date_uses_same_page_native_text_layer_support(tmp_path: Path) -> None:
+    original_path = tmp_path / "original.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=597, height=819)
+    page.insert_text((120, 680), "签订日期：2026年 月 日", fontname="china-s", fontsize=12)
+    pdf.save(original_path)
+    pdf.close()
+    values = _native_pdf_field_values(str(original_path))
+
+    assert values["sign_date"] == {"2026年月日"}
 
 
 def test_cover_title_missing_from_ocr_is_not_reported_when_present_in_opposite_native_pdf_text(tmp_path: Path) -> None:

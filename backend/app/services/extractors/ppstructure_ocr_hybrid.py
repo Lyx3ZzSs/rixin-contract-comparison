@@ -23,6 +23,7 @@ from app.models import (
     PageLayoutQualityReport,
     ParseWarningDetail,
     TextBlock,
+    TextSourceEvidence,
 )
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.ppocrv5 import PPOCRV5Extractor
@@ -406,8 +407,45 @@ class PPStructureOCRHybridExtractor:
                 "layout_match_status": decision.status,
                 "layout_match_reason": decision.reason,
                 "source": ocr_block.source or "ppocrv5_layout_matched",
+                "source_evidence": self._paired_text_evidence(ocr_block, matched),
             }
         )
+
+    @staticmethod
+    def _paired_text_evidence(ocr_block: TextBlock, structure_block: TextBlock) -> list[TextSourceEvidence]:
+        evidence = list(ocr_block.source_evidence)
+        if not evidence and (ocr_block.text or "").strip():
+            evidence.append(
+                TextSourceEvidence(
+                    source="ppocrv5",
+                    raw_text=ocr_block.text,
+                    page_no=ocr_block.page_no,
+                    bbox=ocr_block.bbox,
+                    confidence=ocr_block.confidence,
+                )
+            )
+        if (structure_block.text or "").strip():
+            evidence.append(
+                TextSourceEvidence(
+                    source="ppstructure",
+                    raw_text=structure_block.text,
+                    page_no=structure_block.page_no,
+                    bbox=structure_block.bbox,
+                    confidence=structure_block.confidence,
+                )
+            )
+        unique: dict[tuple[str, str, float, float, float, float], TextSourceEvidence] = {}
+        for item in evidence:
+            key = (
+                item.source,
+                item.raw_text,
+                round(item.bbox.x0, 2),
+                round(item.bbox.y0, 2),
+                round(item.bbox.x1, 2),
+                round(item.bbox.y1, 2),
+            )
+            unique.setdefault(key, item)
+        return list(unique.values())
 
     def _best_structure_match(self, bbox: BBox, structure_blocks: list[TextBlock]) -> TextBlock | None:
         probe = TextBlock(block_id="probe", page_no=1, text="", bbox=bbox)

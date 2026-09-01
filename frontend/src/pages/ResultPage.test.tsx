@@ -253,6 +253,12 @@ const mockDiffs: DiffItem[] = [
     compare_snippet: "新增发票条款",
     readable_change: "新增发票条款。",
     source_type: "metadata",
+    content_recognition_status: "NEEDS_REVIEW",
+    content_recognition_reason: "ALIGNED_SUFFIX_CANDIDATE",
+    content_candidates: [
+      { source: "ppocrv5", value: "伟" },
+      { source: "ppstructure", value: "郑伟" },
+    ],
     review_flags: ["SEAL_REVIEW"],
     review_status: "UNREVIEWED",
     original_evidence: [],
@@ -340,6 +346,9 @@ function backendAuditItems(diffs: DiffItem[]): AuditItem[] {
         compare_evidence: compare,
         evidence_state: located ? "LOCATED" as const : "UNLOCATED" as const,
         quality_status: located ? (diff.quality_status ?? "NORMAL") : "NEEDS_REVIEW" as const,
+        content_recognition_status: diff.content_recognition_status ?? "CONFIRMED",
+        content_recognition_reason: diff.content_recognition_reason ?? "",
+        content_candidates: diff.content_candidates ?? [],
         structural_flags: [],
         review_flags: located ? (diff.review_flags ?? []) : [...(diff.review_flags ?? []), "EVIDENCE_UNLOCATED"],
         text_confidence: diff.text_confidence,
@@ -1080,9 +1089,10 @@ describe("ResultPage", () => {
     await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
 
     expect(screen.getByRole("button", { name: "筛选全部差异" })).toHaveTextContent("5");
-    expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("2");
-    expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("2");
-    expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "筛选确定删除差异" })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "筛选确定新增差异" })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "筛选确定修改差异" })).toHaveTextContent("0");
+    expect(screen.getByRole("button", { name: "筛选待复核差异" })).toHaveTextContent("3");
     expect(screen.getByLabelText("正文差异")).toBeInTheDocument();
     expect(screen.getByLabelText("结构与质量提示")).toBeInTheDocument();
     expect(await screen.findAllByText("低置信 OCR")).not.toHaveLength(0);
@@ -1094,24 +1104,27 @@ describe("ResultPage", () => {
     expect(screen.getAllByText("证据不可靠")).not.toHaveLength(0);
     expect(await screen.findAllByText("处置规划")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "审计定位改动 diff-4:DELETE" })).toHaveTextContent("证据未定位");
-    await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
+    await user.click(screen.getByRole("button", { name: "筛选确定新增差异" }));
 
-    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:ADD" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "审计定位改动 diff-2:ADD" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "审计定位改动 diff-2:ADD" })).toHaveTextContent("内容识别待复核");
+    expect(screen.getByText("内容识别待复核")).toHaveAttribute(
+      "title",
+      expect.stringContaining("郑伟"),
+    );
+    expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-3:DELETE" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:ADD" })).toHaveTextContent("新增");
-
     const addCard = screen.getByRole("button", { name: "审计定位改动 diff-2:ADD" });
     await user.click(addCard);
 
     expect(addCard.closest(".audit-diff-card")).toHaveClass("active");
 
-    await user.click(screen.getByRole("button", { name: "筛选修改差异" }));
+    await user.click(screen.getByRole("button", { name: "筛选待复核差异" }));
 
-    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:MODIFY" })).toHaveTextContent("修改");
+    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:MODIFY" })).toHaveTextContent("疑似修改");
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-2:ADD" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "筛选删除差异" }));
+    await user.click(screen.getByRole("button", { name: "筛选确定删除差异" }));
 
     expect(screen.getByRole("button", { name: "审计定位改动 diff-3:DELETE" })).toHaveTextContent("删除");
     expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
@@ -1141,9 +1154,9 @@ describe("ResultPage", () => {
     await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
 
     expect(screen.getByRole("button", { name: "筛选全部差异" })).toHaveTextContent("1");
-    expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("0");
-    expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("0");
-    expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "筛选确定新增差异" })).toHaveTextContent("0");
+    expect(screen.getByRole("button", { name: "筛选确定删除差异" })).toHaveTextContent("0");
+    expect(screen.getByRole("button", { name: "筛选确定修改差异" })).toHaveTextContent("1");
     const modifyCard = screen.getByRole("button", { name: "审计定位改动 diff-preamble-title:MODIFY" });
     expect(modifyCard).toHaveTextContent(
       "原文：国能长源随州发电有限公司随县分公司 2026年新能源场站功率预测系统授权服务合同",
@@ -1186,9 +1199,9 @@ describe("ResultPage", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
 
-    expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("0");
-    expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("0");
-    expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "筛选确定新增差异" })).toHaveTextContent("0");
+    expect(screen.getByRole("button", { name: "筛选确定删除差异" })).toHaveTextContent("0");
+    expect(screen.getByRole("button", { name: "筛选确定修改差异" })).toHaveTextContent("1");
     const modifyCard = screen.getByRole("button", { name: "审计定位改动 diff-signing-party:MODIFY" });
     expect(modifyCard).toHaveTextContent("原文：甲方：国能长源随州发电有限公司随县分公司");
     expect(modifyCard).toHaveTextContent("修改后：甲方：国能长源随州发电有限公司");

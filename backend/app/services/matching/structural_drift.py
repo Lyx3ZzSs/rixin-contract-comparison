@@ -308,6 +308,9 @@ class StructuralDriftMixin:
                         ),
                         "neighbor_score": 0.0,
                         "contained_in_matched_compare": 1.0,
+                        "contained_heading_recovery": (
+                            1.0 if self._is_short_numbered_heading(left, left.text) else 0.0
+                        ),
                     },
                     match_confidence="MEDIUM",
                 )
@@ -328,7 +331,14 @@ class StructuralDriftMixin:
                 continue
             span = None
             for needle_text in self._coverage_texts(needle):
-                span = self._find_contained_span(needle_text, right.text)
+                short_heading = self._is_short_numbered_heading(needle, needle_text)
+                if short_heading and not self._short_heading_position_compatible(needle, right):
+                    continue
+                span = self._find_contained_span(
+                    needle_text,
+                    right.text,
+                    allow_short_heading=short_heading,
+                )
                 if span is not None:
                     break
             if span is None or self._overlaps_existing(span, consumed_compare_spans.get(right.clause_id, [])):
@@ -356,7 +366,13 @@ class StructuralDriftMixin:
 
     def _coverage_texts(self, clause: Clause) -> list[str]:
         texts = [*self._containment_texts(clause), *self._paragraph_sentence_fragments(clause.text)]
-        return list(dict.fromkeys(text for text in texts if len(self._search_text(text)[0]) >= 8))
+        return list(
+            dict.fromkeys(
+                text
+                for text in texts
+                if len(self._search_text(text)[0]) >= 8 or self._is_short_numbered_heading(clause, text)
+            )
+        )
 
     def _paragraph_sentence_fragments(self, text: str) -> list[str]:
         fragments: list[str] = []
@@ -391,7 +407,13 @@ class StructuralDriftMixin:
                 best = (clause, start, end, score)
         return best
 
-    def _find_contained_span(self, needle_text: str, haystack_text: str) -> tuple[int, int, float] | None:
+    def _find_contained_span(
+        self,
+        needle_text: str,
+        haystack_text: str,
+        *,
+        allow_short_heading: bool = False,
+    ) -> tuple[int, int, float] | None:
         needle, _ = self._search_text(needle_text)
         haystack, haystack_map = self._search_text(haystack_text)
         if not needle or not haystack:
@@ -400,7 +422,7 @@ class StructuralDriftMixin:
             return None
 
         exact = haystack.find(needle)
-        min_exact_len = 8 if len(needle) < 20 else 1
+        min_exact_len = 4 if allow_short_heading else 8 if len(needle) < 20 else 1
         if exact >= 0 and len(needle) >= min_exact_len:
             return self._source_span(exact, exact + len(needle), haystack_map, 100.0)
 
@@ -427,6 +449,8 @@ class StructuralDriftMixin:
         compact_len = len(self._search_text(clause.text)[0])
         if compact_len >= 20:
             return True
+        if compact_len >= 4 and self._is_short_numbered_heading(clause, clause.text):
+            return True
         if compact_len < 8:
             return False
         return bool(
@@ -434,6 +458,31 @@ class StructuralDriftMixin:
             or len(self.normalizer.normalize_for_match(clause.title)) >= 2
             or self._has_segmentation_flag(clause)
         )
+
+    def _is_short_numbered_heading(self, clause: Clause, text: str) -> bool:
+        compact = unicodedata.normalize("NFKC", text or "").strip()
+        search_text = self._search_text(compact)[0]
+        if not 4 <= len(search_text) < 20:
+            return False
+        if not (clause.title or clause.clause_no):
+            return False
+        return bool(
+            re.fullmatch(
+                r"(?:第?[一二三四五六七八九十百\d]+(?:章|节|条)?\s*[、.．:：]?|"
+                r"[（(][一二三四五六七八九十百\d]+[）)])\s*"
+                r"[^\n。；;，,]{2,16}",
+                compact,
+            )
+        )
+
+    @staticmethod
+    def _short_heading_position_compatible(left: Clause, right: Clause) -> bool:
+        if left.page_numbers and right.page_numbers:
+            if min(abs(a - b) for a in left.page_numbers for b in right.page_numbers) > 1:
+                return False
+        if left.order_index and right.order_index and abs(left.order_index - right.order_index) > 3:
+            return False
+        return True
 
     @staticmethod
     def _has_segmentation_flag(clause: Clause) -> bool:

@@ -993,6 +993,37 @@ class TestSummaryStage:
 
         assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"]
 
+    def test_final_dedupe_aggregates_seal_subregions_on_same_page(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path)
+        first = DiffItem(
+            diff_id="D010",
+            diff_type="ADD",
+            source_type="seal",
+            title="印章区域（第3页）",
+            compare_text="合同专用章",
+            compare_evidence=[
+                EvidenceBox(page_no=3, bbox=BBox(x0=100, y0=200, x1=220, y1=320), method="seal_region")
+            ],
+        )
+        second = DiffItem(
+            diff_id="D011",
+            diff_type="ADD",
+            source_type="seal",
+            title="印章区域（第3页）",
+            compare_text="公司章",
+            compare_evidence=[
+                EvidenceBox(page_no=3, bbox=BBox(x0=540, y0=350, x1=590, y1=450), method="seal_region")
+            ],
+        )
+        ctx.diffs = [first, second]
+
+        SummaryStage().execute(ctx)
+
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010"]
+        assert len(ctx.task.diffs[0].compare_evidence) == 2
+        assert ctx.task.diffs[0].quality_status == "NEEDS_REVIEW"
+        assert "FINAL_DEDUPE_FIELD_CONFLICT" in ctx.task.diffs[0].review_flags
+
     def test_different_id_final_dedupe_never_text_merges_unlocated_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         ctx.diffs = [

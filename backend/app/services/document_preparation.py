@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -93,6 +94,17 @@ class DocumentPreparer:
     decimal_clause_heading_pattern = re.compile(r"^\s*(\d+(?:\.\d+){1,3})[、.．]?\s*(.+)$")
     integer_clause_heading_pattern = re.compile(r"^\s*\d+[、.．]\s*(.+)$")
     date_like_pattern = re.compile(r"^\s*(?:19|20)\d{2}[./年-]\d{1,2}(?:[./月-]\d{1,2}日?)?\s*$")
+    parenthesized_clause_heading_pattern = re.compile(
+        r"^\s*[（(][一二三四五六七八九十百千万0-9]+[）)]\s*(?P<body>.+)$"
+    )
+    strong_clause_business_pattern = re.compile(
+        r"事故|处罚|违约|赔偿|责任|义务|付款|支付|金额|期限|验收|交付|保密|知识产权|"
+        r"终止|解除|不可抗力|争议|仲裁|诉讼|应当|应|不得|负责|承担|提供"
+    )
+    revision_artifact_pattern = re.compile(
+        r"^(?P<action>删除|插入|设置格式)\[(?P<author>[\u4e00-\u9fff·]{2,8})\]\s*[:：]\s*(?P<payload>.{0,32})$"
+    )
+    revision_format_payload_pattern = re.compile(r"^(?:突出显示|字体|字号|字形|颜色|下划线|加粗|倾斜|删除线)?$")
 
     def prepare_pair(self, original: Document, compare: Document) -> DocumentPreparationResult:
         result = DocumentPreparationResult()
@@ -135,6 +147,10 @@ class DocumentPreparer:
             compact = re.sub(r"\s+", "", block.text or "")
             if not compact:
                 continue
+            if self._is_rendered_revision_artifact(block, page):
+                block.enter_clause_compare = False
+                self._mark_role(block, side, "revision_artifact", "rendered_word_revision_artifact", result)
+                continue
             if self._is_page_number_footer(block, page, compact):
                 self._mark_role(block, side, "page_footer", "page_number_footer", result)
                 continue
@@ -160,9 +176,38 @@ class DocumentPreparer:
                 continue
             block_type = (block.block_type or "").lower()
             if block_type in {"footnote", "vision_footnote"}:
+                if self._is_strong_clause_candidate(block, page):
+                    block.block_type = "text"
+                    block.enter_clause_compare = True
+                    block.flow_role = "body"
+                    self._mark_role(block, side, "main_clause", "strong_clause_overrides_footnote", result)
+                    continue
                 near_bottom = page.height > 0 and block.bbox.y0 >= page.height * 0.90
                 role = "page_footer" if near_bottom or self.page_number_pattern.fullmatch(compact) else "body_footnote"
                 self._mark_role(block, side, role, "footnote_secondary_classification", result)
+
+    def _is_strong_clause_candidate(self, block: TextBlock, page: Page) -> bool:
+        text = unicodedata.normalize("NFKC", block.text or "").strip()
+        compact = re.sub(r"\s+", "", text)
+        if not self._looks_like_real_clause_heading(compact):
+            return False
+        if len(compact) < 12:
+            return False
+        sentence_like = bool(re.search(r"[。；;]", text)) or len(compact) >= 24
+        business_signal = bool(self.strong_clause_business_pattern.search(compact))
+        body_position = page.height <= 0 or block.bbox.y0 < page.height * 0.90
+        return sentence_like and business_signal and body_position
+
+    def _is_rendered_revision_artifact(self, block: TextBlock, page: Page) -> bool:
+        compact = unicodedata.normalize("NFKC", block.text or "").strip()
+        match = self.revision_artifact_pattern.fullmatch(compact)
+        if match is None:
+            return False
+        if match.group("action") == "设置格式":
+            return bool(self.revision_format_payload_pattern.fullmatch(match.group("payload").strip()))
+        near_comment_margin = page.width > 0 and block.bbox.x0 >= page.width * 0.72
+        narrow_block = page.width > 0 and (block.bbox.x1 - block.bbox.x0) <= page.width * 0.30
+        return near_comment_margin and narrow_block
 
     def _is_page_number_footer(self, block: TextBlock, page: Page, compact: str) -> bool:
         return bool(
@@ -180,6 +225,9 @@ class DocumentPreparer:
         decimal_match = self.decimal_clause_heading_pattern.match(compact)
         if decimal_match:
             return len(decimal_match.group(2).strip("、.．:：")) >= 4
+        parenthesized_match = self.parenthesized_clause_heading_pattern.match(compact)
+        if parenthesized_match:
+            return len(parenthesized_match.group("body").strip("、.．:：")) >= 4
         integer_match = self.integer_clause_heading_pattern.match(compact)
         return bool(integer_match and len(integer_match.group(1).strip("、.．:：")) >= 4)
 

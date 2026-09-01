@@ -537,6 +537,35 @@ def test_missing_modify_evidence_inherits_matched_clause_page_risk() -> None:
     assert summary.affected_diff_count == 1
 
 
+def test_signing_delete_inherits_unreliable_missing_compare_page() -> None:
+    diff = DiffItem(
+        diff_id="D012",
+        diff_type="DELETE",
+        source_type="signing_region",
+        title="甲方 · 签署栏",
+        original_text="甲方签署栏",
+        compare_text="",
+        original_evidence=[_evidence(2)],
+    )
+    profiles = [
+        PageOcrQualityProfile(
+            side="compare",
+            page_no=2,
+            status="UNRELIABLE",
+            score=0.6,
+            reasons=["READING_ORDER_CONFLICT", "SEAL_OR_SIGNATURE_DETECTED"],
+        )
+    ]
+
+    summary = OcrQualityProfiler().apply_to_diffs(diffs=[diff], profiles=profiles)
+
+    assert diff.quality_status == "NEEDS_REVIEW"
+    assert "PAGE_UNRELIABLE" in diff.review_flags
+    assert "READING_ORDER_RISK" in diff.review_flags
+    assert profiles[0].affected_diff_ids == ["D012"]
+    assert summary.affected_diff_count == 1
+
+
 def test_low_confidence_business_diff_needs_review() -> None:
     diff = DiffItem(
         diff_id="D002",

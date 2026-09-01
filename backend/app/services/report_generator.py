@@ -251,12 +251,14 @@ class ReportGenerator:
         return table
 
     def _summary_table(self, audit_items: list[AuditItem], styles: dict[str, ParagraphStyle]) -> Table:
-        counts = Counter(item.diff_type for item in audit_items)
+        confirmed_items = [item for item in audit_items if item.quality_status != "NEEDS_REVIEW"]
+        counts = Counter(item.diff_type for item in confirmed_items)
         items = [
             ("全部差异", len(audit_items), "#111827"),
-            ("新增", counts["ADD"], "#15804F"),
-            ("删除", counts["DELETE"], "#C9362C"),
-            ("修改", counts["MODIFY"], "#A96300"),
+            ("确定新增", counts["ADD"], "#15804F"),
+            ("确定删除", counts["DELETE"], "#C9362C"),
+            ("确定修改", counts["MODIFY"], "#A96300"),
+            ("待复核", len(audit_items) - len(confirmed_items), "#7C3AED"),
         ]
         row = []
         for label, value, color in items:
@@ -265,7 +267,7 @@ class ReportGenerator:
                 Paragraph(f'<font color="{color}" size="16"><b>{value}</b></font>', styles["Normal"]),
             ]
             row.append(cell)
-        table = Table([row], colWidths=[4.05 * cm, 4.05 * cm, 4.05 * cm, 4.05 * cm])
+        table = Table([row], colWidths=[3.24 * cm] * 5)
         table.setStyle(
             TableStyle(
                 [
@@ -361,7 +363,11 @@ class ReportGenerator:
             Paragraph("原文内容", styles["IndexHead"]),
             Paragraph("修改后内容", styles["IndexHead"]),
         ]
-        type_label = self._diff_type_label(item.diff_type)
+        type_label = (
+            f"待复核·疑似{self._diff_type_label(item.diff_type)}"
+            if item.quality_status == "NEEDS_REVIEW"
+            else self._diff_type_label(item.diff_type)
+        )
         type_color = {"ADD": "#15804F", "DELETE": "#C9362C", "MODIFY": "#A96300"}.get(item.diff_type, "#4B5563")
         page_label = self._page_label(item)
         orig_rich = self._highlighted_cell_text(
@@ -421,6 +427,13 @@ class ReportGenerator:
         section_path = " / ".join(item.section_path) if item.section_path else "未提供"
         structural_flags = "、".join(item.structural_flags) if item.structural_flags else "无"
         review_flags = "、".join(item.review_flags) if item.review_flags else "无"
+        content_candidates = " / ".join(
+            dict.fromkeys(
+                str(candidate.get("text") or candidate.get("value") or "").strip()
+                for candidate in item.content_candidates
+                if str(candidate.get("text") or candidate.get("value") or "").strip()
+            )
+        ) or "无"
         text_confidence = self._format_optional_confidence(item.text_confidence)
         match_confidence = item.match_confidence or "未提供"
         ocr_statuses = "、".join(item.ocr_context.statuses) if item.ocr_context.statuses else "未受影响"
@@ -459,6 +472,10 @@ class ReportGenerator:
             ("修改后全文", item.compare_text or "—"),
             ("证据位置", evidence_location),
             ("质量状态", item.quality_status),
+            ("变化判定", "待复核" if item.quality_status == "NEEDS_REVIEW" else "已确认"),
+            ("内容识别状态", item.content_recognition_status),
+            ("内容识别原因", item.content_recognition_reason or "无"),
+            ("内容识别候选", content_candidates),
             ("结构标记", structural_flags),
             ("审核标记", review_flags),
             ("文本置信度", text_confidence),

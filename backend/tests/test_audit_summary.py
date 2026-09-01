@@ -253,7 +253,7 @@ def test_audit_items_reclassify_legacy_modify_with_single_evidence_type() -> Non
     ]
 
 
-def test_audit_stats_count_each_audit_item() -> None:
+def test_audit_stats_separate_review_candidates_from_confirmed_type_counts() -> None:
     diffs = [
         DiffItem(
             diff_id="D001",
@@ -270,10 +270,14 @@ def test_audit_stats_count_each_audit_item() -> None:
 
     assert stats.total == 5
     assert stats.add == 2
-    assert stats.delete == 2
+    assert stats.delete == 1
     assert stats.modify == 1
+    assert stats.needs_review == 1
     assert stats.raw_diff_count == 4
-    expected_summary = "本次共识别 5 个审计点，其中新增 2 个、删除 2 个、修改 1 个；对应原始差异记录 4 条。"
+    expected_summary = (
+        "本次共识别 5 个审计点，其中确定新增 2 个、确定删除 1 个、"
+        "确定修改 1 个、待复核 1 个；对应原始差异记录 4 条。"
+    )
     assert audit_stats_summary(stats) == expected_summary
 
 

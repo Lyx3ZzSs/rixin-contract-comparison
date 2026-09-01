@@ -113,8 +113,9 @@ def test_signing_region_stage_builds_diff_and_covers_seal(monkeypatch, tmp_path:
         len(ctx.header_footer_diffs) + len(ctx.metadata_diffs) + len(ctx.table_diffs) + len(ctx.seal_diffs) + 1
     )
     assert ctx.signing_region_diffs[0].diff_id == f"D{expected_index:03d}"
-    assert ctx.seal_diffs[0].diff_id in ctx.signing_region_covered_diff_ids
-    assert ctx.seal_diffs[0].diff_id in ctx.signing_region_debug["coverage"]["covered_diff_ids"]
+    assert ctx.signing_region_diffs[0].diff_id in ctx.signing_region_covered_diff_ids
+    assert ctx.seal_diffs[0].diff_id not in ctx.signing_region_covered_diff_ids
+    assert ctx.signing_region_diffs[0].diff_id in ctx.signing_region_debug["coverage"]["covered_diff_ids"]
     assert ctx.signing_region_debug["legacy_region_fallback"] == {"original": True, "compare": True}
     assert ctx.task.debug_artifact_paths["signing_region"].endswith("signing_region.json")
 
@@ -1259,6 +1260,42 @@ def test_signing_region_stage_ignores_malformed_low_confidence_candidates() -> N
     assert all(region.region_id.startswith("LC-") for region in regions)
     assert structure.blocks == []
     assert visual_candidate["used_for_promotion"] is False
+
+
+def test_nearby_fragment_recovery_absorbs_business_field_and_refreshes_party_role() -> None:
+    page = Page(
+        page_no=13,
+        width=595,
+        height=842,
+        blocks=[
+            TextBlock(block_id="title", page_no=13, text="签字页", bbox=BBox(x0=79, y0=83, x1=117, y1=95)),
+            TextBlock(block_id="party-a", page_no=13, text="甲方", bbox=BBox(x0=80, y0=111, x1=123, y1=123)),
+            TextBlock(block_id="party-b", page_no=13, text="乙方", bbox=BBox(x0=320, y0=111, x1=363, y1=123)),
+            TextBlock(
+                block_id="right-name",
+                page_no=13,
+                text="单位名称：国能日新科技股份有限公司",
+                bbox=BBox(x0=321, y0=141, x1=521, y1=153),
+            ),
+        ],
+    )
+    signing_block = SigningBlock(
+        block_id="SB-13-1",
+        page_no=13,
+        bbox=BBox(x0=60, y0=75, x1=540, y1=560),
+        block_role=SigningBlockRole.PARTY_A,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["signing_page_context"],
+        source_block_ids=["title", "party-a"],
+        text="签字页\n甲方",
+    )
+
+    SigningRegionStage._expand_block_with_nearby_fragments(page, signing_block)
+
+    assert {"party-b", "right-name"}.issubset(signing_block.source_block_ids)
+    assert signing_block.block_role == SigningBlockRole.BOTH_PARTIES
+    assert "paired_parties" in signing_block.confidence_reasons
 
 
 def test_signing_region_stage_normalizes_string_candidate_lists_for_promotion() -> None:

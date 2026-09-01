@@ -51,6 +51,9 @@ class AuditItem:
     is_fallback: bool
     evidence_state: Literal["LOCATED", "UNLOCATED"]
     quality_status: str
+    content_recognition_status: str
+    content_recognition_reason: str
+    content_candidates: list[dict[str, object]]
     structural_flags: list[str]
     review_flags: list[str]
     text_confidence: float | None
@@ -69,6 +72,7 @@ class AuditStats:
     add: int
     delete: int
     modify: int
+    needs_review: int
     raw_diff_count: int
 
 
@@ -143,20 +147,22 @@ def normalized_audit_item_reviews(
 
 def build_audit_stats(diffs: list[DiffItem]) -> AuditStats:
     items = build_audit_items(diffs)
-    counter = Counter(item.diff_type for item in items)
+    confirmed = [item for item in items if item.quality_status != "NEEDS_REVIEW"]
+    counter = Counter(item.diff_type for item in confirmed)
     return AuditStats(
         total=len(items),
         add=counter["ADD"],
         delete=counter["DELETE"],
         modify=counter["MODIFY"],
+        needs_review=len(items) - len(confirmed),
         raw_diff_count=len(diffs),
     )
 
 
 def audit_stats_summary(stats: AuditStats) -> str:
     return (
-        f"本次共识别 {stats.total} 个审计点，其中新增 {stats.add} 个、"
-        f"删除 {stats.delete} 个、修改 {stats.modify} 个；"
+        f"本次共识别 {stats.total} 个审计点，其中确定新增 {stats.add} 个、"
+        f"确定删除 {stats.delete} 个、确定修改 {stats.modify} 个、待复核 {stats.needs_review} 个；"
         f"对应原始差异记录 {stats.raw_diff_count} 条。"
     )
 
@@ -286,6 +292,9 @@ def _audit_item(
         is_fallback=is_fallback,
         evidence_state=evidence_state,
         quality_status=quality_status,
+        content_recognition_status=diff.content_recognition_status,
+        content_recognition_reason=diff.content_recognition_reason,
+        content_candidates=[dict(item) for item in diff.content_candidates],
         structural_flags=list(diff.structural_flags),
         review_flags=review_flags,
         text_confidence=diff.text_confidence,

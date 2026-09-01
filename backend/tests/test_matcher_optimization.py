@@ -1193,6 +1193,55 @@ def test_short_unmatched_original_contained_in_matched_compare_clause_is_not_del
     assert not any(diff.diff_type == "DELETE" and diff.original_clause_id == "O002" for diff in diffs)
 
 
+def test_short_numbered_heading_merged_into_matched_block_is_covered() -> None:
+    heading = Clause(
+        clause_id="O083",
+        clause_no="二",
+        title="双方责任",
+        text="二、双方责任",
+        normalized_text=normalizer.normalize_for_diff("二、双方责任"),
+        match_text=normalizer.normalize_for_match("二、双方责任"),
+        page_numbers=[12],
+        order_index=83,
+    )
+    body_text = "甲方应提供必要的现场条件，乙方应按照约定完成技术服务。"
+    body = clause("O084", "", "甲方安全责任", body_text).model_copy(
+        update={"page_numbers": [12], "order_index": 84}
+    )
+    merged = clause("N083", "", "双方责任", f"二、双方责任\n甲方安全责任\n{body_text}").model_copy(
+        update={"page_numbers": [12], "order_index": 83}
+    )
+
+    pairs = ClauseMatcher().match([heading, body], [merged])
+    diffs = DiffEngine().build_diffs(pairs)
+    recovered = next(pair for pair in pairs if pair.original and pair.original.clause_id == "O083")
+
+    assert recovered.compare is not None
+    assert recovered.match_method == "contained_compare"
+    assert recovered.score_details["contained_heading_recovery"] == 1.0
+    assert not any(diff.diff_type == "DELETE" and diff.original_clause_id == "O083" for diff in diffs)
+
+
+def test_short_numbered_heading_delete_is_kept_when_opposite_text_is_absent() -> None:
+    heading = Clause(
+        clause_id="O083",
+        clause_no="二",
+        title="双方责任",
+        text="二、双方责任",
+        normalized_text=normalizer.normalize_for_diff("二、双方责任"),
+        match_text=normalizer.normalize_for_match("二、双方责任"),
+        page_numbers=[12],
+        order_index=83,
+    )
+    compare = clause("N083", "", "安全责任", "甲方应提供必要的现场条件。").model_copy(
+        update={"page_numbers": [12], "order_index": 83}
+    )
+
+    diffs = DiffEngine().build_diffs(ClauseMatcher().match([heading], [compare]))
+
+    assert any(diff.diff_type == "DELETE" and diff.original_clause_id == "O083" for diff in diffs)
+
+
 def test_multiple_original_clauses_merged_into_one_compare_clause_are_explicitly_matched() -> None:
     payment_text = "甲方应在收到合格发票后30日内完成付款。"
     invoice_text = "乙方应在付款前提供合法有效的增值税专用发票。"

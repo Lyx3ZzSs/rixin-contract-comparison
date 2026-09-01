@@ -173,7 +173,35 @@ class SigningBlockDetector:
         ):
             for block in self._business_only_signing_blocks(page):
                 selected.setdefault(block.block_id, block)
+        if page_role != "cover" and is_terminal_page:
+            for block in self._inline_terminal_business_signing_blocks(page):
+                selected.setdefault(block.block_id, block)
         return sorted(selected.values(), key=lambda block: (self._effective_bbox(block).y0, self._effective_bbox(block).x0))
+
+    def _inline_terminal_business_signing_blocks(self, page: Page) -> list[TextBlock]:
+        ordered = sorted(page.blocks, key=lambda block: (self._effective_bbox(block).y0, self._effective_bbox(block).x0))
+        anchors = [block for block in ordered if PARTY_LABEL_RE.search(self._compact(block.text))]
+        if not anchors:
+            return []
+        anchor_y = min(self._effective_bbox(block).y0 for block in anchors)
+        tail = [
+            block
+            for block in ordered
+            if self._effective_bbox(block).y0 >= anchor_y - 4
+            and not self._is_ignorable_for_business_only_page(block, page)
+        ]
+        text = self._compact("\n".join(block.text for block in tail))
+        signal_count = sum(bool(pattern.search(text)) for pattern in [SEAL_RE, SIGN_RE, REPRESENTATIVE_RE, DATE_LABEL_RE])
+        if not ("甲方" in text and "乙方" in text):
+            return []
+        if self._business_field_category_count(text) < 5 or signal_count < 2:
+            return []
+        return [
+            block
+            for block in tail
+            if not self._looks_like_contract_body_text(block, self._compact(block.text))
+            or self._is_short_business_value_block(block, page)
+        ]
 
     def _is_candidate(self, block: TextBlock, page: Page) -> bool:
         text = self._compact(block.text)
@@ -269,29 +297,32 @@ class SigningBlockDetector:
         selected = {block.block_id: block for block in cluster}
         current_bbox = self._raw_union([self._effective_bbox(block) for block in cluster])
         ordered_blocks = sorted(page.blocks, key=lambda block: (self._effective_bbox(block).y0, self._effective_bbox(block).x0))
-        for block in ordered_blocks:
-            if block.block_id in selected:
-                current_bbox = self._raw_union([current_bbox, self._effective_bbox(block)])
-                continue
+        changed = True
+        while changed:
+            changed = False
+            for block in ordered_blocks:
+                if block.block_id in selected:
+                    continue
 
-            bbox = self._effective_bbox(block)
-            if bbox.y0 < current_bbox.y0:
-                continue
-            if self._is_page_footer(block, page):
-                continue
-            vertical_gap = max(0.0, bbox.y0 - current_bbox.y1)
-            if vertical_gap > self._continuation_gap_for(cluster, block):
-                continue
-            if not self._horizontally_related(current_bbox, bbox, page):
-                continue
-            if not self._is_signing_continuation_block(block) and not self._is_stacked_signing_visual_continuation(
-                cluster,
-                block,
-            ):
-                continue
+                bbox = self._effective_bbox(block)
+                if bbox.y0 < current_bbox.y0:
+                    continue
+                if self._is_page_footer(block, page):
+                    continue
+                vertical_gap = max(0.0, bbox.y0 - current_bbox.y1)
+                if vertical_gap > self._continuation_gap_for(cluster, block):
+                    continue
+                if not self._horizontally_related(current_bbox, bbox, page):
+                    continue
+                if not (
+                    self._is_signing_continuation_block(block)
+                    or self._is_stacked_signing_visual_continuation(cluster, block)
+                ):
+                    continue
 
-            selected[block.block_id] = block
-            current_bbox = self._raw_union([current_bbox, bbox])
+                selected[block.block_id] = block
+                current_bbox = self._raw_union([current_bbox, bbox])
+                changed = True
 
         return sorted(selected.values(), key=lambda block: (self._effective_bbox(block).y0, self._effective_bbox(block).x0))
 

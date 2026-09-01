@@ -1,11 +1,15 @@
 import pytest
 
-from app.models import BBox, DiffItem, EvidenceBox
+from app.models import BBox, DiffItem, Document, EvidenceBox, Page, TextBlock
 from app.services.signing_region.comparator import SigningRegionComparator
 from app.services.signing_region.coverage import SigningRegionCoverageBuilder
 from app.services.signing_region.diff_builder import SigningRegionDiffBuilder
+from app.services.signing_region.extractor import SigningRegionExtractor
 from app.services.signing_region.matcher import SigningRegionMatcher
 from app.services.signing_region.models import (
+    SigningBlock,
+    SigningBlockConfidenceLevel,
+    SigningBlockRole,
     SigningElement,
     SigningElementType,
     SigningRegion,
@@ -203,6 +207,145 @@ def test_diff_builder_keeps_multiline_field_evidence_as_separate_boxes() -> None
     assert [evidence.bbox for evidence in diff.compare_evidence] == compare_boxes
 
 
+def test_diff_builder_prefers_party_value_boxes_over_cross_column_review_bbox() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original_field = _field(
+        "o-address",
+        "乙方",
+        "address",
+        "地址",
+        "北京市海淀区西三旗建材城中路27号1幢2层227号",
+    )
+    compare_field = _field("c-address", "乙方", "address", "地址", "北京市路27号1幢")
+    original_boxes = [BBox(x0=347, y0=180, x1=531, y1=194), BBox(x0=311, y0=210, x1=457, y1=226)]
+    compare_boxes = [BBox(x0=338, y0=181, x1=383, y1=198), BBox(x0=302, y0=211, x1=379, y1=228)]
+    original_field.raw_ref.update(
+        {
+            "value_bboxes": [bbox.model_dump() for bbox in original_boxes],
+            "display_value_bbox": BBox(x0=96, y0=180, x1=533, y1=226).model_dump(),
+            "content_recognition_status": "NEEDS_REVIEW",
+            "content_recognition_reason": "CONFLICTING_VALUE_CANDIDATES",
+        }
+    )
+    compare_field.raw_ref.update(
+        {
+            "value_bboxes": [bbox.model_dump() for bbox in compare_boxes],
+            "display_value_bbox": BBox(x0=302, y0=181, x1=383, y1=228).model_dump(),
+            "content_recognition_status": "NEEDS_REVIEW",
+            "content_recognition_reason": "CONFLICTING_VALUE_CANDIDATES",
+        }
+    )
+    original.elements.append(original_field)
+    compare.elements.append(compare_field)
+
+    diff = SigningRegionDiffBuilder().build_diffs(
+        [SigningRegionComparator().compare(original, compare, match_confidence=0.9)]
+    )[0]
+
+    assert diff.content_recognition_status == "NEEDS_REVIEW"
+    assert [evidence.bbox for evidence in diff.original_evidence] == original_boxes
+    assert [evidence.bbox for evidence in diff.compare_evidence] == compare_boxes
+    assert all(evidence.bbox.x0 >= 300 for evidence in diff.original_evidence)
+
+
+def test_comparator_ignores_table_markup_when_matching_unknown_postal_code_roles() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.extend(
+        [
+            _field("o-postal-a", "甲方", "postal_code", "邮政编码", "100096", x0=80),
+            _field("o-postal-b", "乙方", "postal_code", "邮政编码", "813000", x0=330),
+        ]
+    )
+    compare.elements.extend(
+        [
+            _field(
+                "c-postal-a",
+                "unknown",
+                "postal_code",
+                "邮政编码",
+                '100096</td></tr><tr><td colspan="2">',
+                x0=82,
+            ),
+            _field("c-postal-b", "unknown", "postal_code", "邮政编码", "813000", x0=332),
+        ]
+    )
+
+    comparison = SigningRegionComparator().compare(original, compare)
+
+    assert comparison.column_changes == []
+    assert comparison.field_changes == []
+
+
+def test_diff_builder_uses_full_field_bbox_when_peer_field_is_missing() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.append(_field("o-name", "甲方", "party_name", "单位名称", "南京公司"))
+    compare.elements.append(_field("c-name", "甲方", "party_name", "单位名称", "南京公司"))
+    compare_postal = _field(
+        "c-postal",
+        "甲方",
+        "postal_code",
+        "邮政编码",
+        "100096",
+        value_bbox=BBox(x0=155.5, y0=633, x1=183.5, y1=646),
+    )
+    compare_postal.raw_ref.update(
+        {
+            "display_value_bbox": BBox(x0=115, y0=620, x1=515, y1=646).model_dump(),
+            "content_recognition_status": "NEEDS_REVIEW",
+            "content_recognition_reason": "ALIGNED_SUFFIX_CANDIDATE",
+        }
+    )
+    compare.elements.append(compare_postal)
+
+    diff = SigningRegionDiffBuilder().build_diffs([SigningRegionComparator().compare(original, compare)])[0]
+
+    assert diff.title == "甲方 · 邮政编码"
+    assert diff.diff_type == "ADD"
+    assert [evidence.bbox for evidence in diff.compare_evidence] == [compare_postal.bbox]
+
+
+def test_diff_builder_uses_full_multiline_field_boxes_when_peer_field_is_missing() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.append(_field("o-name", "甲方", "party_name", "单位名称", "南京公司"))
+    compare.elements.append(_field("c-name", "甲方", "party_name", "单位名称", "南京公司"))
+    original_address = _field(
+        "o-address",
+        "甲方",
+        "address",
+        "单位地址",
+        "北京市海淀区西三旗建材城中路27号1幢2层227号",
+    )
+    field_boxes = [
+        BBox(x0=61, y0=444, x1=298, y1=455),
+        BBox(x0=65, y0=466, x1=158, y1=475),
+    ]
+    original_address.raw_ref.update(
+        {
+            "field_bboxes": [bbox.model_dump() for bbox in field_boxes],
+            "field_segments": ["单位地址：北京市海淀区西三旗建材城中路", "27号1幢2层227号"],
+            "value_bboxes": [
+                BBox(x0=145, y0=444, x1=298, y1=455).model_dump(),
+                BBox(x0=65, y0=466, x1=158, y1=475).model_dump(),
+            ],
+        }
+    )
+    original.elements.append(original_address)
+
+    diff = SigningRegionDiffBuilder().build_diffs([SigningRegionComparator().compare(original, compare)])[0]
+
+    assert diff.title == "甲方 · 单位地址"
+    assert diff.diff_type == "DELETE"
+    assert [evidence.bbox for evidence in diff.original_evidence] == field_boxes
+    assert [evidence.text for evidence in diff.original_evidence] == [
+        "单位地址：北京市海淀区西三旗建材城中路",
+        "27号1幢2层227号",
+    ]
+
+
 def test_comparator_reports_truncated_signing_field_labels_per_party() -> None:
     original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
     compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
@@ -253,9 +396,7 @@ def test_comparator_reports_truncated_signing_field_labels_per_party() -> None:
 def test_comparator_suppresses_truncated_signing_label_only_when_seal_overlaps_it() -> None:
     original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
     compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
-    original.elements.append(
-        _field("o-b", "乙方", "legal_representative", "法人代表或授权委托人", "", x0=330)
-    )
+    original.elements.append(_field("o-b", "乙方", "legal_representative", "法人代表或授权委托人", "", x0=330))
     compare.elements.extend(
         [
             _field("c-b", "乙方", "legal_representative", "法人代表或", "", x0=330),
@@ -365,6 +506,50 @@ def test_comparator_suppresses_seal_polluted_blank_signature_label(
     comparison = SigningRegionComparator().compare(original, compare)
 
     assert comparison.field_changes == []
+
+
+def test_comparator_pairs_cross_key_blank_signature_fields_before_seal_occlusion_filter() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.append(
+        _field(
+            "o-sign",
+            "甲方",
+            "authorized_representative",
+            "授权代表（签字）",
+            "",
+            x0=90,
+        )
+    )
+    compare.elements.extend(
+        [
+            _field(
+                "c-sign",
+                "甲方",
+                "legal_representative",
+                "法定代表负责人3002406授权代表",
+                "",
+                x0=90,
+            ),
+            SigningElement(
+                element_id="c-seal",
+                element_type=SigningElementType.SEAL,
+                page_no=1,
+                bbox=BBox(x0=119, y0=660, x1=230, y1=730),
+                text="seal",
+                confidence=0.95,
+                source="visual_model",
+                raw_ref={"party_role": "甲方"},
+            ),
+            _visual_signature("c-signature", "甲方"),
+        ]
+    )
+
+    comparison = SigningRegionComparator().compare(original, compare)
+
+    assert comparison.field_changes == []
+    assert [change["type"] for change in comparison.seal_changes] == ["ADD"]
+    assert [change["type"] for change in comparison.signature_changes] == ["ADD"]
 
 
 def test_diff_builder_does_not_leak_date_critical_flag_to_signing_label_change() -> None:
@@ -480,6 +665,42 @@ def test_date_placeholder_is_equivalent_to_an_empty_field() -> None:
     assert comparison.diff_type is None
 
 
+def test_comparator_treats_dotted_and_chinese_dates_as_equivalent() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements = [_field("o-date", "甲方", "date", "日期", "2026.4.17")]
+    compare.elements = [_field("c-date", "甲方", "date", "日期", "2026年4月17日")]
+
+    comparison = SigningRegionComparator().compare(original, compare)
+
+    assert comparison.field_changes == []
+    assert comparison.diff_type is None
+
+
+def test_date_value_change_without_value_geometry_does_not_highlight_label() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements = [_field("o-date", "甲方", "date", "日期", "2026.4.17")]
+    compare.elements = [_field("c-date", "甲方", "date", "日期", "")]
+
+    diff = SigningRegionDiffBuilder().build_diffs([SigningRegionComparator().compare(original, compare)])[0]
+
+    assert diff.diff_type == "DELETE"
+    assert diff.original_evidence == []
+
+
+def test_date_value_change_uses_real_value_bbox() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    value_bbox = BBox(x0=107.5, y0=497.5, x1=174, y1=516.5)
+    original.elements = [_field("o-date", "甲方", "date", "日期", "2026.4.17", value_bbox=value_bbox)]
+    compare.elements = [_field("c-date", "甲方", "date", "日期", "")]
+
+    diff = SigningRegionDiffBuilder().build_diffs([SigningRegionComparator().compare(original, compare)])[0]
+
+    assert [evidence.bbox for evidence in diff.original_evidence] == [value_bbox]
+
+
 @pytest.mark.parametrize(
     ("original_text", "compare_text", "expected_type", "expected_original", "expected_compare"),
     [
@@ -504,6 +725,37 @@ def test_comparator_classifies_effective_date_value_changes(
     assert diff.diff_type == expected_type
     assert diff.original_text == expected_original
     assert diff.compare_text == expected_compare
+
+
+def test_comparator_collapses_legacy_split_date_placeholders_before_pairing() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    for index, role in enumerate(("甲方", "乙方")):
+        y0 = 680 + index * 40
+        time_field = _field(f"o-time-{index}", role, "date", "时间", "年月日", x0=87)
+        time_field.bbox = BBox(x0=87, y0=y0, x1=143, y1=y0 + 20)
+        time_field.raw_ref["display_value_bbox"] = BBox(
+            x0=143,
+            y0=y0,
+            x1=328,
+            y1=y0 + 20,
+        ).model_dump()
+        standalone = _field(f"o-standalone-{index}", role, "date", "签署日期", "", x0=197)
+        standalone.bbox = BBox(x0=197, y0=y0, x1=333, y1=y0 + 23)
+        compare_field = _field(f"c-time-{index}", role, "date", "时间", "2026年5月8日", x0=108)
+        compare_field.bbox = BBox(x0=108, y0=y0, x1=336, y1=y0 + 30)
+        original.elements.extend([time_field, standalone])
+        compare.elements.append(compare_field)
+
+    comparison = SigningRegionComparator().compare(original, compare)
+
+    assert [(change["party_role"], change["type"], change["field_label"]) for change in comparison.field_changes] == [
+        ("乙方", "ADD", "时间"),
+        ("甲方", "ADD", "时间"),
+    ]
+    assert all(change["fill_state_change"] == "filled" for change in comparison.field_changes)
+    assert all(change["original_text"] == "" for change in comparison.field_changes)
+    assert all(change["compare_text"] == "2026年5月8日" for change in comparison.field_changes)
 
 
 def test_diff_builder_keeps_field_highlight_separate_from_recognition_outline() -> None:
@@ -622,6 +874,242 @@ def test_comparator_detects_signature_slot_presence_change() -> None:
     assert diff.section_type == "signature:signature"
     assert diff.readable_change.endswith("未签 → 已签")
     assert diff.compare_evidence[0].bbox == BBox(x0=90, y0=710, x1=180, y1=760)
+
+
+def test_comparator_reports_blank_date_to_handwritten_date_as_one_fill_change() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.append(_field("o-date", "甲方", "date", "日期", "", x0=90))
+    compare.elements.append(_field("c-date", "甲方", "date", "日期", "2026.7.28", x0=92))
+
+    comparison = SigningRegionComparator().compare(original, compare)
+    diffs = SigningRegionDiffBuilder().build_diffs([comparison])
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "ADD"
+    assert diffs[0].title == "甲方 · 日期"
+    assert diffs[0].original_text == ""
+    assert diffs[0].compare_text == "2026.7.28"
+    assert "SIGNING_DATE_FILLED" in diffs[0].review_flags
+    assert "由未填写变为填写" in diffs[0].readable_change
+
+
+def test_comparator_pairs_blank_labeled_field_with_handwritten_value_once() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.extend(
+        [
+            _field("o-rep", "甲方", "legal_representative", "法人代表或授权委托人", "", x0=90),
+            _field("o-sign", "甲方", "signature", "（签字）", "", x0=170),
+        ]
+    )
+    compare.elements.extend(
+        [
+            _field("c-rep", "甲方", "legal_representative", "法人代表或授权委托人", "张三", x0=92),
+            _field("c-sign", "甲方", "signature", "（签字）", "", x0=172),
+        ]
+    )
+
+    diffs = SigningRegionDiffBuilder().build_diffs([SigningRegionComparator().compare(original, compare)])
+
+    assert len(diffs) == 1
+    assert diffs[0].title == "甲方 · 法人代表或授权委托人"
+    assert diffs[0].diff_type == "ADD"
+    assert diffs[0].compare_text == "张三"
+
+
+def test_confirmed_field_fill_keeps_content_recognition_uncertainty_separate() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.append(_field("o-rep", "甲方", "legal_representative", "法人代表或授权委托人", "", x0=90))
+    compare_field = _field(
+        "c-rep",
+        "甲方",
+        "legal_representative",
+        "法人代表或授权委托人",
+        "郑伟",
+        x0=92,
+        value_bbox=BBox(x0=210, y0=680, x1=266, y1=710),
+    )
+    compare_field.raw_ref.update(
+        {
+            "display_value_bbox": BBox(x0=205, y0=678, x1=266, y1=711).model_dump(),
+            "content_recognition_status": "NEEDS_REVIEW",
+            "content_recognition_reason": "ALIGNED_SUFFIX_CANDIDATE",
+            "value_evidence": [
+                {"source": "ppocrv5", "text": "伟", "bbox": BBox(x0=253, y0=680, x1=266, y1=710).model_dump()},
+                {"source": "ppstructure", "text": "郑伟", "bbox": BBox(x0=205, y0=678, x1=266, y1=711).model_dump()},
+            ],
+        }
+    )
+    compare.elements.append(compare_field)
+
+    diff = SigningRegionDiffBuilder().build_diffs([SigningRegionComparator().compare(original, compare)])[0]
+
+    assert diff.diff_type == "ADD"
+    assert diff.quality_status == "NORMAL"
+    assert diff.compare_text == "郑伟"
+    assert diff.content_recognition_status == "NEEDS_REVIEW"
+    assert {item["text"] for item in diff.content_candidates} == {"伟", "郑伟"}
+    assert diff.compare_evidence[0].bbox == BBox(x0=205, y0=678, x1=266, y1=711)
+    assert "新增手写填写“郑伟”" in diff.readable_change
+
+
+def test_conflicting_handwriting_candidates_confirm_fill_but_do_not_choose_longer_text() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.append(_field("o-rep", "甲方", "legal_representative", "法人代表或授权委托人", "", x0=90))
+    compare_field = _field("c-rep", "甲方", "legal_representative", "法人代表或授权委托人", "伟", x0=92)
+    compare_field.raw_ref.update(
+        {
+            "content_recognition_status": "NEEDS_REVIEW",
+            "content_recognition_reason": "CONFLICTING_VALUE_CANDIDATES",
+            "value_evidence": [
+                {"source": "ppocrv5", "text": "伟", "bbox": BBox(x0=250, y0=680, x1=266, y1=710).model_dump()},
+                {"source": "ppstructure", "text": "张三", "bbox": BBox(x0=210, y0=678, x1=266, y1=711).model_dump()},
+            ],
+        }
+    )
+    compare.elements.append(compare_field)
+
+    diff = SigningRegionDiffBuilder().build_diffs([SigningRegionComparator().compare(original, compare)])[0]
+
+    assert diff.diff_type == "ADD"
+    assert diff.quality_status == "NORMAL"
+    assert diff.content_recognition_status == "NEEDS_REVIEW"
+    assert diff.compare_text == ""
+    assert {item["text"] for item in diff.content_candidates} == {"伟", "张三"}
+    assert diff.readable_change.endswith("新增手写填写（内容识别需复核）")
+
+
+def test_narrow_ocr_continuation_is_exposed_with_suppression_reason() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.append(_field("o-address", "乙方", "address", "地址", "北京市海淀区"))
+    compare_field = _field("c-address", "乙方", "address", "地址", "北京市海淀区N")
+    compare_field.raw_ref["value_bboxes"] = [
+        BBox(x0=100, y0=680, x1=220, y1=700).model_dump(),
+        BBox(x0=568, y0=680, x1=570, y1=691).model_dump(),
+    ]
+    compare.elements.append(compare_field)
+
+    diff = SigningRegionDiffBuilder().build_diffs([SigningRegionComparator().compare(original, compare)])[0]
+
+    assert "NARROW_OCR_CONTINUATION_NOISE" in diff.review_flags
+
+
+def test_signing_extractor_keeps_date_text_inside_seal_layout_region() -> None:
+    date_block = TextBlock(
+        block_id="date-under-seal",
+        page_no=1,
+        text="日期：2026合2",
+        bbox=BBox(x0=92, y0=658, x1=232, y1=686),
+        block_type="seal",
+        source="ppocrv5_layout_matched",
+        confidence=0.86,
+    )
+    other_date = TextBlock(
+        block_id="other-date",
+        page_no=1,
+        text="日期：",
+        bbox=BBox(x0=320, y0=658, x1=360, y1=686),
+        block_type="text",
+        confidence=0.98,
+    )
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[Page(page_no=1, width=595, height=842, blocks=[date_block, other_date])],
+    )
+    signing_block = SigningBlock(
+        block_id="SB-1-1",
+        page_no=1,
+        bbox=BBox(x0=70, y0=620, x1=530, y1=720),
+        block_role=SigningBlockRole.BOTH_PARTIES,
+        confidence=0.8,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["two_column_layout"],
+        source_block_ids=["date-under-seal", "other-date"],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], document)[0]
+    dates = [
+        element
+        for element in region.elements
+        if element.element_type == SigningElementType.FIELD and element.raw_ref.get("field_key") == "date"
+    ]
+
+    assert any(element.text == "2026合2" for element in dates)
+    assert {element.raw_ref["party_role"] for element in dates} == {"甲方", "乙方"}
+
+
+def test_signing_extractor_does_not_treat_company_suffix_as_handwritten_signature() -> None:
+    label = TextBlock(
+        block_id="signature-label",
+        page_no=1,
+        text="法人代表或授权委托人：（签字）",
+        bbox=BBox(x0=320, y0=330, x1=475, y1=350),
+        source="ppocrv5_layout_matched",
+        confidence=0.98,
+    )
+    company_tail = TextBlock(
+        block_id="company-tail",
+        page_no=1,
+        text="有限公司",
+        bbox=BBox(x0=470, y0=345, x1=530, y1=365),
+        source="ppocrv5_layout_matched",
+        confidence=0.91,
+    )
+    document = Document(
+        filename="sample.pdf",
+        path="sample.pdf",
+        page_count=1,
+        pages=[Page(page_no=1, width=595, height=842, blocks=[label, company_tail])],
+    )
+    signing_block = SigningBlock(
+        block_id="SB-1-1",
+        page_no=1,
+        bbox=BBox(x0=60, y0=300, x1=540, y1=420),
+        block_role=SigningBlockRole.BOTH_PARTIES,
+        confidence=0.8,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["two_column_layout"],
+        source_block_ids=["signature-label", "company-tail"],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], document)[0]
+
+    assert not any(element.element_type == SigningElementType.SIGNATURE for element in region.elements)
+
+
+def test_comparator_uses_peer_document_reference_for_seal_truncated_party() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.append(_party("o-party", "甲方", "甲方：南京科技有限公司(盖章)", bbox=original.bbox))
+    compare.elements.extend(
+        [
+            _party("c-party", "甲方", "甲方：南京科(盖章", bbox=compare.bbox),
+            SigningElement(
+                element_id="c-seal",
+                element_type=SigningElementType.SEAL,
+                page_no=1,
+                bbox=compare.bbox,
+                text="seal",
+                confidence=0.9,
+                source="visual_model",
+            ),
+        ]
+    )
+
+    comparison = SigningRegionComparator().compare(
+        original,
+        compare,
+        original_party_references={},
+        compare_party_references={"甲方": "南京科技有限公司"},
+    )
+
+    assert comparison.party_changes == []
 
 
 def test_comparator_assigns_visual_signature_to_nearest_signature_field() -> None:
@@ -1747,8 +2235,9 @@ def test_coverage_hides_overlapping_seal_diff() -> None:
 
     result = SigningRegionCoverageBuilder().build([region_diff], [legacy])
 
-    assert result.covered_diff_ids == {"D002"}
+    assert result.covered_diff_ids == {"D010"}
     assert result.entries[0].signing_region_diff_id == "D010"
+    assert result.entries[0].reasons["D002"] == "duplicate_seal_diff"
 
 
 def test_coverage_hides_broad_legacy_seal_region_containing_focused_signing_seal() -> None:
@@ -1785,7 +2274,7 @@ def test_coverage_hides_broad_legacy_seal_region_containing_focused_signing_seal
 
     result = SigningRegionCoverageBuilder().build([signing_diff], [legacy])
 
-    assert result.covered_diff_ids == {"D009"}
+    assert result.covered_diff_ids == {"D012"}
 
 
 def test_coverage_hides_overlapping_signing_contact_delete_described_only_by_snippet() -> None:

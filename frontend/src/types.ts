@@ -3,6 +3,7 @@ export type TaskTerminalReason = "NONE" | "EXECUTION_FAILED" | "SUBMISSION_FAILE
 export type DiffType = "ADD" | "DELETE" | "MODIFY";
 export type EvidenceQuality = "LOW" | "MEDIUM" | "HIGH";
 export type DiffQualityStatus = "NORMAL" | "NEEDS_REVIEW";
+export type ContentRecognitionStatus = "CONFIRMED" | "NEEDS_REVIEW";
 export type OcrQualityStatus =
   | "OK"
   | "LOW_TEXT_CONFIDENCE"
@@ -250,6 +251,9 @@ export interface DiffItem {
   match_candidates?: Record<string, unknown>[];
   review_flags?: string[];
   quality_status?: DiffQualityStatus;
+  content_recognition_status?: ContentRecognitionStatus;
+  content_recognition_reason?: string;
+  content_candidates?: Record<string, unknown>[];
   text_confidence?: number | null;
   merged_sources?: string[];
   review_status?: ReviewStatus;
@@ -288,6 +292,9 @@ export interface AuditItem {
   compare_evidence: EvidenceBox[];
   evidence_state: "LOCATED" | "UNLOCATED";
   quality_status: DiffQualityStatus;
+  content_recognition_status?: ContentRecognitionStatus;
+  content_recognition_reason?: string;
+  content_candidates?: Record<string, unknown>[];
   structural_flags: string[];
   review_flags: string[];
   text_confidence?: number | null;

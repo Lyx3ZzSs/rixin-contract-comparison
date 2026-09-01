@@ -301,6 +301,12 @@ def test_report_renders_complete_located_and_unlocated_audit_item_evidence(tmp_p
                     )
                 ],
                 quality_status="NEEDS_REVIEW",
+                content_recognition_status="NEEDS_REVIEW",
+                content_recognition_reason="CRITICAL_IDENTIFIER_SOURCE_CONFLICT",
+                content_candidates=[
+                    {"source": "ppocrv5", "value": "91610103MABO"},
+                    {"source": "ppstructure", "value": "91610103MAB0"},
+                ],
                 structural_flags=["TABLE_STRUCTURE"],
                 review_flags=["LOW_MATCH_CONFIDENCE"],
                 text_confidence=0.73,
@@ -396,6 +402,11 @@ def test_report_renders_complete_located_and_unlocated_audit_item_evidence(tmp_p
 
     # Quality, OCR, remediation and independent review context are never inferred away.
     assert "质量状态：NEEDS_REVIEW" in report_text
+    assert "变化判定：待复核" in report_text
+    assert "内容识别状态：NEEDS_REVIEW" in report_text
+    assert "内容识别原因：CRITICAL_IDENTIFIER_SOURCE_CONFLICT" in report_text
+    assert "91610103MABO" in report_text
+    assert "91610103MAB0" in report_text
     assert "结构标记：TABLE_STRUCTURE" in report_text
     assert "审核标记：LOW_MATCH_CONFIDENCE" in report_text
     assert "文本置信度：0.73" in report_text

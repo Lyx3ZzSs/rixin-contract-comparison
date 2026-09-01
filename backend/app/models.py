@@ -12,6 +12,7 @@ from app.errors import TaskTransitionConflict
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
+ContentRecognitionStatus = Literal["CONFIRMED", "NEEDS_REVIEW"]
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 TaskTerminalReason = Literal["NONE", "EXECUTION_FAILED", "SUBMISSION_FAILED", "CANCELLED"]
 TaskExecutionStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED"]
@@ -87,6 +88,14 @@ class CharBox(BaseModel):
     page_no: int
     bbox: BBox
     text_index: int | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class TextSourceEvidence(BaseModel):
+    source: str
+    raw_text: str
+    page_no: int
+    bbox: BBox
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
@@ -254,6 +263,7 @@ class TextBlock(BaseModel):
     layout_match_status: LayoutMatchStatus = "not_applicable"
     layout_match_reason: str = ""
     char_boxes: list[CharBox] = Field(default_factory=list)
+    source_evidence: list[TextSourceEvidence] = Field(default_factory=list)
     raw_html: str = ""
     table_cell_bboxes: list[list[float]] = Field(default_factory=list)
 
@@ -335,6 +345,9 @@ class DiffItem(BaseModel):
     structural_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     quality_status: DiffQualityStatus = "NORMAL"
+    content_recognition_status: ContentRecognitionStatus = "CONFIRMED"
+    content_recognition_reason: str = ""
+    content_candidates: list[dict[str, Any]] = Field(default_factory=list)
     text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     merged_sources: list[str] = Field(default_factory=list)
     review_status: ReviewStatus = "UNREVIEWED"

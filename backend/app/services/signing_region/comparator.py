@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 import unicodedata
 from collections import Counter
@@ -186,12 +187,30 @@ class SigningRegionComparator:
                     compare,
                 ):
                     continue
+                if self._is_overlapping_alternative_field_gap(
+                    role,
+                    field_key,
+                    original_element,
+                    compare_element,
+                    original_fields,
+                    compare_fields,
+                ):
+                    continue
                 original_text = original_element.text.strip() if original_element is not None else ""
                 compare_text = compare_element.text.strip() if compare_element is not None else ""
                 original_label = self._field_label(original_element)
                 compare_label = self._field_label(compare_element)
                 original_value = self._normalized_field_value(field_key, original_text)
                 compare_value = self._normalized_field_value(field_key, compare_text)
+                original_content_status = self._content_recognition_status(original_element)
+                compare_content_status = self._content_recognition_status(compare_element)
+                content_status = (
+                    "NEEDS_REVIEW"
+                    if "NEEDS_REVIEW" in {original_content_status, compare_content_status}
+                    else "CONFIRMED"
+                )
+                content_reason = self._content_recognition_reason(compare_element or original_element)
+                content_candidates = self._content_candidates(compare_element or original_element)
                 value_changed = field_key != "signature" and original_value != compare_value
                 label_changed = not self._field_labels_equivalent(field_key, original_label, compare_label)
                 if label_changed and self._is_seal_occluded_signature_label_conflict(
@@ -208,10 +227,18 @@ class SigningRegionComparator:
                     field_key,
                     original_text,
                     compare_text,
+                    original_element,
+                    compare_element,
                     original,
                     compare,
                 ):
                     continue
+                narrow_continuation_noise = self._narrow_ocr_continuation_noise(
+                    original_element,
+                    compare_element,
+                    original_value,
+                    compare_value,
+                )
                 if original_element is None or compare_element is None:
                     change_type = "DELETE" if original_element is not None else "ADD"
                     change_scope = "field"
@@ -227,6 +254,11 @@ class SigningRegionComparator:
                     change_scope = "value" if value_changed and not label_changed else "label"
                     original_change_text = original_text if value_changed else original_label
                     compare_change_text = compare_text if value_changed else compare_label
+                if content_reason == "CONFLICTING_VALUE_CANDIDATES" and change_type in {"ADD", "DELETE"}:
+                    if change_type == "ADD":
+                        compare_change_text = ""
+                    else:
+                        original_change_text = ""
                 if field_key == "date" and value_changed:
                     original_change_text = self._display_date_value(original_text) if original_value else ""
                     compare_change_text = self._display_date_value(compare_text) if compare_value else ""
@@ -247,15 +279,51 @@ class SigningRegionComparator:
                         "original_text": original_change_text,
                         "compare_text": compare_change_text,
                         "changed_date_components": changed_date_components,
-                        "critical": field_key
-                        in {"account", "credit_code", "party", "party_name", "date"},
+                        "fill_state_change": (
+                            "filled"
+                            if not original_value and bool(compare_value)
+                            else "cleared"
+                            if bool(original_value) and not compare_value
+                            else ""
+                        ),
+                        "change_decision": (
+                            "CONFIRMED"
+                            if (not original_value and bool(compare_value))
+                            or (bool(original_value) and not compare_value)
+                            else "CANDIDATE"
+                        ),
+                        "content_recognition_status": content_status,
+                        "content_recognition_reason": content_reason,
+                        "content_candidates": content_candidates,
+                        "decision_reason": ("NARROW_OCR_CONTINUATION_NOISE" if narrow_continuation_noise else ""),
+                        "critical": field_key in {"account", "credit_code", "party", "party_name", "date"},
                         "original_element_id": original_element.element_id if original_element is not None else "",
                         "compare_element_id": compare_element.element_id if compare_element is not None else "",
                     }
                 )
                 self._add_review_flag(comparison, "SIGNING_FIELD_CHANGE")
+                if field_key == "date" and not original_value and compare_value:
+                    self._add_review_flag(comparison, "SIGNING_DATE_FILLED")
                 if field_key in {"account", "credit_code", "party", "party_name", "date"}:
                     self._add_review_flag(comparison, "CRITICAL_VALUE_CHANGE")
+
+    @staticmethod
+    def _content_recognition_status(element: SigningElement | None) -> str:
+        if element is None:
+            return "CONFIRMED"
+        return str(element.raw_ref.get("content_recognition_status") or "CONFIRMED")
+
+    @staticmethod
+    def _content_recognition_reason(element: SigningElement | None) -> str:
+        if element is None:
+            return ""
+        return str(element.raw_ref.get("content_recognition_reason") or "")
+
+    @staticmethod
+    def _content_candidates(element: SigningElement | None) -> list[dict[str, object]]:
+        if element is None:
+            return []
+        return [dict(item) for item in element.raw_ref.get("value_evidence") or [] if isinstance(item, dict)]
 
     @classmethod
     def _is_party_name_ocr_gap(
@@ -307,25 +375,55 @@ class SigningRegionComparator:
         compare_elements: list[SigningElement],
     ) -> list[tuple[SigningElement | None, SigningElement | None]]:
         remaining_compare = list(compare_elements)
-        unmatched_original: list[SigningElement] = []
         pairs: list[tuple[SigningElement | None, SigningElement | None]] = []
-        for original in original_elements:
-            original_value = cls._normalized_field_value(field_key, original.text)
-            original_label = cls._normalized_field_label(cls._field_label(original))
-            match_index = next(
-                (
-                    index
-                    for index, candidate in enumerate(remaining_compare)
-                    if cls._normalized_field_value(field_key, candidate.text) == original_value
-                    and cls._normalized_field_label(cls._field_label(candidate)) == original_label
-                ),
-                None,
+
+        def nearest_geometry_distance(element: SigningElement) -> float:
+            if not remaining_compare:
+                return 0.0
+            center = ((element.bbox.x0 + element.bbox.x1) / 2, (element.bbox.y0 + element.bbox.y1) / 2)
+            return min(
+                abs(center[0] - (candidate.bbox.x0 + candidate.bbox.x1) / 2)
+                + abs(center[1] - (candidate.bbox.y0 + candidate.bbox.y1) / 2)
+                for candidate in remaining_compare
             )
-            if match_index is None:
-                unmatched_original.append(original)
+
+        def claim_priority(element: SigningElement) -> tuple[int, float]:
+            label = cls._normalized_field_label(cls._field_label(element))
+            has_same_label_peer = any(
+                cls._normalized_field_label(cls._field_label(candidate)) == label for candidate in remaining_compare
+            )
+            return (0 if has_same_label_peer else 1, nearest_geometry_distance(element))
+
+        # When one parser emits two interpretations of the same field, prefer
+        # the matching label and use geometry to break ties.  Input order can
+        # otherwise create a false MODIFY followed by a false DELETE.
+        for original in sorted(original_elements, key=claim_priority):
+            if not remaining_compare:
+                pairs.append((original, None))
                 continue
+            original_label = cls._normalized_field_label(cls._field_label(original))
+            original_value = cls._normalized_field_value(field_key, original.text)
+            original_center = ((original.bbox.x0 + original.bbox.x1) / 2, (original.bbox.y0 + original.bbox.y1) / 2)
+
+            def identity_cost(candidate: SigningElement) -> tuple[int, float, int]:
+                candidate_label = cls._normalized_field_label(cls._field_label(candidate))
+                candidate_center = (
+                    (candidate.bbox.x0 + candidate.bbox.x1) / 2,
+                    (candidate.bbox.y0 + candidate.bbox.y1) / 2,
+                )
+                geometry_distance = abs(original_center[0] - candidate_center[0]) + abs(
+                    original_center[1] - candidate_center[1]
+                )
+                candidate_value = cls._normalized_field_value(field_key, candidate.text)
+                return (
+                    0 if candidate_label == original_label else 1,
+                    geometry_distance,
+                    0 if candidate_value == original_value else 1,
+                )
+
+            match_index = min(range(len(remaining_compare)), key=lambda index: identity_cost(remaining_compare[index]))
             pairs.append((original, remaining_compare.pop(match_index)))
-        pairs.extend(zip_longest(unmatched_original, remaining_compare))
+        pairs.extend((None, candidate) for candidate in remaining_compare)
         return pairs
 
     @classmethod
@@ -368,6 +466,8 @@ class SigningRegionComparator:
         field_key: str,
         original_text: str,
         compare_text: str,
+        original_element: SigningElement | None,
+        compare_element: SigningElement | None,
         original_region: SigningRegion,
         compare_region: SigningRegion,
     ) -> bool:
@@ -380,9 +480,85 @@ class SigningRegionComparator:
         if cls._single_character_substitution(left, right):
             return True
         short, long = sorted((left, right), key=len)
-        if len(short) > max(6, len(long) // 2) or len(short) < 4:
+        if len(short) < 4:
             return False
-        return short[:2] == long[:2] and short[-2:] == long[-2:] and cls._is_ordered_subsequence(short, long)
+        longer_element = original_element if len(left) >= len(right) else compare_element
+        segments = longer_element.raw_ref.get("field_segments", []) if longer_element is not None else []
+        first_segment = (
+            cls._normalized_field_value(
+                field_key,
+                re.sub(r"^\s*(?:地址|单位地址)\s*[:：]?", "", str(segments[0] or "")),
+            )
+            if segments
+            else ""
+        )
+        if first_segment == short and long.startswith(short):
+            return True
+        if not (
+            cls._seal_overlaps_element(original_region, original_element) if original_element is not None else False
+        ) and not (
+            cls._seal_overlaps_element(compare_region, compare_element) if compare_element is not None else False
+        ):
+            return False
+        return (
+            len(short) <= max(6, len(long) // 2)
+            and short[:2] == long[:2]
+            and short[-2:] == long[-2:]
+            and cls._is_ordered_subsequence(short, long)
+        )
+
+    @classmethod
+    def _is_overlapping_alternative_field_gap(
+        cls,
+        role: str,
+        field_key: str,
+        original_element: SigningElement | None,
+        compare_element: SigningElement | None,
+        original_fields: dict[tuple[str, str], list[SigningElement]],
+        compare_fields: dict[tuple[str, str], list[SigningElement]],
+    ) -> bool:
+        if (original_element is None) == (compare_element is None):
+            return False
+        present = original_element or compare_element
+        if present is None:
+            return False
+        same_side = original_fields if original_element is not None else compare_fields
+        opposite = compare_fields if original_element is not None else original_fields
+        peers = opposite.get((role, field_key), [])
+        siblings = [item for item in same_side.get((role, field_key), []) if item.element_id != present.element_id]
+        for sibling in siblings:
+            sibling_value = cls._normalized_field_value(field_key, sibling.text)
+            peer_matches_sibling = any(
+                cls._normalized_field_value(field_key, peer.text) == sibling_value for peer in peers if sibling_value
+            )
+            if field_key == "date" and not sibling_value:
+                peer_matches_sibling = any(
+                    bool(cls._normalized_field_value(field_key, peer.text))
+                    and cls._field_labels_equivalent(
+                        field_key,
+                        cls._field_label(sibling),
+                        cls._field_label(peer),
+                    )
+                    for peer in peers
+                )
+            if not peer_matches_sibling:
+                continue
+            present_bboxes = cls._field_identity_bboxes(present) if field_key == "date" else [present.bbox]
+            sibling_bboxes = cls._field_identity_bboxes(sibling) if field_key == "date" else [sibling.bbox]
+            if any(
+                cls._bboxes_overlap(left, right, tolerance=4.0) for left in present_bboxes for right in sibling_bboxes
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _field_identity_bboxes(element: SigningElement) -> list[BBox]:
+        bboxes = [element.bbox]
+        for key in ("display_value_bbox", "value_bbox"):
+            raw_bbox = element.raw_ref.get(key)
+            if raw_bbox:
+                bboxes.append(BBox.model_validate(raw_bbox))
+        return bboxes
 
     @staticmethod
     def _is_ordered_subsequence(short: str, long: str) -> bool:
@@ -530,18 +706,65 @@ class SigningRegionComparator:
             field_key = str(element.raw_ref.get("field_key") or "")
             if not field_key:
                 continue
-            if (
-                field_key in {"legal_representative", "authorized_representative", "signature"}
-                and not element.text.strip()
-            ):
-                field_key = "signature"
             role = str(element.raw_ref.get("party_role") or "unknown")
+            signature_field_keys = {"legal_representative", "authorized_representative", "signature"}
+            peer_signature_fields = [
+                peer_element
+                for peer_element in (peer.elements if peer is not None else [])
+                if peer_element.element_type == SigningElementType.FIELD
+                and str(peer_element.raw_ref.get("party_role") or "unknown") == role
+                and str(peer_element.raw_ref.get("field_key") or "") in signature_field_keys
+            ]
+            peer_has_same_key = any(
+                str(peer_element.raw_ref.get("field_key") or "") == field_key for peer_element in peer_signature_fields
+            )
+            peer_has_blank_alternative = any(
+                str(peer_element.raw_ref.get("field_key") or "") != field_key and not peer_element.text.strip()
+                for peer_element in peer_signature_fields
+            )
+            if (
+                field_key in signature_field_keys
+                and not element.text.strip()
+                and not peer_has_same_key
+                and peer_has_blank_alternative
+            ):
+                # Empty legal/authorized-representative labels describe the same
+                # signing slot.  Seal OCR can make one side look like a different
+                # label family; pair them first so seal-occlusion filtering can
+                # decide whether the label change is real.
+                field_key = "signature"
             if role == "unknown":
-                matching_roles = peer_roles.get((field_key, cls._normalized_field_value(field_key, element.text)), set())
+                matching_roles = peer_roles.get(
+                    (field_key, cls._normalized_field_value(field_key, element.text)), set()
+                )
                 if len(matching_roles) == 1:
                     role = next(iter(matching_roles))
             fields.setdefault((role, field_key), []).append(element)
         return fields
+
+    @staticmethod
+    def _narrow_ocr_continuation_noise(
+        original_element: SigningElement | None,
+        compare_element: SigningElement | None,
+        original_value: str,
+        compare_value: str,
+    ) -> bool:
+        if original_element is None or compare_element is None:
+            return False
+        short, long = sorted((original_value, compare_value), key=len)
+        if not short or not long.startswith(short):
+            return False
+        suffix = long[len(short) :]
+        if not re.fullmatch(r"[A-Za-z0-9]{1,2}", suffix):
+            return False
+        longer = compare_element if len(compare_value) > len(original_value) else original_element
+        value_bboxes = longer.raw_ref.get("value_bboxes") or []
+        if not value_bboxes:
+            return False
+        trailing = BBox.model_validate(value_bboxes[-1])
+        width = max(0.0, trailing.x1 - trailing.x0)
+        height = max(1.0, trailing.y1 - trailing.y0)
+        return width / height <= 0.35
 
     @staticmethod
     def _has_structured_fields(region: SigningRegion) -> bool:
@@ -549,7 +772,12 @@ class SigningRegionComparator:
 
     @staticmethod
     def _normalized_field_value(field_key: str, value: str) -> str:
-        normalized = unicodedata.normalize("NFKC", value or "")
+        decoded = html.unescape(value or "")
+        markup = re.search(r"</?(?:html|body|table|thead|tbody|tr|th|td)\b", decoded, re.IGNORECASE)
+        if markup is not None:
+            decoded = decoded[: markup.start()]
+        decoded = re.sub(r"<[^>]+>", "", decoded)
+        normalized = unicodedata.normalize("NFKC", decoded)
         normalized = re.sub(r"\s+", "", normalized).replace(":", "：")
         if field_key == "date":
             parts = SigningRegionComparator._date_parts(normalized)
@@ -567,6 +795,8 @@ class SigningRegionComparator:
         match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", compact)
         if match is None:
             match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})[08oO](?!\d)", compact)
+        if match is None:
+            match = re.search(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})", compact)
         if match is None:
             return None
         parts = tuple(int(item) for item in match.groups())
@@ -592,15 +822,15 @@ class SigningRegionComparator:
             return re.sub(r"[\s_＿]", "", unicodedata.normalize("NFKC", str(value or "")))
 
         return [
-            name
-            for name in ("year", "month", "day")
-            if normalized(original.get(name)) != normalized(compare.get(name))
+            name for name in ("year", "month", "day") if normalized(original.get(name)) != normalized(compare.get(name))
         ]
 
     @classmethod
     def _display_date_value(cls, value: str) -> str:
         parts = cls._date_parts(value)
         if parts is None:
+            return value
+        if not re.search(r"[年月日]", value):
             return value
         year, month, day = parts
         return f"{year}年{month}月{day}日"
@@ -640,7 +870,11 @@ class SigningRegionComparator:
         original_region: SigningRegion,
         compare_region: SigningRegion,
     ) -> bool:
-        if field_key != "signature" or original_element is None or compare_element is None:
+        if (
+            field_key not in {"signature", "legal_representative", "authorized_representative"}
+            or original_element is None
+            or compare_element is None
+        ):
             return False
         if original_element.text.strip() or compare_element.text.strip():
             return False
@@ -648,10 +882,7 @@ class SigningRegionComparator:
             cls._normalized_field_label(cls._field_label(original_element)),
             cls._normalized_field_label(cls._field_label(compare_element)),
         )
-        if (
-            not all(cls._looks_like_signature_label(label) for label in labels)
-            or labels[0] == labels[1]
-        ):
+        if not all(cls._looks_like_signature_label(label) for label in labels) or labels[0] == labels[1]:
             return False
         occluded = (
             cls._seal_overlaps_element(original_region, original_element),
@@ -663,11 +894,7 @@ class SigningRegionComparator:
         if labels[1 - shorter_index].startswith(labels[shorter_index]) and occluded[shorter_index]:
             return True
         stems = tuple(cls._signature_label_stem(label) for label in labels)
-        return bool(
-            min(map(len, stems)) >= 4
-            and (stems[0] in labels[1] or stems[1] in labels[0])
-            and any(occluded)
-        )
+        return bool(min(map(len, stems)) >= 4 and (stems[0] in labels[1] or stems[1] in labels[0]) and any(occluded))
 
     @staticmethod
     def _looks_like_signature_label(label: str) -> bool:
@@ -969,9 +1196,7 @@ class SigningRegionComparator:
         source_bbox = element.raw_ref.get("source_bbox")
         if source_bbox:
             bboxes.append(BBox.model_validate(source_bbox))
-        bboxes.extend(
-            BBox.model_validate(item) for item in element.raw_ref.get("field_bboxes", [])
-        )
+        bboxes.extend(BBox.model_validate(item) for item in element.raw_ref.get("field_bboxes", []))
         return any(cls._seal_overlaps_bbox(region, bbox, tolerance=8.0) for bbox in bboxes)
 
     @staticmethod
@@ -998,15 +1223,20 @@ class SigningRegionComparator:
     ) -> bool:
         original_reference = cls._normalized_party_name(original_references.get(role, ""))
         compare_reference = cls._normalized_party_name(compare_references.get(role, ""))
-        if not original_reference or original_reference != compare_reference:
+        if original_reference and compare_reference and original_reference != compare_reference:
+            return False
+        reference = original_reference or compare_reference
+        if not reference:
             return False
         original_name = cls._normalized_party_name(original_text)
         compare_name = cls._normalized_party_name(compare_text)
         if not (cls._region_has_visual_seal(original_region) or cls._region_has_visual_seal(compare_region)):
             return False
-        return cls._party_name_matches_reference(
-            original_name, original_reference
-        ) and cls._party_name_matches_reference(compare_name, compare_reference)
+        if not (original_reference and compare_reference) and reference not in {original_name, compare_name}:
+            return False
+        return cls._party_name_matches_reference(original_name, reference) and cls._party_name_matches_reference(
+            compare_name, reference
+        )
 
     @classmethod
     def _party_name_matches_reference(cls, observed: str, reference: str) -> bool:

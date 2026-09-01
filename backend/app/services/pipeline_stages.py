@@ -62,6 +62,7 @@ from app.services.repeated_overlay_filter import RepeatedOverlayFilter
 from app.services.seal_comparator import build_seal_diffs
 from app.services.signing_region.block_detector import (
     BODY_VERB_RE,
+    BUSINESS_SIGNING_FIELD_RE,
     DATE_LABEL_RE,
     NUMBERED_RE,
     PARTY_LABEL_RE,
@@ -1394,6 +1395,12 @@ class SigningRegionStage:
                 seen_texts.add(compact)
         if appended_texts:
             signing_block.text = "\n".join(part for part in [existing_text, *appended_texts] if part)
+        signing_block.block_role = SigningBlockDetector._role(signing_block.text)
+        if (
+            signing_block.block_role == SigningBlockRole.BOTH_PARTIES
+            and "paired_parties" not in signing_block.confidence_reasons
+        ):
+            signing_block.confidence_reasons.append("paired_parties")
 
     @staticmethod
     def _near_signing_block(anchor: BBox, candidate: BBox, page: Page) -> bool:
@@ -1416,7 +1423,10 @@ class SigningRegionStage:
             return block.bbox.x1 >= anchor.x0 and block.bbox.x0 <= anchor.x1
         if SigningRegionStage._fragment_looks_like_numbered_clause(compact) or BODY_VERB_RE.search(compact):
             return False
-        if any(pattern.search(compact) for pattern in [SEAL_RE, SIGN_RE, REPRESENTATIVE_RE, DATE_LABEL_RE]):
+        if any(
+            pattern.search(compact)
+            for pattern in [SEAL_RE, SIGN_RE, REPRESENTATIVE_RE, DATE_LABEL_RE, BUSINESS_SIGNING_FIELD_RE]
+        ):
             return True
         return len(compact) <= 8
 
@@ -2885,6 +2895,8 @@ def _diff_partition_key(diff: DiffItem) -> tuple[str, str]:
 def _different_id_diffs_are_spatial_duplicates(left: DiffItem, right: DiffItem) -> bool:
     if left.diff_id and left.diff_id == right.diff_id:
         return True
+    if _same_page_visual_seal_summary(left, right):
+        return True
     if (
         left.source_type != right.source_type
         or left.section_type != right.section_type
@@ -2896,6 +2908,26 @@ def _different_id_diffs_are_spatial_duplicates(left: DiffItem, right: DiffItem) 
     if not _same_clause_or_stable_path(left, right):
         return False
     return _matching_located_evidence(left, right)
+
+
+def _same_page_visual_seal_summary(left: DiffItem, right: DiffItem) -> bool:
+    """Aggregate page-level seal subregions while retaining every evidence bbox."""
+    if left.source_type != "seal" or right.source_type != "seal" or left.diff_type != right.diff_type:
+        return False
+    if left.title != right.title:
+        return False
+    for left_evidence, right_evidence in (
+        (left.original_evidence, right.original_evidence),
+        (left.compare_evidence, right.compare_evidence),
+    ):
+        left_pages = {item.page_no for item in left_evidence if item.page_no > 0}
+        right_pages = {item.page_no for item in right_evidence if item.page_no > 0}
+        if left_pages or right_pages:
+            if len(left_pages) != 1 or left_pages != right_pages:
+                return False
+    return bool(left.original_evidence or left.compare_evidence) and bool(
+        right.original_evidence or right.compare_evidence
+    )
 
 
 def _same_clause_or_stable_path(left: DiffItem, right: DiffItem) -> bool:

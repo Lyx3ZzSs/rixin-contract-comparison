@@ -619,6 +619,51 @@ def test_detector_extends_vertically_stacked_party_signature_sections() -> None:
     assert block.confidence >= 0.7
 
 
+def test_detector_reconsiders_right_column_field_after_left_column_expands_anchor() -> None:
+    page = Page(
+        page_no=13,
+        width=595,
+        height=842,
+        blocks=[
+            _block("title", "签字页", _bbox(79, 83, 117, 95), page_no=13),
+            _block("party-a", "甲方", _bbox(80, 111, 123, 123), page_no=13),
+            _block("party-b", "乙方", _bbox(320, 111, 363, 123), page_no=13),
+            _block(
+                "right-name",
+                "单位名称：国能日新科技股份有限公司",
+                _bbox(321, 141, 521, 153),
+                page_no=13,
+                layout_bbox=_bbox(320, 139.5, 522, 179),
+            ),
+            _block(
+                "left-name",
+                "单位名称：定边县瑞能新能源科技有限公司",
+                _bbox(84, 141, 285, 153),
+                page_no=13,
+                layout_bbox=_bbox(82, 140, 285, 152),
+            ),
+            _block("rep-a", "法定代表人或授权代表签字：", _bbox(81, 196, 230, 209), page_no=13),
+            _block("rep-b", "法定代表人或授权代表签字：", _bbox(320, 196, 470, 209), page_no=13),
+        ],
+    )
+
+    result = SigningBlockDetector().detect(_document(page))
+
+    block = next(item for item in result.blocks if "title" in item.source_block_ids)
+    assert "right-name" in block.source_block_ids
+    assert block.block_role == SigningBlockRole.BOTH_PARTIES
+    region = SigningRegionExtractor().extract_from_blocks([block], _document(page))[0]
+    names = {
+        (element.raw_ref.get("party_role"), element.text)
+        for element in region.elements
+        if element.raw_ref.get("field_key") == "party_name"
+    }
+    assert names == {
+        ("甲方", "定边县瑞能新能源科技有限公司"),
+        ("乙方", "国能日新科技股份有限公司"),
+    }
+
+
 def test_detector_extends_scanned_stacked_signature_sections_with_lower_seal_and_time() -> None:
     page = Page(
         page_no=29,
@@ -923,6 +968,48 @@ def test_detector_recovers_terminal_business_only_signing_page_after_no_text_mar
     assert {"address", "contact_a", "phone_a", "email_b", "credit_b"}.issubset(block.source_block_ids)
     assert "footer" not in block.source_block_ids
     assert block.exclude_from_clause_diff is True
+
+
+def test_detector_excludes_inline_terminal_signing_tail_after_body_clause() -> None:
+    page = Page(
+        page_no=3,
+        width=595,
+        height=842,
+        blocks=[
+            _block("body", "五、纠纷解决 双方应友好协商解决。", _bbox(70, 90, 520, 130), page_no=3),
+            _block(
+                "parties",
+                "甲方：甲方科技有限公司 乙方：乙方科技有限公司",
+                _bbox(70, 190, 520, 215),
+                page_no=3,
+            ),
+            _block("seal_a", "（盖章）", _bbox(90, 240, 150, 260), page_no=3),
+            _block("seal_b", "（盖章）", _bbox(340, 240, 400, 260), page_no=3),
+            _block("rep_a", "法人代表或授权委托人：", _bbox(70, 285, 250, 305), page_no=3),
+            _block("rep_b", "法人代表或授权委托人：", _bbox(320, 285, 500, 305), page_no=3),
+            _block("address_a", "地址：北京市海淀区", _bbox(70, 335, 250, 355), page_no=3),
+            _block("address_b", "地址：陕西省西安市", _bbox(320, 335, 500, 355), page_no=3),
+            _block("phone_a", "电话：010-12345678", _bbox(70, 385, 250, 405), page_no=3),
+            _block("phone_b", "电话：029-12345678", _bbox(320, 385, 500, 405), page_no=3),
+            _block("bank_a", "开户银行：招商银行", _bbox(70, 435, 250, 455), page_no=3),
+            _block("bank_b", "开户银行：中国银行", _bbox(320, 435, 500, 455), page_no=3),
+            _block("account_a", "账号：110001", _bbox(70, 485, 250, 505), page_no=3),
+            _block("account_b", "账号：220002", _bbox(320, 485, 500, 505), page_no=3),
+            _block("credit_a", "税号：91110001", _bbox(70, 535, 250, 555), page_no=3),
+            _block("credit_b", "税号：91110002", _bbox(320, 535, 500, 555), page_no=3),
+            _block("date_a", "日期：", _bbox(70, 585, 250, 605), page_no=3),
+            _block("date_b", "日期：", _bbox(320, 585, 500, 605), page_no=3),
+        ],
+    )
+
+    result = SigningBlockDetector().detect(_document(page))
+
+    assert len(result.blocks) == 1
+    block = result.blocks[0]
+    assert "terminal_business_signing_fields" in block.confidence_reasons
+    assert block.exclude_from_clause_diff is True
+    assert "body" not in block.source_block_ids
+    assert {"parties", "address_a", "credit_b", "date_a"}.issubset(block.source_block_ids)
 
 
 def test_detector_suppresses_nested_label_clusters_inside_full_signing_page() -> None:

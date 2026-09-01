@@ -365,6 +365,14 @@ class OcrQualityProfiler:
                 risk_profiles_by_key=risk_profiles_by_key,
             )
 
+        if diff.source_type == "signing_region" and diff.diff_type in {"ADD", "DELETE"}:
+            present_evidence = diff.compare_evidence if diff.diff_type == "ADD" else diff.original_evidence
+            missing_side: OcrQualitySide = "original" if diff.diff_type == "ADD" else "compare"
+            for page_no in {evidence.page_no for evidence in present_evidence}:
+                key = (missing_side, page_no)
+                if key in risk_profiles_by_key:
+                    matched_by_key[key] = risk_profiles_by_key[key]
+
         return [
             matched_by_key[key]
             for key in sorted(matched_by_key, key=lambda item: (_SIDE_ORDER.get(item[0], 99), item[1]))

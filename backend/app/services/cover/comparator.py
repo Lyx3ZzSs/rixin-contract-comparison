@@ -36,7 +36,10 @@ def build_diffs(normalizer, original: Document, compare: Document, start_index: 
             continue
         if key == "project_title" and _project_title_covered_by_opposite_document(left, right, original, compare):
             continue
-        diffs.append(_build_diff(key, left, right, next_index))
+        diff = _build_diff(key, left, right, next_index)
+        if _cover_field_supported_elsewhere(key, left, right, original, compare, normalizer):
+            diff.review_flags.append("CROSS_PAGE_FIELD_CONFIRMED")
+        diffs.append(diff)
         next_index += 1
     preamble_diffs = _build_preamble_title_diffs(
         original_extraction,
@@ -307,6 +310,101 @@ def _project_title_covered_by_opposite_document(
         return False
     opposite = compare if left else original
     return _document_contains_text(opposite, present.value)
+
+
+def _cover_field_supported_elsewhere(
+    key: str,
+    left: CoverField | None,
+    right: CoverField | None,
+    original: Document,
+    compare: Document,
+    normalizer,
+) -> bool:
+    if key == "project_title":
+        return False
+    left_value = left.value if left else ""
+    right_value = right.value if right else ""
+    if _unreliable_cover_field_value(left_value) and right_value:
+        return _document_has_labeled_field_value(original, key, right_value, normalizer)
+    if _unreliable_cover_field_value(right_value) and left_value:
+        return _document_has_labeled_field_value(compare, key, left_value, normalizer)
+    return False
+
+
+def _unreliable_cover_field_value(value: str) -> bool:
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", value or ""))
+    if not compact:
+        return True
+    replacement_count = sum(compact.count(char) for char in "□▢■�")
+    return replacement_count >= max(1, len(compact) // 3)
+
+
+def _document_has_labeled_field_value(document: Document, key: str, value: str, normalizer) -> bool:
+    target = normalize_value(normalizer, key, value)
+    if not target:
+        return False
+    first_page = min((page.page_no for page in document.pages), default=1)
+    for page in document.pages:
+        if page.page_no == first_page:
+            continue
+        for block in page.blocks:
+            for line in (block.text or "").splitlines():
+                parsed = parse_labeled_line(line.strip())
+                if parsed is None or parsed[0] != key:
+                    continue
+                if normalize_value(normalizer, key, parsed[1]) == target:
+                    return True
+    return target in _native_pdf_field_values(document.path).get(key, set())
+
+
+@lru_cache(maxsize=64)
+def _native_pdf_field_values(path: str) -> dict[str, set[str]]:
+    pdf_path = _existing_pdf_path(path)
+    if pdf_path is None:
+        return {}
+    try:
+        import fitz
+
+        with fitz.open(pdf_path) as pdf:
+            page_lines = [
+                [line.strip() for line in page.get_text().splitlines() if line.strip()]
+                for page in pdf
+            ]
+    except Exception:
+        return {}
+
+    values: dict[str, set[str]] = {}
+    for lines in page_lines:
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            if line in {"甲", "乙"} and index + 1 < len(lines) and lines[index + 1] == "方":
+                line = f"{line}方"
+                index += 1
+            parsed = parse_labeled_line(line)
+            if parsed is None:
+                index += 1
+                continue
+            key, inline_value = parsed
+            parts = [inline_value] if inline_value else []
+            cursor = index + 1
+            complete_blank_date = key == "sign_date" and bool(
+                re.fullmatch(r"\d{4}年\s*月\s*日?", inline_value.strip())
+            )
+            while not complete_blank_date and cursor < len(lines) and cursor <= index + 4:
+                candidate = lines[cursor]
+                candidate_label = candidate
+                if candidate in {"甲", "乙"} and cursor + 1 < len(lines) and lines[cursor + 1] == "方":
+                    candidate_label = f"{candidate}方"
+                if parse_labeled_line(candidate_label) is not None:
+                    break
+                parts.append(candidate)
+                cursor += 1
+            value = re.sub(r"\s+", "", "".join(parts))
+            if value:
+                values.setdefault(key, set()).add(normalize_extra(value))
+            index = max(index + 1, cursor)
+    return values
 
 
 def _title_extra_covered_by_document(extra: CoverExtraText, document: Document) -> bool:

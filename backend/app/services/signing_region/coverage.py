@@ -59,8 +59,15 @@ class SigningRegionCoverageBuilder:
                 legacy_evidence = [*legacy.original_evidence, *legacy.compare_evidence]
                 if self._any_overlap(signing_evidence, legacy_evidence):
                     covered.append(legacy.diff_id)
-                    reasons[legacy.diff_id] = "overlaps_confirmed_signing_region"
-                    result.covered_diff_ids.add(legacy.diff_id)
+                    if legacy.source_type == "seal":
+                        # The page visual detector is the canonical owner of a
+                        # seal object.  Signing-region output only provides the
+                        # field context and must not emit the same object again.
+                        reasons[legacy.diff_id] = "duplicate_seal_diff"
+                        result.covered_diff_ids.add(signing_diff.diff_id)
+                    else:
+                        reasons[legacy.diff_id] = "overlaps_confirmed_signing_region"
+                        result.covered_diff_ids.add(legacy.diff_id)
             if covered:
                 result.entries.append(
                     SigningCoverageEntry(
