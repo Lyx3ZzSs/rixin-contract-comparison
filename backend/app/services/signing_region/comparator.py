@@ -323,7 +323,14 @@ class SigningRegionComparator:
     def _content_candidates(element: SigningElement | None) -> list[dict[str, object]]:
         if element is None:
             return []
-        return [dict(item) for item in element.raw_ref.get("value_evidence") or [] if isinstance(item, dict)]
+        return [
+            dict(item)
+            for item in [
+                *(element.raw_ref.get("value_evidence") or []),
+                *(element.raw_ref.get("supporting_unlocalized_evidence") or []),
+            ]
+            if isinstance(item, dict)
+        ]
 
     @classmethod
     def _is_party_name_ocr_gap(

@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "contract_key": "HANENG_GONGHE",
+  "expected_case_count": 4,
+  "assertions": [
+    {
+      "case_id": "HANENG_GONGHE_P1_HEADER_FOOTER_ADD_DD283FDA91",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "header_footer",
+      "source_type": "header_footer",
+      "diff_type": "ADD",
+      "title": "页眉",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "Cokila-20260626-w01"
+    },
+    {
+      "case_id": "HANENG_GONGHE_P1_SEAL_ADD_A1BFE0B465",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第1页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "可可可合632",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 555.0,
+          "y0": 205.0,
+          "x1": 597.0,
+          "y1": 324.0
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HANENG_GONGHE_P3_SEAL_ADD_E82B677D32",
+      "assertion": "MUST_REVIEW",
+      "page": 3,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第3页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "55同专用章21000340",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 554.0,
+          "y0": 199.0,
+          "x1": 595.5,
+          "y1": 322.0
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HANENG_GONGHE_P5_SIGNATURE_ADD_A1EB09EADF",
+      "assertion": "MUST_REVIEW",
+      "page": 5,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "甲方 · 法人代表或授权委托人",
+      "party": "甲方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NORMAL",
+      "content_recognition_status": "NEEDS_REVIEW",
+      "change_decision": "CONFIRMED",
+      "semantic_after": "伟",
+      "content_candidates_contain": [
+        "伟",
+        "郑伟"
+      ],
+      "presentation_contains": "新增手写填写；内容识别待确认",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 253.5,
+          "y0": 275.5,
+          "x1": 266.5,
+          "y1": 304.5
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 601.0
+      }
+    }
+  ]
+}

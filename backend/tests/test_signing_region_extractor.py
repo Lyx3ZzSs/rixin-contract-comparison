@@ -328,6 +328,315 @@ def test_extractor_builds_role_scoped_standard_and_custom_fields() -> None:
     assert all(BBox.model_validate(field.raw_ref["value_bbox"]).x0 > field.bbox.x0 for field in fields)
 
 
+def test_extractor_rejects_ambiguous_cross_column_structure_date_block() -> None:
+    left = TextBlock(
+        block_id="left-date",
+        page_no=1,
+        text="签订日期：2026.7.28",
+        bbox=_bbox(70, 500, 220, 520),
+        source="ppocrv5_layout_matched",
+    )
+    right = TextBlock(
+        block_id="right-date",
+        page_no=1,
+        text="签订日期：",
+        bbox=_bbox(320, 500, 375, 520),
+        source="ppocrv5_layout_matched",
+        source_evidence=[
+            {
+                "source": "ppocrv5",
+                "raw_text": "签订日期：",
+                "page_no": 1,
+                "bbox": _bbox(320, 500, 375, 520),
+                "confidence": 0.99,
+            },
+            {
+                "source": "ppstructure",
+                "raw_text": "签订日期：2026.7.28签订日期：",
+                "page_no": 1,
+                "bbox": _bbox(60, 496, 540, 524),
+                "confidence": 1.0,
+            },
+        ],
+    )
+    signing_block = SigningBlock(
+        block_id="SB-CROSS-COLUMN-DATE",
+        page_no=1,
+        bbox=_bbox(40, 450, 555, 560),
+        block_role=SigningBlockRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["paired_parties"],
+        source_block_ids=[left.block_id, right.block_id],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document([left, right]))[0]
+    dates = {
+        element.raw_ref["party_role"]: element
+        for element in region.elements
+        if element.element_type == SigningElementType.FIELD and element.raw_ref["field_key"] == "date"
+    }
+
+    assert dates["甲方"].text == "2026.7.28"
+    assert dates["乙方"].text == ""
+    assert dates["乙方"].raw_ref["value_evidence"] == []
+    assert {
+        item["rejection_reason"] for item in dates["乙方"].raw_ref["rejected_value_evidence"]
+    } == {"AMBIGUOUS_MULTI_LABEL_BLOCK"}
+
+
+def test_extractor_does_not_create_value_bbox_from_cross_column_block_intersection() -> None:
+    right = TextBlock(
+        block_id="right-date",
+        page_no=1,
+        text="签订日期：",
+        bbox=_bbox(320, 500, 375, 520),
+        source="ppocrv5_layout_matched",
+        source_evidence=[
+            {
+                "source": "ppstructure",
+                "raw_text": "签订日期：2026.7.28",
+                "page_no": 1,
+                "bbox": _bbox(60, 496, 540, 524),
+                "confidence": 1.0,
+            }
+        ],
+    )
+    signing_block = SigningBlock(
+        block_id="SB-CROSS-COLUMN-BLOCK",
+        page_no=1,
+        bbox=_bbox(40, 450, 555, 560),
+        block_role=SigningBlockRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["paired_parties"],
+        source_block_ids=[right.block_id],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document([right]))[0]
+    date_field = next(
+        element
+        for element in region.elements
+        if element.element_type == SigningElementType.FIELD and element.raw_ref["field_key"] == "date"
+    )
+
+    assert date_field.text == ""
+    assert date_field.raw_ref["value_evidence"] == []
+    assert "display_value_bbox" not in date_field.raw_ref
+    assert date_field.raw_ref["rejected_value_evidence"][0]["rejection_reason"] == (
+        "CROSS_COLUMN_SOURCE_BLOCK"
+    )
+
+
+def test_extractor_accepts_localized_structure_value_fragment_in_target_roi() -> None:
+    right = TextBlock(
+        block_id="right-date",
+        page_no=1,
+        text="签订日期：",
+        bbox=_bbox(320, 500, 375, 520),
+        source="ppocrv5_layout_matched",
+        source_evidence=[
+            {
+                "source": "ppstructure",
+                "raw_text": "2026.7.28",
+                "page_no": 1,
+                "bbox": _bbox(382, 500, 455, 520),
+                "confidence": 1.0,
+            }
+        ],
+    )
+    signing_block = SigningBlock(
+        block_id="SB-LOCALIZED-STRUCTURE-DATE",
+        page_no=1,
+        bbox=_bbox(40, 450, 555, 560),
+        block_role=SigningBlockRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["paired_parties"],
+        source_block_ids=[right.block_id],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document([right]))[0]
+    date_field = next(
+        element
+        for element in region.elements
+        if element.element_type == SigningElementType.FIELD and element.raw_ref["field_key"] == "date"
+    )
+
+    assert date_field.text == "2026.7.28"
+    assert date_field.raw_ref["content_recognition_status"] == "CONFIRMED"
+    assert date_field.raw_ref["content_recognition_reason"] == "SINGLE_SOURCE"
+    assert date_field.raw_ref["value_evidence"][0]["localization_method"] == "SOURCE_FRAGMENT_BBOX"
+    assert BBox.model_validate(date_field.raw_ref["display_value_bbox"]) == _bbox(382, 500, 455, 520)
+
+
+def test_extractor_requires_two_independent_sources_for_source_values_agree() -> None:
+    line = TextBlock(
+        block_id="date",
+        page_no=1,
+        text="签订日期：2026.7.28",
+        bbox=_bbox(70, 500, 220, 520),
+        source="ppocrv5_layout_matched",
+        source_evidence=[
+            {
+                "source": "ppocrv5",
+                "raw_text": "签订日期：2026.7.28",
+                "page_no": 1,
+                "bbox": _bbox(70, 500, 220, 520),
+                "confidence": 0.99,
+            },
+            {
+                "source": "ppstructure",
+                "raw_text": "2026.7.28",
+                "page_no": 1,
+                "bbox": _bbox(135, 500, 220, 520),
+                "confidence": 1.0,
+            },
+        ],
+    )
+    signing_block = SigningBlock(
+        block_id="SB-TWO-SOURCES",
+        page_no=1,
+        bbox=_bbox(40, 450, 555, 560),
+        block_role=SigningBlockRole.PARTY_A,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        source_block_ids=[line.block_id],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document([line]))[0]
+    date_field = next(
+        element
+        for element in region.elements
+        if element.element_type == SigningElementType.FIELD and element.raw_ref["field_key"] == "date"
+    )
+
+    assert date_field.raw_ref["content_recognition_reason"] == "SOURCE_VALUES_AGREE"
+    assert {item["source"] for item in date_field.raw_ref["value_evidence"]} == {
+        "ppocrv5",
+        "ppstructure",
+    }
+
+
+def test_extractor_marks_one_localized_value_source_as_single_source() -> None:
+    line = TextBlock(
+        block_id="date",
+        page_no=1,
+        text="签订日期：2026.7.28",
+        bbox=_bbox(70, 500, 220, 520),
+        source="ppocrv5_layout_matched",
+    )
+    signing_block = SigningBlock(
+        block_id="SB-ONE-SOURCE",
+        page_no=1,
+        bbox=_bbox(40, 450, 555, 560),
+        block_role=SigningBlockRole.PARTY_A,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        source_block_ids=[line.block_id],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document([line]))[0]
+    date_field = next(
+        element
+        for element in region.elements
+        if element.element_type == SigningElementType.FIELD and element.raw_ref["field_key"] == "date"
+    )
+
+    assert date_field.text == "2026.7.28"
+    assert date_field.raw_ref["content_recognition_status"] == "CONFIRMED"
+    assert date_field.raw_ref["content_recognition_reason"] == "SINGLE_SOURCE"
+    assert len(date_field.raw_ref["value_evidence"]) == 1
+
+
+def test_extractor_marks_critical_date_single_source_with_conflicting_support_for_review() -> None:
+    line = TextBlock(
+        block_id="date-conflict",
+        page_no=1,
+        text="签订日期：2026.7.28",
+        bbox=_bbox(70, 500, 220, 520),
+        source="ppocrv5_layout_matched",
+        source_evidence=[
+            {
+                "source": "ppocrv5",
+                "raw_text": "签订日期：2026.7.28",
+                "page_no": 1,
+                "bbox": _bbox(70, 500, 220, 520),
+                "confidence": 0.98,
+            },
+            {
+                "source": "ppstructure",
+                "raw_text": "签订日期：2026.7.2B",
+                "page_no": 1,
+                "bbox": _bbox(70, 500, 220, 520),
+                "confidence": 1.0,
+            },
+        ],
+    )
+    signing_block = SigningBlock(
+        block_id="SB-DATE-CONFLICT",
+        page_no=1,
+        bbox=_bbox(40, 450, 555, 560),
+        block_role=SigningBlockRole.PARTY_A,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        source_block_ids=[line.block_id],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document([line]))[0]
+    date_field = next(
+        element
+        for element in region.elements
+        if element.element_type == SigningElementType.FIELD and element.raw_ref["field_key"] == "date"
+    )
+
+    assert date_field.text == "2026.7.28"
+    assert date_field.raw_ref["content_recognition_status"] == "NEEDS_REVIEW"
+    assert date_field.raw_ref["content_recognition_reason"] == "SINGLE_SOURCE"
+    assert date_field.raw_ref["supporting_unlocalized_evidence"][0]["candidate_value"] == "2026.7.2B"
+
+
+def test_extractor_keeps_two_same_row_dates_in_their_own_columns() -> None:
+    blocks = [
+        TextBlock(
+            block_id="left-date",
+            page_no=1,
+            text="签订日期：2026.7.28",
+            bbox=_bbox(70, 500, 220, 520),
+            source="ppocrv5_layout_matched",
+        ),
+        TextBlock(
+            block_id="right-date",
+            page_no=1,
+            text="签订日期：2026.8.09",
+            bbox=_bbox(320, 500, 470, 520),
+            source="ppocrv5_layout_matched",
+        ),
+    ]
+    signing_block = SigningBlock(
+        block_id="SB-SAME-ROW-DATES",
+        page_no=1,
+        bbox=_bbox(40, 450, 555, 560),
+        block_role=SigningBlockRole.BOTH_PARTIES,
+        confidence=0.9,
+        confidence_level=SigningBlockConfidenceLevel.HIGH,
+        confidence_reasons=["paired_parties"],
+        source_block_ids=[block.block_id for block in blocks],
+    )
+
+    region = SigningRegionExtractor().extract_from_blocks([signing_block], _document(blocks))[0]
+    dates = {
+        element.raw_ref["party_role"]: element
+        for element in region.elements
+        if element.element_type == SigningElementType.FIELD and element.raw_ref["field_key"] == "date"
+    }
+
+    assert dates["甲方"].text == "2026.7.28"
+    assert dates["乙方"].text == "2026.8.09"
+    assert BBox.model_validate(dates["甲方"].raw_ref["display_value_bbox"]).x1 < 300
+    assert BBox.model_validate(dates["乙方"].raw_ref["display_value_bbox"]).x0 > 300
+
+
 def test_extractor_fuses_spatially_aligned_incomplete_handwriting_candidates() -> None:
     text = "法人代表或授权委托人：伟"
     line = TextBlock(
@@ -360,9 +669,9 @@ def test_extractor_fuses_spatially_aligned_incomplete_handwriting_candidates() -
             },
             {
                 "source": "ppstructure",
-                "raw_text": "法人代表或授权委托人：郑伟",
+                "raw_text": "郑伟",
                 "page_no": 1,
-                "bbox": _bbox(56, 274, 266, 305),
+                "bbox": _bbox(239, 274, 266, 305),
                 "confidence": 0.98,
             },
         ],
@@ -439,7 +748,7 @@ def test_extractor_rejects_cross_row_structure_email_polluted_by_signature_strok
 
     assert email.text == "12048144@ceic.com"
     assert email.raw_ref["content_recognition_status"] == "CONFIRMED"
-    assert email.raw_ref["content_recognition_reason"] == "SOURCE_VALUES_AGREE"
+    assert email.raw_ref["content_recognition_reason"] == "SINGLE_SOURCE"
     assert [item["text"] for item in email.raw_ref["value_evidence"]] == ["12048144@ceic.com"]
     assert BBox.model_validate(email.raw_ref["display_value_bbox"]).x1 <= 237
 
@@ -463,9 +772,9 @@ def test_extractor_does_not_promote_invalid_email_suffix_candidate() -> None:
             },
             {
                 "source": "ppstructure",
-                "raw_text": "邮箱：12048144@ceic.com 1",
+                "raw_text": "12048144@ceic.com 1",
                 "page_no": 1,
-                "bbox": _bbox(92, 407.5, 258, 423),
+                "bbox": _bbox(116, 407.5, 258, 423),
                 "confidence": 0.5676,
             },
         ],

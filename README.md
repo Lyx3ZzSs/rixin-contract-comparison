@@ -214,6 +214,49 @@ cd ..
 cd frontend && npm test && npm run build
 ```
 
+### 10-contract Golden Blocking Gate
+
+当前人工确认的业务基线版本为 `contract-golden-v1`，包含 10 份合同、20 个固定 PDF SHA256 和 186 条语义断言。真实合同 PDF 属于私有测试数据，不提交到普通源码仓库；开发机或 CI 需挂载版本固定的 bundle：
+
+```bash
+export GOLDEN_CONTRACT_DATA_ROOT=/secure/path/contract-golden-v1
+make golden-contract
+```
+
+该统一命令依次校验 20/20 输入文件的 SHA256 和页数、Fresh Replay 10/10 合同、执行 semantic blocking test，并检查 Golden 高风险文件是否发生变化。CI 不绑定具体平台，只需挂载 bundle、设置环境变量并执行上述命令。任一 blocking case 被跳过或以下条件任一不满足，命令均以非零状态退出：
+
+- 10/10 contracts executed，0 skipped。
+- positive、negative、review assertions 100% PASS。
+- unexpected confirmed diff 为 0。
+- bbox regression 为 0。
+
+在多 commit 的 PR/代码审查中，CI 应额外将目标分支对应的 Git revision 通过平台无关变量 `GOLDEN_BASE_REF` 传入，以检查完整变更范围；未设置时，干净 checkout 默认检查 `HEAD^...HEAD`。
+
+后续修改 comparison pipeline 的标准流程是：
+
+```text
+修改代码 → unit tests → Golden 10-contract replay → PASS → 允许合并
+```
+
+如果 Golden 失败，禁止直接修改 Golden 让测试变绿：
+
+- A. 代码回归：修复代码，保持 Golden 不变。
+- B. 算法能力真实提升且业务结果合理变化：人工核对合同原件，批准新的业务真相后再修改 Golden。
+
+Golden 变更必须先运行语义化变更检查；它会列出 added cases、removed cases、changed expected decision、changed semantic expectation 和 changed bbox expectation：
+
+```bash
+python backend/scripts/check_golden_baseline_change.py
+```
+
+人工审查通过后才可设置：
+
+```bash
+GOLDEN_BASELINE_CHANGE_APPROVED=1 make golden-contract
+```
+
+该变量仅表示允许提交已经人工审核的 Golden 修改，不会生成、更新或覆盖 Golden。`contract_golden/manifest.json`、`oracle/*`、`semantic_matcher.py`、blocking test 和 baseline change checker 均属于高风险保护区，修改时必须在 PR/代码审查中显式提示。
+
 ## 当前限制
 
 - 合同比对必须同时配置可用的 `PPOCRV5_URL` 和 `PPSTRUCTURE_URL`；任一服务不可用都会使比对任务失败。

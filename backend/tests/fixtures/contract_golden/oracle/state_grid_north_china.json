@@ -1,0 +1,524 @@
+{
+  "schema_version": 1,
+  "contract_key": "STATE_GRID_NORTH_CHINA",
+  "expected_case_count": 20,
+  "assertions": [
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P1_METADATA_ADD_A5ED1AD126",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面字段：合同编号（乙方）",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "GNXNYN-20140604-000024"
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P1_DATE_ADD_47E0771F4B",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面字段：签订日期",
+      "field_type": "date",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "2024.6.3"
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P1_SEAL_ADD_68BDE56DFF",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第1页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "<divstyle=\"text-align:center;\"><imgsrc=\"imgs/img_in_seal_box_1124_1097_1",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 562.0,
+          "y0": 548.5,
+          "x1": 597.0,
+          "y1": 656.0
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P2_SEAL_ADD_3CE9A856A0",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第2页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "<divstyle=\"text-align:center;\"><imgsrc=\"imgs/img_in_seal_box_0_1119_69_1",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 0.0,
+          "y0": 559.5,
+          "x1": 34.5,
+          "y1": 656.0
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P12_SIGNATURE_DELETE_3633BFCB53",
+      "assertion": "MUST_REVIEW",
+      "page": 12,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 签署主体变化",
+      "party": "乙方",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "乙方:国能日新科技股份有限公司(盖章)",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 316.39369628291286,
+          "y0": 138.98349571681078,
+          "x1": 505.33021633811205,
+          "y1": 152.48189278283198
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P12_SIGNATURE_DELETE_71700997FE",
+      "assertion": "MUST_REVIEW",
+      "page": 12,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 签署主体变化",
+      "party": "甲方",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "甲方:国家电网有限公司华北分部(盖章)",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 90.96943558213293,
+          "y0": 138.98349571681078,
+          "x1": 299.8992381828558,
+          "y1": 152.48189278283198
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P12_SIGNATURE_DELETE_C20A4178BD",
+      "assertion": "MUST_REVIEW",
+      "page": 12,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 授权代表（签字）",
+      "party": "乙方",
+      "field_type": "authorized_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "授权代表(签字):",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 309.89587945561766,
+          "y0": 233.47227517895914,
+          "x1": 425.35708615601715,
+          "y1": 249.47037540535462
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P12_SIGNATURE_DELETE_D4C2E8A01C",
+      "assertion": "MUST_REVIEW",
+      "page": 12,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 签订日期",
+      "party": "乙方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "签订日期:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 309.89587945561766,
+          "y0": 257.9693661506272,
+          "x1": 369.8757270921888,
+          "y1": 273.46752574494786
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P12_SIGNATURE_DELETE_2AB1F0734F",
+      "assertion": "MUST_REVIEW",
+      "page": 12,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 法定代表人（负责人）或",
+      "party": "乙方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "法定代表人(负责人)或",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 309.89587945561766,
+          "y0": 210.47500610351562,
+          "x1": 461.84482680159795,
+          "y1": 224.47334380161166
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P12_SIGNATURE_DELETE_5D49BA7F24",
+      "assertion": "MUST_REVIEW",
+      "page": 12,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 授权代表（签字）",
+      "party": "甲方",
+      "field_type": "authorized_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "授权代表(签字):",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 90.96943558213293,
+          "y0": 232.4723939148094,
+          "x1": 205.93081021889432,
+          "y1": 249.47037540535462
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P12_SIGNATURE_DELETE_E167823E61",
+      "assertion": "MUST_REVIEW",
+      "page": 12,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 签订日期",
+      "party": "甲方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "签订日期:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 91.46926764577103,
+          "y0": 257.9693661506272,
+          "x1": 151.9489473459803,
+          "y1": 273.46752574494786
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P12_SIGNATURE_DELETE_B63184103B",
+      "assertion": "MUST_REVIEW",
+      "page": 12,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 法定代表人(负责人)或",
+      "party": "甲方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "法定代表人(负责人)或",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 90.46960351849484,
+          "y0": 209.97506547144076,
+          "x1": 224.42459657350378,
+          "y1": 225.97316569783624
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P25_SIGNATURE_DELETE_5D87055B4A",
+      "assertion": "MUST_REVIEW",
+      "page": 25,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 签署主体变化",
+      "party": "乙方",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "乙方:国能日新科技股份有限公司(盖章)",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 310.39571151925577,
+          "y0": 133.9840893960622,
+          "x1": 503.33088808355967,
+          "y1": 149.48224899038283
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P25_SIGNATURE_DELETE_DF2B2DA8D9",
+      "assertion": "MUST_REVIEW",
+      "page": 25,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 签署主体变化",
+      "party": "甲方",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "甲方:国家电网有限公司华北分部(盖章)",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 91.96909970940912,
+          "y0": 133.9840893960622,
+          "x1": 302.89823056468435,
+          "y1": 149.48224899038283
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P25_SIGNATURE_DELETE_35AF6BC3BC",
+      "assertion": "MUST_REVIEW",
+      "page": 25,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 授权代表（签字）",
+      "party": "乙方",
+      "field_type": "authorized_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "授权代表(签字):",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 311.39537564653193,
+          "y0": 230.47263138651,
+          "x1": 421.3584296469124,
+          "y1": 244.47096908460603
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P25_SIGNATURE_DELETE_F33CDF6275",
+      "assertion": "MUST_REVIEW",
+      "page": 25,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 签订日期",
+      "party": "乙方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "签订日期:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 312.39503977380815,
+          "y0": 277.96699143362156,
+          "x1": 372.3748874103793,
+          "y1": 293.4651510279422
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P25_SIGNATURE_DELETE_C1AF970CCA",
+      "assertion": "MUST_REVIEW",
+      "page": 25,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 法定代表人（负责人）或",
+      "party": "乙方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "法定代表人(负责人)或",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 312.39503977380815,
+          "y0": 206.9754216789916,
+          "x1": 464.34398711978844,
+          "y1": 220.4738187450128
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P25_SIGNATURE_DELETE_5517426182",
+      "assertion": "MUST_REVIEW",
+      "page": 25,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 授权代表（签字）",
+      "party": "甲方",
+      "field_type": "authorized_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "授权代表(签字):",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 92.4689317730472,
+          "y0": 229.97269075443512,
+          "x1": 200.9324895825134,
+          "y1": 245.9707909808306
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P25_SIGNATURE_DELETE_DB4939A405",
+      "assertion": "MUST_REVIEW",
+      "page": 25,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 签订日期",
+      "party": "甲方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "签订日期:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 92.4689317730472,
+          "y0": 277.96699143362156,
+          "x1": 152.44877940961837,
+          "y1": 293.4651510279422
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_P25_SIGNATURE_DELETE_9260564C50",
+      "assertion": "MUST_REVIEW",
+      "page": 25,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 法定代表人(负责人)或",
+      "party": "甲方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "法定代表人(负责人)或",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 92.9687638366853,
+          "y0": 206.47548104691674,
+          "x1": 226.42392482805613,
+          "y1": 221.97364064123738
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    }
+  ]
+}

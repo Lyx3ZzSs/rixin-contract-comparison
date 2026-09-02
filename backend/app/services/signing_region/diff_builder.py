@@ -124,10 +124,9 @@ class SigningRegionDiffBuilder:
                 "authorized_representative",
                 "signature",
             }:
-                if change.get("content_recognition_reason") == "CONFLICTING_VALUE_CANDIDATES":
-                    return f"{title}：新增手写填写（内容识别需复核）"
-                suffix = "（内容识别需复核）" if change.get("content_recognition_status") == "NEEDS_REVIEW" else ""
-                return f"{title}：新增手写填写“{compare_display}”{suffix}"
+                if change.get("content_recognition_status") == "NEEDS_REVIEW":
+                    return f"{title}：新增手写填写；内容识别待确认"
+                return f"{title}：新增手写填写“{compare_display}”"
             return f"{title}字段由未填写变为填写：{compare_display}"
         if change.get("fill_state_change") == "cleared":
             return f"{title}字段由填写变为未填写：{original_display}"

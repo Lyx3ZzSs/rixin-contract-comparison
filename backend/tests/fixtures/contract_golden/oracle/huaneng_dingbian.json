@@ -1,0 +1,274 @@
+{
+  "schema_version": 1,
+  "contract_key": "HUANENG_DINGBIAN",
+  "expected_case_count": 13,
+  "assertions": [
+    {
+      "case_id": "HUANENG_DINGBIAN_P1_METADATA_ADD_7B82F2924A",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面字段：合同编号（甲方）",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "XNY-RN/SC-FW-2026-00S"
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P1_METADATA_ADD_A09295245D",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面额外文本",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "Cakilu-7020513N2o"
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P1_METADATA_ADD_0361199306",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面额外文本",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "正"
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P1_METADATA_ADD_7A5C267AE9",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面额外文本",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "2026年05月"
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P1_SEAL_ADD_BDEFBEFFE2",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第1页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "合",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 538.5,
+          "y0": 296.5,
+          "x1": 598.0,
+          "y1": 423.5
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P13_SEAL_ADD_D3384C53C1",
+      "assertion": "MUST_REVIEW",
+      "page": 13,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第13页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "单位名公司法定代表人或授",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 80.0,
+          "y0": 114.0,
+          "x1": 237.0,
+          "y1": 297.0
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P13_SIGNATURE_ADD_D1E1E45785",
+      "assertion": "MUST_REVIEW",
+      "page": 13,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "甲方 · 签字日期",
+      "party": "甲方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "NEEDS_REVIEW",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "2026年5月22日",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 138.5,
+          "y0": 513.5,
+          "x1": 230.5,
+          "y1": 534.5
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P13_SIGNATURE_ADD_916B418E94",
+      "assertion": "MUST_REVIEW",
+      "page": 13,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "甲方 · 法定代表人或授权代表签字",
+      "party": "甲方",
+      "field_type": "signature",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "未签",
+      "semantic_after": "已签",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 131.95936395759716,
+          "y0": 227.33333333333334,
+          "x1": 195.0689045936396,
+          "y1": 281.3333333333333
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P28_SIGNATURE_ADD_2E71656484",
+      "assertion": "MUST_REVIEW",
+      "page": 28,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "签署日期",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "10.6.8本项目范围内风电场与国网陕西省电力调度中心及西安集控中心保持网络通讯正常,不出现通信终端,通讯闪断。(以调度颁布的要求为准,最低要求",
+      "semantic_after": "10.6.8本项目范围内风电场与国网陕西省电力调度中心及西安集控中心保持网络通讯正常,不出现通信终端,通讯闪断。(以调度颁布的要求为准,最低要求",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 83.7,
+          "y0": 509.2,
+          "x1": 113.3,
+          "y1": 536.3
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P30_SIGNATURE_ADD_2AA7360919",
+      "assertion": "MUST_REVIEW",
+      "page": 30,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "签署日期",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "四、坚持文明生产、文明施工。合同执行期与买方主管人员意见有冲突时,采取合理合法途径协商解决,不得采取任何有商业贿赂倾向的方式。违约责任:双方应自",
+      "semantic_after": "四、坚持文明生产、文明施工。合同执行期与买方主管人员意见有冲突时,采取合理合法途径协商解决,不得采取任何有商业贿赂倾向的方式。违约责任:双方应自",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 86.2,
+          "y0": 425.7,
+          "x1": 113.3,
+          "y1": 451.8
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P38_SIGNATURE_ADD_FA241882AB",
+      "assertion": "MUST_REVIEW",
+      "page": 38,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "签署日期",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "7)甲方有关安全管理体系方面的管理程序、标准和规定。甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司年月日年月日",
+      "semantic_after": "7)甲方有关安全管理体系方面的管理程序、标准和规定。甲方:定边县瑞能新能源科技有限公司乙方:国能日新科技股份有限公司2026年05月22日年月日",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 84.7,
+          "y0": 649.2,
+          "x1": 113.8,
+          "y1": 678.3
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P40_SIGNATURE_ADD_68B755758F",
+      "assertion": "MUST_REVIEW",
+      "page": 40,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "签署日期",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "第六条协议的效力和变更本协议自双方签字起生效。本协议的任何修改必须经过双方的书面同意。协议未尽事宜由双方协商解决,协商不成,可向仲裁机关申请仲裁",
+      "semantic_after": "第六条协议的效力和变更本协议自双方签字起生效。本协议的任何修改必须经过双方的书面同意。协议未尽事宜由双方协商解决,协商不成,可向仲裁机关申请仲裁",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 85.7,
+          "y0": 613.2,
+          "x1": 118.8,
+          "y1": 638.3
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUANENG_PARTY_B_COMPANY_NAME_FALSE_ADD",
+      "assertion": "MUST_NOT_EXIST",
+      "region": "signing",
+      "party": "乙方",
+      "field_type": "party_name",
+      "diff_type": "ADD",
+      "forbidden_value_pattern": "国能日新科技股份有限公司"
+    }
+  ]
+}

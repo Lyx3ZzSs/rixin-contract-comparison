@@ -952,7 +952,46 @@ def test_confirmed_field_fill_keeps_content_recognition_uncertainty_separate() -
     assert diff.content_recognition_status == "NEEDS_REVIEW"
     assert {item["text"] for item in diff.content_candidates} == {"伟", "郑伟"}
     assert diff.compare_evidence[0].bbox == BBox(x0=205, y0=678, x1=266, y1=711)
-    assert "新增手写填写“郑伟”" in diff.readable_change
+    assert diff.readable_change == "甲方 · 法人代表或授权委托人：新增手写填写；内容识别待确认"
+
+
+def test_confirmed_date_fill_keeps_single_source_transcription_under_review() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.append(_field("o-date", "甲方", "date", "签订日期", "", x0=90))
+    compare_date = _field(
+        "c-date",
+        "甲方",
+        "date",
+        "签订日期",
+        "2026.7.28",
+        x0=92,
+        value_bbox=BBox(x0=170, y0=680, x1=245, y1=710),
+    )
+    compare_date.raw_ref.update(
+        {
+            "content_recognition_status": "NEEDS_REVIEW",
+            "content_recognition_reason": "SINGLE_SOURCE",
+            "value_evidence": [
+                {
+                    "source": "ppocrv5",
+                    "text": "2026.7.28",
+                    "bbox": BBox(x0=170, y0=680, x1=245, y1=710).model_dump(),
+                }
+            ],
+        }
+    )
+    compare.elements.append(compare_date)
+
+    comparison = SigningRegionComparator().compare(original, compare)
+    change = next(item for item in comparison.field_changes if item["field_key"] == "date")
+    diff = SigningRegionDiffBuilder().build_diffs([comparison])[0]
+
+    assert change["change_decision"] == "CONFIRMED"
+    assert change["content_recognition_status"] == "NEEDS_REVIEW"
+    assert change["content_recognition_reason"] == "SINGLE_SOURCE"
+    assert diff.diff_type == "ADD"
+    assert diff.content_recognition_status == "NEEDS_REVIEW"
 
 
 def test_conflicting_handwriting_candidates_confirm_fill_but_do_not_choose_longer_text() -> None:
@@ -979,7 +1018,47 @@ def test_conflicting_handwriting_candidates_confirm_fill_but_do_not_choose_longe
     assert diff.content_recognition_status == "NEEDS_REVIEW"
     assert diff.compare_text == ""
     assert {item["text"] for item in diff.content_candidates} == {"伟", "张三"}
-    assert diff.readable_change.endswith("新增手写填写（内容识别需复核）")
+    assert diff.readable_change == "甲方 · 法人代表或授权委托人：新增手写填写；内容识别待确认"
+
+
+def test_unlocalized_supporting_candidate_is_visible_but_cannot_replace_localized_value() -> None:
+    original = _region("O1", "", element_type=SigningElementType.SIGNING_TABLE)
+    compare = _region("C1", "", element_type=SigningElementType.SIGNING_TABLE)
+    original.elements.append(_field("o-rep", "甲方", "legal_representative", "法人代表或授权委托人", "", x0=90))
+    compare_field = _field("c-rep", "甲方", "legal_representative", "法人代表或授权委托人", "伟", x0=92)
+    compare_field.raw_ref.update(
+        {
+            "content_recognition_status": "NEEDS_REVIEW",
+            "content_recognition_reason": "SINGLE_SOURCE",
+            "value_evidence": [
+                {
+                    "source": "ppocrv5",
+                    "text": "伟",
+                    "bbox": BBox(x0=250, y0=680, x1=266, y1=710).model_dump(),
+                }
+            ],
+            "supporting_unlocalized_evidence": [
+                {
+                    "source": "ppstructure",
+                    "text": "郑伟",
+                    "candidate_value": "郑伟",
+                    "localized": False,
+                    "provenance_valid": False,
+                    "rejection_reason": "UNLOCALIZED_BLOCK_VALUE",
+                }
+            ],
+        }
+    )
+    compare.elements.append(compare_field)
+
+    diff = SigningRegionDiffBuilder().build_diffs([SigningRegionComparator().compare(original, compare)])[0]
+
+    assert diff.diff_type == "ADD"
+    assert diff.compare_text == "伟"
+    assert diff.content_recognition_status == "NEEDS_REVIEW"
+    assert {item["text"] for item in diff.content_candidates} == {"伟", "郑伟"}
+    assert diff.readable_change == "甲方 · 法人代表或授权委托人：新增手写填写；内容识别待确认"
+    assert "伟" not in diff.readable_change
 
 
 def test_narrow_ocr_continuation_is_exposed_with_suppression_reason() -> None:

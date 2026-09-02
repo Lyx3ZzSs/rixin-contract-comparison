@@ -1,0 +1,305 @@
+{
+  "schema_version": 1,
+  "contract_key": "RETURN_CONFIRMATION",
+  "expected_case_count": 14,
+  "assertions": [
+    {
+      "case_id": "RETURN_CONFIRMATION_P1_HEADER_FOOTER_MODIFY_278788ADC9",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "header_footer",
+      "source_type": "header_footer",
+      "diff_type": "MODIFY",
+      "title": "页脚页码",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_before": "页码格式:共14页第N页(覆盖第1-14页)",
+      "semantic_after": "页码格式:共15页第N页(覆盖第1-15页)"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P1_METADATA_ADD_D5AACA05A3",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面字段：合同编号",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "XX-C-260520"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P1_DATE_MODIFY_2FBE901E3B",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "MODIFY",
+      "title": "封面字段：签订日期",
+      "field_type": "date",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "2026年4月日",
+      "semantic_after": "2026年4月21日"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P1_METADATA_ADD_8E27E5E34C",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面额外文本",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "GNXMXN-22604A-00044"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P1_METADATA_ADD_4894DBD1E0",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面额外文本",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "录"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P15_SEAL_ADD_901AA50156",
+      "assertion": "MUST_REVIEW",
+      "page": 15,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第15页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "限公司",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 518.0,
+          "y0": 345.5,
+          "x1": 550.0,
+          "y1": 443.0
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_SIGNATURE_ADD_EE35BF633F",
+      "assertion": "MUST_REVIEW",
+      "page": 11,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "乙方 · 日期",
+      "party": "乙方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "2026.",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 372.5,
+          "y0": 151.0,
+          "x1": 403.5,
+          "y1": 177.5
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_SIGNATURE_MODIFY_AF46BC6FA3",
+      "assertion": "MUST_REVIEW",
+      "page": 11,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "MODIFY",
+      "title": "乙方 · 法人代表或授权委托人",
+      "party": "乙方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "法人代表或授权委托人",
+      "semantic_after": "法人代表或",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 338.0,
+          "y0": 108.0,
+          "x1": 398.5,
+          "y1": 125.0
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P10_SIGNATURE_DELETE_FA0B07F45D",
+      "assertion": "MUST_REVIEW",
+      "page": 10,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · (签字)",
+      "party": "乙方",
+      "field_type": "signature",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "(签字)",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 397.3664905922839,
+          "y0": 689.9180722633054,
+          "x1": 425.85691821965526,
+          "y1": 706.9160537538505
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_SIGNATURE_MODIFY_400CE57722",
+      "assertion": "MUST_REVIEW",
+      "page": 11,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "MODIFY",
+      "title": "甲方 · 法人代表或授权委托人",
+      "party": "甲方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "法人代表或授权委托人",
+      "semantic_after": "法人",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 94.5,
+          "y0": 106.5,
+          "x1": 122.5,
+          "y1": 126.0
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P10_SIGNATURE_DELETE_43FD0C3FC7",
+      "assertion": "MUST_REVIEW",
+      "page": 10,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · (签字)",
+      "party": "甲方",
+      "field_type": "signature",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "(签字)",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 180.93920703698967,
+          "y0": 689.9180722633054,
+          "x1": 209.42963466436098,
+          "y1": 706.9160537538505
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_SEAL_ADD_8151DB4059",
+      "assertion": "MUST_REVIEW",
+      "page": 11,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "甲方 · 印章",
+      "party": "甲方",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_after": "seal",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 149.46866096866097,
+          "y0": 58.02508960573477,
+          "x1": 227.3019943019943,
+          "y1": 73.98207885304659
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_SEAL_ADD_3F66D4048B",
+      "assertion": "MUST_REVIEW",
+      "page": 11,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "乙方 · 印章",
+      "party": "乙方",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_after": "seal",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 420.22222222222223,
+          "y0": 59.35483870967742,
+          "x1": 506.7037037037037,
+          "y1": 78.63620071684588
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P7_CLAUSE_MODIFY_E3560FB61E",
+      "assertion": "MUST_REVIEW",
+      "page": 7,
+      "region": "clause",
+      "source_type": "clause",
+      "diff_type": "MODIFY",
+      "title": "标的物",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_before": "一、标的物上述价格为含13%增值税价格,总金额包括光伏功率预测系统V2.0软件部分价格,支持该系统所需的硬件设备价格。该价格为固定不变价,包括设",
+      "semantic_after": "一、标的物上述价格为含13%增值税价格,总金额包括光伏功率预测系统V2.0软件部分价格,支持该系统所需的硬件设备价格。该价格为固定不变价,包括设"
+    }
+  ]
+}

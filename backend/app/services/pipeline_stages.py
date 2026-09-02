@@ -98,6 +98,7 @@ from app.services.signing_region.visual import (
     RemoteVisualSignatureDetector,
     VisualSignatureDetector,
 )
+from app.services.signing_region.value_ocr import SigningFieldValueOCR
 from app.services.table_compare import TableComparator
 from app.services.text_coordinate_locator import TextCoordinateLocator
 from app.utils.id_utils import generate_diff_id
@@ -915,6 +916,7 @@ class SigningRegionStage:
         *,
         visual_detector: VisualSignatureDetector | None = None,
         visual_fingerprinter: OpenCvSigningRegionFingerprinter | None = None,
+        field_value_ocr: SigningFieldValueOCR | None = None,
         visual_enabled: bool | None = None,
     ) -> None:
         self.block_detector = SigningBlockDetector()
@@ -924,6 +926,7 @@ class SigningRegionStage:
         self.comparator = SigningRegionComparator()
         self.diff_builder = SigningRegionDiffBuilder()
         self.coverage_builder = SigningRegionCoverageBuilder()
+        self.field_value_ocr = field_value_ocr or SigningFieldValueOCR()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
         self.visual_enabled = settings.signing_visual_enabled if visual_enabled is None else visual_enabled
         self.visual_detector = visual_detector if visual_detector is not None else self._default_visual_detector()
@@ -1044,6 +1047,7 @@ class SigningRegionStage:
                 ctx.compare_pdf,
                 side="compare",
             )
+        targeted_value_ocr = self.field_value_ocr.enrich(ctx.compare_pdf, compare_regions)
         self._apply_visual_enrichment_when_comparable(visual_status)
         matches = self.matcher.match(original_regions, compare_regions)
         original_party_references = self.comparator.party_references(extractions.original.document)
@@ -1116,6 +1120,7 @@ class SigningRegionStage:
             },
             "original_regions": _jsonable(original_regions),
             "compare_regions": _jsonable(compare_regions),
+            "targeted_value_ocr": _jsonable(targeted_value_ocr),
             "matches": [
                 {
                     "original_region_id": original.region_id if original is not None else None,

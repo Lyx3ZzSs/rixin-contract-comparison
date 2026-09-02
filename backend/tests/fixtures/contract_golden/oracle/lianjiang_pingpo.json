@@ -1,0 +1,159 @@
+{
+  "schema_version": 1,
+  "contract_key": "LIANJIANG_PINGPO",
+  "expected_case_count": 8,
+  "assertions": [
+    {
+      "case_id": "LIANJIANG_PINGPO_P13_SEAL_ADD_2DFE11E82A",
+      "assertion": "MUST_REVIEW",
+      "page": 13,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第13页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "电科技签订日期:2026.7.28合同专用章",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 74.47510290823087,
+          "y0": 529.8056313810838,
+          "x1": 224.9248074409657,
+          "y1": 642.2643738912195
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P27_SEAL_ADD_B46CA339B7",
+      "assertion": "MUST_REVIEW",
+      "page": 27,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第27页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "绿电科能限公司司日期:2026合2",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 552.8173298918443,
+          "y0": 264.9678280284104,
+          "x1": 592.8041168641296,
+          "y1": 367.4553841526068
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P13_SIGNATURE_ADD_E6D40ECA17",
+      "assertion": "MUST_REVIEW",
+      "page": 13,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "甲方 · 签订日期",
+      "party": "甲方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "2026.7.28",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 138.95354770797437,
+          "y0": 583.785827785949,
+          "x1": 209.42998737281027,
+          "y1": 598.280510153922
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 598.2999877929688
+      }
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P27_SIGNATURE_ADD_12E3AB40F8",
+      "assertion": "MUST_REVIEW",
+      "page": 27,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "甲方 · 日期",
+      "party": "甲方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "2026合2",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 134.45557119430933,
+          "y0": 657.9201163875247,
+          "x1": 208.9309619301907,
+          "y1": 685.9167170848661
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 605.2999877929688
+      }
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P2_CLAUSE_MODIFY_25A734845C",
+      "assertion": "MUST_EXIST",
+      "page": 2,
+      "region": "clause",
+      "source_type": "clause",
+      "diff_type": "MODIFY",
+      "title": "乙方应在入场后在委托服务期限内完成服务工作,具体入场时间以甲方通知",
+      "quality_status": "NORMAL",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CONFIRMED",
+      "semantic_before": "4.乙方应在入场后30天内完成服务工作,具体入场时间以甲方通知为准。如遇特殊情况导致现场工作无法按期完成,经甲方书面同意,乙方的服务期限进行相应",
+      "semantic_after": "4.乙方应在入场后在委托服务期限内完成服务工作,具体入场时间以甲方通知为准。如遇特殊情况导致现场工作无法按期完成,经甲方书面同意,乙方的服务期限"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P4_CLAUSE_MODIFY_2212A5F950",
+      "assertion": "MUST_EXIST",
+      "page": 4,
+      "region": "clause",
+      "source_type": "clause",
+      "diff_type": "MODIFY",
+      "title": "验收方式:现场验收。",
+      "quality_status": "NORMAL",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_before": "(2)验收方式:现场验收,出具运行维护报告。",
+      "semantic_after": "(2)验收方式:现场验收。"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P4_CLAUSE_MODIFY_70A333145C",
+      "assertion": "MUST_EXIST",
+      "page": 4,
+      "region": "clause",
+      "source_type": "clause",
+      "diff_type": "MODIFY",
+      "title": "服务工作完成后,经甲方验收合格且提供维护报告及签发验收合格确认单(附",
+      "quality_status": "NORMAL",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_before": "(3)服务工作完成后,经甲方验收合格签发验收合格确认单(附件1)。",
+      "semantic_after": "(3)服务工作完成后,经甲方验收合格且提供维护报告及签发验收合格确认单(附件1)。"
+    },
+    {
+      "case_id": "LIANJIANG_P13_PARTY_B_CROSS_COLUMN_DATE_FALSE_ADD",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 13,
+      "region": "signing",
+      "party": "乙方",
+      "field_type": "date",
+      "diff_type": "ADD",
+      "forbidden_value_pattern": "2267[.]28京"
+    }
+  ]
+}

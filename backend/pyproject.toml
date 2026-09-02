@@ -40,6 +40,9 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "golden_contract_blocking: executes the 10-contract semantic blocking regression gate",
+]
 
 [tool.ruff]
 line-length = 120

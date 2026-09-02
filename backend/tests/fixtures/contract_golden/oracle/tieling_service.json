@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "contract_key": "TIELING_SERVICE",
+  "expected_case_count": 4,
+  "assertions": [
+    {
+      "case_id": "TIELING_SERVICE_P1_SEAL_ADD_E0CDB62DC9",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第1页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "品房市司合61",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 551.5,
+          "y0": 325.5,
+          "x1": 598.0,
+          "y1": 439.0
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "TIELING_SERVICE_P2_SEAL_ADD_D0F47F47E6",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第2页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "电力科友司专用章103033906",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 550.5,
+          "y0": 326.0,
+          "x1": 598.0,
+          "y1": 443.0
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "TIELING_SERVICE_P3_SEAL_ADD_FCD17862D5",
+      "assertion": "MUST_REVIEW",
+      "page": 3,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第3页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "合同专用章",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 139.5,
+          "y0": 174.5,
+          "x1": 264.5,
+          "y1": 294.0
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "TIELING_TAX_ID_NO_CONFIRMED_MODIFY",
+      "assertion": "MUST_NOT_CONFIRM",
+      "page": 3,
+      "region": "signing",
+      "field_type": "tax_id",
+      "diff_type": "MODIFY"
+    }
+  ]
+}

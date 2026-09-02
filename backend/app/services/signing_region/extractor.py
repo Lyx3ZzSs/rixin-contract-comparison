@@ -414,6 +414,7 @@ class SigningRegionExtractor:
                 ):
                     continue
                 field_bbox = self._field_bbox(source, start, end)
+                label_bbox = self._field_bbox(source, start, value_start) if value_start > start else field_bbox
                 field_bboxes = [field_bbox]
                 continuation_blocks = (
                     self._field_continuation_blocks(source, field_bbox, midpoint, source_blocks)
@@ -463,12 +464,21 @@ class SigningRegionExtractor:
                         value = (adjacent_value_source.text or "").strip()
                         value_bbox = adjacent_value_source.bbox
                         value_bboxes = [value_bbox]
+                value_roi = self._field_value_roi(
+                    signing_block,
+                    party_role=party_role,
+                    midpoint=midpoint,
+                    source_bbox=source.bbox,
+                    field_bbox=field_bbox,
+                    value_roi_x0=label_bbox.x1,
+                )
                 (
                     preferred_value,
                     value_evidence,
                     content_recognition_status,
                     content_recognition_reason,
                     display_value_bbox,
+                    rejected_value_evidence,
                 ) = self._fuse_field_value_evidence(
                     source,
                     label=label,
@@ -476,11 +486,22 @@ class SigningRegionExtractor:
                     primary_value=value,
                     primary_value_bbox=value_bbox,
                     field_bbox=field_bbox,
+                    value_roi=value_roi,
                     party_role=party_role,
                     midpoint=midpoint,
                     signing_block=signing_block,
                     primary_value_source=adjacent_value_source,
                 )
+                supporting_unlocalized_evidence = [
+                    item
+                    for item in rejected_value_evidence
+                    if item.get("rejection_reason") == "UNLOCALIZED_BLOCK_VALUE"
+                ]
+                rejected_contaminated_evidence = [
+                    item
+                    for item in rejected_value_evidence
+                    if item.get("rejection_reason") != "UNLOCALIZED_BLOCK_VALUE"
+                ]
                 if preferred_value:
                     value = preferred_value
                 used_source_ids.update(
@@ -518,12 +539,16 @@ class SigningRegionExtractor:
                             ),
                             **({"field_segments": field_segments} if len(field_segments) > 1 else {}),
                             **({"value_bbox": value_bbox.model_dump()} if value_bbox is not None else {}),
+                            "value_roi": value_roi.model_dump(),
                             **(
                                 {"display_value_bbox": display_value_bbox.model_dump()}
                                 if display_value_bbox is not None
                                 else {}
                             ),
                             "value_evidence": value_evidence,
+                            "rejected_value_evidence": rejected_value_evidence,
+                            "supporting_unlocalized_evidence": supporting_unlocalized_evidence,
+                            "rejected_contaminated_evidence": rejected_contaminated_evidence,
                             "content_recognition_status": content_recognition_status,
                             "content_recognition_reason": content_recognition_reason,
                             **(
@@ -908,6 +933,37 @@ class SigningRegionExtractor:
             }
         )
 
+    @staticmethod
+    def _uses_party_columns(signing_block: SigningBlock) -> bool:
+        return (
+            "stacked_party_layout" not in signing_block.confidence_reasons
+            and (
+                "two_column_layout" in signing_block.confidence_reasons
+                or "paired_parties" in signing_block.confidence_reasons
+            )
+        )
+
+    @classmethod
+    def _field_value_roi(
+        cls,
+        signing_block: SigningBlock,
+        *,
+        party_role: str,
+        midpoint: float,
+        source_bbox: BBox,
+        field_bbox: BBox,
+        value_roi_x0: float,
+    ) -> BBox:
+        two_column_layout = cls._uses_party_columns(signing_block)
+        column_x0 = midpoint if two_column_layout and party_role == "乙方" else signing_block.bbox.x0
+        column_x1 = midpoint if two_column_layout and party_role == "甲方" else signing_block.bbox.x1
+        return BBox(
+            x0=max(column_x0, min(column_x1, value_roi_x0)),
+            y0=min(source_bbox.y0, field_bbox.y0),
+            x1=min(column_x1, signing_block.bbox.x1),
+            y1=max(source_bbox.y1, field_bbox.y1),
+        )
+
     @classmethod
     def _fuse_field_value_evidence(
         cls,
@@ -918,31 +974,25 @@ class SigningRegionExtractor:
         primary_value: str,
         primary_value_bbox: BBox | None,
         field_bbox: BBox,
+        value_roi: BBox,
         party_role: str,
         midpoint: float,
         signing_block: SigningBlock,
         primary_value_source: TextBlock | None = None,
-    ) -> tuple[str, list[dict[str, object]], str, str, BBox | None]:
-        label_match = next(
-            (
-                match
-                for match in FIELD_RE.finditer(source.text or "")
-                if cls._field_key(cls._compact(match.group("label"))) == field_key
-            ),
-            None,
-        )
-        if label_match is None:
-            return primary_value, [], "CONFIRMED", "", primary_value_bbox
-        label_bbox = cls._field_bbox(source, label_match.start(), label_match.start("value"))
-        two_column_layout = "two_column_layout" in signing_block.confidence_reasons
+    ) -> tuple[
+        str,
+        list[dict[str, object]],
+        str,
+        str,
+        BBox | None,
+        list[dict[str, object]],
+    ]:
+        # `field_bbox` belongs to the current FIELD_RE occurrence.  Re-finding
+        # the first label of the same kind here loses that identity when a
+        # merged line contains the same field in both party columns.
+        two_column_layout = cls._uses_party_columns(signing_block)
         column_x0 = midpoint if two_column_layout and party_role == "乙方" else signing_block.bbox.x0
         column_x1 = midpoint if two_column_layout and party_role == "甲方" else signing_block.bbox.x1
-        value_roi = BBox(
-            x0=max(column_x0, min(column_x1, label_bbox.x1)),
-            y0=min(source.bbox.y0, field_bbox.y0),
-            x1=max(min(column_x1, signing_block.bbox.x1), min(column_x1, label_bbox.x1)),
-            y1=max(source.bbox.y1, field_bbox.y1),
-        )
         raw_sources = list(source.source_evidence)
         if not raw_sources:
             raw_sources = [
@@ -954,12 +1004,44 @@ class SigningRegionExtractor:
                     "confidence": source.confidence,
                 }
             ]
-
         evidence: list[dict[str, object]] = []
+        rejected: list[dict[str, object]] = []
+
+        def reject(
+            *,
+            source_name: str,
+            raw_text: str,
+            page_no: int,
+            candidate_bbox: BBox,
+            confidence: float | None,
+            reason: str,
+            candidate_value: str = "",
+        ) -> None:
+            rejected.append(
+                {
+                    "source": source_name,
+                    "raw_text": raw_text,
+                    "page_no": page_no,
+                    "bbox": candidate_bbox.model_dump(),
+                    "confidence": confidence,
+                    "field_key": field_key,
+                    "party_role": party_role,
+                    "localized": False,
+                    "provenance_valid": False,
+                    "rejection_reason": reason,
+                    **(
+                        {"candidate_value": candidate_value, "text": candidate_value}
+                        if candidate_value
+                        else {}
+                    ),
+                }
+            )
+
         for raw_source in raw_sources:
             source_name = str(
                 raw_source.source if hasattr(raw_source, "source") else raw_source.get("source", "unknown")
             )
+            is_structure_source = "ppstructure" in source_name.casefold()
             raw_text = str(
                 raw_source.raw_text if hasattr(raw_source, "raw_text") else raw_source.get("raw_text", "")
             )
@@ -977,27 +1059,81 @@ class SigningRegionExtractor:
             confidence = (
                 raw_source.confidence if hasattr(raw_source, "confidence") else raw_source.get("confidence")
             )
-            if page_no != source.page_no or cls._bbox_overlap_ratio(source.bbox, candidate_bbox) < 0.45:
+            if page_no != source.page_no:
+                continue
+            candidate_matches = list(FIELD_RE.finditer(raw_text))
+            matching_field_labels = [
+                match
+                for match in candidate_matches
+                if cls._field_key(cls._compact(match.group("label"))) == field_key
+            ]
+            row_overlap = min(field_bbox.y1, candidate_bbox.y1) - max(field_bbox.y0, candidate_bbox.y0)
+            localized_value_fragment = (
+                not candidate_matches
+                and bool(cls._clean_field_value(raw_text))
+                and row_overlap > 0
+                and cls._bbox_within_roi(candidate_bbox, value_roi)
+            )
+            if (
+                cls._bbox_overlap_ratio(source.bbox, candidate_bbox) < 0.45
+                and not localized_value_fragment
+            ):
                 continue
             if two_column_layout and not cls._bbox_within_column(
                 candidate_bbox,
                 column_x0=column_x0,
                 column_x1=column_x1,
             ):
-                # PP-Structure may attach the whole signing table as evidence
-                # to every OCR line.  Its flattened text contains both columns,
-                # so it cannot establish which party owns a value.
+                if matching_field_labels:
+                    reject(
+                        source_name=source_name,
+                        raw_text=raw_text,
+                        page_no=page_no,
+                        candidate_bbox=candidate_bbox,
+                        confidence=confidence,
+                        reason=(
+                            "AMBIGUOUS_MULTI_LABEL_BLOCK"
+                            if len(matching_field_labels) > 1
+                            else "CROSS_COLUMN_SOURCE_BLOCK"
+                        ),
+                    )
                 continue
-            candidate_matches = list(FIELD_RE.finditer(raw_text))
-            candidate_match = next(
-                (
-                    match
-                    for match in candidate_matches
-                    if cls._field_key(cls._compact(match.group("label"))) == field_key
-                ),
-                None,
-            )
+
+            # A value-only Structure token/cell with its own bbox is already
+            # spatially localized.  It may support a blank OCR field, provided
+            # it is in the same party column, row and value ROI.
+            candidate_match = matching_field_labels[0] if len(matching_field_labels) == 1 else None
             if candidate_match is None:
+                fragment = cls._clean_field_value(raw_text)
+                if (
+                    localized_value_fragment
+                    and fragment
+                ):
+                    evidence.append(
+                        {
+                            "source": source_name,
+                            "text": fragment,
+                            "raw_text": raw_text,
+                            "normalized_text": cls._normalized_chars(fragment),
+                            "page_no": page_no,
+                            "bbox": candidate_bbox.model_dump(),
+                            "confidence": confidence,
+                            "field_key": field_key,
+                            "party_role": party_role,
+                            "localized": True,
+                            "provenance_valid": True,
+                            "localization_method": "SOURCE_FRAGMENT_BBOX",
+                        }
+                    )
+                elif len(matching_field_labels) > 1:
+                    reject(
+                        source_name=source_name,
+                        raw_text=raw_text,
+                        page_no=page_no,
+                        candidate_bbox=candidate_bbox,
+                        confidence=confidence,
+                        reason="AMBIGUOUS_MULTI_LABEL_BLOCK",
+                    )
                 continue
             source_height = max(1.0, source.bbox.y1 - source.bbox.y0)
             candidate_height = max(1.0, candidate_bbox.y1 - candidate_bbox.y0)
@@ -1012,14 +1148,39 @@ class SigningRegionExtractor:
                 # A layout block spanning several signing rows cannot provide
                 # field-local geometry.  In scans it commonly concatenates the
                 # next signature stroke to the preceding email/phone value.
+                reject(
+                    source_name=source_name,
+                    raw_text=raw_text,
+                    page_no=page_no,
+                    candidate_bbox=candidate_bbox,
+                    confidence=confidence,
+                    reason="UNLOCALIZED_MULTI_ROW_BLOCK",
+                )
                 continue
             candidate_value = cls._clean_field_value(candidate_match.group("value") or "")
             if not candidate_value:
                 continue
-            if raw_text == (source.text or "") and primary_value_bbox is not None:
+            if (
+                not is_structure_source
+                and raw_text == (source.text or "")
+                and primary_value_bbox is not None
+            ):
                 candidate_value_bbox = primary_value_bbox
             else:
-                candidate_value_bbox = cls._bbox_intersection(candidate_bbox, value_roi)
+                # A labelled PP-Structure line/block has no value-substring
+                # geometry in TextSourceEvidence.  Intersecting its block bbox
+                # with the target ROI would fabricate localization and can move
+                # a value across party columns.  Keep it only as diagnostics.
+                reject(
+                    source_name=source_name,
+                    raw_text=raw_text,
+                    page_no=page_no,
+                    candidate_bbox=candidate_bbox,
+                    confidence=confidence,
+                    reason="UNLOCALIZED_BLOCK_VALUE",
+                    candidate_value=candidate_value,
+                )
+                continue
             if candidate_value_bbox is None:
                 continue
             evidence.append(
@@ -1033,11 +1194,14 @@ class SigningRegionExtractor:
                     "confidence": confidence,
                     "field_key": field_key,
                     "party_role": party_role,
+                    "localized": True,
+                    "provenance_valid": True,
+                    "localization_method": "PRIMARY_VALUE_BBOX",
                 }
             )
 
         if primary_value and not any(item["text"] == primary_value for item in evidence):
-            fallback_bbox = primary_value_bbox or cls._bbox_intersection(source.bbox, value_roi)
+            fallback_bbox = primary_value_bbox
             if fallback_bbox is not None:
                 fallback_source = primary_value_source or source
                 evidence.insert(
@@ -1056,6 +1220,9 @@ class SigningRegionExtractor:
                         "confidence": fallback_source.confidence,
                         "field_key": field_key,
                         "party_role": party_role,
+                        "localized": True,
+                        "provenance_valid": True,
+                        "localization_method": "PRIMARY_VALUE_BBOX",
                     },
                 )
         unique: dict[tuple[str, str], dict[str, object]] = {}
@@ -1063,12 +1230,30 @@ class SigningRegionExtractor:
             unique.setdefault((str(item["source"]), str(item["normalized_text"])), item)
         evidence = list(unique.values())
         if not evidence:
-            return primary_value, [], "CONFIRMED", "", primary_value_bbox
+            return primary_value, [], "CONFIRMED", "", primary_value_bbox, rejected
 
         values = list(dict.fromkeys(str(item["normalized_text"]) for item in evidence if item["normalized_text"]))
         display_bbox = cls._bbox_union([BBox.model_validate(item["bbox"]) for item in evidence])
         if len(values) <= 1:
-            return primary_value or str(evidence[0]["text"]), evidence, "CONFIRMED", "SOURCE_VALUES_AGREE", display_bbox
+            independent_sources = {str(item["source"]) for item in evidence}
+            reason = "SOURCE_VALUES_AGREE" if len(independent_sources) >= 2 else "SINGLE_SOURCE"
+            single_source_review = False
+            if reason == "SINGLE_SOURCE" and field_key in {*SIGNATURE_FIELD_KEYS, "date"}:
+                accepted_value = values[0] if values else ""
+                single_source_review = any(
+                    item.get("rejection_reason") == "UNLOCALIZED_BLOCK_VALUE"
+                    and cls._normalized_chars(str(item.get("candidate_value") or ""))
+                    not in {"", accepted_value}
+                    for item in rejected
+                )
+            return (
+                primary_value or str(evidence[0]["text"]),
+                evidence,
+                "NEEDS_REVIEW" if single_source_review else "CONFIRMED",
+                reason,
+                display_bbox,
+                rejected,
+            )
 
         ordered = sorted(values, key=len)
         shortest, longest = ordered[0], ordered[-1]
@@ -1094,9 +1279,33 @@ class SigningRegionExtractor:
                     "NEEDS_REVIEW",
                     "INVALID_EMAIL_CANDIDATE_REJECTED",
                     BBox.model_validate(preferred_evidence["bbox"]),
+                    rejected,
                 )
-            return str(longer_evidence["text"]), evidence, "NEEDS_REVIEW", "ALIGNED_SUFFIX_CANDIDATE", display_bbox
-        return primary_value, evidence, "NEEDS_REVIEW", "CONFLICTING_VALUE_CANDIDATES", display_bbox
+            return (
+                str(longer_evidence["text"]),
+                evidence,
+                "NEEDS_REVIEW",
+                "ALIGNED_SUFFIX_CANDIDATE",
+                display_bbox,
+                rejected,
+            )
+        return (
+            primary_value,
+            evidence,
+            "NEEDS_REVIEW",
+            "CONFLICTING_VALUE_CANDIDATES",
+            display_bbox,
+            rejected,
+        )
+
+    @staticmethod
+    def _bbox_within_roi(bbox: BBox, roi: BBox, tolerance: float = 2.0) -> bool:
+        return (
+            bbox.x0 >= roi.x0 - tolerance
+            and bbox.x1 <= roi.x1 + tolerance
+            and bbox.y0 >= roi.y0 - tolerance
+            and bbox.y1 <= roi.y1 + tolerance
+        )
 
     @staticmethod
     def _bbox_within_column(
