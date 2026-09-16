@@ -44,8 +44,8 @@ SEPARATED_DATE_COMPONENT_RE = re.compile(
     r"(?P<day>\d{1,2})"
 )
 PARTY_FIELD_RE = re.compile(
-    r"(?P<role>甲方|乙方|丙方|丁方)\s*[:：]\s*(?P<value>.*?)"
-    r"(?=(?:甲方|乙方|丙方|丁方)\s*[:：]|$)"
+    r"(?P<role>甲方|乙方|丙方|丁方|委托人|承包人|买方|卖方|设计方)\s*[:：]\s*(?P<value>.*?)"
+    r"(?=(?:甲方|乙方|丙方|丁方|委托人|承包人|买方|卖方|设计方)\s*[:：]|$)"
 )
 PARTY_RESIDUAL_RE = re.compile(r"^[【】\[\]（）()]*盖章[】\]）)]*$")
 PARTY_CONTINUATION_SUFFIX_RE = re.compile(
@@ -57,14 +57,14 @@ PARTY_CONTINUATION_STOP_RE = re.compile(
 )
 FIELD_RE = re.compile(
     r"(?P<label>[A-Za-z][A-Za-z\s_-]{0,24}|[\u4e00-\u9fff（）()]{1,24})\s*[:：]\s*"
-    r"(?P<value>.*?)(?=(?:甲方|乙方|丙方|丁方|单位名称|公司名称|单位地址|法定代表人|法人代表或授权委托人|法人代表|法人|"
-    r"授权代表|授权委托人|委托代理人|负责人|签字|签名|签订日期|签署日期|日期|地址|住所|联系人|"
+    r"(?P<value>.*?)(?=(?:计划开工日期|计划竣工日期|实际开工日期|实际竣工日期|本项目现场负责人姓名|承包人|建设单位意见|甲方|乙方|丙方|丁方|单位名称|公司名称|单位地址|法定代表人|法人代表或授权委托人|法人代表|法人|"
+    r"授权代表|授权委托人|委托代理人|负责人|签字|签名|盖章|签订日期|签署日期|日期|地址|住所|联系人|"
     r"项目负责人|廉洁联系人|电话|手机|联系方式|传真|邮箱|电子邮箱|E-?mail|开户行|开户银行|账号|"
     r"帐户|账户|银行行号|联行号|统一社会信用代码|税号|纳税人识别号|邮编|邮政编码)\s*[:：]|$)",
     re.IGNORECASE,
 )
 FIELD_ALIASES = (
-    ("party", re.compile(r"^(?:甲方|乙方|丙方|丁方)$")),
+    ("party", re.compile(r"^(?:甲方|乙方|丙方|丁方|委托人|承包人|买方|卖方|设计方)$")),
     ("party_name", re.compile(r"单位名称|公司名称")),
     ("legal_representative", re.compile(r"法定代表人|法人(?:代表(?:或(?:授权委托人)?)?)?|负责人")),
     ("authorized_representative", re.compile(r"授权代表|授权委托人|委托代理人")),
@@ -157,6 +157,7 @@ class SigningRegionExtractor:
                 SigningRegion(
                     region_id=f"SR-{block.page_no}-{index}",
                     signing_block_id=block.block_id,
+                    group_id=getattr(block, "group_id", ""),
                     page_no=block.page_no,
                     bbox=block.bbox,
                     region_role=self._role_from_block(block),
@@ -178,7 +179,15 @@ class SigningRegionExtractor:
             if block_id in blocks_by_id and (blocks_by_id[block_id].text or "").strip()
         ]
         field_blocks = self._expand_table_field_blocks(source_blocks)
-        if self._has_two_column_field_layout(field_blocks):
+        if self._has_stacked_party_layout(field_blocks) and not any(
+            a.block_id != b.block_id and abs(a.bbox.y0-b.bbox.y0) < 12 and abs(a.bbox.x0-b.bbox.x0) > 100
+            and FIELD_RE.search(a.text) and FIELD_RE.search(b.text)
+            for a in field_blocks for b in field_blocks
+        ):
+            signing_block.confidence_reasons = [r for r in signing_block.confidence_reasons if r != "two_column_layout"]
+            if "stacked_party_layout" not in signing_block.confidence_reasons:
+                signing_block.confidence_reasons.append("stacked_party_layout")
+        elif self._has_two_column_field_layout(field_blocks):
             if "two_column_layout" not in signing_block.confidence_reasons:
                 signing_block.confidence_reasons.append("two_column_layout")
         elif self._has_stacked_party_layout(field_blocks):
@@ -229,13 +238,17 @@ class SigningRegionExtractor:
             for block_id in signing_block.source_block_ids
             if block_id in blocks_by_id
             and (blocks_by_id[block_id].text or "").strip()
-            and (blocks_by_id[block_id].block_type or "").lower() not in {"seal", "stamp", "image", "figure"}
+            and (
+                (blocks_by_id[block_id].block_type or "").lower() not in {"seal", "stamp", "image", "figure"}
+                or PARTY_FIELD_RE.match(blocks_by_id[block_id].text or "") is not None
+            )
         ]
         elements: list[SigningElement] = []
         for anchor in sorted(source_blocks, key=lambda item: (item.bbox.y0, item.bbox.x0)):
             matches = list(PARTY_FIELD_RE.finditer(anchor.text or ""))
             for match_index, match in enumerate(matches, start=1):
                 role = match.group("role")
+                role = {"委托人":"甲方", "承包人":"乙方"}.get(role,role)
                 value = (match.group("value") or "").strip()
                 if not value:
                     continue
@@ -264,6 +277,13 @@ class SigningRegionExtractor:
                         source="inferred",
                         raw_ref={
                             "party_role": role,
+                            **({"field_key": "party_name", "source_block_type": anchor.block_type,
+                                "value_roi": BBox(
+                                    x0=self._field_bbox(anchor, match.start("value"), match.end("value")).x0,
+                                    y0=party_bbox.y0, x1=min(signing_block.bbox.x1, party_bbox.x1 + 12),
+                                    y1=min(signing_block.bbox.y1, party_bbox.y1 + 44),
+                                ).model_dump()}
+                               if anchor.block_type in {"seal", "stamp"} else {}),
                             "source_block_ids": [anchor.block_id, *(item.block_id for item in continuation_blocks)],
                             "field_bboxes": [item.model_dump() for item in field_bboxes],
                             "field_segments": field_segments,
@@ -417,12 +437,16 @@ class SigningRegionExtractor:
                 label_bbox = self._field_bbox(source, start, value_start) if value_start > start else field_bbox
                 field_bboxes = [field_bbox]
                 continuation_blocks = (
-                    self._field_continuation_blocks(source, field_bbox, midpoint, source_blocks)
-                    if field_key in {"address", "credit_code"}
+                    self._field_continuation_blocks(source, field_bbox, midpoint, source_blocks,
+                                                    use_columns=self._uses_party_columns(signing_block))
+                    if field_key in {"address", "credit_code", "bank"}
                     else []
                 )
                 if field_key == "credit_code":
                     continuation_blocks = self._credit_code_continuations(value, continuation_blocks)
+                if field_key == "bank":
+                    continuation_blocks = [item for item in continuation_blocks
+                                           if value.endswith("支") and item.text.strip() == "行"][:1]
                 value_bbox = (
                     self._field_bbox(source, value_start, value_end) if value and value_end > value_start else None
                 )
@@ -449,6 +473,9 @@ class SigningRegionExtractor:
                     ),
                     stacked_midpoint=stacked_midpoint,
                 )
+                explicit_role = self._business_role_for_field(label_bbox, source_blocks)
+                if explicit_role:
+                    party_role = explicit_role
                 adjacent_value_source = None
                 if field_key == "date" and not value:
                     adjacent_value_source = self._adjacent_date_value_block(
@@ -523,6 +550,7 @@ class SigningRegionExtractor:
                         source="inferred",
                         raw_ref={
                             "field_key": field_key,
+                            "column_midpoint": midpoint if self._uses_party_columns(signing_block) else None,
                             "field_label": label,
                             "field_prefix": field_prefix or label,
                             "party_role": party_role,
@@ -585,7 +613,16 @@ class SigningRegionExtractor:
         elements: list[SigningElement] = []
         for source in source_blocks:
             text = (source.text or "").strip()
-            if source.block_id in used_source_ids or DATE_RE.fullmatch(text) is None:
+            leading_date = DATE_RE.match(text)
+            mixed_date_and_next_label = bool(leading_date and re.fullmatch(
+                r"(?:日期|签署日期|签订日期)\s*[:：]", text[leading_date.end():].strip()))
+            if mixed_date_and_next_label:
+                # One OCR line may join left-party handwriting to the right
+                # party's still-blank date label. Each keeps its own geometry.
+                date_bbox = self._field_bbox(source, leading_date.start(), leading_date.end())
+                text = leading_date.group()
+                source = source.model_copy(update={"text": text, "bbox": date_bbox})
+            elif source.block_id in used_source_ids or DATE_RE.fullmatch(text) is None:
                 continue
             role = self._field_party_role(
                 "日期",
@@ -596,6 +633,7 @@ class SigningRegionExtractor:
                 occurrence_count=1,
                 stacked_midpoint=stacked_midpoint,
             )
+            role = self._business_role_for_field(source.bbox, source_blocks) or role
             value = text if self._date_parts(text) is not None else ""
             elements.append(
                 SigningElement(
@@ -692,6 +730,9 @@ class SigningRegionExtractor:
             text = self._compact(candidate.text)
             if (
                 candidate.block_id in used_ids
+                or candidate.block_type in {"seal", "stamp"}
+                or text in {"合同专用章", "财务专用章", "发票专用章", "公章"}
+                or (candidate.confidence is not None and candidate.confidence < 0.8)
                 or not SIGNATURE_VALUE_RE.fullmatch(text)
                 or SIGNATURE_LABEL_FRAGMENT_RE.search(text)
                 or SIGNATURE_COMPANY_FRAGMENT_RE.search(text)
@@ -704,7 +745,9 @@ class SigningRegionExtractor:
             vertical_gap = max(anchor.bbox.y0 - candidate.bbox.y1, candidate.bbox.y0 - anchor.bbox.y1, 0.0)
             if vertical_gap > 10.0:
                 continue
-            role = "甲方" if (candidate.bbox.x0 + candidate.bbox.x1) / 2 < midpoint else "乙方"
+            role = str(anchor.raw_ref.get("party_role") or "unknown")
+            if self._uses_party_columns(signing_block):
+                role = "甲方" if (candidate.bbox.x0 + candidate.bbox.x1) / 2 < midpoint else "乙方"
             elements.append(
                 SigningElement(
                     element_id=f"{signing_block.block_id}-signature-{candidate.block_id}",
@@ -745,6 +788,18 @@ class SigningRegionExtractor:
                 candidate = (left_x1 + right_x0) / 2 if left_x1 <= right_x0 + 4.0 else (left_start + right_start) / 2
                 if midpoint_min <= candidate <= midpoint_max:
                     return candidate
+        bare_party_starts: dict[str, list[float]] = {"甲方": [], "乙方": []}
+        for block in source_blocks:
+            match = re.fullmatch(r"(甲方|乙方)\s*[:：]?\s*(?:[（(]盖章[）)])?", (block.text or "").strip())
+            if match:
+                bare_party_starts[match.group(1)].append(block.bbox.x0)
+        if bare_party_starts["甲方"] and bare_party_starts["乙方"]:
+            left, right = min(bare_party_starts["甲方"]), min(bare_party_starts["乙方"])
+            if right - left >= 80:
+                # Empty headings locate column starts, not column centers.
+                # Ink following a short left label can extend close to the
+                # next column's start and must remain owned by the left party.
+                return right - max(8.0, min(18.0, (right-left) * 0.05))
         party_centers: dict[str, list[float]] = {"甲方": [], "乙方": []}
         for block in source_blocks:
             roles = {match.group("role") for match in PARTY_FIELD_RE.finditer(block.text or "")}
@@ -816,6 +871,24 @@ class SigningRegionExtractor:
                             if cell_bbox.x0 <= (char_box.bbox.x0 + char_box.bbox.x1) / 2 <= cell_bbox.x1
                             and cell_bbox.y0 <= (char_box.bbox.y0 + char_box.bbox.y1) / 2 <= cell_bbox.y1
                         ]
+                        if "visible_ruled_grid" in source.source and char_boxes:
+                            lines = []
+                            for char in sorted(char_boxes, key=lambda c: ((c.bbox.y0+c.bbox.y1)/2, c.bbox.x0)):
+                                cy = (char.bbox.y0+char.bbox.y1)/2
+                                if not lines or abs(cy-lines[-1][0]) > 4:
+                                    lines.append((cy, []))
+                                lines[-1][1].append(char)
+                            for line_index, (_, chars) in enumerate(lines):
+                                chars.sort(key=lambda c: c.bbox.x0)
+                                local_chars = [c.model_copy(update={"text_index": i}) for i, c in enumerate(chars)]
+                                expanded.append(source.model_copy(update={
+                                    "block_id": f"{source.block_id}-cell-{row.row_index}-{cell.col_index}-line-{line_index}",
+                                    "text": "".join(c.char for c in local_chars),
+                                    "bbox": cls._bbox_union([c.bbox for c in local_chars]),
+                                    "source": "signing_table_cell", "raw_html": "", "table_cell_bboxes": [],
+                                    "char_boxes": local_chars, "source_evidence": [],
+                                }))
+                            continue
                         expanded.append(
                             source.model_copy(
                                 update={
@@ -845,7 +918,7 @@ class SigningRegionExtractor:
 
     @classmethod
     def _standalone_field_label(cls, text: str) -> str:
-        label = cls._compact(text).strip("：:＿_")
+        label = cls._compact(text).strip("：:；;＿_")
         if any(marker in label for marker in ("签字页", "签署页", "无正文")):
             return ""
         lookup_label = label.strip("（）()")
@@ -860,16 +933,20 @@ class SigningRegionExtractor:
         field_bbox: BBox,
         midpoint: float,
         source_blocks: list[TextBlock],
+        *,
+        use_columns: bool = True,
     ) -> list[TextBlock]:
         field_is_left = (field_bbox.x0 + field_bbox.x1) / 2 < midpoint
         continuations: list[TextBlock] = []
         for candidate in sorted(source_blocks, key=lambda item: (item.bbox.y0, item.bbox.x0)):
+            if candidate.block_type in {"seal", "stamp", "image", "figure"} or candidate.flow_role in {"noise", "non_text", "margin"}:
+                continue
             overlap_tolerance = 12.0 if source.source == "signing_table_cell" else 2.0
             if candidate.block_id == source.block_id or candidate.bbox.y0 < source.bbox.y1 - overlap_tolerance:
                 continue
             if candidate.bbox.y0 - source.bbox.y1 > 48.0:
                 break
-            if ((candidate.bbox.x0 + candidate.bbox.x1) / 2 < midpoint) != field_is_left:
+            if use_columns and ((candidate.bbox.x0 + candidate.bbox.x1) / 2 < midpoint) != field_is_left:
                 continue
             text = (candidate.text or "").strip()
             if (
@@ -879,6 +956,15 @@ class SigningRegionExtractor:
                 or PARTY_FIELD_RE.search(text)
                 or cls._standalone_field_label(text)
             ):
+                continue
+            # Wrapped fields continue at their left edge. Floating fragments
+            # inside the column (seal serials / curved stamp text) are not a
+            # continuation merely because they occur on the next OCR row.
+            line_height = max(1.0, field_bbox.y1 - field_bbox.y0)
+            continuation_bbox = cls._field_bbox(candidate, 0, len(candidate.text or ""))
+            if continuation_bbox.x0 - field_bbox.x0 > max(18.0, line_height * 1.5):
+                continue
+            if continuations and candidate.bbox.y0 < continuations[-1].bbox.y1 - 2.0:
                 continue
             continuations.append(candidate)
         return continuations
@@ -1422,6 +1508,24 @@ class SigningRegionExtractor:
             if pattern.search(compact):
                 return field_key
         return f"custom:{compact.casefold()}"
+
+    @classmethod
+    def _business_role_for_field(cls, bbox: BBox, source_blocks: list[TextBlock]) -> str:
+        """Bind business roles by their own local labels, even if rows reorder."""
+        anchors = [
+            (match.group("role"), cls._field_bbox(block, match.start(), match.end()))
+            for block in source_blocks for match in PARTY_FIELD_RE.finditer(block.text or "")
+            if match.group("role") in {"买方", "卖方", "设计方"}
+        ]
+        if len({role for role, _ in anchors}) < 2:
+            return ""
+        # A field starts under its heading.  Restrict to the same column before
+        # taking the nearest preceding heading; party names may be very wide.
+        eligible = [(role, anchor) for role, anchor in anchors
+                    if anchor.y0 <= bbox.y0 + 3 and abs(anchor.x0 - bbox.x0) <= 70]
+        if not eligible:
+            return "unknown"
+        return max(eligible, key=lambda item: item[1].y0)[0]
 
     @staticmethod
     def _field_party_role(

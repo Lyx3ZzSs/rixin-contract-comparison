@@ -5,6 +5,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from app.models import BBox, DiffItem, DiffType, Document, EvidenceBox, Page, TextBlock
+from app.services.page_alignment import PageAlignmentEntry, PageAlignmentStatus
 from app.utils.id_utils import generate_diff_id
 
 
@@ -41,8 +42,21 @@ class PageDiffConsolidator:
     noise_block_types = {"abandon", "formula"}
     footer_block_types = {"footer", "page_footer"}
 
-    def consolidate(self, original: Document, compare: Document, diffs: list[DiffItem]) -> list[DiffItem]:
-        page_diffs = self._build_page_diffs(original, compare, diffs, self._next_diff_index(diffs))
+    def consolidate(
+        self,
+        original: Document,
+        compare: Document,
+        diffs: list[DiffItem],
+        *,
+        page_alignment=None,
+    ) -> list[DiffItem]:
+        page_diffs = self._build_page_diffs(
+            original,
+            compare,
+            diffs,
+            self._next_diff_index(diffs),
+            page_alignment=page_alignment,
+        )
         if not page_diffs:
             return diffs
 
@@ -56,26 +70,63 @@ class PageDiffConsolidator:
         compare: Document,
         diffs: list[DiffItem],
         start_index: int,
+        *,
+        page_alignment=None,
     ) -> list[DiffItem]:
         original_by_page = {candidate.page.page_no: candidate for candidate in self._candidate_pages(original)}
         compare_by_page = {candidate.page.page_no: candidate for candidate in self._candidate_pages(compare)}
         blocked_original, blocked_compare = self._matched_pages(diffs)
         deleted_evidence = self._one_sided_evidence_by_page(diffs, "DELETE")
         added_evidence = self._one_sided_evidence_by_page(diffs, "ADD")
+        # A cross-page clause cannot be partly consumed by a page event.
+        # Retain clause granularity on its pages rather than duplicate its
+        # prefix or delete its uncovered continuation.
+        for diff in diffs:
+            if diff.source_type != "clause" or diff.diff_type not in {"ADD", "DELETE"}:
+                continue
+            evidence = diff.compare_evidence if diff.diff_type == "ADD" else diff.original_evidence
+            pages = {item.page_no for item in evidence}
+            if len(pages) > 1:
+                (blocked_compare if diff.diff_type == "ADD" else blocked_original).update(pages)
 
         diffs: list[DiffItem] = []
         next_index = start_index
         for page_no, evidences in sorted(deleted_evidence.items()):
             candidate = original_by_page.get(page_no)
+            alignment_entry = self._alignment_entry(page_alignment, page_no, deleted=True)
+            if self._alignment_blocks_page_diff(alignment_entry):
+                continue
             if candidate and page_no not in blocked_original and self._evidence_covers_page(candidate, evidences):
-                diffs.append(self._make_page_diff(candidate, "DELETE", next_index))
+                diffs.append(self._make_page_diff(candidate, "DELETE", next_index, alignment_entry))
                 next_index += 1
         for page_no, evidences in sorted(added_evidence.items()):
             candidate = compare_by_page.get(page_no)
+            alignment_entry = self._alignment_entry(page_alignment, page_no, deleted=False)
+            if self._alignment_blocks_page_diff(alignment_entry):
+                continue
             if candidate and page_no not in blocked_compare and self._evidence_covers_page(candidate, evidences):
-                diffs.append(self._make_page_diff(candidate, "ADD", next_index))
+                diffs.append(self._make_page_diff(candidate, "ADD", next_index, alignment_entry))
                 next_index += 1
         return diffs
+
+    @staticmethod
+    def _alignment_entry(page_alignment, page_no: int, *, deleted: bool) -> PageAlignmentEntry | None:
+        if page_alignment is None:
+            return None
+        lookup = getattr(page_alignment, "entry_for_original" if deleted else "entry_for_compare", None)
+        return lookup(page_no) if callable(lookup) else None
+
+    @staticmethod
+    def _alignment_blocks_page_diff(entry: PageAlignmentEntry | None) -> bool:
+        return bool(
+            entry
+            and entry.status
+            in {
+                PageAlignmentStatus.MATCHED,
+                PageAlignmentStatus.MERGED,
+                PageAlignmentStatus.SPLIT,
+            }
+        )
 
     def _candidate_pages(self, document: Document) -> list[_PageCandidate]:
         candidates: list[_PageCandidate] = []
@@ -132,7 +183,13 @@ class PageDiffConsolidator:
             covered_weight += weight * self._block_coverage_ratio(block.bbox, evidences)
         return bool(total_weight and covered_weight / total_weight >= self.min_weighted_coverage_ratio)
 
-    def _make_page_diff(self, candidate: _PageCandidate, diff_type: DiffType, index: int) -> DiffItem:
+    def _make_page_diff(
+        self,
+        candidate: _PageCandidate,
+        diff_type: DiffType,
+        index: int,
+        alignment_entry: PageAlignmentEntry | None = None,
+    ) -> DiffItem:
         page_label = f"第{candidate.page.page_no}页"
         text = candidate.text[: self.max_page_text_length]
         snippet = text[:300]
@@ -145,6 +202,8 @@ class PageDiffConsolidator:
             confidence=0.9,
             evidence_quality="HIGH",
         )
+        uncertain = bool(alignment_entry and alignment_entry.status == PageAlignmentStatus.UNCERTAIN)
+        alignment_details = alignment_entry.to_debug_payload() if alignment_entry is not None else {}
         return DiffItem(
             diff_id=generate_diff_id(index),
             diff_type=diff_type,
@@ -155,7 +214,15 @@ class PageDiffConsolidator:
             compare_snippet=snippet if diff_type == "ADD" else "",
             readable_change=f"整页{'新增' if diff_type == 'ADD' else '删除'}：{page_label}",
             source_type="page",
-            structural_flags=["PAGE_LEVEL_CHANGE"],
+            structural_flags=["PAGE_LEVEL_CHANGE", *( ["PAGE_ALIGNMENT_UNCERTAIN"] if uncertain else [])],
+            review_flags=["PAGE_ALIGNMENT_UNCERTAIN"] if uncertain else [],
+            quality_status="NEEDS_REVIEW" if uncertain else "NORMAL",
+            match_score=alignment_entry.alignment_score * 100 if alignment_entry is not None else None,
+            match_method="page_sequence_alignment" if alignment_entry is not None else "",
+            match_score_details={
+                "change_decision": "CANDIDATE" if uncertain else "CONFIRMED",
+                "page_alignment": alignment_details,
+            },
             original_evidence=[evidence] if diff_type == "DELETE" else [],
             compare_evidence=[evidence] if diff_type == "ADD" else [],
         )

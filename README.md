@@ -9,8 +9,13 @@
 - 条款切分和坐标证据绑定。
 - 条款编号、标题、正文相似度匹配。
 - 新增、删除、修改差异识别。
-- React 预览页：左右原始 PDF 预览、前端差异高亮、同步滚动、差异点定位和页码标识。
-- `合同差异分析报告` PDF。
+- 上传后统一比对印章、签署区域及页眉页脚，不再提供排除开关。`/api/compare` 已移除相关参数；TextIn 兼容入口不再接受 `remove_stamp`、`remove_headerfooter`。历史结果保持保存时的检测内容，重新执行时采用完整比对。
+- 统一事件结果页：左右原始 PDF 预览、差异高亮、同步滚动、差异项定位、审核和事件报告导出。
+- 提前预览：两份输入文件发布后，处理中也可阅读 PDF、缩放和同步滚动；最终检查完成后显示差异并开放报告导出。性能候选的启用条件与实测结果见 [2026-09-16 优化实施记录](docs/reports/comparison-optimization-implementation-20260916.md)。
+- 匹配加速默认开启（`MATCH_PERFORMANCE_STRATEGY=enabled`）：严格精确对应的条款跳过重排，发生对应冲突时回退完整匹配；设为 `off` 可关闭。配置在后端进程启动时读取。
+- 图像计算优化：表格与矩阵码检查默认并行分析两页，签章笔画使用等价数组计算；`COMPARE_IMAGE_ANALYSIS_MAX_INFLIGHT=1` 可恢复串行分析。[实测与验证记录](docs/reports/comparison-image-computation-optimization-20260916.md)。
+- 旧版审计页面已下线，旧链接（包括 `?view=legacy`）统一打开事件结果页；历史结果缺少分组快照时按独立变化展示，保留原始明细、历史审核记录和旧报告。
+- `合同差异分析报告` PDF：修改项左右对照并突出变化片段，新增/删除项完整展示，长条款自动分页并重复标题；记录页和结果页统一导出事件报告。
 
 ## 安装与启动
 
@@ -159,6 +164,13 @@ OCR 原始结果会保存到 `storage/tasks/{task_id}/ocr`，用于排查识别�
 
 点击导出报告或请求 `/api/compare/{task_id}/report` 时，系统不会调用大模型，会生成包含基础信息和审计统计改动点表格的差异分析报告。
 
+### 比对计算复用
+
+页面序列对齐会先检查拆并页的必要条件，通过后才计算组合页相似度。条款匹配默认通过
+`MATCH_FEATURE_CACHE_ENABLED=true` 复用条款路径、页关系、向量长度及有向相似度，保留全部候选和模型请求。
+路径与页关系各最多缓存 8,192 项，向量长度最多 4,096 项，向量对分数最多 100,000 项；超过上限按 LRU
+淘汰并重新计算。缓存只属于一次匹配，正常结束或异常退出都会释放。设为 `false` 可禁用匹配计算复用。
+
 ## API 示例
 
 ```bash
@@ -214,18 +226,18 @@ cd ..
 cd frontend && npm test && npm run build
 ```
 
-### 10-contract Golden Blocking Gate
+### 15-contract Golden Blocking Gate
 
-当前人工确认的业务基线版本为 `contract-golden-v1`，包含 10 份合同、20 个固定 PDF SHA256 和 186 条语义断言。真实合同 PDF 属于私有测试数据，不提交到普通源码仓库；开发机或 CI 需挂载版本固定的 bundle：
+当前正式业务基线版本为 `contract-golden-v3`，包含 15 份合同、30 个固定 PDF SHA256 和 255 条语义断言。新增五份的原件核对和验收结果见 `backend/tests/fixtures/contract_golden/UPDATE-v3.md`。真实合同 PDF 属于私有测试数据，不提交到普通源码仓库；开发机或 CI 需挂载版本固定的 bundle：
 
 ```bash
-export GOLDEN_CONTRACT_DATA_ROOT=/secure/path/contract-golden-v1
+export GOLDEN_CONTRACT_DATA_ROOT=/secure/path/contract-golden-v3
 make golden-contract
 ```
 
-该统一命令依次校验 20/20 输入文件的 SHA256 和页数、Fresh Replay 10/10 合同、执行 semantic blocking test，并检查 Golden 高风险文件是否发生变化。CI 不绑定具体平台，只需挂载 bundle、设置环境变量并执行上述命令。任一 blocking case 被跳过或以下条件任一不满足，命令均以非零状态退出：
+该统一命令依次校验 30/30 输入文件的 SHA256 和页数、Fresh Replay 15/15 合同、执行 semantic blocking test，并检查 Golden 高风险文件是否发生变化。CI 不绑定具体平台，只需挂载 bundle、设置环境变量并执行上述命令。任一 blocking case 被跳过或以下条件任一不满足，命令均以非零状态退出：
 
-- 10/10 contracts executed，0 skipped。
+- 15/15 contracts executed，0 skipped。
 - positive、negative、review assertions 100% PASS。
 - unexpected confirmed diff 为 0。
 - bbox regression 为 0。
@@ -235,7 +247,7 @@ make golden-contract
 后续修改 comparison pipeline 的标准流程是：
 
 ```text
-修改代码 → unit tests → Golden 10-contract replay → PASS → 允许合并
+修改代码 → unit tests → Golden 15-contract replay → PASS → 允许合并
 ```
 
 如果 Golden 失败，禁止直接修改 Golden 让测试变绿：

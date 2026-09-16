@@ -44,7 +44,12 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
         for line_index, line in enumerate(block_lines):
             parsed = parse_labeled_line(line)
             if parsed is None:
-                continue
+                from .date_ocr import date_precision
+                # A standalone cover date has no label; retain its month/day precision.
+                if block.page_no == first_page_no and date_precision(line):
+                    parsed = ("cover_date", line)
+                else:
+                    continue
             key, value = parsed
             evidences = [build_evidence(block, line)]
             vparts = value_parts_from_line(block, value) if value else []
@@ -161,6 +166,9 @@ def _preamble_title_field(page_no: int, blocks: list[TextBlock]) -> CoverField |
 def _valid_field_value(key: str, value: str) -> bool:
     if key != "sign_date":
         return True
+    from .date_ocr import date_precision
+    if date_precision(value):
+        return True
     compact = re.sub(r"\s+", "", value or "")
     if len(re.findall(r"\d{4}", compact)) != 1:
         return False
@@ -176,14 +184,18 @@ def _is_contract_number_key(key: str) -> bool:
 
 def _cover_blocks(document: Document) -> list[TextBlock]:
     blocks: list[TextBlock] = []
-    skip_types = {"attachment_header", "seal_region", "edge_noise"}
+    skip_types = {"attachment_header", "seal_region", "edge_noise", "watermark"}
     for page in document.pages:
         for block in page.blocks:
+            if block.block_role in {"revision_artifact", "page_footer"}:
+                continue
             if (block.block_type or "").lower() in skip_types:
                 continue
             text = clean_text(block.text)
             if not text:
                 continue
+            if re.sub(r"\s+", "", text) in {"目录", "目次", "CONTENTS", "Contents"}:
+                return blocks
             if is_body_start(text, block.block_type):
                 return blocks
             blocks.append(block)

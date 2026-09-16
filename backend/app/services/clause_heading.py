@@ -66,6 +66,13 @@ class ClauseHeadingDetector:
         if marker is None:
             if not self.is_unnumbered_section_title(unit, marker) or self.current_is_bare_marker(current):
                 return None
+            # Native attachment catalogs already own their following cover.
+            # Splitting only the OCR side's title loses the date-field match.
+            document_title = (block_type in {"doc_title", "title"}
+                              or self.is_cover_noise_text(re.sub(r"\s+", "", text)))
+            if (current is not None and document_title
+                    and re.search(r"(?:^|\n)附件[一二三四五六七八九十0-9]+", "\n".join(current.texts))):
+                return None
             title = self.title_from_text(text)
             score = 0.74
             signals = ["paragraph_title", "unnumbered_title"]
@@ -196,15 +203,18 @@ class ClauseHeadingDetector:
         )
 
     def is_unnumbered_section_title(self, unit: Any, marker: Marker | None) -> bool:
-        if marker is not None or getattr(unit, "block_type", "") != "paragraph_title":
-            return False
+        block_type = getattr(unit, "block_type", "")
         compact = re.sub(r"\s+", "", str(getattr(unit, "text", "") or ""))
+        attachment_title = (block_type in {"paragraph_title", "doc_title", "title"}
+                            and getattr(unit, "section_type", "") in {"appendix", "safety_agreement"})
+        if marker is not None or (block_type != "paragraph_title" and not attachment_title):
+            return False
         cross_page_title_boundary = "CROSS_PAGE_TITLE_BOUNDARY" in getattr(unit, "split_flags", ())
         if not compact:
             return False
         if len(compact) < 4 and not cross_page_title_boundary:
             return False
-        if self.is_cover_noise_text(compact) or self.is_attachment_title(compact):
+        if self.is_attachment_title(compact) or (not attachment_title and self.is_cover_noise_text(compact)):
             return False
         return not bool(re.search(r"[:：。；;，,]$", compact))
 
@@ -240,7 +250,10 @@ class ClauseHeadingDetector:
             return False
         block_type = str(getattr(unit, "block_type", "") or "")
         if block_type not in {"paragraph_title", "doc_title", "title"}:
-            return False
+            number, title = marker
+            return bool(re.fullmatch(r"[一二三四五六七八九十]+[、.]?", number)
+                        and len(title) >= 12
+                        and re.search(r"应当|不得|双方|甲方|乙方|履行|坚持", title))
         _, title = marker
         compact_title = re.sub(r"\s+", "", title or "")
-        return len(compact_title) >= 4
+        return len(compact_title) >= 4 or compact_title in {"其他", "其它", "总则", "生效", "报价表"}

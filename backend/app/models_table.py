@@ -12,6 +12,7 @@ class TableCell(BaseModel):
     colspan: int = 1
     rowspan: int = 1
     bbox: BBox | None = None
+    observation_reason: str = ""
 
 
 class TableRow(BaseModel):

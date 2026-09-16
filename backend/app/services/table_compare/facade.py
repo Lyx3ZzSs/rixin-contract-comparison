@@ -42,8 +42,14 @@ class TableComparator:
         self.last_debug_payload: dict[str, object] = {}
 
     def build_diffs(
-        self, original: Document, compare: Document, start_index: int = 1
+        self,
+        original: Document,
+        compare: Document,
+        start_index: int = 1,
+        *,
+        page_alignment=None,
     ) -> tuple[list[DiffItem], list[str]]:
+        self._matcher.page_alignment = page_alignment
         warnings: list[str] = []
         self.last_debug_payload = {
             "table_block_counts": {"original": 0, "compare": 0},
@@ -137,6 +143,35 @@ class TableComparator:
             diffs, warnings = self._compare_tables(
                 original_tables, compare_tables, original_blocks, compare_blocks, start_index, warnings
             )
+            # Resolve field identity before treating a missing layout as a
+            # deleted form, including forms with real printed-field changes.
+            from app.services.signing_table_equivalence import reconcile_printed_form
+            kept = []
+            equivalent_forms = []
+            for diff in diffs:
+                deleted = diff.diff_type == "DELETE"
+                present, counterpart = (original, compare) if deleted else (compare, original)
+                evidences = diff.original_evidence if deleted else diff.compare_evidence
+                alignment = diff.match_score_details.get("page_alignment", {})
+                counterpart_pages = alignment.get("compare_pages" if deleted else "original_pages", [])
+                pages = {e.page_no for e in evidences}
+                replacement = None
+                if (diff.match_score_details.get("decision_reason") == "ALIGNED_PAGE_STRUCTURE_NOT_EXTRACTED"
+                        and len(pages) == len(counterpart_pages) == 1):
+                    left = next((p for p in present.pages if p.page_no in pages), None)
+                    right = next((p for p in counterpart.pages if p.page_no in counterpart_pages), None)
+                    if left is not None and right is not None:
+                        replacement = reconcile_printed_form(diff, left, right) if deleted else reconcile_printed_form(diff, right, left)
+                if replacement is not None:
+                    kept.extend(replacement)
+                    equivalent_forms.append({"diff_id": diff.diff_id,
+                                             "reason": "party_printed_field_changes" if replacement else "same_party_printed_fields",
+                                             "replacement_diff_ids": [item.diff_id for item in replacement],
+                                             "present_pages": sorted(pages), "counterpart_pages": counterpart_pages})
+                else:
+                    kept.append(diff)
+            diffs = kept
+            self.last_debug_payload["cross_representation_equivalence"] = equivalent_forms
             self.last_debug_payload["diff_count"] = len(diffs)
             self.last_debug_payload["suppressed_diffs"] = self._diff_builder.diagnostics_payload()
             self.last_debug_payload["warnings"] = list(warnings)
@@ -578,6 +613,41 @@ class TableComparator:
         used_original: set[int] = set()
         used_compare: set[int] = set()
 
+        # Establish continuation ownership before emitting orphan tables.
+        # The whole last row, including its label, must match after appending
+        # the fragment. A repeated date somewhere else on the page is not a
+        # counterpart, and a changed value must still produce a difference.
+        import unicodedata
+        def exact(text):
+            return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
+        def row_text(row):
+            return "".join(c.text for c in row.cells)
+        continuation_matches = []
+        for side, tables, others, indices, used in (
+            ("original", original_tables, compare_tables, [(a,b) for a,b,_ in pairs], used_original),
+            ("compare", compare_tables, original_tables, [(b,a) for a,b,_ in pairs], used_compare),
+        ):
+            paired_indices = {a for a,_ in indices}
+            for idx, tail in enumerate(tables):
+                if idx in paired_indices or len(tail.rows) != 1:
+                    continue
+                fragment = exact(row_text(tail.rows[0]))
+                if not fragment or len(fragment) > 40:
+                    continue
+                for previous_idx, other_idx in indices:
+                    previous, other = tables[previous_idx], others[other_idx]
+                    if not previous.rows or not other.rows or previous.rows[-1].page_no+1 != tail.rows[0].page_no:
+                        continue
+                    prefix = exact(row_text(previous.rows[-1]))
+                    if len(prefix) < 8 or prefix+fragment != exact(row_text(other.rows[-1])):
+                        continue
+                    used.add(idx)
+                    continuation_matches.append({"side": side, "source_page": tail.rows[0].page_no,
+                        "owner_page": previous.rows[-1].page_no, "counterpart_page": other.rows[-1].page_no,
+                        "owner_row": prefix, "continuation": fragment, "reason": "complete_row_continuation_identity"})
+                    break
+        self.last_debug_payload["continuation_content_matches"] = continuation_matches
+
         for orig_idx, comp_idx, score in pairs:
             used_original.add(orig_idx)
             used_compare.add(comp_idx)
@@ -586,6 +656,10 @@ class TableComparator:
 
             orig_block = self._diff_builder.find_block(original_blocks, orig_table)
             comp_block = self._diff_builder.find_block(compare_blocks, comp_table)
+            self._diff_builder.source_blocks = {
+                "original": {block.block_id: block for block, _ in self._diff_builder.find_blocks(original_blocks, orig_table)},
+                "compare": {block.block_id: block for block, _ in self._diff_builder.find_blocks(compare_blocks, comp_table)},
+            }
             cell_diffs = self._diff_builder.diff_cells(
                 orig_table,
                 comp_table,
@@ -601,16 +675,53 @@ class TableComparator:
         for idx in range(len(original_tables)):
             if idx not in used_original:
                 blocks = self._diff_builder.find_blocks(original_blocks, original_tables[idx])
-                diffs.append(self._diff_builder.whole_table_diff(original_tables[idx], "DELETE", next_index, blocks, None))
+                diff = self._diff_builder.whole_table_diff(
+                    original_tables[idx], "DELETE", next_index, blocks, None
+                )
+                self._mark_aligned_unmatched_table_candidate(diff, original_tables[idx].page_no, deleted=True)
+                diffs.append(diff)
                 next_index += 1
         for idx in range(len(compare_tables)):
             if idx not in used_compare:
                 blocks = self._diff_builder.find_blocks(compare_blocks, compare_tables[idx])
-                diffs.append(self._diff_builder.whole_table_diff(compare_tables[idx], "ADD", next_index, None, blocks))
+                diff = self._diff_builder.whole_table_diff(
+                    compare_tables[idx], "ADD", next_index, None, blocks
+                )
+                self._mark_aligned_unmatched_table_candidate(diff, compare_tables[idx].page_no, deleted=False)
+                diffs.append(diff)
                 next_index += 1
 
         diffs = self._reconcile_quote_remark_diffs(diffs)
         return self._renumber_diffs(diffs, start_index), warnings
+
+    def _mark_aligned_unmatched_table_candidate(
+        self,
+        diff: DiffItem,
+        page_no: int,
+        *,
+        deleted: bool,
+    ) -> None:
+        alignment = self._matcher.page_alignment
+        lookup = getattr(alignment, "entry_for_original" if deleted else "entry_for_compare", None)
+        if not callable(lookup):
+            return
+        entry = lookup(page_no)
+        if entry is None or str(entry.status) not in {"MATCHED", "MERGED", "SPLIT"}:
+            return
+        counterpart_pages = entry.compare_pages if deleted else entry.original_pages
+        if not counterpart_pages:
+            return
+        diff.quality_status = "NEEDS_REVIEW"
+        diff.match_method = "page_sequence_alignment"
+        diff.match_score = entry.alignment_score * 100.0
+        diff.match_score_details = {
+            **diff.match_score_details,
+            "change_decision": "CANDIDATE",
+            "decision_reason": "ALIGNED_PAGE_STRUCTURE_NOT_EXTRACTED",
+            "page_alignment": entry.to_debug_payload(),
+        }
+        if "ALIGNED_PAGE_STRUCTURE_NOT_EXTRACTED" not in diff.review_flags:
+            diff.review_flags.append("ALIGNED_PAGE_STRUCTURE_NOT_EXTRACTED")
 
     def _business_field_level_diffs(
         self,

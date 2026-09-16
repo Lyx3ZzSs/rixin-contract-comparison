@@ -53,6 +53,12 @@ class SigningRegionDiffBuilder:
     ) -> DiffItem:
         original_text = str(change.get("original_text") or "")
         compare_text = str(change.get("compare_text") or "")
+        if change.get("content_recognition_reason") == "PARTIAL_SIGNATURE_NAME":
+            # A recognized fragment is evidence of ink, not a reliable person's name.
+            if original_text:
+                original_text = "手写填写（姓名未可靠识别）"
+            if compare_text:
+                compare_text = "手写填写（姓名未可靠识别）"
         change_type = str(change.get("type") or "MODIFY")
         role = str(change.get("party_role") or "")
         label = str(change.get("field_label") or self._change_label(changes_attr))
@@ -87,8 +93,19 @@ class SigningRegionDiffBuilder:
             match_score_details={
                 "field_key": str(change.get("field_key") or ""),
                 "change_decision": str(change.get("change_decision") or "CANDIDATE"),
+                "decision_reason": str(change.get("decision_reason") or ""),
+                "original_observation_state": str(change.get("original_observation_state") or ""),
+                "original_observation_reason": str(change.get("original_observation_reason") or ""),
+                "compare_observation_state": str(change.get("compare_observation_state") or ""),
+                "compare_observation_reason": str(change.get("compare_observation_reason") or ""),
             },
             review_flags=flags,
+            quality_status=(
+                "NEEDS_REVIEW"
+                if change.get("change_decision") in {"CANDIDATE", "NEEDS_REVIEW"}
+                or change.get("content_recognition_reason") == "PARTIAL_SIGNATURE_NAME"
+                else "NORMAL"
+            ),
             content_recognition_status=content_status,
             content_recognition_reason=content_reason,
             content_candidates=content_candidates,
@@ -104,6 +121,9 @@ class SigningRegionDiffBuilder:
 
     @staticmethod
     def _change_display_text(change: dict, *, side: str) -> str:
+        if change.get(f"{side}_observation_state") == "UNOBSERVED":
+            reason = str(change.get(f"{side}_observation_reason") or "UNSPECIFIED")
+            return f"未观察（{reason}）"
         text = str(change.get(f"{side}_text") or change.get(f"{side}_residual_text") or "")
         residual = str(change.get(f"{side}_residual_text") or "")
         if residual:
@@ -118,6 +138,11 @@ class SigningRegionDiffBuilder:
         original_display: str,
         compare_display: str,
     ) -> str:
+        if change.get("change_decision") in {"CANDIDATE", "NEEDS_REVIEW"} and "UNOBSERVED" in {
+            change.get("original_observation_state"),
+            change.get("compare_observation_state"),
+        }:
+            return f"{title}：{original_display} → {compare_display}；一侧未观察，无法确认增删"
         if change.get("fill_state_change") == "filled":
             if str(change.get("field_key") or "") in {
                 "legal_representative",
@@ -154,11 +179,20 @@ class SigningRegionDiffBuilder:
     def _change_flags(changes_attr: str, flags: list[str], change: dict) -> list[str]:
         relevant = {
             "party_changes": {"SIGNING_PARTY_CHANGE", "CRITICAL_VALUE_CHANGE"},
-            "column_changes": {"SIGNING_COLUMN_CHANGE"},
-            "field_changes": {"SIGNING_FIELD_CHANGE", "SIGNING_DATE_FILLED", "CRITICAL_VALUE_CHANGE"},
-            "seal_changes": {"SIGNING_SEAL_CHANGE"},
+            "column_changes": {"SIGNING_COLUMN_CHANGE", "OBSERVATION_UNOBSERVED"},
+            "field_changes": {
+                "SIGNING_FIELD_CHANGE",
+                "SIGNING_DATE_FILLED",
+                "CRITICAL_VALUE_CHANGE",
+                "OBSERVATION_UNOBSERVED",
+            },
+            "seal_changes": {"SIGNING_SEAL_CHANGE", "OBSERVATION_UNOBSERVED"},
             "date_changes": {"SIGNING_DATE_CHANGE", "CRITICAL_VALUE_CHANGE"},
-            "signature_changes": {"SIGNING_SIGNATURE_CHANGE", "SIGNING_SIGNATURE_UNCERTAIN"},
+            "signature_changes": {
+                "SIGNING_SIGNATURE_CHANGE",
+                "SIGNING_SIGNATURE_UNCERTAIN",
+                "OBSERVATION_UNOBSERVED",
+            },
             "label_changes": {"SIGNING_LABEL_CHANGE"},
             "table_changes": {"SIGNING_TABLE_CHANGE"},
             "visual_changes": {"SIGNING_VISUAL_CHANGE"},

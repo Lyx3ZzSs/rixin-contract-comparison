@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { getDiffs, getTask, retryCompareTask } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getTask, retryCompareTask } from "./api";
 import { createProgressEventSource, type ProgressEvent, type ProgressEventStream } from "./api_sse";
-import type { CompareRecordSummary, CompareTask, DiffItem } from "../types";
+import type { CompareRecordSummary, CompareTask } from "../types";
 
 export type ProgressMode = "INITIAL_LOAD" | "SSE" | "POLLING" | "TERMINAL";
 
@@ -60,6 +60,7 @@ function startProgressSynchronization(options: ProgressSynchronizationOptions): 
   let mode: ProgressMode = "INITIAL_LOAD";
   let terminalHintRevision: number | null = null;
   let pollDelay = POLL_INITIAL_DELAY_MS;
+  let waitingForPreview = false;
 
   const transition = (next: ProgressMode) => {
     if (stopped || mode === next) return;
@@ -163,6 +164,11 @@ function startProgressSynchronization(options: ProgressSynchronizationOptions): 
 
       options.onTask(task);
       if (source === "initial") {
+        waitingForPreview = task.preview_available === false;
+        if (waitingForPreview) schedulePoll();
+        else openStream();
+      } else if (waitingForPreview && task.preview_available) {
+        waitingForPreview = false;
         openStream();
       } else {
         schedulePoll();
@@ -209,19 +215,15 @@ function abortableDelay(delay: number, signal: AbortSignal): Promise<void> {
 
 interface UseTaskProgressResult {
   task: CompareTask | null;
-  diffs: DiffItem[];
   isLoading: boolean;
   error: string;
   progressMode: ProgressMode;
   isRetrying: boolean;
   retry: () => Promise<void>;
-  setTask: Dispatch<SetStateAction<CompareTask | null>>;
-  setDiffs: Dispatch<SetStateAction<DiffItem[]>>;
 }
 
 export function useTaskProgress(taskId: string): UseTaskProgressResult {
   const [task, setTask] = useState<CompareTask | null>(null);
-  const [diffs, setDiffs] = useState<DiffItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   const [progressMode, setProgressMode] = useState<ProgressMode>("INITIAL_LOAD");
@@ -230,7 +232,6 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
 
   useEffect(() => {
     setTask(null);
-    setDiffs([]);
     setIsLoading(true);
     setError("");
     setProgressMode("INITIAL_LOAD");
@@ -259,13 +260,11 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
         } : current);
       },
       async onTerminal(terminalTask, source, signal) {
-        const terminalDiffs = terminalTask.status === "COMPLETED" ? await getDiffs(taskId, signal) : [];
         if (source === "poll" && terminalTask.status === "COMPLETED") {
           await abortableDelay(RESULT_COMPLETION_ANIMATION_MS, signal);
         }
         if (signal.aborted) return;
         setTask(terminalTask);
-        setDiffs(terminalDiffs);
         setError("");
         setIsLoading(false);
       },
@@ -291,7 +290,7 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
     }
   }, [taskId]);
 
-  return { task, diffs, isLoading, error, progressMode, isRetrying, retry, setTask, setDiffs };
+  return { task, isLoading, error, progressMode, isRetrying, retry };
 }
 
 export function useRecordProgressSSE(

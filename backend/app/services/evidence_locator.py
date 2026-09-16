@@ -79,6 +79,10 @@ class EvidenceLocator:
                     text=text,
                     highlight_type=text_range.highlight_type,
                     text_confidence=self._segment_text_confidence(segment),
+                    char_boxes=[char.model_copy(deep=True) for char in segment
+                                if method == "char_exact" and char.page_no == page_no
+                                and bbox.x0 <= (char.bbox.x0+char.bbox.x1)/2 <= bbox.x1
+                                and bbox.y0 <= (char.bbox.y0+char.bbox.y1)/2 <= bbox.y1],
                 )
                 for page_no, bbox, text in self._merge_char_boxes(segment)
             )
@@ -184,6 +188,19 @@ class EvidenceLocator:
                     and "signing_region" in {diffs[left_diff].source_type, diffs[right_diff].source_type}
                 ):
                     continue
+                if {diffs[left_diff].source_type, diffs[right_diff].source_type} == {"metadata", "clause"}:
+                    clause_diff, clause_evidence, metadata_evidence = (
+                        (diffs[left_diff], left, right) if diffs[left_diff].source_type == "clause"
+                        else (diffs[right_diff], right, left)
+                    )
+                    ranges = (clause_diff.original_change_ranges if side == "original"
+                              else clause_diff.compare_change_ranges)
+                    if (metadata_evidence.method == "cover_extra" and ranges
+                            and clause_evidence.method == "char_exact"):
+                        # These are independently retained business changes.
+                        # Removing a precise range box here leaves a visible
+                        # diff unlocated and destroys downstream ownership proof.
+                        continue
                 if not self._evidence_conflicts(left, right):
                     continue
                 winner = self._preferred_evidence(

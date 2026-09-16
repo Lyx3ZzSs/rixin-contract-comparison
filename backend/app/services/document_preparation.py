@@ -5,10 +5,12 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.document_understanding import DocumentUnderstandingService
 from app.models import BBox, Document, Page, TextBlock
 from app.services.cover.patterns import parse_labeled_line
 from app.services.table_compare.constants import TABLE_HEADERS
 from app.services.table_compare.utils import strip_html
+from app.services.pipeline_metrics import PerformanceRecorder
 
 
 @dataclass
@@ -23,6 +25,7 @@ class DocumentPreparationDecision:
 @dataclass
 class DocumentPreparationResult:
     decisions: list[DocumentPreparationDecision] = field(default_factory=list)
+    performance: PerformanceRecorder = field(default_factory=PerformanceRecorder, repr=False, compare=False)
 
     def to_debug_payload(self) -> list[dict[str, Any]]:
         return [
@@ -38,8 +41,11 @@ class DocumentPreparationResult:
 
 
 class DocumentPreparer:
+    def __init__(self, *, image_analysis_max_inflight: int = 2):
+        self.image_analysis_max_inflight = image_analysis_max_inflight
+
     page_number_pattern = re.compile(
-        r"^(?:第?\s*\d+\s*页?|共\s*\d+\s*页\s*第\s*\d+\s*页|[-—–_]*\s*\d+\s*[-—–_]*)$"
+        r"^(?:第?\s*\d+\s*页?|第\s*\d+\s*页\s*共\s*\d+\s*页|共\s*\d+\s*页\s*第\s*\d+\s*页|[-—–_]*\s*\d+\s*[-—–_]*)$"
     )
     clause_heading_pattern = re.compile(
         r"^\s*(?:第[一二三四五六七八九十百千万0-9]+[章节条]|[一二三四五六七八九十百千万0-9]+[、.．])"
@@ -102,32 +108,282 @@ class DocumentPreparer:
         r"终止|解除|不可抗力|争议|仲裁|诉讼|应当|应|不得|负责|承担|提供"
     )
     revision_artifact_pattern = re.compile(
-        r"^(?P<action>删除|插入|设置格式)\[(?P<author>[\u4e00-\u9fff·]{2,8})\]\s*[:：]\s*(?P<payload>.{0,32})$"
+        r"^(?P<action>删除|插入|设置格式)\[(?P<author>[^\[\]\r\n]{1,64})\]\s*[:：]\s*(?P<payload>[^\r\n]*)$"
     )
-    revision_format_payload_pattern = re.compile(r"^(?:突出显示|字体|字号|字形|颜色|下划线|加粗|倾斜|删除线)?$")
+    revision_format_payload_pattern = re.compile(
+        r"^(?:突出显示|字体|字号|字形|颜色|下划线|加粗|倾斜|删除线|行距|居中|缩进|对齐|段落)(?:\s*[:：,，].*|\s*\d+.*)?$"
+    )
 
     def prepare_pair(self, original: Document, compare: Document) -> DocumentPreparationResult:
+        from app.services.document_role_repair import reconcile_contact_placeholders, reconcile_body_roles, reconcile_local_source_disagreement
         result = DocumentPreparationResult()
-        self.prepare(original, "original", result)
-        self.prepare(compare, "compare", result)
+        timed = result.performance.call
+        from app.services.cover.party_ocr import reconcile_cover_title_roles
+        for side, block in timed("cover_title_roles", reconcile_cover_title_roles, original, compare):
+            result.decisions.append(DocumentPreparationDecision(side=side,page_no=block.page_no,block_id=block.block_id,
+                reason="matched_cover_title_role",text_preview=block.text))
+        for side, block in timed("local_source_disagreement", reconcile_local_source_disagreement, original, compare):
+            result.decisions.append(DocumentPreparationDecision(side=side,page_no=block.page_no,block_id=block.block_id,
+                reason="own_layout_and_peer_sources_agree",text_preview=block.text))
+        for side, block in timed("body_roles", reconcile_body_roles, original, compare):
+            result.decisions.append(DocumentPreparationDecision(
+                side=side, page_no=block.page_no, block_id=block.block_id,
+                reason="paired_body_geometry_role_recovery", text_preview=block.text,
+            ))
+        for side, block in timed("contact_placeholders", reconcile_contact_placeholders, original, compare):
+            result.decisions.append(DocumentPreparationDecision(
+                side=side, page_no=block.page_no, block_id=block.block_id,
+                reason="paired_contact_placeholder", text_preview=block.text,
+            ))
+        timed("original", self.prepare, original, "original", result)
+        timed("compare", self.prepare, compare, "compare", result)
         return result
 
     def prepare(self, document: Document, side: str, result: DocumentPreparationResult | None = None) -> DocumentPreparationResult:
         result = result or DocumentPreparationResult()
         if not document.pages:
             return result
+        timed = result.performance.call
+        from app.services.seal_image_validation import reclassify_unverified_seal_images
+        for item in timed("seal_image_validation", reclassify_unverified_seal_images, document):
+            result.decisions.append(DocumentPreparationDecision(side=side,page_no=item["page_no"],
+                block_id=item["block_id"],reason=item["reason"],text_preview="图像保留；缺少印章类别证据"))
+        from app.services.diagonal_watermark import classify_diagonal_watermarks
+        for item in timed("diagonal_watermarks", classify_diagonal_watermarks, document):
+            result.decisions.append(DocumentPreparationDecision(side=side,page_no=item["page_no"],
+                block_id=item["block_id"],reason="pale_diagonal_watermark_ownership",text_preview=item["text"]))
+        from app.services.document_role_repair import normalize_signing_lines
+        for block in timed("signing_lines", normalize_signing_lines, document):
+            result.decisions.append(DocumentPreparationDecision(side=side,page_no=block.page_no,block_id=block.block_id,
+                reason="signing_physical_line_ownership",text_preview=block.text[:160]))
 
+        from app.services.document_role_repair import repeated_title_ids
+        title_ids = timed("repeated_titles", repeated_title_ids, document)
+
+        from app.services.document_role_repair import recover_visible_native_punctuation, recover_native_technical_tokens
+        for block in [*timed("native_punctuation", recover_visible_native_punctuation, document),
+                      *timed("native_technical_tokens", recover_native_technical_tokens, document)]:
+            result.decisions.append(DocumentPreparationDecision(
+                side=side, page_no=block.page_no, block_id=block.block_id,
+                reason="visible_native_punctuation_corroborated", text_preview=block.text,
+            ))
+
+        timed("sparse_native_tables", self._recover_sparse_native_tables, document, side, result)
+        from app.services.table_slash_recovery import repair_table_slashes, recover_native_continuation_rows
+        for block in timed("native_continuation_rows", recover_native_continuation_rows, document):
+            result.decisions.append(DocumentPreparationDecision(side=side,page_no=block.page_no,
+                block_id=block.block_id,reason="visible_native_continuation_grid",text_preview=block.text))
+        for block, previous, _ in timed("table_slashes", repair_table_slashes, document):
+            result.decisions.append(DocumentPreparationDecision(side=side, page_no=block.page_no, block_id=block.block_id,
+                reason="visible_single_stroke_slash_recovered", text_preview=f"{previous} → /"))
+        from app.services.ruled_table_recovery import recover_ruled_tables
+        for block in timed("ruled_tables", recover_ruled_tables, document,
+                           max_inflight=self.image_analysis_max_inflight, performance=result.performance):
+            result.decisions.append(DocumentPreparationDecision(
+                side=side, page_no=block.page_no, block_id=block.block_id,
+                reason="visible_ruled_grid_character_ownership", text_preview=block.text[:160],
+            ))
+        active_section_role = None
         for page in document.pages:
-            self._classify_page_structure(page, side, result)
+            timed("layout_prefixes", self._recover_layout_prefixes, page, side, result)
+            from app.services.document_role_repair import repair_corroborated_ocr
+            for block in timed("corroborated_ocr", repair_corroborated_ocr, page):
+                result.decisions.append(DocumentPreparationDecision(
+                    side=side, page_no=page.page_no, block_id=block.block_id,
+                    reason="same_region_corroborated_ocr_repair", text_preview=block.text[:160],
+                ))
+            active_section_role = timed("page_structure", self._classify_page_structure,
+                                        page, side, result, active_section_role)
+            for block in page.blocks:
+                if block.block_id in title_ids:
+                    block.block_type = "doc_title"
+                    block.enter_clause_compare = False
+                    self._mark_role(block, side, "repeated_document_title", "cover_title_repeated", result)
 
+        from app.services.header_footer_compare import HeaderFooterComparator
+        footer_blocks = timed("footer_ownership", HeaderFooterComparator().owned_footer_blocks, document)
+        for page in document.pages:
+            for block in page.blocks:
+                if (page.page_no, block.block_id) in footer_blocks:
+                    block.enter_clause_compare = False
+                    self._mark_role(block, side, "page_footer", "shared_footer_evidence_ownership", result)
         return result
+
+    @staticmethod
+    def _recover_sparse_native_tables(document: Document, side: str, result: DocumentPreparationResult) -> None:
+        """Recover lost OCR cells from the same PDF's visible text and ruled grid."""
+        from html import escape
+        from pathlib import Path
+        from xml.etree import ElementTree
+
+        import fitz
+        from app.models import CharBox, TextSourceEvidence
+
+        candidates = []
+        for page in document.pages:
+            for block in page.blocks:
+                if not block.raw_html:
+                    continue
+                try:
+                    root = ElementTree.fromstring(block.raw_html)
+                except ElementTree.ParseError:
+                    continue
+                rows = [["".join(cell.itertext()).strip() for cell in row.findall("td")] for row in root.iter("tr")]
+                if len(rows) >= 2 and all(len(row) == 2 for row in rows):
+                    values = [value for row in rows for value in row]
+                    if sum(not v for v in values) / len(values) >= 0.6:
+                        candidates.append((page, block, rows))
+        if not candidates or not Path(document.path).is_file():
+            return
+        with fitz.open(document.path) as pdf:
+            for page, block, rows in candidates:
+                if not 1 <= page.page_no <= len(pdf):
+                    continue
+                native = pdf[page.page_no - 1]
+                # Hidden OCR layers are not independent evidence of visible content.
+                if any(span["type"] == 3 or span["opacity"] < 0.9 for span in native.get_texttrace()):
+                    continue
+                region = fitz.Rect(block.bbox.x0 - 3, block.bbox.y0 - 3, block.bbox.x1 + 3, block.bbox.y1 + 3)
+                tables = native.find_tables(clip=region).tables
+                tables = [table for table in tables if table.row_count == len(rows) and table.col_count == 2]
+                if len(tables) != 1:
+                    continue
+                words = native.get_text("words")
+                recovered = []
+                for row in tables[0].rows:
+                    recovered.append([" ".join(w[4] for w in words if cell and fitz.Point((w[0]+w[2])/2, (w[1]+w[3])/2) in fitz.Rect(cell)) for cell in row.cells])
+                def norm(value: str) -> str:
+                    return re.sub(r"\s+", "", value)
+                if any(norm(old) not in norm(new) for old_row, new_row in zip(rows, recovered) for old, new in zip(old_row, new_row) if old):
+                    continue
+                if any(not row[0] for row in recovered) or sum(map(len, (v for row in recovered for v in row))) < 30:
+                    continue
+                chars = []
+                text = ""
+                for raw_block in native.get_text("rawdict")["blocks"]:
+                    for line in raw_block.get("lines", []):
+                        for span in line["spans"]:
+                            for char in span["chars"]:
+                                bounds = fitz.Rect(char["bbox"])
+                                if (bounds.tl + bounds.br) / 2 not in region:
+                                    continue
+                                chars.append(CharBox(char=char["c"], page_no=page.page_no, text_index=len(text),
+                                                     bbox=BBox(x0=bounds.x0, y0=bounds.y0, x1=bounds.x1, y1=bounds.y1)))
+                                text += char["c"]
+                        text += "\n"
+                block.source_evidence.append(TextSourceEvidence(source="pdf_native_table_recovery", raw_text=text,
+                                                                  page_no=page.page_no, bbox=block.bbox, confidence=1.0))
+                block.text = text.strip()
+                block.char_boxes = chars
+                block.raw_html = "<table>" + "".join("<tr>" + "".join(f"<td>{escape(v)}</td>" for v in row) + "</tr>" for row in recovered) + "</table>"
+                result.decisions.append(DocumentPreparationDecision(side=side, page_no=page.page_no, block_id=block.block_id,
+                                                                    reason="sparse_table_native_text_recovered", text_preview=block.text[:160]))
+
+    def _recover_layout_prefixes(self, page: Page, side: str, result: DocumentPreparationResult) -> None:
+        """Recover an omitted leading line only from the same OCR layout region."""
+        def compact(text: str) -> str:
+            return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
+
+        recovered: list[TextBlock] = []
+        seen: set[str] = set()
+        for block in page.blocks:
+            if not block.layout_block_id or block.layout_block_id in seen or block.block_type != "text":
+                continue
+            group = [item for item in page.blocks if item.layout_block_id == block.layout_block_id]
+            first = min(group, key=lambda item: (item.bbox.y0, item.bbox.x0))
+            if block is not first:
+                continue
+            seen.add(block.layout_block_id)
+            anchor = compact(first.text)
+            if self._recover_inline_layout_prefix(page, first, group, side, result):
+                continue
+            if len(anchor) < 16:
+                continue
+            for source in first.source_evidence:
+                if source.source != "ppstructure" or source.page_no != page.page_no or source.bbox is None:
+                    continue
+                raw = unicodedata.normalize("NFKC", source.raw_text)
+                normalized = compact(raw)
+                offset = normalized.find(anchor)
+                if not 12 <= offset <= 100 or normalized.count(anchor) != 1:
+                    continue
+                prefix = normalized[:offset]
+                if any(prefix in compact(item.text) for item in page.blocks):
+                    continue
+                gap = first.bbox.y0 - source.bbox.y0
+                if not 8 <= gap <= 60:
+                    continue
+                # Never invent character coordinates from a paragraph OCR result.
+                bbox = BBox(x0=source.bbox.x0, y0=source.bbox.y0,
+                            x1=source.bbox.x1, y1=first.bbox.y0)
+                recovered.append(TextBlock(
+                    block_id=first.block_id + "_layout_prefix", page_no=page.page_no,
+                    text=prefix, bbox=bbox, source="ppstructure_layout_prefix_recovery",
+                    confidence=source.confidence, reading_order=(first.reading_order or 0) - 1,
+                    source_evidence=[source], block_type="text", flow_role="body",
+                ))
+                result.decisions.append(DocumentPreparationDecision(
+                    side=side, page_no=page.page_no, block_id=recovered[-1].block_id,
+                    reason="same_layout_missing_prefix_recovered", text_preview=prefix,
+                ))
+                break
+        page.blocks.extend(recovered)
+        if recovered:
+            page.blocks.sort(key=lambda item: (item.reading_order or 0, item.bbox.y0, item.bbox.x0))
+
+    def _recover_inline_layout_prefix(
+        self, page: Page, block: TextBlock, group: list[TextBlock], side: str,
+        result: DocumentPreparationResult,
+    ) -> bool:
+        """Use a same-side layout reading for an omitted labelled row prefix.
+
+        The line OCR must be its exact suffix in the same physical row. Other
+        OCR blocks in that row must not already own the missing prefix.
+        """
+        old = block.text.strip()
+        if len(old) < 6 or len(group) != 1:
+            return False
+        for source in block.source_evidence:
+            full = source.raw_text.strip()
+            if (source.source != "ppstructure" or source.page_no != page.page_no
+                    or source.bbox is None or source.confidence is None or source.confidence < 0.95
+                    or not re.match(r"^(?:项目名称|合同名称|工程名称)\s*[:：]", full)
+                    or not full.endswith(old) or not 6 <= len(full)-len(old) <= 80):
+                continue
+            roi = source.bbox
+            height = max(1, block.bbox.y1-block.bbox.y0)
+            if (abs(roi.y0-block.bbox.y0) > height * 0.4
+                    or abs(roi.y1-block.bbox.y1) > height * 0.4
+                    or roi.x0 >= block.bbox.x0 - height or abs(roi.x1-block.bbox.x1) > height):
+                continue
+            if any(other is not block and other.text.strip()
+                   and min(other.bbox.y1,roi.y1)>max(other.bbox.y0,roi.y0)
+                   and min(other.bbox.x1,block.bbox.x0)>max(other.bbox.x0,roi.x0)
+                   for other in page.blocks):
+                continue
+            shift = len(full)-len(old)
+            block.text = full
+            block.char_boxes = [char.model_copy(update={"text_index": char.text_index+shift})
+                                for char in block.char_boxes if char.text_index is not None]
+            block.bbox = roi.model_copy()
+            block.block_type = "paragraph_title"
+            block.source = "+".join(filter(None,[block.source,"same_side_inline_layout_prefix"]))
+            result.decisions.append(DocumentPreparationDecision(
+                side=side,page_no=page.page_no,block_id=block.block_id,
+                reason="same_side_inline_layout_prefix",text_preview=full,
+            ))
+            return True
+        return False
 
     def _classify_page_structure(
         self,
         page: Page,
         side: str,
         result: DocumentPreparationResult,
-    ) -> None:
+        active_section_role: str | None = None,
+    ) -> str | None:
+        from app.services.document_role_repair import revision_continuations
+        continuations = revision_continuations(page, self._is_rendered_revision_artifact)
         body_start_y = min(
             (
                 block.bbox.y0
@@ -142,12 +398,25 @@ class DocumentPreparer:
             if (block.block_type or "").lower() in self.table_block_types
         ]
 
-        active_section_role: str | None = None
         for block in self._section_flow_blocks(page):
+            if block.raw_html and "设置格式" in block.raw_html:
+                def strip_revision_cell(match: re.Match[str]) -> str:
+                    cell_text = strip_html(match.group("body")).strip()
+                    if self.revision_artifact_pattern.fullmatch(unicodedata.normalize("NFKC", cell_text)):
+                        result.decisions.append(DocumentPreparationDecision(
+                            side=side, page_no=page.page_no, block_id=block.block_id,
+                            reason="rendered_word_revision_table_cell", text_preview=cell_text,
+                        ))
+                        return match.group("open") + match.group("close")
+                    return match.group(0)
+                block.raw_html = re.sub(
+                    r"(?P<open><t[dh]\b[^>]*>)(?P<body>.*?)(?P<close></t[dh]>)",
+                    strip_revision_cell, block.raw_html, flags=re.IGNORECASE | re.DOTALL,
+                )
             compact = re.sub(r"\s+", "", block.text or "")
             if not compact:
                 continue
-            if self._is_rendered_revision_artifact(block, page):
+            if block.block_id in continuations or self._is_rendered_revision_artifact(block, page):
                 block.enter_clause_compare = False
                 self._mark_role(block, side, "revision_artifact", "rendered_word_revision_artifact", result)
                 continue
@@ -158,6 +427,11 @@ class DocumentPreparer:
             if section_role:
                 active_section_role = section_role
                 self._mark_role(block, side, section_role, "section_classifier", result)
+                continue
+            # A local table caption keeps its identity inside an appendix too.
+            table_role = self._table_context_role(block, table_blocks, compact)
+            if table_role:
+                self._mark_role(block, side, table_role, "nearby_table_header_context", result)
                 continue
             if active_section_role and self._looks_like_main_contract_heading(compact):
                 active_section_role = None
@@ -186,6 +460,8 @@ class DocumentPreparer:
                 role = "page_footer" if near_bottom or self.page_number_pattern.fullmatch(compact) else "body_footnote"
                 self._mark_role(block, side, role, "footnote_secondary_classification", result)
 
+        return active_section_role
+
     def _is_strong_clause_candidate(self, block: TextBlock, page: Page) -> bool:
         text = unicodedata.normalize("NFKC", block.text or "").strip()
         compact = re.sub(r"\s+", "", text)
@@ -203,10 +479,13 @@ class DocumentPreparer:
         match = self.revision_artifact_pattern.fullmatch(compact)
         if match is None:
             return False
-        if match.group("action") == "设置格式":
-            return bool(self.revision_format_payload_pattern.fullmatch(match.group("payload").strip()))
-        near_comment_margin = page.width > 0 and block.bbox.x0 >= page.width * 0.72
+        near_comment_margin = page.width > 0 and block.bbox.x0 >= page.width * 0.65
         narrow_block = page.width > 0 and (block.bbox.x1 - block.bbox.x0) <= page.width * 0.30
+        if match.group("action") == "设置格式":
+            payload = match.group("payload").strip()
+            return (near_comment_margin and narrow_block) or not payload or bool(
+                self.revision_format_payload_pattern.fullmatch(payload)
+            )
         return near_comment_margin and narrow_block
 
     def _is_page_number_footer(self, block: TextBlock, page: Page, compact: str) -> bool:
@@ -238,17 +517,17 @@ class DocumentPreparer:
         block_type = (block.block_type or "").lower()
         if self._looks_like_real_clause_heading(compact):
             return None
-        if self.quote_page_pattern.search(compact):
+        if DocumentUnderstandingService.is_quote_title_text(compact):
             return "quote_section"
         if self.safety_title_pattern.search(compact):
             return "safety_section"
         if self.appendix_title_pattern.match(compact):
             if self.safety_title_pattern.search(compact):
                 return "safety_section"
-            if self.quote_page_pattern.search(compact):
+            if DocumentUnderstandingService.is_quote_title_text(compact):
                 return "quote_section"
             return "appendix_section"
-        if block_type == "doc_title" and self.quote_page_pattern.search(compact):
+        if block_type == "doc_title" and DocumentUnderstandingService.is_quote_title_text(compact):
             return "quote_section"
         return None
 
@@ -306,6 +585,11 @@ class DocumentPreparer:
 
         if self.table_note_label_pattern.match(compact):
             return "table_note"
+
+        subject = re.sub(r"^[（(]?\d+[）).、]", "", compact)
+        if (4 <= len(subject) <= 40 and subject != compact
+                and any(subject in re.sub(r"\s+", "", table.text)[:150] for table in nearby_tables)):
+            return "table_caption"
 
         candidate_terms = self._candidate_table_terms(block.text)
         if not candidate_terms or not self._looks_like_table_caption(block.text, candidate_terms):

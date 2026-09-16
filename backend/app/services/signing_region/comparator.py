@@ -8,6 +8,12 @@ from datetime import date
 from itertools import zip_longest
 
 from app.models import BBox, Document
+from app.services.field_observation import (
+    FieldObservation,
+    ObservationReason,
+    ObservationState,
+    decide_observation_transition,
+)
 from app.services.signing_region.models import (
     SigningElement,
     SigningElementType,
@@ -41,7 +47,6 @@ class SigningRegionComparator:
         match_confidence: float = 0.0,
         original_party_references: dict[str, str] | None = None,
         compare_party_references: dict[str, str] | None = None,
-        ignore_seals: bool = False,
     ) -> SigningRegionComparison:
         comparison = SigningRegionComparison(
             comparison_id=self._comparison_id(original, compare),
@@ -49,10 +54,6 @@ class SigningRegionComparator:
             compare_region=compare,
             match_confidence=match_confidence,
         )
-        if ignore_seals and original is None and compare is not None and self._seal_only_region(compare):
-            return comparison
-        if ignore_seals and compare is None and original is not None and self._seal_only_region(original):
-            return comparison
         if original is None and compare is not None:
             comparison.diff_type = "ADD"
             comparison.region_changes.append({"type": "ADD", "detail": "新增签署栏"})
@@ -85,31 +86,19 @@ class SigningRegionComparator:
             excluded_roles=missing_roles,
         )
         self._compare_signatures(original, compare, comparison, excluded_roles=missing_roles)
-        if not ignore_seals:
-            self._compare_seals(original, compare, comparison)
-        self._compare_elements(original, compare, comparison, ignore_seals=ignore_seals)
+        self._compare_seals(original, compare, comparison)
+        self._compare_elements(original, compare, comparison)
         if self._has_changes(comparison):
             comparison.diff_type = "MODIFY"
         return comparison
-
-    @staticmethod
-    def _seal_only_region(region: SigningRegion) -> bool:
-        return bool(region.elements) and all(
-            element.element_type in {SigningElementType.SEAL, SigningElementType.LABEL, SigningElementType.VISUAL_AREA}
-            for element in region.elements
-        )
 
     def _compare_elements(
         self,
         original: SigningRegion,
         compare: SigningRegion,
         comparison: SigningRegionComparison,
-        *,
-        ignore_seals: bool,
     ) -> None:
         for element_type, (changes_attr, review_flag) in ELEMENT_CHANGE_CONFIGS.items():
-            if ignore_seals and element_type == SigningElementType.SEAL:
-                continue
             if element_type in {
                 SigningElementType.DATE_FIELD,
                 SigningElementType.LABEL,
@@ -202,8 +191,25 @@ class SigningRegionComparator:
                 compare_label = self._field_label(compare_element)
                 original_value = self._normalized_field_value(field_key, original_text)
                 compare_value = self._normalized_field_value(field_key, compare_text)
+                if field_key == "date" and original_element is not None and compare_element is not None:
+                    proof = original_element.raw_ref.get("paired_date_ink") or {}
+                    if (proof.get("equivalent") and proof == compare_element.raw_ref.get("paired_date_ink")
+                            and proof.get("original_element_id") == original_element.element_id
+                            and proof.get("compare_element_id") == compare_element.element_id):
+                        continue
                 original_content_status = self._content_recognition_status(original_element)
                 compare_content_status = self._content_recognition_status(compare_element)
+                original_observation = self._field_observation(
+                    original_element,
+                    original,
+                    peer_value=compare_value,
+                )
+                compare_observation = self._field_observation(
+                    compare_element,
+                    compare,
+                    peer_value=original_value,
+                    peer_element=original_element,
+                )
                 content_status = (
                     "NEEDS_REVIEW"
                     if "NEEDS_REVIEW" in {original_content_status, compare_content_status}
@@ -211,8 +217,30 @@ class SigningRegionComparator:
                 )
                 content_reason = self._content_recognition_reason(compare_element or original_element)
                 content_candidates = self._content_candidates(compare_element or original_element)
+                if field_key in {"legal_representative", "authorized_representative", "signature"}:
+                    partial_names = [
+                        (side, element) for side, element in (("original", original_element), ("compare", compare_element))
+                        if element is not None and re.fullmatch(r"[\u4e00-\u9fff]", element.text.strip())
+                    ]
+                    if partial_names and content_reason != "CONFLICTING_VALUE_CANDIDATES":
+                        content_status = "NEEDS_REVIEW"
+                        content_reason = "PARTIAL_SIGNATURE_NAME"
+                        content_candidates = [*content_candidates, *[
+                            {"text": element.text, "side": side, "source": element.source,
+                             "element_id": element.element_id, "reason": "PARTIAL_SIGNATURE_NAME"}
+                            for side, element in partial_names
+                        ]]
                 value_changed = field_key != "signature" and original_value != compare_value
                 label_changed = not self._field_labels_equivalent(field_key, original_label, compare_label)
+                # Keep template diagnostics, but absence of recognized values
+                # does not prove both fields are blank. Missing/occluded fields
+                # must still go through observation-based candidate admission.
+                if not original_value and not compare_value:
+                    if label_changed:
+                        comparison.template_changes.append({"party_role": role, "field_key": field_key,
+                            "original_label": original_label, "compare_label": compare_label,
+                            **original_observation.as_details("original"), **compare_observation.as_details("compare"),
+                            "reason": "EMPTY_FIELD_TEMPLATE_CHANGE"})
                 if label_changed and self._is_seal_occluded_signature_label_conflict(
                     field_key,
                     original_element,
@@ -223,6 +251,12 @@ class SigningRegionComparator:
                     label_changed = False
                 if not value_changed and not label_changed:
                     continue
+                observation_transition = decide_observation_transition(
+                    original_observation,
+                    compare_observation,
+                    values_equal=not value_changed,
+                    content_reliable=content_status == "CONFIRMED",
+                )
                 if self._is_seal_occluded_address_ocr_conflict(
                     field_key,
                     original_text,
@@ -267,6 +301,20 @@ class SigningRegionComparator:
                     if field_key == "date" and value_changed
                     else []
                 )
+                change_decision = observation_transition.change_decision
+                observed_states = {original_observation.state, compare_observation.state}
+                if change_decision != "CONFIRMED" and (
+                    field_key in {
+                        "legal_representative",
+                        "authorized_representative",
+                        "signature",
+                    }
+                    or (
+                        field_key not in {"account", "credit_code", "party", "party_name", "date"}
+                        and observed_states == {ObservationState.OBSERVED_BLANK, ObservationState.UNOBSERVED}
+                    )
+                ):
+                    change_decision = "CANDIDATE"
                 element = original_element or compare_element
                 comparison.field_changes.append(
                     {
@@ -279,29 +327,26 @@ class SigningRegionComparator:
                         "original_text": original_change_text,
                         "compare_text": compare_change_text,
                         "changed_date_components": changed_date_components,
-                        "fill_state_change": (
-                            "filled"
-                            if not original_value and bool(compare_value)
-                            else "cleared"
-                            if bool(original_value) and not compare_value
-                            else ""
-                        ),
-                        "change_decision": (
-                            "CONFIRMED"
-                            if (not original_value and bool(compare_value))
-                            or (bool(original_value) and not compare_value)
-                            else "CANDIDATE"
-                        ),
+                        "fill_state_change": observation_transition.fill_state_change,
+                        "change_decision": change_decision,
+                        **original_observation.as_details("original"),
+                        **compare_observation.as_details("compare"),
                         "content_recognition_status": content_status,
                         "content_recognition_reason": content_reason,
                         "content_candidates": content_candidates,
-                        "decision_reason": ("NARROW_OCR_CONTINUATION_NOISE" if narrow_continuation_noise else ""),
+                        "decision_reason": (
+                            "NARROW_OCR_CONTINUATION_NOISE"
+                            if narrow_continuation_noise
+                            else observation_transition.reason
+                        ),
                         "critical": field_key in {"account", "credit_code", "party", "party_name", "date"},
                         "original_element_id": original_element.element_id if original_element is not None else "",
                         "compare_element_id": compare_element.element_id if compare_element is not None else "",
                     }
                 )
                 self._add_review_flag(comparison, "SIGNING_FIELD_CHANGE")
+                if change_decision in {"CANDIDATE", "NEEDS_REVIEW"}:
+                    self._add_review_flag(comparison, "OBSERVATION_UNOBSERVED")
                 if field_key == "date" and not original_value and compare_value:
                     self._add_review_flag(comparison, "SIGNING_DATE_FILLED")
                 if field_key in {"account", "credit_code", "party", "party_name", "date"}:
@@ -331,6 +376,266 @@ class SigningRegionComparator:
             ]
             if isinstance(item, dict)
         ]
+
+    @classmethod
+    def _field_observation(
+        cls,
+        element: SigningElement | None,
+        region: SigningRegion,
+        *,
+        peer_value: str = "",
+        peer_element: SigningElement | None = None,
+    ) -> FieldObservation:
+        if element is None:
+            counterpart = peer_element.raw_ref.get("missing_compare_observation") if peer_element is not None else None
+            if isinstance(counterpart, dict):
+                state = ObservationState(str(counterpart.get("state") or ObservationState.UNOBSERVED.value))
+                reason = str(counterpart.get("reason") or ObservationReason.FIELD_ELEMENT_MISSING.value)
+                return FieldObservation(state, reason)
+            return FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.FIELD_ELEMENT_MISSING.value,
+            )
+
+        explicit_state = element.observation_state or element.raw_ref.get("observation_state")
+        explicit_reason = element.observation_reason or str(element.raw_ref.get("observation_reason") or "")
+        if explicit_state:
+            state = ObservationState(str(getattr(explicit_state, "value", explicit_state)))
+            observation = FieldObservation(state, explicit_reason or "EXPLICIT_OBSERVATION")
+            cls._store_observation(element, observation)
+            return observation
+
+        field_key = str(element.raw_ref.get("field_key") or "")
+        value = cls._normalized_field_value(field_key, element.text)
+        roi_payload = element.raw_ref.get("value_roi")
+        roi = BBox.model_validate(roi_payload) if roi_payload else None
+        if str(element.raw_ref.get("party_role") or "unknown") == "unknown":
+            observation = FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.PARTY_ATTRIBUTION_UNRELIABLE.value,
+            )
+        elif cls._targeted_ocr_failed(element):
+            observation = FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.OCR_EXTRACTION_FAILED.value,
+            )
+        elif cls._has_rejected_cross_column_evidence(element):
+            observation = FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.CROSS_COLUMN_EVIDENCE_REJECTED.value,
+            )
+        elif roi is not None and cls._roi_occlusion(region, roi, page_no=element.page_no):
+            occlusion_reason = cls._roi_occlusion(region, roi, page_no=element.page_no)
+            if not value or (peer_value and value != peer_value):
+                observation = FieldObservation(ObservationState.UNOBSERVED, occlusion_reason)
+            else:
+                observation = cls._localized_value_observation(element, value)
+        elif value:
+            observation = cls._localized_value_observation(element, value)
+        elif roi is None:
+            observation = FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.FIELD_ROI_NOT_FOUND.value,
+            )
+        elif not cls._roi_is_observable(region, element, roi):
+            observation = FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.LOW_VISUAL_COVERAGE.value,
+            )
+        else:
+            observation = FieldObservation(
+                ObservationState.OBSERVED_BLANK,
+                ObservationReason.CLEAR_LOCALIZED_VALUE_ROI.value,
+            )
+        cls._store_observation(element, observation)
+        return observation
+
+    @classmethod
+    def _localized_value_observation(cls, element: SigningElement, value: str) -> FieldObservation:
+        accepted = [item for item in element.raw_ref.get("value_evidence") or [] if isinstance(item, dict)]
+        if any(item.get("localized") is not False and item.get("provenance_valid") is not False for item in accepted):
+            return FieldObservation(
+                ObservationState.OBSERVED_VALUE,
+                ObservationReason.LOCALIZED_VALUE_EVIDENCE.value,
+            )
+        if element.raw_ref.get("value_bbox") or element.raw_ref.get("value_bboxes"):
+            return FieldObservation(
+                ObservationState.OBSERVED_VALUE,
+                ObservationReason.LOCALIZED_PRIMARY_VALUE.value,
+            )
+        return FieldObservation(
+            ObservationState.UNOBSERVED,
+            ObservationReason.FIELD_ROI_NOT_FOUND.value,
+        )
+
+    @staticmethod
+    def _store_observation(element: SigningElement, observation: FieldObservation) -> None:
+        element.observation_state = observation.state
+        element.observation_reason = observation.reason
+        element.raw_ref["observation_state"] = observation.state.value
+        element.raw_ref["observation_reason"] = observation.reason
+
+    @staticmethod
+    def _targeted_ocr_failed(element: SigningElement) -> bool:
+        status = str((element.raw_ref.get("targeted_roi_ocr") or {}).get("status") or "")
+        return status in {"INVALID_PAGE", "INVALID_ROI", "OCR_ERROR"}
+
+    @staticmethod
+    def _has_rejected_cross_column_evidence(element: SigningElement) -> bool:
+        reasons = {
+            str(item.get("rejection_reason") or "")
+            for item in element.raw_ref.get("rejected_contaminated_evidence") or []
+            if isinstance(item, dict)
+        }
+        return bool(
+            reasons.intersection(
+                {"CROSS_COLUMN_SOURCE_BLOCK", "AMBIGUOUS_MULTI_LABEL_BLOCK", "UNLOCALIZED_MULTI_ROW_BLOCK"}
+            )
+        )
+
+    @classmethod
+    def _roi_occlusion(cls, region: SigningRegion, roi: BBox, *, page_no: int | None = None) -> str:
+        for element in region.elements:
+            if page_no is not None and element.page_no != page_no:
+                continue
+            if element.element_type not in {SigningElementType.SEAL, SigningElementType.SIGNATURE}:
+                continue
+            if cls._bbox_overlap_ratio(roi, element.bbox) < 0.08:
+                continue
+            if element.element_type == SigningElementType.SEAL:
+                return ObservationReason.SEAL_OCCLUSION.value
+            return ObservationReason.HANDWRITING_OCCLUSION.value
+        return ""
+
+    @staticmethod
+    def _roi_is_observable(region: SigningRegion, element: SigningElement, roi: BBox) -> bool:
+        roi_area = max(0.0, roi.x1 - roi.x0) * max(0.0, roi.y1 - roi.y0)
+        if roi_area <= 4.0 or element.confidence < 0.5:
+            return False
+        intersection = SigningRegionComparator._bbox_intersection_area(region.bbox, roi)
+        return intersection / roi_area >= 0.9
+
+    @classmethod
+    def _signature_observations(
+        cls,
+        region: SigningRegion,
+    ) -> dict[tuple[str, str], tuple[FieldObservation, bool, str]]:
+        slots: dict[tuple[str, str], tuple[FieldObservation, bool, str]] = {}
+        for element in region.elements:
+            if element.element_type != SigningElementType.FIELD:
+                continue
+            key = str(element.raw_ref.get("field_key") or "")
+            label = str(element.raw_ref.get("field_label") or "")
+            if key != "signature" and not (
+                key in {"legal_representative", "authorized_representative"} and ("签字" in label or "签名" in label)
+            ):
+                continue
+            role = str(element.raw_ref.get("party_role") or "unknown")
+            observation = cls._field_observation(element, region)
+            slots[(role, "signature")] = (observation, False, element.element_id)
+
+        for element in region.elements:
+            if element.element_type != SigningElementType.SIGNATURE:
+                continue
+            role = str(element.raw_ref.get("party_role") or cls.role_for_bbox(region, element.bbox))
+            observation = cls._visual_signature_observation(element, region)
+            current = slots.get((role, "signature"))
+            if (
+                current is None
+                or observation.state == ObservationState.OBSERVED_VALUE
+                or current[0].state == ObservationState.OBSERVED_BLANK
+                or (
+                    observation.state == ObservationState.UNOBSERVED
+                    and current[0].state == ObservationState.UNOBSERVED
+                    and not current[1]
+                )
+            ):
+                slots[(role, "signature")] = (observation, True, element.element_id)
+        return slots
+
+    @classmethod
+    def _visual_signature_observation(
+        cls,
+        element: SigningElement,
+        region: SigningRegion,
+    ) -> FieldObservation:
+        overlapping_seal = any(
+            candidate.element_type == SigningElementType.SEAL
+            and cls._bbox_overlap_ratio(element.bbox, candidate.bbox) >= 0.2
+            for candidate in region.elements
+        )
+        if overlapping_seal:
+            return FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.VISUAL_OBJECT_CONFLICT.value,
+            )
+        if element.confidence >= 0.75 and element.source in {"visual_model", "ocr"}:
+            return FieldObservation(
+                ObservationState.OBSERVED_VALUE,
+                ObservationReason.RELIABLE_VISUAL_OBJECT.value,
+            )
+        return FieldObservation(
+            ObservationState.UNOBSERVED,
+            ObservationReason.LOW_VISUAL_COVERAGE.value,
+        )
+
+    @staticmethod
+    def _signature_observation_text(observation: FieldObservation, candidate_present: bool) -> str:
+        if observation.state == ObservationState.OBSERVED_VALUE:
+            return "已签"
+        if observation.state == ObservationState.OBSERVED_BLANK:
+            return "未签"
+        return "疑似已签（待确认）" if candidate_present else "未观察"
+
+    @classmethod
+    def _visual_object_observation(
+        cls,
+        element: SigningElement | None,
+        region: SigningRegion,
+        *,
+        peer_region: SigningRegion,
+        peer_element: SigningElement | None,
+    ) -> FieldObservation:
+        if element is not None:
+            if element.confidence >= 0.75 and element.source == "visual_model":
+                return FieldObservation(
+                    ObservationState.OBSERVED_VALUE,
+                    ObservationReason.RELIABLE_VISUAL_OBJECT.value,
+                )
+            return FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.LOW_VISUAL_COVERAGE.value,
+            )
+        if peer_element is None:
+            return FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.VISUAL_OBJECT_NOT_DETECTED.value,
+            )
+        return FieldObservation(
+            ObservationState.UNOBSERVED,
+            ObservationReason.VISUAL_OBJECT_NOT_DETECTED.value,
+        )
+
+    @staticmethod
+    def _roi_is_inside_region(region: SigningRegion, roi: BBox) -> bool:
+        area = max(0.0, roi.x1 - roi.x0) * max(0.0, roi.y1 - roi.y0)
+        if area <= 4.0:
+            return False
+        return SigningRegionComparator._bbox_intersection_area(region.bbox, roi) / area >= 0.75
+
+    @staticmethod
+    def _bbox_overlap_ratio(base: BBox, other: BBox) -> float:
+        area = max(0.0, base.x1 - base.x0) * max(0.0, base.y1 - base.y0)
+        if area <= 0:
+            return 0.0
+        return SigningRegionComparator._bbox_intersection_area(base, other) / area
+
+    @staticmethod
+    def _bbox_intersection_area(left: BBox, right: BBox) -> float:
+        return max(0.0, min(left.x1, right.x1) - max(left.x0, right.x0)) * max(
+            0.0,
+            min(left.y1, right.y1) - max(left.y0, right.y0),
+        )
 
     @classmethod
     def _is_party_name_ocr_gap(
@@ -452,6 +757,13 @@ class SigningRegionComparator:
             return False
         missing_fields = original_fields if original_element is None else compare_fields
         missing_region = original_region if original_element is None else compare_region
+        signature_keys = {"legal_representative", "authorized_representative", "signature"}
+        if (field_key in signature_keys
+                and cls._seal_overlaps_bbox(missing_region, present.bbox, tolerance=2.0)
+                and any(other_role == role and other_key in signature_keys and elements
+                        for (other_role, other_key), elements in missing_fields.items())):
+            present.raw_ref["label_occlusion_reconciliation"] = "ALTERNATIVE_SIGNATURE_LABEL_VISIBLE"
+            return True
         return any(
             other_role != role
             and other_key == field_key
@@ -479,6 +791,11 @@ class SigningRegionComparator:
         compare_region: SigningRegion,
     ) -> bool:
         if field_key != "address" or not original_text or not compare_text:
+            return False
+        if any(element is not None and element.raw_ref.get("content_recognition_reason") ==
+               "CONSISTENT_RED_SUPPRESSED_LOCAL_READINGS" for element in (original_element, compare_element)):
+            # The localized value has been re-read independently of the peer.
+            # A stamp must not erase a real digit/street change once recovered.
             return False
         if not (cls._region_has_visual_seal(original_region) or cls._region_has_visual_seal(compare_region)):
             return False
@@ -580,28 +897,62 @@ class SigningRegionComparator:
         *,
         excluded_roles: set[str],
     ) -> None:
-        original_slots = self._signature_slots(original)
-        compare_slots = self._signature_slots(compare)
+        original_slots = self._signature_observations(original)
+        compare_slots = self._signature_observations(compare)
         for slot in sorted(set(original_slots) | set(compare_slots)):
-            original_signed = original_slots.get(slot, False)
-            compare_signed = compare_slots.get(slot, False)
-            if original_signed == compare_signed:
+            original_observation, original_candidate, original_element_id = original_slots.get(
+                slot,
+                (
+                    FieldObservation(ObservationState.UNOBSERVED, ObservationReason.FIELD_ELEMENT_MISSING.value),
+                    False,
+                    "",
+                ),
+            )
+            compare_observation, compare_candidate, compare_element_id = compare_slots.get(
+                slot,
+                (
+                    FieldObservation(ObservationState.UNOBSERVED, ObservationReason.FIELD_ELEMENT_MISSING.value),
+                    False,
+                    "",
+                ),
+            )
+            original_signed = original_observation.state == ObservationState.OBSERVED_VALUE
+            compare_signed = compare_observation.state == ObservationState.OBSERVED_VALUE
+            if original_observation.state == compare_observation.state and original_candidate == compare_candidate:
                 continue
             role, field_key = slot
-            if role in excluded_roles:
+            if (
+                not original_candidate
+                and not compare_candidate
+                and ObservationState.OBSERVED_VALUE not in {original_observation.state, compare_observation.state}
+            ):
                 continue
+            transition = decide_observation_transition(
+                original_observation,
+                compare_observation,
+                values_equal=original_signed == compare_signed,
+            )
+            change_decision = "CANDIDATE"
             comparison.signature_changes.append(
                 {
-                    "type": "ADD" if compare_signed else "DELETE",
+                    "type": "ADD" if compare_signed or compare_candidate else "DELETE",
                     "element_type": SigningElementType.SIGNATURE.value,
                     "party_role": role,
                     "field_key": field_key,
                     "field_label": self._signature_slot_label(original, compare, slot),
-                    "original_text": "已签" if original_signed else "未签",
-                    "compare_text": "已签" if compare_signed else "未签",
+                    "original_text": self._signature_observation_text(original_observation, original_candidate),
+                    "compare_text": self._signature_observation_text(compare_observation, compare_candidate),
+                    "change_decision": change_decision,
+                    "decision_reason": transition.reason,
+                    **original_observation.as_details("original"),
+                    **compare_observation.as_details("compare"),
+                    "original_element_id": original_element_id,
+                    "compare_element_id": compare_element_id,
                 }
             )
             self._add_review_flag(comparison, "SIGNING_SIGNATURE_CHANGE")
+            if change_decision in {"CANDIDATE", "NEEDS_REVIEW"}:
+                self._add_review_flag(comparison, "OBSERVATION_UNOBSERVED")
 
     def _compare_seals(
         self,
@@ -629,6 +980,24 @@ class SigningRegionComparator:
                     change_type = "ADD"
                 elif compare_element is None:
                     change_type = "DELETE"
+                original_observation = self._visual_object_observation(
+                    original_element,
+                    original,
+                    peer_region=compare,
+                    peer_element=compare_element,
+                )
+                compare_observation = self._visual_object_observation(
+                    compare_element,
+                    compare,
+                    peer_region=original,
+                    peer_element=original_element,
+                )
+                transition = decide_observation_transition(
+                    original_observation,
+                    compare_observation,
+                    values_equal=original_element is not None and compare_element is not None,
+                )
+                change_decision = "CANDIDATE"
                 comparison.seal_changes.append(
                     {
                         "type": change_type,
@@ -637,10 +1006,16 @@ class SigningRegionComparator:
                         "compare_text": compare_text,
                         "original_element_id": original_element.element_id if original_element is not None else "",
                         "compare_element_id": compare_element.element_id if compare_element is not None else "",
+                        "change_decision": change_decision,
+                        "decision_reason": transition.reason,
+                        **original_observation.as_details("original"),
+                        **compare_observation.as_details("compare"),
                         **({"party_role": role, "field_label": "印章"} if scoped else {}),
                     }
                 )
                 self._add_review_flag(comparison, "SIGNING_SEAL_CHANGE")
+                if change_decision in {"CANDIDATE", "NEEDS_REVIEW"}:
+                    self._add_review_flag(comparison, "OBSERVATION_UNOBSERVED")
 
     @classmethod
     def _role_scoped_elements(
@@ -675,9 +1050,28 @@ class SigningRegionComparator:
                     "original_text": f"{role}签署栏" if deleted else "",
                     "compare_text": "" if deleted else f"{role}签署栏",
                     "detail": f"{'删除' if deleted else '新增'}{role}签署栏",
+                    "change_decision": "CANDIDATE",
+                    "decision_reason": "COMPARE_UNOBSERVED" if deleted else "ORIGINAL_UNOBSERVED",
+                    "original_observation_state": (
+                        ObservationState.OBSERVED_VALUE.value if deleted else ObservationState.UNOBSERVED.value
+                    ),
+                    "original_observation_reason": (
+                        ObservationReason.LOCALIZED_VALUE_EVIDENCE.value
+                        if deleted
+                        else ObservationReason.COLUMN_OCR_MISSING.value
+                    ),
+                    "compare_observation_state": (
+                        ObservationState.UNOBSERVED.value if deleted else ObservationState.OBSERVED_VALUE.value
+                    ),
+                    "compare_observation_reason": (
+                        ObservationReason.COLUMN_OCR_MISSING.value
+                        if deleted
+                        else ObservationReason.LOCALIZED_VALUE_EVIDENCE.value
+                    ),
                 }
             )
             self._add_review_flag(comparison, "SIGNING_COLUMN_CHANGE")
+            self._add_review_flag(comparison, "OBSERVATION_UNOBSERVED")
         return missing_roles
 
     @classmethod
@@ -897,6 +1291,11 @@ class SigningRegionComparator:
         )
         if not any(occluded):
             return False
+        if field_key == "signature":
+            for index, label in enumerate(labels):
+                if (occluded[index] and re.fullmatch(r"签字[/\\].{0,3}专用章", label)
+                        and labels[1 - index] in {"签字/盖章", "签字\\盖章"}):
+                    return True
         shorter_index = 0 if len(labels[0]) < len(labels[1]) else 1
         if labels[1 - shorter_index].startswith(labels[shorter_index]) and occluded[shorter_index]:
             return True
@@ -972,6 +1371,10 @@ class SigningRegionComparator:
     @staticmethod
     def _column_midpoint(region: SigningRegion) -> float:
         fallback = (region.bbox.x0 + region.bbox.x1) / 2
+        explicit = [float(element.raw_ref["column_midpoint"]) for element in region.elements
+                    if element.raw_ref.get("column_midpoint") is not None and element.page_no == region.page_no]
+        if explicit:
+            return sorted(explicit)[len(explicit)//2]
         left = [
             element.bbox
             for element in region.elements
@@ -1215,7 +1618,7 @@ class SigningRegionComparator:
 
     @staticmethod
     def _normalized_party_text(text: str) -> str:
-        return re.sub(r"\s+", "", text or "").replace(":", "：")
+        return SigningRegionComparator._normalized_party_name(text)
 
     @classmethod
     def _is_seal_occluded_party_ocr_conflict(
@@ -1228,6 +1631,11 @@ class SigningRegionComparator:
         original_references: dict[str, str],
         compare_references: dict[str, str],
     ) -> bool:
+        if any(element.element_type == SigningElementType.PARTY_FIELD
+               and str(element.raw_ref.get("party_role") or "") == role
+               and element.raw_ref.get("content_recognition_reason") == "CONSISTENT_RED_SUPPRESSED_LOCAL_READINGS"
+               for region in (original_region, compare_region) for element in region.elements):
+            return False
         original_reference = cls._normalized_party_name(original_references.get(role, ""))
         compare_reference = cls._normalized_party_name(compare_references.get(role, ""))
         if original_reference and compare_reference and original_reference != compare_reference:

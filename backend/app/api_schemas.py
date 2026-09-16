@@ -2,7 +2,37 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+class PreviewPage(BaseModel):
+    page_no: int = Field(gt=0)
+    width_points: float = Field(gt=0, allow_inf_nan=False)
+    height_points: float = Field(gt=0, allow_inf_nan=False)
+    rotation: Literal[0, 90, 180, 270]
+
+
+class PreviewDocument(BaseModel):
+    source_revision: str = Field(min_length=1)
+    page_count: int = Field(gt=0)
+    pages: list[PreviewPage]
+
+    @model_validator(mode="after")
+    def contiguous_pages(self):
+        if [p.page_no for p in self.pages] != list(range(1, self.page_count + 1)):
+            raise ValueError("Invalid preview page sequence")
+        return self
+
+
+class PreviewDocuments(BaseModel):
+    original: PreviewDocument
+    compare: PreviewDocument
+
+
+class PreviewMetadata(BaseModel):
+    schema_version: Literal[1] = 1
+    coordinate_space: Literal["display_pdf_points"] = "display_pdf_points"
+    documents: PreviewDocuments
 
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 TaskTerminalReason = Literal["NONE", "EXECUTION_FAILED", "SUBMISSION_FAILED", "CANCELLED"]
@@ -56,6 +86,7 @@ class BBoxResponse(BaseModel):
 
 
 class EvidenceBoxResponse(BaseModel):
+    char_boxes: list[dict[str, Any]] = Field(default_factory=list)
     page_no: int
     bbox: BBoxResponse
     method: str = "clause_fallback"
@@ -158,6 +189,7 @@ class AuditItemResponse(BaseModel):
     compare_evidence: list[EvidenceBoxResponse] = Field(default_factory=list)
     evidence_state: Literal["LOCATED", "UNLOCATED"] = "UNLOCATED"
     quality_status: DiffQualityStatus = "NORMAL"
+    change_decision: Literal["CONFIRMED", "CANDIDATE", "NEEDS_REVIEW"] = "CONFIRMED"
     content_recognition_status: ContentRecognitionStatus = "CONFIRMED"
     content_recognition_reason: str = ""
     content_candidates: list[dict[str, Any]] = Field(default_factory=list)
@@ -185,6 +217,8 @@ class CompareTaskResponse(BaseModel):
     stage: str
     progress_percent: int
     diff_count: int
+    event_count: int | None = None
+    event_version: str = ""
     reviewed_count: int = 0
     confirmed_count: int = 0
     false_positive_count: int = 0
@@ -204,6 +238,7 @@ class CompareTaskResponse(BaseModel):
     report_filename: str
     original_pdf_url: str
     compare_pdf_url: str
+    preview_available: bool = False
     original_highlight_pdf_url: str
     compare_highlight_pdf_url: str
     errors: list[str] = Field(default_factory=list)
@@ -230,6 +265,8 @@ class CompareRecordResponse(BaseModel):
     original_filename: str
     compare_filename: str
     diff_count: int
+    event_count: int | None = None
+    event_version: str = ""
     report_url: str
 
 

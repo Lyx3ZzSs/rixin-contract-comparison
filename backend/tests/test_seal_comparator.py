@@ -218,3 +218,10 @@ def test_seal_diffs_keep_real_visual_seal_deletion(tmp_path: Path) -> None:
 
     assert len(diffs) == 1
     assert diffs[0].diff_type == "DELETE"
+
+
+def test_seal_markup_attributes_are_not_visible_contract_text() -> None:
+    from app.services.seal_comparator import _clean_seal_text
+    assert _clean_seal_text('<div class="seal"><img src="seal.png" alt="OCR asset">合同专用章</div>') == '合同专用章'
+    assert _clean_seal_text('&lt;div&gt;合同专用章&lt;/div&gt;') == '合同专用章'
+    assert _clean_seal_text('甲方有限公司合同专用章') != _clean_seal_text('乙方有限公司合同专用章')

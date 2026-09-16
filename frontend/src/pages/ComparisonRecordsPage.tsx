@@ -239,7 +239,8 @@ export function ComparisonRecordsPage({ onOpenTask, onCreateComparison }: Compar
                 </div>
                 <div className="record-stats" aria-label="差异统计">
                   <span>
-                    <b>{record.diff_count}</b>
+                    <b>{record.event_count ?? record.diff_count}</b>
+                    <small>{record.event_count == null ? "历史明细" : "差异项"}</small>
                     差异
                   </span>
                 </div>

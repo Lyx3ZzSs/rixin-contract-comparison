@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from app.models import BBox, DiffType
+from app.services.field_observation import ObservationState
 
 
 class SigningElementType(str, Enum):
@@ -17,6 +18,16 @@ class SigningElementType(str, Enum):
     DATE_FIELD = "date_field"
     SIGNING_TABLE = "signing_table"
     VISUAL_AREA = "visual_area"
+
+
+class SigningVisualObjectType(str, Enum):
+    COMPANY_ROUND_SEAL = "COMPANY_ROUND_SEAL"
+    PERSONAL_NAME_SEAL = "PERSONAL_NAME_SEAL"
+    HANDWRITTEN_SIGNATURE = "HANDWRITTEN_SIGNATURE"
+    HANDWRITTEN_DATE = "HANDWRITTEN_DATE"
+    EDGE_SEAM_SEAL = "EDGE_SEAM_SEAL"
+    OTHER_STAMP = "OTHER_STAMP"
+    UNKNOWN_SIGNING_MARK = "UNKNOWN_SIGNING_MARK"
 
 
 class SigningRegionRole(str, Enum):
@@ -61,11 +72,14 @@ class SigningElement(BaseModel):
     source: SigningElementSource = "layout"
     visual_hash: str = ""
     model_name: str = ""
+    observation_state: ObservationState | None = None
+    observation_reason: str = ""
     raw_ref: dict[str, Any] = Field(default_factory=dict)
 
 
 class SigningRegion(BaseModel):
     region_id: str
+    group_id: str = ""
     page_no: int
     bbox: BBox
     signing_block_id: str = ""
@@ -98,6 +112,7 @@ class SigningPage(BaseModel):
 
 class SigningBlock(BaseModel):
     block_id: str
+    group_id: str = ""
     page_no: int
     bbox: BBox
     block_role: SigningBlockRole = SigningBlockRole.UNKNOWN
@@ -127,6 +142,22 @@ class VisualDetectionResult(BaseModel):
     error: str = ""
 
 
+class SigningVisualObject(BaseModel):
+    object_id: str
+    object_type: SigningVisualObjectType
+    page_no: int
+    bbox: BBox
+    visual_detection_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    text: str = ""
+    text_recognition_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    party_role: str = "unknown"
+    party_attribution_reason: str = "UNATTRIBUTED"
+    party_attribution_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    supporting_pages: list[int] = Field(default_factory=list)
+    fragment_bboxes: list[BBox] = Field(default_factory=list)
+    raw_ref: dict[str, Any] = Field(default_factory=dict)
+
+
 class SigningRegionComparison(BaseModel):
     comparison_id: str
     diff_type: DiffType | None = None
@@ -141,6 +172,7 @@ class SigningRegionComparison(BaseModel):
     label_changes: list[dict[str, Any]] = Field(default_factory=list)
     party_changes: list[dict[str, Any]] = Field(default_factory=list)
     field_changes: list[dict[str, Any]] = Field(default_factory=list)
+    template_changes: list[dict[str, Any]] = Field(default_factory=list)
     table_changes: list[dict[str, Any]] = Field(default_factory=list)
     visual_changes: list[dict[str, Any]] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)

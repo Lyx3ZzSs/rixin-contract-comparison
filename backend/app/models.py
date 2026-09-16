@@ -17,7 +17,7 @@ TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
 TaskTerminalReason = Literal["NONE", "EXECUTION_FAILED", "SUBMISSION_FAILED", "CANCELLED"]
 TaskExecutionStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
-DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal", "page", "signing_region"]
+DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal", "page", "signing_region", "graphic"]
 LayoutMatchStatus = Literal[
     "matched",
     "ambiguous",
@@ -100,6 +100,7 @@ class TextSourceEvidence(BaseModel):
 
 
 class EvidenceBox(BaseModel):
+    char_boxes: list[CharBox] = Field(default_factory=list)
     page_no: int
     bbox: BBox
     method: str = "clause_fallback"
@@ -369,9 +370,6 @@ class AuditItemReview(BaseModel):
 
 class CompareOptions(BaseModel):
     ignore_punctuation: bool = False
-    ignore_headers_footers: bool = False
-    ignore_stamps: bool = False
-    signing_region_mode: Literal["full", "off"] = "full"
 
 
 class OcrRawResultSidePaths(BaseModel):
@@ -475,6 +473,9 @@ class CompareTask(BaseModel):
     ignored_count: int = 0
     audit_item_reviews: dict[str, AuditItemReview] = Field(default_factory=dict)
     audit_item_reviews_normalized: bool = False
+    event_snapshot: dict[str, Any] | None = None
+    event_reviews: dict[str, AuditItemReview] = Field(default_factory=dict)
+    external_compare_options: dict[str, Any] = Field(default_factory=dict)
     compare_options: CompareOptions = Field(default_factory=CompareOptions)
     signing_region_outlines: SigningRegionOutlines = Field(default_factory=SigningRegionOutlines)
     diffs: list[DiffItem] = Field(default_factory=list)

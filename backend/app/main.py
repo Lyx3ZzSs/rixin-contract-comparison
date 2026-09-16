@@ -15,6 +15,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as compare_router
+from app.api_events import router as events_router
+from app.api_textin import router as textin_router
 from app.application.compare_tasks import requires_diagnostic_retention
 from app.auth.errors import IdentityProviderUnavailable
 from app.auth.runtime import AuthRuntime
@@ -86,6 +88,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(compare_router)
+app.include_router(events_router)
+app.include_router(textin_router)
 
 
 @app.get("/health")

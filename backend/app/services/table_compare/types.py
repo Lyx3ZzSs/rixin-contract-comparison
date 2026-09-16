@@ -56,6 +56,7 @@ class LogicalCell:
         "source_col",
         "colspan",
         "rowspan",
+        "observation_reason",
     )
 
     def __init__(
@@ -70,6 +71,7 @@ class LogicalCell:
         source_col: int,
         colspan: int = 1,
         rowspan: int = 1,
+        observation_reason: str = "",
     ):
         self.row_index = row_index
         self.col_index = col_index
@@ -81,6 +83,7 @@ class LogicalCell:
         self.source_col = source_col
         self.colspan = colspan
         self.rowspan = rowspan
+        self.observation_reason = observation_reason
 
 
 class LogicalRow:

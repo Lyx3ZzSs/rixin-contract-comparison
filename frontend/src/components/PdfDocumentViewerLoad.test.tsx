@@ -1,6 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { PdfPreviewRuntime } from '../lib/pdfPreviewRuntime';
+const runtime = new PdfPreviewRuntime('load-test');
+
 import { PdfDocumentViewer } from "./PdfDocumentViewer";
 
 const { getDocument } = vi.hoisted(() => ({ getDocument: vi.fn() }));
@@ -16,7 +19,7 @@ vi.mock("pdfjs-dist/legacy/build/pdf.worker.mjs?url", () => ({
 
 function renderViewer() {
   return render(
-    <PdfDocumentViewer
+    <PdfDocumentViewer runtime={runtime}
       side="original"
       src="http://api.test/file.pdf"
       accessToken="test-token"
@@ -33,7 +36,7 @@ function renderViewer() {
 
 function renderViewerWithoutToken() {
   return render(
-    <PdfDocumentViewer
+    <PdfDocumentViewer runtime={runtime}
       side="original"
       src="http://api.test/file.pdf"
       accessToken=""
@@ -71,7 +74,7 @@ describe("PdfDocumentViewer load errors", () => {
     const callsAfterInitialLoad = getDocument.mock.calls.length;
 
     rerender(
-      <PdfDocumentViewer
+      <PdfDocumentViewer runtime={runtime}
         side="original"
         src="http://api.test/file.pdf"
         accessToken="renewed-token"

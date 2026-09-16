@@ -17,6 +17,7 @@ from app.infrastructure.artifact_store import ArtifactStore, default_artifact_st
 from app.models import BBox, CharBox, Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.pipeline_metrics import PerformanceRecorder
+from app.services.remote_metrics import record_remote_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,7 @@ class PPOCRV5Extractor:
             recorder.set_counter("http_response_bytes", len(getattr(response, "content", b"")))
             with recorder.measure("response_json_decode"):
                 payload = response.json()
+            record_remote_metrics(recorder, getattr(response, "headers", {}), payload)
             logger.info("OCR HTTP请求 耗时 %.2fs", time.perf_counter() - t)
         except httpx.HTTPStatusError as exc:
             recorder.increment("http_failure_count")

@@ -47,6 +47,7 @@ class CandidateScoringMixin:
             right.text,
             body_details["body_score"],
         )
+        page_alignment_score = self._page_alignment_score(left, right)
         details = {
             "clause_key_score": round(clause_key_score, 2),
             "canonical_path_score": round(canonical_path_score, 2),
@@ -58,6 +59,7 @@ class CandidateScoringMixin:
             "title_score": round(title_score, 2),
             "position_score": round(position_score, 2),
             "neighbor_score": round(neighbor_score, 2),
+            "page_alignment_score": round(page_alignment_score * 100.0, 2),
             "business_token_score": round(business_token_score, 2),
             "business_token_mismatch": 1.0 if business_mismatch else 0.0,
             "weak_numeric_marker": 1.0 if self._has_weak_numeric_marker(left, right) else 0.0,
@@ -172,13 +174,21 @@ class CandidateScoringMixin:
         return self._token_score(left_path, right_path)
 
     def _canonical_path(self, clause: Clause) -> str:
-        parts = [clause.section_type or "main_contract"]
-        for item in clause.section_path:
+        return self._canonical_path_from_parts(
+            clause.section_type, tuple(clause.section_path), clause.clause_no, clause.title,
+        )
+
+    def _canonical_path_from_parts(
+        self, section_type: str, section_path: tuple[str, ...], clause_no: str, title: str,
+    ) -> str:
+        # Immutable field values also handle synthesized clauses and input edits.
+        parts = [section_type or "main_contract"]
+        for item in section_path:
             parts.append(self._canonical_path_item(item))
-        if clause.clause_no:
-            parts.append(self._canonical_clause_no_path_item(clause.clause_no))
-        elif clause.title:
-            parts.append(self.normalizer.normalize_for_match(clause.title)[:32])
+        if clause_no:
+            parts.append(self._canonical_clause_no_path_item(clause_no))
+        elif title:
+            parts.append(self.normalizer.normalize_for_match(title)[:32])
         return "/".join(part for part in parts if part)
 
     def _canonical_path_item(self, item: str) -> str:

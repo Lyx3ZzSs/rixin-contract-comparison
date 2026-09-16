@@ -58,6 +58,7 @@ class AuditItem:
     review_flags: list[str]
     text_confidence: float | None
     match_confidence: str | float | None
+    change_decision: Literal["CONFIRMED", "CANDIDATE", "NEEDS_REVIEW"] = "CONFIRMED"
     ocr_context: AuditItemOcrContext = AuditItemOcrContext()
     remediation_context: AuditItemRemediationContext = AuditItemRemediationContext()
     review_status: ReviewStatus = "UNREVIEWED"
@@ -244,6 +245,8 @@ def _audit_item(
     )
     review_flags = list(dict.fromkeys(diff.review_flags))
     quality_status = diff.quality_status
+    if diff.match_score_details.get("change_decision") in {"CANDIDATE", "NEEDS_REVIEW"}:
+        quality_status = "NEEDS_REVIEW"
     if evidence_state == "UNLOCATED":
         quality_status = "NEEDS_REVIEW"
         if "EVIDENCE_UNLOCATED" not in review_flags:
@@ -299,6 +302,10 @@ def _audit_item(
         review_flags=review_flags,
         text_confidence=diff.text_confidence,
         match_confidence=diff.match_confidence,
+        change_decision=(
+            "CANDIDATE" if diff.match_score_details.get("change_decision") == "CANDIDATE"
+            else "NEEDS_REVIEW" if quality_status == "NEEDS_REVIEW" else "CONFIRMED"
+        ),
     )
 
 

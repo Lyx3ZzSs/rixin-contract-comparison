@@ -9,6 +9,53 @@ from app.services.matching._fuzz import ratio_score
 
 
 class StructuralDriftMixin:
+    def _recover_adjacent_heading_from_body_pair(
+        self, original: list[Clause], pairs: list[ClausePair], matched_original: set[str],
+    ) -> list[ClausePair]:
+        """Split a body match only when the adjacent heading owns its prefix.
+
+        Heading numbers remain separate values to compare, including actual
+        renumbering. Exact full-body equality prevents hiding changed terms.
+        """
+        recovered: list[ClausePair] = []
+        for index, heading in enumerate(original[:-1]):
+            if heading.clause_id in matched_original or not heading.clause_no or not heading.title:
+                continue
+            if not self._is_short_numbered_heading(heading, heading.text):
+                continue
+            body = original[index + 1]
+            if body.clause_no or body.section_type != heading.section_type:
+                continue
+            pair = next((item for item in pairs if item.original is not None
+                         and item.original.clause_id == body.clause_id and item.compare is not None), None)
+            if pair is None:
+                continue
+            combined = pair.compare
+            if not combined.clause_no or combined.section_type != heading.section_type:
+                continue
+            if self.normalizer.normalize_for_match(combined.title) != self.normalizer.normalize_for_match(heading.title):
+                continue
+            boundary = combined.text.find("\n")
+            if boundary < 0:
+                continue
+            remainder = combined.text[boundary + 1:]
+            if self._search_text(remainder)[0] != self._search_text(body.text)[0]:
+                continue
+            right_heading = self._slice_clause(combined, 0, boundary, f"{combined.clause_id}H")
+            right_body = self._slice_clause(combined, boundary + 1, len(combined.text), f"{combined.clause_id}B")
+            if right_heading is None or right_body is None:
+                continue
+            right_heading.clause_no = combined.clause_no
+            right_heading.title = combined.title
+            pair.compare = right_body
+            recovered.append(ClausePair(
+                original=heading, compare=right_heading, score=100.0,
+                match_method="adjacent_heading_recovery", match_confidence="NORMAL",
+                score_details={"adjacent_heading_recovery": 1.0, "body_score": 100.0},
+            ))
+            matched_original.add(heading.clause_id)
+        return recovered
+
     def _match_structural_drift_candidates(
         self,
         original: list[Clause],
@@ -301,7 +348,7 @@ class StructuralDriftMixin:
                         "body_ratio_score": round(score, 2),
                         "body_token_score": round(score, 2),
                         "body_partial_score": round(score, 2),
-                        "body_length_coverage": 1.0,
+                        "body_length_coverage": self._body_length_coverage(left.text, right_slice.text),
                         "position_score": self._position_score(
                             original.index(left) / max(1, len(original) - 1),
                             compare_order.get(right.clause_id, len(compare)) / max(1, len(compare) - 1),
@@ -330,7 +377,13 @@ class StructuralDriftMixin:
             if (needle.section_type or "main_contract") != (right.section_type or "main_contract"):
                 continue
             span = None
-            for needle_text in self._coverage_texts(needle):
+            # Consuming the entire original requires its entire body, not one
+            # sentence that happens to occur in an already matched clause.
+            full_texts = [needle.text, self._strip_clause_prefix_only(needle.text)]
+            title = (needle.title or "").strip()
+            if title and needle.text.strip().startswith(title):
+                full_texts.append(needle.text.strip()[len(title):].strip())
+            for needle_text in dict.fromkeys(text for text in full_texts if text):
                 short_heading = self._is_short_numbered_heading(needle, needle_text)
                 if short_heading and not self._short_heading_position_compatible(needle, right):
                     continue
@@ -418,7 +471,7 @@ class StructuralDriftMixin:
         haystack, haystack_map = self._search_text(haystack_text)
         if not needle or not haystack:
             return None
-        if len(haystack) <= len(needle) + 8:
+        if len(haystack) <= len(needle):
             return None
 
         exact = haystack.find(needle)
@@ -426,7 +479,10 @@ class StructuralDriftMixin:
         if exact >= 0 and len(needle) >= min_exact_len:
             return self._source_span(exact, exact + len(needle), haystack_map, 100.0)
 
-        if len(needle) < 20:
+        # Exact body containment remains valid when only a short heading
+        # surrounds it. Keep the wider margin for fuzzy spans, where a few
+        # changed characters could otherwise be consumed as segmentation.
+        if len(needle) < 20 or len(haystack) <= len(needle) + 8:
             return None
 
         anchor_len = min(16, max(8, len(needle) // 8))

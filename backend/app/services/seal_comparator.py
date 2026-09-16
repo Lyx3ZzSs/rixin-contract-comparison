@@ -7,6 +7,7 @@ Compares seal blocks between two documents and produces diffs with
 from __future__ import annotations
 
 from dataclasses import dataclass
+import html
 import re
 
 from app.models import BBox, DiffItem, Document, EvidenceBox, Page, TextBlock, TextRange
@@ -33,6 +34,7 @@ def build_seal_diffs(
     original: Document,
     compare: Document,
     start_index: int = 1,
+    diagnostics: list[dict] | None = None,
 ) -> list[DiffItem]:
     """Compare seal blocks between two documents.
 
@@ -52,6 +54,13 @@ def build_seal_diffs(
     next_index = start_index
     for orig, comp in pairs:
         if orig is not None and comp is not None:
+            from app.services.seal_visual_equivalence import corresponding_red_graphics
+            proof = corresponding_red_graphics(original, orig, compare, comp, verify_ink=True)
+            if diagnostics is not None:
+                diagnostics.append({**proof, 'original_page': orig.page_no, 'compare_page': comp.page_no,
+                                    'original_bbox': orig.bbox.model_dump(), 'compare_bbox': comp.bbox.model_dump()})
+            if proof.get('equivalent'):
+                continue
             diff = _build_modify(orig, comp, next_index)
             if diff is not None:
                 diffs.append(diff)
@@ -173,11 +182,19 @@ def _union_bbox(bboxes: list[BBox]) -> BBox:
     )
 
 
+def _clean_seal_text(text: str) -> str:
+    """Extract rendered text; HTML attributes and image paths are not seal ink."""
+    decoded = html.unescape(text or "")
+    decoded = re.sub(r"<(script|style)\b[^>]*>.*?</\1\s*>", "", decoded,
+                     flags=re.IGNORECASE | re.DOTALL)
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]*>", "", decoded)).strip()
+
+
 def _merge_text(blocks: list[TextBlock]) -> str:
     parts: list[str] = []
     seen: set[str] = set()
     for block in blocks:
-        text = block.text.strip()
+        text = _clean_seal_text(block.text)
         if not text or text in seen:
             continue
         parts.append(text)

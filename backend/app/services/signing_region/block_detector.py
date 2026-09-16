@@ -14,14 +14,15 @@ from app.services.signing_region.models import (
 
 
 PARTY_RE = re.compile(r"甲方|乙方|丙方|丁方")
-PARTY_LABEL_RE = re.compile(r"(?:甲方|乙方|丙方|丁方)\s*[:：]")
+PARTY_LABEL_RE = re.compile(r"(?:甲方|乙方|丙方|丁方)(?:[（(](?:盖章|签章)[）)])?\s*[:：]")
 SEAL_RE = re.compile(r"盖章|签章|公章")
 SIGN_RE = re.compile(r"签字|签名")
 REPRESENTATIVE_RE = re.compile(r"法定代表人|法人代表|授权代表|授权委托人")
 DATE_LABEL_RE = re.compile(r"日期[:：]|时间[:：]|签订日期|签署日期|签订时间|签署时间")
+BUSINESS_PARTY_LABEL_RE = re.compile(r"^(?:买方|卖方|设计方|采购方|供货方)[:：]")
 SIGNING_CONTEXT_RE = re.compile(r"以下无正文|签署页|签字页")
 SIGNING_PAGE_TITLE_RE = re.compile(r"^\s*(?:签署页|签字页)\s*$")
-SIGNING_TAIL_CONTEXT_RE = re.compile(r"合同经双方.{0,30}(?:签字|签署|盖章)|一式[一二两三四五六七八九十百千万\d]+份|传真件有效")
+SIGNING_TAIL_CONTEXT_RE = re.compile(r"合同经双方.{0,30}(?:签字|签署|盖章)|一式[一二两三四五六七八九十百千万壹贰叁肆伍陆柒捌玖拾佰仟\d]+份|传真件有效")
 SIGNING_CONTINUATION_RE = re.compile(r"地址|邮编|电话|联系人|开户|账号|统一社会信用代码|邮箱|电子邮箱|E-?mail|传真")
 DATE_TIME_CONTINUATION_LABEL_RE = re.compile(
     r"^(?:日期|时间)[:：]?(?:\d{2,4}(?:[年./-]\d{0,2})?(?:[月./-]\d{0,2})?日?\.?)?$"
@@ -33,7 +34,7 @@ BUSINESS_SIGNING_FIELD_RE = re.compile(
 )
 BODY_VERB_RE = re.compile(r"应当|负责(?!人)|承担|履行|支付|违约|权利|义务|为准|合同经|生效|协商|约定")
 NUMBERED_RE = re.compile(r"^\s*(?:第[一二三四五六七八九十百千万0-9]+[章节条款]|[一二三四五六七八九十百千万0-9]+[、.．]|\d+(?:\.\d+){0,4}[、.．]?)")
-PAGE_FOOTER_RE = re.compile(r"^(?:共?\d+页第\d+页|第\d+页|[-—_]*\d+[-—_]*)$")
+PAGE_FOOTER_RE = re.compile(r"^(?:共?\d+页第\d+页|第\d+页(?:共\d+页)?|[-—_]*\d+[-—_]*)$")
 BUSINESS_FIELD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("address", re.compile(r"地址")),
     ("contact", re.compile(r"联系人")),
@@ -78,6 +79,10 @@ class SigningBlockDetector:
                 previous_page=pages_by_no.get(page.page_no - 1),
                 is_terminal_page=page.page_no == terminal_page_no,
             )
+            continuation = self._cross_page_business_continuation(page, pages_by_no.get(page.page_no - 1), result.blocks)
+            if continuation is not None:
+                consumed = set(continuation.source_block_ids)
+                blocks = [block for block in blocks if not consumed.intersection(block.source_block_ids)] + [continuation]
             result.blocks.extend(blocks)
             if blocks:
                 result.pages.append(self._to_page(page, page_roles.get(page.page_no, "body"), blocks))
@@ -92,6 +97,21 @@ class SigningBlockDetector:
         previous_page: Page | None = None,
         is_terminal_page: bool = False,
     ) -> list[SigningBlock]:
+        # Operational approval forms contain signature slots, but those slots
+        # do not establish a contract execution region. Keep their contents in
+        # the ordinary table/text comparison and independent visual scan.
+        page_text = self._compact("\n".join(block.text for block in page.blocks))
+        if (
+            any(re.fullmatch(r".{0,20}(?:验收|申请|报审|审批).{0,6}[单表]", self._compact(b.text)) for b in page.blocks)
+            and sum(bool(re.search(term, page_text)) for term in [r"意见|评价", r"验收内容|完成情况|开工|竣工", r"签字|签名", r"日期|时间"]) >= 2
+            and not (PARTY_LABEL_RE.search(page_text) or REPRESENTATIVE_RE.search(page_text) or SIGNING_CONTEXT_RE.search(page_text))
+        ):
+            result.excluded_candidates.append({
+                "page_no": page.page_no,
+                "reason": "operational_approval_form_not_contract_signing",
+                "source_block_ids": [block.block_id for block in page.blocks],
+            })
+            return []
         candidates = self._candidate_blocks(
             page,
             page_role,
@@ -101,10 +121,16 @@ class SigningBlockDetector:
         if not candidates:
             return []
         signing_blocks: list[SigningBlock] = []
-        for index, cluster in enumerate(self._cluster(candidates), start=1):
+        clusters = self._cluster(candidates)
+        if self._explicit_signing_page(page) and sum(bool(REPRESENTATIVE_RE.search(b.text)) for b in candidates) >= 2:
+            clusters = [candidates]
+        for index, cluster in enumerate(clusters, start=1):
             cluster = self._extend_signing_continuation(cluster, page)
             text = "\n".join(block.text.strip() for block in cluster if block.text.strip())
             bbox = self._padded_union([self._effective_bbox(block) for block in cluster], page)
+            boundary = self.body_boundary(page, min(block.bbox.y0 for block in cluster))
+            if boundary is not None:
+                bbox.y1 = min(bbox.y1, boundary)
             score, reasons = self._score_cluster(cluster, page, page_role)
             if self._is_cover_signing_info_table(cluster, page_role, reasons):
                 result.excluded_candidates.append({
@@ -163,6 +189,16 @@ class SigningBlockDetector:
         is_terminal_page: bool = False,
     ) -> list[TextBlock]:
         selected = {block.block_id: block for block in page.blocks if self._is_candidate(block, page)}
+        if page_role != "cover":
+            for block in self._local_signing_structure_blocks(page):
+                selected.setdefault(block.block_id, block)
+        if self._explicit_signing_page(page):
+            for block in page.blocks:
+                text = self._compact(block.text)
+                if not self._is_page_footer(block, page) and not self._looks_like_contract_body_text(block, text) and any(
+                    pattern.search(text) for pattern in [REPRESENTATIVE_RE, SIGN_RE, DATE_LABEL_RE, BUSINESS_PARTY_LABEL_RE]
+                ):
+                    selected.setdefault(block.block_id, block)
         if page_role != "cover" and self._has_lower_middle_signing_tail_context(page, list(selected.values())):
             for block in page.blocks:
                 if block.block_id not in selected and self._is_lower_middle_signing_tail_block(block, page):
@@ -176,7 +212,90 @@ class SigningBlockDetector:
         if page_role != "cover" and is_terminal_page:
             for block in self._inline_terminal_business_signing_blocks(page):
                 selected.setdefault(block.block_id, block)
+        # OCR often separates the label and its handwritten date. Recall only
+        # a unique same-line value to the right of an already selected label.
+        for label in list(selected.values()):
+            if not re.fullmatch(r"(?:日期|时间|签订日期|签署日期)[:：]?", self._compact(label.text)):
+                continue
+            height = max(1.0, label.bbox.y1 - label.bbox.y0)
+            adjacent = [b for b in page.blocks if b.block_id not in selected
+                        and re.fullmatch(r"(?:19|20)\d{2}[年./-]\d{1,2}[月./-]\d{1,2}日?", self._compact(b.text))
+                        and 0 <= b.bbox.x0 - label.bbox.x1 <= height * 3
+                        and min(b.bbox.y1, label.bbox.y1) - max(b.bbox.y0, label.bbox.y0) >= height * 0.5]
+            if len(adjacent) == 1:
+                selected[adjacent[0].block_id] = adjacent[0]
         return sorted(selected.values(), key=lambda block: (self._effective_bbox(block).y0, self._effective_bbox(block).x0))
+
+    def _local_signing_structure_blocks(self, page: Page) -> list[TextBlock]:
+        """Recall a local form by independent labels, regardless of page position."""
+        labels = []
+        for block in page.blocks:
+            text = self._compact(block.text)
+            if self._is_page_footer(block, page) or self._looks_like_contract_body_text(block, text):
+                continue
+            if (re.match(r"^(?:甲方|乙方|丙方|丁方|法定代表人|法人代表|或?授权代表|授权委托人|[（(]?签字|[（(]?签名|日期|时间|年月日)", text)
+                    or PARTY_LABEL_RE.search(text)):
+                labels.append(block)
+        retained = []
+        for cluster in self._cluster(labels):
+            text = self._compact("\n".join(block.text for block in cluster))
+            parties = {PARTY_RE.search(match.group(0)).group(0) for match in PARTY_LABEL_RE.finditer(text)}
+            parties.update(match.group(0)[:2] for block in cluster
+                           if (match := re.match(r"[甲乙丙丁]方[（(]盖", self._compact(block.text))))
+            # Separate roles and two independent signing fields establish a
+            # form. A sentence merely mentioning execution is not an anchor.
+            signals = sum(bool(pattern.search(text)) for pattern in [SEAL_RE, SIGN_RE, REPRESENTATIVE_RE, DATE_LABEL_RE])
+            if len(parties) >= 2 and signals >= 2:
+                start_y = min(block.bbox.y0 for block in cluster)
+                boundary = self.body_boundary(page, start_y)
+                retained.extend(block for block in cluster if boundary is None or block.bbox.y0 < boundary)
+        return retained
+
+    def _cross_page_business_continuation(
+        self, page: Page, previous_page: Page | None, detected: list[SigningBlock],
+    ) -> SigningBlock | None:
+        if previous_page is None:
+            return None
+        previous = [block for block in detected if block.page_no == previous_page.page_no
+                    and block.confidence >= 0.7 and "two_column_layout" in block.confidence_reasons
+                    and block.bbox.y1 >= previous_page.height * 0.8]
+        if len(previous) != 1:
+            return None
+        anchor = previous[0]
+        candidates = []
+        for block in sorted(page.blocks, key=lambda item: (item.bbox.y0, item.bbox.x0)):
+            if self._is_ignorable_for_business_only_page(block, page):
+                continue
+            text = self._compact(block.text)
+            if not text:
+                continue
+            # Only a prefix of repeated field labels may continue. A title,
+            # prose, or a new party header closes the preceding signing group.
+            if not (SIGNING_CONTINUATION_RE.match(text) or re.match(r"^(?:税号|邮编|日期|时间)[:：]", text)):
+                break
+            if self._looks_like_contract_body_text(block, text):
+                break
+            candidates.append(block)
+        if len(candidates) < 4 or min(b.bbox.y0 for b in candidates) > page.height * 0.24:
+            return None
+        text = "\n".join(block.text for block in candidates)
+        if self._business_field_category_count(text) < 3 or not self._looks_two_column(candidates, page):
+            return None
+        # Both columns must continue the preceding form, not merely happen
+        # to contain contact information somewhere on the next page.
+        width_ratio = page.width / previous_page.width
+        if abs(min(b.bbox.x0 for b in candidates) - anchor.bbox.x0 * width_ratio) > page.width * 0.1:
+            return None
+        anchor.group_id = anchor.group_id or anchor.block_id
+        return SigningBlock(
+            block_id=f"SB-{page.page_no}-continuation", page_no=page.page_no,
+            group_id=anchor.group_id, bbox=self._padded_union([b.bbox for b in candidates], page),
+            block_role=SigningBlockRole.CONTINUATION, confidence=0.85,
+            confidence_level=SigningBlockConfidenceLevel.HIGH,
+            confidence_reasons=["cross_page_business_continuation", "two_column_layout"],
+            source_block_ids=[b.block_id for b in candidates], text=text,
+            exclude_from_clause_diff=True,
+        )
 
     def _inline_terminal_business_signing_blocks(self, page: Page) -> list[TextBlock]:
         ordered = sorted(page.blocks, key=lambda block: (self._effective_bbox(block).y0, self._effective_bbox(block).x0))
@@ -211,7 +330,7 @@ class SigningBlockDetector:
         in_bottom = bbox.y1 >= page.height * self.bottom_ratio
         in_top = bbox.y0 <= page.height * self.top_continuation_ratio
         has_party = bool(PARTY_RE.search(text))
-        has_party_label = bool(PARTY_LABEL_RE.search(text))
+        has_party_label = bool(PARTY_LABEL_RE.search(text) or PARTY_RE.fullmatch(text))
         has_structural_signing_signal = any(pattern.search(text) for pattern in [
             SEAL_RE,
             SIGN_RE,
@@ -296,6 +415,10 @@ class SigningBlockDetector:
 
         selected = {block.block_id: block for block in cluster}
         current_bbox = self._raw_union([self._effective_bbox(block) for block in cluster])
+        boundary = self.body_boundary(page, current_bbox.y0)
+        if boundary is not None:
+            selected = {key: block for key, block in selected.items() if block.bbox.y0 < boundary}
+            current_bbox = self._raw_union([self._effective_bbox(block) for block in selected.values()])
         ordered_blocks = sorted(page.blocks, key=lambda block: (self._effective_bbox(block).y0, self._effective_bbox(block).x0))
         changed = True
         while changed:
@@ -305,12 +428,17 @@ class SigningBlockDetector:
                     continue
 
                 bbox = self._effective_bbox(block)
+                if boundary is not None and block.bbox.y0 >= boundary:
+                    continue
                 if bbox.y0 < current_bbox.y0:
                     continue
-                if self._is_page_footer(block, page):
+                if self._is_page_footer(block, page) or block.flow_role in {"margin", "noise"}:
                     continue
                 vertical_gap = max(0.0, bbox.y0 - current_bbox.y1)
-                if vertical_gap > self._continuation_gap_for(cluster, block):
+                gap = self._continuation_gap_for(cluster, block)
+                if self._explicit_signing_page(page) and self._is_signing_continuation_block(block):
+                    gap = max(gap, self.signing_title_continuation_gap)
+                if vertical_gap > gap:
                     continue
                 if not self._horizontally_related(current_bbox, bbox, page):
                     continue
@@ -326,6 +454,29 @@ class SigningBlockDetector:
 
         return sorted(selected.values(), key=lambda block: (self._effective_bbox(block).y0, self._effective_bbox(block).x0))
 
+    @classmethod
+    def _explicit_signing_page(cls, page: Page) -> bool:
+        return any(
+            len(cls._compact(b.text)) <= 90
+            and re.search(r"^(?:[（(]?本页无正文.*签署页|.{0,20}(?:签署页|签字页))[）)]?$", cls._compact(b.text))
+            for b in page.blocks
+        )
+
+    @classmethod
+    def body_boundary(cls, page: Page, start_y: float) -> float | None:
+        """A prose paragraph is a barrier, not a gap to jump across."""
+        positions = []
+        for block in page.blocks:
+            text = cls._compact(block.text)
+            if block.bbox.y0 <= start_y or block.block_type == "table":
+                continue
+            if re.match(r"^(?:附件|附录)[一二三四五六七八九十0-9]+", text) or (len(text) >= 20 and (
+                re.match(r"根据|依据|为(?:了|保障|加强|遵守)|第[一二三四五六七八九十0-9]+条", text)
+                or (BODY_VERB_RE.search(text) and not any(p.search(text) for p in [SIGNING_CONTINUATION_RE, DATE_LABEL_RE]))
+            )):
+                positions.append(block.bbox.y0)
+        return min(positions) if positions else None
+
     def _continuation_gap_for(self, cluster: list[TextBlock], candidate: TextBlock) -> float:
         text = self._compact("\n".join(block.text for block in cluster))
         if SIGNING_PAGE_TITLE_RE.match(text) and self._is_business_signing_continuation(candidate):
@@ -340,7 +491,11 @@ class SigningBlockDetector:
         has_party_seal_header = PARTY_RE.search(text) is not None and SEAL_RE.search(text) is not None
         return bool(SIGNING_CONTEXT_RE.search(text)) or (
             PARTY_LABEL_RE.search(text) is not None and signal_count >= 2
-        ) or has_party_seal_header
+        ) or has_party_seal_header or (
+            REPRESENTATIVE_RE.search(text) is not None
+            and SIGN_RE.search(text) is not None
+            and DATE_LABEL_RE.search(text) is not None
+        )
 
     def _is_signing_continuation_block(self, block: TextBlock) -> bool:
         text = self._compact(block.text)
@@ -517,6 +672,9 @@ class SigningBlockDetector:
     @staticmethod
     def _is_signing_date_value(text: str) -> bool:
         compact = re.sub(r"\s+", "", text or "")
+        # A value from one column and the next column's empty date label can
+        # share an OCR line. Only local continuation calls use this recognizer.
+        compact = re.sub(r"(?:日期|时间)[:：]$", "", compact)
         return bool(
             re.fullmatch(r"\d{4}年\d{1,2}月(?:\d{1,2})?日", compact)
             or re.fullmatch(r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", compact)
@@ -598,6 +756,8 @@ class SigningBlockDetector:
 
     @staticmethod
     def _looks_like_contract_body_text(block: TextBlock, text: str) -> bool:
+        if SIGNING_TAIL_CONTEXT_RE.search(text) and len(text) >= 20:
+            return True
         if not (BODY_VERB_RE.search(text) or NUMBERED_RE.match(text)):
             return False
         if SIGNING_CONTEXT_RE.search(text):
@@ -679,7 +839,8 @@ class SigningBlockDetector:
 
     @staticmethod
     def _effective_bbox(block: TextBlock) -> BBox:
-        return block.layout_bbox or block.bbox
+        # OCR lines sharing a layout parent still occupy distinct locations.
+        return block.bbox
 
     @staticmethod
     def _compact(text: str) -> str:

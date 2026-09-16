@@ -141,8 +141,8 @@ def test_signing_region_stage_uses_opencv_detector_by_default(monkeypatch, tmp_p
     assert "opencv_available" in configuration
 
 
-def test_signing_region_stage_only_ignores_seals_when_stamps_are_ignored(tmp_path: Path) -> None:
-    ctx = _ctx(tmp_path, CompareOptions(ignore_stamps=True))
+def test_signing_region_stage_runs_with_retired_stamp_option(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, CompareOptions.model_validate({"ignore_stamps": True}))
     ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
     ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
     ctx.signing_pages_original = ["stale-page"]
@@ -167,8 +167,8 @@ def test_signing_region_stage_only_ignores_seals_when_stamps_are_ignored(tmp_pat
     assert ctx.signing_region_debug["skipped"] is False
 
 
-def test_signing_region_stage_skips_when_mode_is_off(tmp_path: Path) -> None:
-    ctx = _ctx(tmp_path, CompareOptions(signing_region_mode="off"))
+def test_signing_region_stage_runs_with_retired_off_mode(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, CompareOptions.model_validate({"signing_region_mode": "off"}))
     ctx.original_extraction = ExtractionResult(document=_doc("A公司"), extractor_used="test")
     ctx.compare_extraction = ExtractionResult(document=_doc("B公司"), extractor_used="test")
 
@@ -178,7 +178,7 @@ def test_signing_region_stage_skips_when_mode_is_off(tmp_path: Path) -> None:
     assert ctx.signing_regions_compare == []
     assert ctx.signing_region_diffs == []
     assert ctx.signing_region_covered_diff_ids == set()
-    assert ctx.signing_region_debug == {"skipped": True}
+    assert ctx.signing_region_debug["skipped"] is False
     assert ctx.task.signing_region_outlines.original == []
     assert ctx.task.signing_region_outlines.compare == []
 

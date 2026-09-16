@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "TIELING_SERVICE",
-  "expected_case_count": 4,
+  "expected_case_count": 5,
   "assertions": [
     {
       "case_id": "TIELING_SERVICE_P1_SEAL_ADD_E0CDB62DC9",
@@ -10,11 +10,11 @@
       "region": "signing",
       "source_type": "seal",
       "diff_type": "ADD",
-      "title": "印章区域（第1页）",
+      "title": "乙方 · 骑缝章",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
       "content_recognition_status": "CONFIRMED",
-      "semantic_after": "品房市司合61",
+      "semantic_after": "骑缝章",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
@@ -24,7 +24,9 @@
           "y1": 439.0
         },
         "min_iou": 0.35
-      }
+      },
+      "object_type": "EDGE_SEAM_SEAL",
+      "review_note": "旧目标页/物理框对应 release D001，同页最大 IoU=0.96769；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 多页骑缝章已聚合，必须用object_type=EDGE_SEAM_SEAL以启用matcher同一对象按不同页消费，保留每页物理框断言。"
     },
     {
       "case_id": "TIELING_SERVICE_P2_SEAL_ADD_D0F47F47E6",
@@ -33,11 +35,11 @@
       "region": "signing",
       "source_type": "seal",
       "diff_type": "ADD",
-      "title": "印章区域（第2页）",
+      "title": "乙方 · 骑缝章",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
       "content_recognition_status": "CONFIRMED",
-      "semantic_after": "电力科友司专用章103033906",
+      "semantic_after": "骑缝章",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
@@ -47,7 +49,9 @@
           "y1": 443.0
         },
         "min_iou": 0.35
-      }
+      },
+      "object_type": "EDGE_SEAM_SEAL",
+      "review_note": "旧目标页/物理框对应 release D001，同页最大 IoU=0.36714；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 多页骑缝章已聚合，必须用object_type=EDGE_SEAM_SEAL以启用matcher同一对象按不同页消费，保留每页物理框断言。"
     },
     {
       "case_id": "TIELING_SERVICE_P3_SEAL_ADD_FCD17862D5",
@@ -56,11 +60,11 @@
       "region": "signing",
       "source_type": "seal",
       "diff_type": "ADD",
-      "title": "印章区域（第3页）",
+      "title": "甲方 · 公司圆章",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
-      "content_recognition_status": "CONFIRMED",
-      "semantic_after": "合同专用章",
+      "content_recognition_status": "NEEDS_REVIEW",
+      "semantic_after": "公司圆章",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
@@ -70,7 +74,9 @@
           "y1": 294.0
         },
         "min_iou": 0.35
-      }
+      },
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "旧目标页/物理框对应 release D003，同页最大 IoU=0.94207；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 章存在与章文可读性分开；content应NEEDS_REVIEW，不能把缺字/正文污染章文标CONFIRMED。"
     },
     {
       "case_id": "TIELING_TAX_ID_NO_CONFIRMED_MODIFY",
@@ -79,6 +85,14 @@
       "region": "signing",
       "field_type": "tax_id",
       "diff_type": "MODIFY"
+    },
+    {
+      "case_id": "TIELING_SERVICE_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
     }
-  ]
+  ],
+  "baseline_version": "contract-golden-v2"
 }

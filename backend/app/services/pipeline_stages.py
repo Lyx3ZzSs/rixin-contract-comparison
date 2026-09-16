@@ -28,6 +28,7 @@ from app.models import (
     ParseWarningDetail,
     SigningRegionOutlines,
     TextBlock,
+    TextRange,
 )
 from app.services.compare_debug import CompareDebugWriter
 from app.services.clause_splitter import ClauseSplitter
@@ -56,6 +57,7 @@ from app.services.counterpart_text_recovery import CounterpartTextRecovery
 from app.services.evidence_relocator import EvidenceRelocationResult, EvidenceRelocator
 from app.services.footer_annotation_visual import FooterAnnotationVisualComparator
 from app.services.page_diff import PageDiffConsolidator
+from app.services.page_alignment import PageSequenceAligner
 from app.services.pipeline import PipelineContext
 from app.services.pipeline_metrics import PerformanceRecorder
 from app.services.repeated_overlay_filter import RepeatedOverlayFilter
@@ -88,9 +90,12 @@ from app.services.signing_region.models import (
     SigningElementType,
     SigningRegion,
     SigningRegionComparison,
+    SigningVisualObjectType,
     VisualDetection,
     VisualDetectionResult,
 )
+from app.services.signing_region.removal_observation import SigningRemovalObservationDetector
+from app.services.signing_region.visual_recall import WholePageSigningVisualRecall
 from app.services.signing_region.visual import (
     LocalCpuVisualSignatureDetector,
     OpenCvSigningRegionFingerprinter,
@@ -101,7 +106,7 @@ from app.services.signing_region.visual import (
 from app.services.signing_region.value_ocr import SigningFieldValueOCR
 from app.services.table_compare import TableComparator
 from app.services.text_coordinate_locator import TextCoordinateLocator
-from app.utils.id_utils import generate_diff_id
+from app.utils.id_utils import generate_diff_id, next_diff_index
 
 logger = logging.getLogger(__name__)
 _parallel_extraction_slots = threading.BoundedSemaphore(
@@ -583,7 +588,10 @@ class ExtractionStage:
             result = (extractor or self.extractor).extract(pdf_path, task_id=task_id)
         except DocumentExtractionError as exc:
             raise DocumentExtractionError(f"{side_label}结构化 OCR 失败：{exc}") from exc
-        if self.require_structured_ocr and result.extractor_used != "ppstructure_ocr_hybrid":
+        allowed = {"ppstructure_ocr_hybrid"}
+        if settings.compare_native_page_mode == "enabled":
+            allowed.add("ppstructure_ocr_hybrid_page_routing")
+        if self.require_structured_ocr and result.extractor_used not in allowed:
             raise DocumentExtractionError(
                 f"{side_label}结构化 OCR 失败：提取器返回了非结构化结果 {result.extractor_used or 'unknown'}"
             )
@@ -734,7 +742,7 @@ class DocumentPreparationStage:
     progress = 36
 
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
-        self.preparer = DocumentPreparer()
+        self.preparer = DocumentPreparer(image_analysis_max_inflight=settings.compare_image_analysis_max_inflight)
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
@@ -743,6 +751,7 @@ class DocumentPreparationStage:
             extractions.original.document,
             extractions.compare.document,
         )
+        ctx.task.metrics.setdefault("performance", {})["document_preparation"] = result.performance.snapshot()
         _write_debug_artifact(
             ctx.task,
             "document_preparation",
@@ -782,6 +791,33 @@ class DocumentUnderstandingStage:
         _emit_progress(ctx, 35, self.name, "document_understanding_done")
 
 
+class PageAlignmentStage:
+    name = "页面序列对齐中"
+    start_progress = 36
+    progress = 37
+
+    def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
+        self.aligner = PageSequenceAligner(cache_size=settings.compare_page_alignment_cache_size)
+        self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+
+    def execute(self, ctx: PipelineContext) -> None:
+        extractions = ctx.require_extractions()
+        ctx.page_alignment = self.aligner.align(
+            extractions.original.document,
+            extractions.compare.document,
+        )
+        ctx.task.metrics.setdefault("performance", {})["page_alignment"] = ctx.page_alignment.performance
+        _write_debug_artifact(
+            ctx.task,
+            "page_alignment",
+            lambda: self.debug_writer.write_page_alignment(
+                ctx.task.task_id,
+                ctx.page_alignment.to_debug_payload(),
+            ),
+        )
+        _emit_progress(ctx, 37, self.name, "page_alignment_done")
+
+
 class PreClauseDiffStage:
     name = "差异识别中"
     start_progress = 36
@@ -793,6 +829,10 @@ class PreClauseDiffStage:
             max_inflight=settings.compare_footer_visual_max_inflight,
         )
         self.cover_metadata = CoverMetadataComparator()
+        from app.services.cover.date_ocr import CoverDateOCR
+        self.cover_date_ocr = CoverDateOCR()
+        from app.services.cover.party_ocr import CoverPartyOCR
+        self.cover_party_ocr = CoverPartyOCR()
         self.table_comparator = TableComparator()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
@@ -802,41 +842,44 @@ class PreClauseDiffStage:
         original_doc = extractions.original.document
         compare_doc = extractions.compare.document
 
-        if task.compare_options.ignore_stamps:
-            seal_diffs: list[DiffItem] = []
-            _emit_progress(ctx, 37, self.name, "seal_recognition_skipped")
-        else:
-            self._recognize_seals(ctx, original_doc, compare_doc)
-            _emit_progress(ctx, 37, self.name, "seal_recognition_done")
+        self._recognize_seals(ctx, original_doc, compare_doc)
+        _emit_progress(ctx, 37, self.name, "seal_recognition_done")
 
-        if task.compare_options.ignore_headers_footers:
-            header_footer_diffs = []
-            _emit_progress(ctx, 38, self.name, "header_footer_diff_skipped")
-        else:
-            ocr_header_footer_diffs = self.header_footer.build_diffs(original_doc, compare_doc)
-            visual_footer_diffs = self.footer_visual.build_diffs(
-                original_doc,
-                compare_doc,
-                start_index=len(ocr_header_footer_diffs) + 1,
-            )
-            ocr_header_footer_diffs = self.footer_visual.remove_overlapping_ocr_diffs(
-                ocr_header_footer_diffs,
-                visual_footer_diffs,
-            )
-            header_footer_diffs = [*ocr_header_footer_diffs, *visual_footer_diffs]
-            for index, diff in enumerate(header_footer_diffs, start=1):
-                diff.diff_id = generate_diff_id(index)
-            _emit_progress(ctx, 38, self.name, "header_footer_diff_done")
+        ocr_header_footer_diffs = self.header_footer.build_diffs(original_doc, compare_doc)
+        visual_footer_diffs = self.footer_visual.build_diffs(
+            original_doc,
+            compare_doc,
+            start_index=len(ocr_header_footer_diffs) + 1,
+        )
+        ocr_header_footer_diffs = self.footer_visual.remove_overlapping_ocr_diffs(
+            ocr_header_footer_diffs,
+            visual_footer_diffs,
+        )
+        header_footer_diffs = [*ocr_header_footer_diffs, *visual_footer_diffs]
+        for index, diff in enumerate(header_footer_diffs, start=1):
+            diff.diff_id = generate_diff_id(index)
+        _emit_progress(ctx, 38, self.name, "header_footer_diff_done")
+        party_diagnostics = self.cover_party_ocr.enrich_pair(original_doc, compare_doc)
+        if party_diagnostics:
+            _write_debug_artifact(task, "cover_party_ocr", lambda: self.debug_writer.write_cover_party_ocr(task.task_id, party_diagnostics))
+        date_diagnostics = {side: self.cover_date_ocr.enrich(document)
+                            for side, document in (("original", original_doc), ("compare", compare_doc))}
+        if any(date_diagnostics.values()):
+            self.debug_writer.write_cover_date_ocr(task.task_id, date_diagnostics)
         metadata_diffs = self.cover_metadata.build_diffs(
             original_doc,
             compare_doc,
             start_index=len(header_footer_diffs) + 1,
         )
+        from app.services.diagonal_watermark import build_watermark_diffs
+        metadata_diffs.extend(build_watermark_diffs(original_doc, compare_doc,
+            start_index=len(header_footer_diffs)+len(metadata_diffs)+1))
         _emit_progress(ctx, 39, self.name, "cover_metadata_diff_done")
         table_diffs, table_warnings = self.table_comparator.build_diffs(
             original_doc,
             compare_doc,
             start_index=len(header_footer_diffs) + len(metadata_diffs) + 1,
+            page_alignment=ctx.page_alignment,
         )
         _write_debug_artifact(
             task,
@@ -846,12 +889,12 @@ class PreClauseDiffStage:
                 self.table_comparator.last_debug_payload,
             ),
         )
-        if not task.compare_options.ignore_stamps:
-            seal_diffs = build_seal_diffs(
-                original_doc,
-                compare_doc,
-                start_index=len(header_footer_diffs) + len(metadata_diffs) + len(table_diffs) + 1,
-            )
+        seal_diffs = build_seal_diffs(
+            original_doc,
+            compare_doc,
+            start_index=len(header_footer_diffs) + len(metadata_diffs) + len(table_diffs) + 1,
+            diagnostics=ctx.seal_equivalence,
+        )
         result = ctx.set_table_diffs(
             header_footer_diffs=header_footer_diffs,
             metadata_diffs=metadata_diffs,
@@ -917,6 +960,7 @@ class SigningRegionStage:
         visual_detector: VisualSignatureDetector | None = None,
         visual_fingerprinter: OpenCvSigningRegionFingerprinter | None = None,
         field_value_ocr: SigningFieldValueOCR | None = None,
+        removal_observation_detector: SigningRemovalObservationDetector | None = None,
         visual_enabled: bool | None = None,
     ) -> None:
         self.block_detector = SigningBlockDetector()
@@ -927,6 +971,8 @@ class SigningRegionStage:
         self.diff_builder = SigningRegionDiffBuilder()
         self.coverage_builder = SigningRegionCoverageBuilder()
         self.field_value_ocr = field_value_ocr or SigningFieldValueOCR()
+        self.removal_observation_detector = removal_observation_detector or SigningRemovalObservationDetector()
+        self.whole_page_visual_recall = WholePageSigningVisualRecall()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
         self.visual_enabled = settings.signing_visual_enabled if visual_enabled is None else visual_enabled
         self.visual_detector = visual_detector if visual_detector is not None else self._default_visual_detector()
@@ -935,27 +981,8 @@ class SigningRegionStage:
         )
 
     def execute(self, ctx: PipelineContext) -> None:
-        if ctx.task.compare_options.signing_region_mode == "off":
-            ctx.task.signing_region_outlines = SigningRegionOutlines()
-            ctx.signing_pages_original = []
-            ctx.signing_pages_compare = []
-            ctx.signing_blocks_original = []
-            ctx.signing_blocks_compare = []
-            ctx.clause_document_original = None
-            ctx.clause_document_compare = None
-            ctx.signing_regions_original = []
-            ctx.signing_regions_compare = []
-            ctx.signing_region_diffs = []
-            ctx.signing_region_covered_diff_ids = set()
-            ctx.signing_region_debug = {"skipped": True}
-            _write_debug_artifact(
-                ctx.task,
-                "signing_region",
-                lambda: self.debug_writer.write_signing_region(ctx.task.task_id, ctx.signing_region_debug),
-            )
-            _emit_progress(ctx, 42, self.name, "signing_region_skipped")
-            return
-
+        performance = PerformanceRecorder()
+        timed = performance.call
         extractions = ctx.require_extractions()
         original_structure = self.block_detector.detect(extractions.original.document)
         compare_structure = self.block_detector.detect(extractions.compare.document)
@@ -999,7 +1026,7 @@ class SigningRegionStage:
         compare_visual_candidate_regions = self._candidate_regions_for_visual_scan(compare_candidate_regions)
         suppressed_low_confidence_candidates: list[dict[str, Any]] = []
         visual_status = {
-            "original": self._collect_visual(
+            "original": timed("original_visual", self._collect_visual,
                 ctx.original_pdf,
                 original_regions,
                 ctx.task.task_id,
@@ -1007,7 +1034,7 @@ class SigningRegionStage:
                 suppressed=suppressed_low_confidence_candidates,
                 candidate_regions=original_visual_candidate_regions,
             ),
-            "compare": self._collect_visual(
+            "compare": timed("compare_visual", self._collect_visual,
                 ctx.compare_pdf,
                 compare_regions,
                 ctx.task.task_id,
@@ -1047,9 +1074,49 @@ class SigningRegionStage:
                 ctx.compare_pdf,
                 side="compare",
             )
-        targeted_value_ocr = self.field_value_ocr.enrich(ctx.compare_pdf, compare_regions)
+        targeted_value_ocr = []
+        from app.services.signing_region.blank_evidence import reject_stamp_text_as_person
+        for side, document, regions in (("original", extractions.original.document, original_regions),
+                                        ("compare", extractions.compare.document, compare_regions)):
+            targeted_value_ocr.extend({**item, "side": side} for item in reject_stamp_text_as_person(document, regions))
+        for side, pdf_path, regions in (("original", ctx.original_pdf, original_regions),
+                                        ("compare", ctx.compare_pdf, compare_regions)):
+            targeted_value_ocr.extend({**item, "side": side} for item in
+                timed("field_value_ocr", self.field_value_ocr.enrich, pdf_path, regions))
         self._apply_visual_enrichment_when_comparable(visual_status)
-        matches = self.matcher.match(original_regions, compare_regions)
+        for side, pdf_path, regions in (("original", ctx.original_pdf, original_regions),
+                                        ("compare", ctx.compare_pdf, compare_regions)):
+            source_document = extractions.original.document if side == "original" else extractions.compare.document
+            for diagnostic in timed("occluded_field_ocr", self.field_value_ocr.enrich_occluded_fields,
+                                    pdf_path, regions, source_document=source_document):
+                targeted_value_ocr.append({**diagnostic, "side": side})
+        matches = self.matcher.match(original_regions, compare_regions, page_alignment=ctx.page_alignment)
+        for original, compare, _ in matches:
+            for side, pdf_path, region, peer in (("original", ctx.original_pdf, original, compare),
+                                                ("compare", ctx.compare_pdf, compare, original)):
+                targeted_value_ocr.extend({**item, "side": side} for item in
+                    timed("missing_field_ocr", self.field_value_ocr.recover_missing_fields, pdf_path, region, peer))
+                targeted_value_ocr.extend({**item, "side": side} for item in
+                    timed("disputed_date_ocr", self.field_value_ocr.enrich_disputed_dates, pdf_path, region, peer))
+        from app.services.signing_region.date_visual_equivalence import reconcile_date_ink
+        targeted_value_ocr.extend(reconcile_date_ink(extractions.original.document, extractions.compare.document, matches))
+        from app.services.signing_region.printed_ownership import exclude_equal_signing_prose
+        exclude_equal_signing_prose(original_clause_doc, compare_clause_doc, matches,
+                                    original_structure.blocks, compare_structure.blocks)
+        from app.services.signing_region.date_visual_equivalence import remove_owned_date_table_diffs
+        ctx.table_diffs = remove_owned_date_table_diffs(ctx.table_diffs, original_regions, compare_regions)
+        from app.services.signing_region.printed_ownership import reconcile_party_table_diffs
+        ctx.table_diffs, party_row_decisions = reconcile_party_table_diffs(
+            ctx.table_diffs, extractions.original.document, extractions.compare.document)
+        targeted_value_ocr.extend(party_row_decisions)
+        from app.services.signing_region.blank_evidence import remove_owned_stamp_table_diffs
+        ctx.table_diffs, stamp_table_decisions = remove_owned_stamp_table_diffs(ctx.table_diffs, original_regions, compare_regions)
+        targeted_value_ocr.extend(stamp_table_decisions)
+        from app.services.signing_region.blank_evidence import verify_blank_field_rois
+        for side, document, regions in (("original", extractions.original.document, original_regions),
+                                        ("compare", extractions.compare.document, compare_regions)):
+            targeted_value_ocr.extend({**item, "side": side} for item in verify_blank_field_rois(document, regions))
+        removal_observations = self.removal_observation_detector.enrich(ctx.compare_pdf, matches)
         original_party_references = self.comparator.party_references(extractions.original.document)
         compare_party_references = self.comparator.party_references(extractions.compare.document)
         for original, compare, _ in matches:
@@ -1066,7 +1133,6 @@ class SigningRegionStage:
                 match_confidence=match_confidence,
                 original_party_references=original_party_references,
                 compare_party_references=compare_party_references,
-                ignore_seals=ctx.task.compare_options.ignore_stamps,
             )
             for original, compare, match_confidence in matches
         ]
@@ -1074,10 +1140,51 @@ class SigningRegionStage:
         legacy_diffs = self._legacy_diffs(ctx)
         signing_region_diffs = self.diff_builder.build_diffs(
             comparisons,
-            start_index=len(legacy_diffs) + 1,
+            start_index=next_diff_index(legacy_diffs),
         )
+        # Whole-page recall can add or enrich a visual candidate that overlaps an
+        # existing metadata/table diff without proving it is the same business
+        # fact.  Freeze coverage before recall so visual evidence cannot hide an
+        # otherwise visible legacy diff.
         coverage = self.coverage_builder.build(signing_region_diffs, legacy_diffs)
-
+        self.whole_page_visual_recall.render_cache = ctx.page_render_cache
+        visual_recall = timed("whole_page_visual_recall", self.whole_page_visual_recall.compare,
+            extractions.original.document,
+            extractions.compare.document,
+            page_alignment=ctx.page_alignment,
+        ) if self.visual_enabled else None
+        if visual_recall is not None:
+            # A whole-page detector may miss the original date while field
+            # extraction has already proved corresponding ink on both sides.
+            date_fields = [e for r in compare_regions for e in r.elements
+                           if e.raw_ref.get("paired_date_ink", {}).get("equivalent")]
+            retained_additions = []
+            for obj in visual_recall.additions:
+                peer = next((e for e in date_fields if obj.object_type == SigningVisualObjectType.HANDWRITTEN_DATE
+                             and obj.page_no == e.page_no and obj.party_role == e.raw_ref.get("party_role")
+                             and self.whole_page_visual_recall._bbox_overlap_ratio(obj.bbox, e.bbox) >= .65), None)
+                if peer is None:
+                    retained_additions.append(obj)
+                else:
+                    obj.raw_ref["paired_date_ink"] = peer.raw_ref["paired_date_ink"]
+            visual_recall.additions = retained_additions
+            ctx.header_footer_diffs = self.whole_page_visual_recall.reconcile_matched_edge_diffs(
+                visual_recall, ctx.header_footer_diffs, extractions.original.document, extractions.compare.document)
+            ctx.seal_diffs = self.whole_page_visual_recall.reconcile_matched_edge_diffs(
+                visual_recall, ctx.seal_diffs, extractions.original.document, extractions.compare.document)
+            ctx.seal_diffs, signing_region_diffs = self.whole_page_visual_recall.reconcile_diffs(
+                visual_recall,
+                ctx.seal_diffs,
+                signing_region_diffs,
+                start_index=next_diff_index([*legacy_diffs, *signing_region_diffs]),
+            )
+        # A proven matched seal owns its presence decision across all routes.
+        # Only seal object events qualify; never consume nearby field changes.
+        signing_region_diffs = [d for d in signing_region_diffs if not (
+            'SIGNING_SEAL_CHANGE' in d.review_flags and d.diff_type == 'ADD'
+            and any(p.get('equivalent') and e.page_no == p['compare_page']
+                    and SigningRegionCoverageBuilder._overlap_ratio(e.bbox, BBox.model_validate(p['compare_bbox'])) >= .65
+                    for p in ctx.seal_equivalence for e in d.compare_evidence))]
         ctx.signing_pages_original = original_structure.pages
         ctx.signing_pages_compare = compare_structure.pages
         ctx.signing_blocks_original = original_structure.blocks
@@ -1091,8 +1198,10 @@ class SigningRegionStage:
             compare=self._region_outlines(compare_regions),
         )
         ctx.signing_region_diffs = signing_region_diffs
+        ctx.task.metrics.setdefault("performance", {})["signing_region"] = performance.snapshot()
         ctx.signing_region_covered_diff_ids = coverage.covered_diff_ids
         ctx.signing_region_debug = {
+            "seal_equivalence": ctx.seal_equivalence,
             "skipped": False,
             "signing_pages": {
                 "original": _jsonable(original_structure.pages),
@@ -1121,6 +1230,7 @@ class SigningRegionStage:
             "original_regions": _jsonable(original_regions),
             "compare_regions": _jsonable(compare_regions),
             "targeted_value_ocr": _jsonable(targeted_value_ocr),
+            "business_removal_observations": _jsonable(removal_observations),
             "matches": [
                 {
                     "original_region_id": original.region_id if original is not None else None,
@@ -1136,6 +1246,9 @@ class SigningRegionStage:
                 "original": visual_status["original"].get("_visual_candidates", []),
                 "compare": visual_status["compare"].get("_visual_candidates", []),
             },
+            "whole_page_visual_recall": (
+                visual_recall.to_debug_payload() if visual_recall is not None else {"skipped": True}
+            ),
             "configuration": self._debug_configuration(),
             "suppressed_low_confidence_candidates": suppressed_low_confidence_candidates,
             "coverage": {
@@ -1356,7 +1469,10 @@ class SigningRegionStage:
     def _expand_block_with_nearby_fragments(page: Page, signing_block: SigningBlock) -> None:
         source_ids = set(signing_block.source_block_ids)
         additions: list[TextBlock] = []
+        boundary = SigningBlockDetector.body_boundary(page, signing_block.bbox.y0)
         for block in sorted(page.blocks, key=lambda item: (item.bbox.y0, item.bbox.x0, item.block_id)):
+            if boundary is not None and block.bbox.y0 >= boundary:
+                continue
             if block.block_id in source_ids:
                 continue
             if SigningRegionStage._is_page_footer_like(block, page):
@@ -1426,7 +1542,9 @@ class SigningRegionStage:
             return False
         if SigningRegionStage._is_visual_fragment_block(block):
             return block.bbox.x1 >= anchor.x0 and block.bbox.x0 <= anchor.x1
-        if SigningRegionStage._fragment_looks_like_numbered_clause(compact) or BODY_VERB_RE.search(compact):
+        if (SigningRegionStage._fragment_looks_like_numbered_clause(compact)
+                or BODY_VERB_RE.search(compact)
+                or (len(compact) >= 20 and SigningBlockDetector._looks_like_contract_body_text(block, compact))):
             return False
         if any(
             pattern.search(compact)
@@ -1437,7 +1555,9 @@ class SigningRegionStage:
 
     @staticmethod
     def _fragment_looks_like_numbered_clause(compact: str) -> bool:
-        return len(compact) > 8 and NUMBERED_RE.match(compact) is not None
+        return (len(compact) > 8 and NUMBERED_RE.match(compact) is not None) or bool(
+            re.match(r"^(?:第[一二三四五六七八九十百千万0-9]+[章节条款]|[一二三四五六七八九十百千万]+[、.．])", compact)
+        )
 
     @staticmethod
     def _is_visual_fragment_block(block: TextBlock) -> bool:
@@ -2190,12 +2310,21 @@ class MatchStage:
             rerank_max_retries=settings.matching.rerank_max_retries,
             rerank_weight=settings.matching.rerank_weight,
             low_confidence_review_threshold=settings.matching.low_confidence_review_threshold,
+            performance_strategy=settings.match_performance_strategy,
+            feature_cache_enabled=settings.match_feature_cache_enabled,
+            deduplicate_model_inputs=settings.match_deduplicate_model_inputs,
         )
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
     def execute(self, ctx: PipelineContext) -> None:
         clauses = ctx.require_clauses()
-        matches = ctx.set_matches(self.matcher.match(clauses.original_clauses, clauses.compare_clauses))
+        matches = ctx.set_matches(
+            self.matcher.match(
+                clauses.original_clauses,
+                clauses.compare_clauses,
+                page_alignment=ctx.page_alignment,
+            )
+        )
         _emit_progress(ctx, 53, self.name, "clause_match_done")
         debug_started_at = time.perf_counter()
         _write_debug_artifact(
@@ -2233,16 +2362,11 @@ class ClauseDiffStage:
     def execute(self, ctx: PipelineContext) -> None:
         table_diffs = ctx.require_table_diffs()
         matches = ctx.require_matches()
-        pre_clause_count = (
-            len(table_diffs.header_footer_diffs)
-            + len(table_diffs.metadata_diffs)
-            + len(table_diffs.table_diffs)
-            + len(ctx.seal_diffs)
-            + len(ctx.signing_region_diffs)
-        )
+        pre_clause_diffs = [*table_diffs.header_footer_diffs, *table_diffs.metadata_diffs,
+                            *table_diffs.table_diffs, *ctx.seal_diffs, *ctx.signing_region_diffs]
         clause_diffs = self.diff_engine.build_diffs(
             matches.pairs,
-            start_index=pre_clause_count + 1,
+            start_index=next_diff_index(pre_clause_diffs),
         )
         _emit_progress(ctx, 59, self.name, "clause_diff_done")
         diffs = [
@@ -2297,6 +2421,7 @@ class EvidenceStage:
                 ctx.original_extraction.document,
                 ctx.compare_extraction.document,
                 ctx.diffs,
+                page_alignment=ctx.page_alignment,
             )
             self.evidence_locator.assign_evidence_confidence(ctx.diffs)
         ctx.diffs = self.footer_visual.remove_overlapping_diffs(ctx.diffs)
@@ -2588,6 +2713,7 @@ class DiffQualityStage:
         diffs = ctx.require_diffs()
         original_document = ctx.original_extraction.document if ctx.original_extraction is not None else None
         compare_document = ctx.compare_extraction.document if ctx.compare_extraction is not None else None
+        candidates = [diff.model_dump(mode="json") for diff in diffs]
         result = self.processor.process(
             diffs,
             original_clauses=ctx.original_clauses,
@@ -2596,6 +2722,16 @@ class DiffQualityStage:
             compare_document=compare_document,
         )
         ctx.diffs = result.diffs
+        # Quality normalization can change the semantic range after the first
+        # evidence pass. Rebuild only those ranges, without stale fallback boxes.
+        changed_ranges = [diff for diff in ctx.diffs if "FINANCIAL_UPPERCASE_AMOUNT_CHANGE" in diff.review_flags]
+        if changed_ranges:
+            matches = ctx.require_matches()
+            EvidenceLocator().locate(
+                changed_ranges,
+                _clauses_for_evidence(ctx.original_clauses, [pair.original for pair in matches.pairs]),
+                _clauses_for_evidence(ctx.compare_clauses, [pair.compare for pair in matches.pairs]),
+            )
         merged_to_winner = self._merged_to_winner(result)
         self._remap_ocr_quality_summary(ctx, result, merged_to_winner)
         self._remap_ocr_remediation_summary(ctx, merged_to_winner)
@@ -2605,6 +2741,7 @@ class DiffQualityStage:
             lambda: self.debug_writer.write_diff_quality(
                 ctx.task.task_id,
                 result.to_debug_payload(),
+                candidates=candidates,
             ),
         )
         _emit_progress(ctx, 86, self.name, "diff_quality_done")
@@ -2717,7 +2854,16 @@ class SummaryStage:
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
         diffs = [diff for diff in ctx.require_diffs() if diff.diff_id not in ctx.signing_region_covered_diff_ids]
-        task.diffs, dedupe_remap = _dedupe_final_diffs(_filter_compare_option_diffs(task, diffs))
+        from app.services.matrix_graphics import MatrixGraphicComparator
+        comparator = MatrixGraphicComparator(render_cache=ctx.page_render_cache,
+                                             max_inflight=settings.compare_image_analysis_max_inflight)
+        graphics, observations = comparator.compare(ctx.original_pdf, ctx.compare_pdf, ctx.page_alignment)
+        task.metrics.setdefault("performance", {})["matrix_graphics"] = comparator.performance.snapshot()
+        diffs.extend(graphics)
+        task.metrics["graphic_observations"] = observations
+        diffs, visual_remap = _reconcile_visual_signing_date_diffs(diffs)
+        task.diffs, dedupe_remap = _dedupe_final_diffs(diffs)
+        dedupe_remap = {**visual_remap, **dedupe_remap}
         ctx.diffs = task.diffs
         _remap_ocr_quality_summary_after_final_dedupe(task, dedupe_remap)
         DiffQualityStage._remap_ocr_remediation_summary(ctx, dedupe_remap)
@@ -2729,6 +2875,108 @@ class SummaryStage:
         )
         _emit_progress(ctx, 93, self.name, "diff_debug_artifact_done")
         _refresh_stats(task)
+        from app.services.diff_events import build_snapshot
+        task.event_snapshot = build_snapshot(
+            task,
+            clauses={side: [c.model_dump() for c in getattr(ctx, f"{side}_clauses")] for side in ("original", "compare")},
+            matches=[{"original_clause_id": p.original.clause_id if p.original else None,
+                      "compare_clause_id": p.compare.clause_id if p.compare else None} for p in ctx.pairs],
+            page_alignment=ctx.page_alignment.to_debug_payload()["entries"] if ctx.page_alignment else [],
+            merge=task.external_compare_options.get("merge_diff", True),
+        )
+
+
+def _reconcile_visual_signing_date_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str, str]]:
+    visual_dates = [
+        diff
+        for diff in diffs
+        if diff.diff_type == "ADD"
+        and diff.diff_id.startswith("WHOLE-PAGE-")
+        and (diff.match_score_details or {}).get("object_type") == SigningVisualObjectType.HANDWRITTEN_DATE.value
+    ]
+    if not visual_dates:
+        return diffs, {}
+
+    date_pattern = re.compile(r"(\d{4})\s*(?:年|[-/.])\s*(\d{1,2})\s*(?:月|[-/.])\s*(\d{1,2})\s*日?")
+
+    def dates(diff: DiffItem) -> set[tuple[int, int, int]]:
+        return {
+            (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            for match in date_pattern.finditer(f"{diff.compare_text}\n{diff.compare_snippet}")
+        }
+
+    visual_by_date: dict[tuple[int, int, int], list[DiffItem]] = {}
+    for diff in visual_dates:
+        for value in dates(diff):
+            visual_by_date.setdefault(value, []).append(diff)
+
+    remove_ids: set[str] = set()
+    remap: dict[str, str] = {}
+    for diff in diffs:
+        if diff in visual_dates or diff.diff_type not in {"ADD", "MODIFY"} or not re.search(r"签[订署字].*(?:日期|时间)", diff.title):
+            continue
+        candidates = {
+            candidate.diff_id: candidate
+            for value in dates(diff)
+            for candidate in visual_by_date.get(value, [])
+        }
+        # OCR may disagree on the handwritten digits (e.g. 2 versus 21).
+        # A localized field change inside the recalled date is the same observation.
+        for visual in visual_dates:
+            if diff.compare_evidence and any(
+                e.page_no == v.page_no
+                and v.bbox.x0 - 3 <= e.bbox.x0 <= e.bbox.x1 <= v.bbox.x1 + 3
+                and v.bbox.y0 - 3 <= e.bbox.y0 <= e.bbox.y1 <= v.bbox.y1 + 3
+                for e in diff.compare_evidence for v in visual.compare_evidence
+            ):
+                candidates[visual.diff_id] = visual
+        if not candidates:
+            continue
+        diff_pages = {item.page_no for item in diff.compare_evidence if item.page_no > 0}
+        if diff_pages:
+            candidates = {
+                diff_id: candidate
+                for diff_id, candidate in candidates.items()
+                if diff_pages & {item.page_no for item in candidate.compare_evidence if item.page_no > 0}
+            }
+        if len(candidates) != 1:
+            continue
+        visual = next(iter(candidates.values()))
+        # The text recognizer supplies the value; the visual detector supplies
+        # its location. Keep both when collapsing the two observations.
+        shared_dates = dates(diff) & dates(visual)
+        if len(shared_dates) == 1 and visual.compare_evidence and not diff.compare_evidence:
+            year, month, day = next(iter(shared_dates))
+            value = f"{year}年{month}月{day}日"
+            diff.compare_evidence = [e.model_copy(update={"text": value, "highlight_type": "ADD"})
+                                     for e in visual.compare_evidence]
+            diff.compare_text = diff.compare_snippet = value
+            diff.original_text = diff.original_snippet = ""
+            diff.original_evidence = []
+            diff.original_change_ranges = []
+            diff.compare_change_ranges = [TextRange(start=0, end=len(value), highlight_type="ADD")]
+            diff.clause_no = ""
+            diff.original_clause_id = diff.compare_clause_id = None
+            diff.section_path = ["签署页"]
+        remove_ids.add(visual.diff_id)
+        remap[visual.diff_id] = diff.diff_id
+        visual_details = dict(visual.match_score_details)
+        if not shared_dates:
+            visual_details["visual_date_ocr_conflict"] = visual.compare_text
+        visual_details["change_decision"] = (diff.match_score_details or {}).get("change_decision") or "NEEDS_REVIEW"
+        visual_details["decision_reason"] = "VISUAL_DATE_TEXT_DIFF_RECONCILED"
+        diff.match_score_details = {**visual_details, **diff.match_score_details}
+        diff.merged_sources = sorted({*diff.merged_sources, visual.source_type})
+        diff.review_flags = list(
+            dict.fromkeys(
+                [
+                    *diff.review_flags,
+                    *(flag for flag in visual.review_flags if flag != "VISUAL_OBJECT_EXISTENCE_CONFIRMED"),
+                    "VISUAL_DATE_TEXT_DIFF_RECONCILED",
+                ]
+            )
+        )
+    return [diff for diff in diffs if diff.diff_id not in remove_ids], remap
 
 
 def _clauses_for_evidence(
@@ -2744,28 +2992,6 @@ def _clauses_for_evidence(
 
 def _refresh_stats(task: CompareTask) -> None:
     task.diff_count = len(task.diffs)
-
-
-def _filter_compare_option_diffs(task: CompareTask, diffs: list[DiffItem]) -> list[DiffItem]:
-    excluded_source_types: set[str] = set()
-    if task.compare_options.ignore_stamps:
-        excluded_source_types.add("seal")
-    if task.compare_options.signing_region_mode == "off":
-        excluded_source_types.add("signing_region")
-    if task.compare_options.ignore_headers_footers:
-        excluded_source_types.add("header_footer")
-    if not excluded_source_types:
-        return diffs
-    return [
-        diff
-        for diff in diffs
-        if diff.source_type not in excluded_source_types
-        and not (
-            task.compare_options.ignore_stamps
-            and diff.source_type == "signing_region"
-            and diff.section_type == "signature:seal"
-        )
-    ]
 
 
 def _dedupe_final_diffs(diffs: list[DiffItem]) -> tuple[list[DiffItem], dict[str, str]]:
@@ -2916,7 +3142,7 @@ def _different_id_diffs_are_spatial_duplicates(left: DiffItem, right: DiffItem) 
 
 
 def _same_page_visual_seal_summary(left: DiffItem, right: DiffItem) -> bool:
-    """Aggregate page-level seal subregions while retaining every evidence bbox."""
+    """Merge observations of one seal, never distinct seals sharing a page."""
     if left.source_type != "seal" or right.source_type != "seal" or left.diff_type != right.diff_type:
         return False
     if left.title != right.title:
@@ -2930,9 +3156,7 @@ def _same_page_visual_seal_summary(left: DiffItem, right: DiffItem) -> bool:
         if left_pages or right_pages:
             if len(left_pages) != 1 or left_pages != right_pages:
                 return False
-    return bool(left.original_evidence or left.compare_evidence) and bool(
-        right.original_evidence or right.compare_evidence
-    )
+    return _matching_located_evidence(left, right)
 
 
 def _same_clause_or_stable_path(left: DiffItem, right: DiffItem) -> bool:

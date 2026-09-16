@@ -17,6 +17,11 @@ def parse_labeled_line(line: str) -> tuple[str, str] | None:
             return key, match.group("value").strip()
 
     compact = re.sub(r"\s+", "", line)
+    # OCR may omit the separator on a standalone company field. Require a
+    # complete company value so contractual prose cannot become metadata.
+    company = re.fullmatch(r"(买方|卖方|甲方|乙方)([^:：。；;\n]{2,80}(?:有限公司|股份公司|设计院|研究院))", compact)
+    if company and not re.search(r"应当|应向|不得|须向|负责|同意", company[2]):
+        return LABEL_TO_KEY[company[1]], company[2]
     compact_label = compact.rstrip(":：")
     key = _label_key(compact_label)
     if key and compact in {compact.rstrip(":："), f"{compact.rstrip(':：')}:", f"{compact.rstrip(':：')}："}:
@@ -63,6 +68,7 @@ def is_title_candidate(normalizer: TextNormalizer, block: TextBlock) -> bool:
         "seal_region",
         "attachment_header",
         "edge_noise",
+        "watermark",
     }:
         return False
     return any(is_title_line(line) for line in lines(text))
@@ -86,6 +92,8 @@ def is_noise_line(line: str) -> bool:
 
 def skip_extra_block(block: TextBlock) -> bool:
     block_type = (block.block_type or "").lower()
+    if block_type == "watermark":
+        return True
     if block_type in {"header", "page_header"} and _is_unmatched_cover_extra(block):
         return False
     return block_type in {

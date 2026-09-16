@@ -57,6 +57,7 @@ class CompareTaskApplication:
         compare_file: UploadFile,
         compare_options: CompareOptions | None,
         owner: CurrentUser,
+        external_compare_options: dict | None = None,
     ) -> CompareTask:
         original_filename = safe_filename(original_file.filename or "")
         compare_filename = safe_filename(compare_file.filename or "")
@@ -72,6 +73,10 @@ class CompareTaskApplication:
         )
         staged_original = self.artifact_store.staging_path(task_id, attempt_id, "original", original_filename)
         staged_compare = self.artifact_store.staging_path(task_id, attempt_id, "compare", compare_filename)
+        if external_compare_options:
+            self.repository.update_compare_task(
+                task_id, lambda persisted: setattr(persisted, "external_compare_options", external_compare_options)
+            )
         try:
             await stream_upload_to_path(original_file, staged_original)
             await stream_upload_to_path(compare_file, staged_compare)

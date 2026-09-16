@@ -185,6 +185,7 @@ class StructuralRepairMixin:
                     source_col=template.source_col,
                     colspan=template.colspan,
                     rowspan=template.rowspan,
+                    observation_reason=template.observation_reason,
                 ))
 
             result.append(_LogicalRow(
@@ -249,6 +250,7 @@ class StructuralRepairMixin:
                     source_col=cell.source_col,
                     colspan=cell.colspan,
                     rowspan=cell.rowspan,
+                    observation_reason=cell.observation_reason,
                 )
                 for cell in row.cells
             ]
@@ -435,6 +437,22 @@ class StructuralRepairMixin:
                 row, next_row, current_seq, col_count,
             )
             if split_rows is not None:
+                # A repair may redistribute cells, but cannot discard source
+                # characters (notably a complete product or its price).
+                from collections import Counter
+                before_tokens = Counter(c for r in (row, next_row) for cell in r.cells
+                                        for c in utils.normalize(cell.text) if not c.isspace())
+                after_tokens = Counter(c for r in split_rows for cell in r.cells
+                                       for c in utils.normalize(cell.text) if not c.isspace())
+                if before_tokens - after_tokens:
+                    self._record_repair_decision(
+                        "phantom_row_split_rejected", before=[row, next_row], after=[row, next_row],
+                        reason="repair would discard source content", confidence=0.0,
+                        signals={"missing_characters": dict(before_tokens - after_tokens)},
+                    )
+                    repaired.append(row)
+                    index += 1
+                    continue
                 repaired.extend(split_rows)
                 self._record_repair_decision(
                     "phantom_row_split",
@@ -1010,6 +1028,7 @@ class StructuralRepairMixin:
             source_col=source.source_col,
             colspan=1,
             rowspan=1,
+            observation_reason=source.observation_reason,
         )
 
     def _section_title_from_cells(self, cells: list[_LogicalCell], col_count: int) -> str:

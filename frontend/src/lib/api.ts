@@ -1,14 +1,9 @@
 import type {
-  AuditItemReviewResponse,
   CompareRecordListResponse,
   CompareRecordQuery,
-  CompareContractOptions,
   CompareResponse,
   CompareQualitySummary,
   CompareTask,
-  DiffReviewPayload,
-  DiffReviewResponse,
-  DiffItem,
   TaskExecutionResponse,
 } from "../types";
 import {
@@ -57,21 +52,10 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
 export async function compareContracts(
   originalFile: File,
   compareFile: File,
-  options?: CompareContractOptions,
 ): Promise<CompareResponse> {
   const formData = new FormData();
   formData.append("original_file", originalFile);
   formData.append("compare_file", compareFile);
-  if (options?.ignoreStamps) {
-    formData.append("ignore_stamps", "true");
-  }
-  if (options?.ignoreHeadersFooters) {
-    formData.append("ignore_headers_footers", "true");
-  }
-  if (options?.signingRegionMode) {
-    formData.append("signing_region_mode", options.signingRegionMode);
-  }
-
   const response = await authorizedFetch(toApiUrl("/api/compare"), {
     method: "POST",
     body: formData,
@@ -100,37 +84,6 @@ export async function getCompareRecords(query: CompareRecordQuery = {}, signal?:
   return parseJsonResponse<CompareRecordListResponse>(response);
 }
 
-export async function getDiffs(taskId: string, signal?: AbortSignal): Promise<DiffItem[]> {
-  const response = await readAuthorizedFetch(`/api/compare/${taskId}/diffs`, signal);
-  const payload = await parseJsonResponse<{ diffs: DiffItem[] }>(response);
-  return payload.diffs;
-}
-
-export async function updateDiffReview(taskId: string, diffId: string, payload: DiffReviewPayload): Promise<DiffReviewResponse> {
-  const response = await authorizedFetch(toApiUrl(`/api/compare/${taskId}/diffs/${diffId}/review`), {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return parseJsonResponse<DiffReviewResponse>(response);
-}
-
-export async function updateAuditItemReview(
-  taskId: string,
-  auditItemId: string,
-  payload: DiffReviewPayload,
-): Promise<AuditItemReviewResponse> {
-  const response = await authorizedFetch(
-    toApiUrl(`/api/compare/${taskId}/audit-items/${encodeURIComponent(auditItemId)}/review`),
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
-  );
-  return parseJsonResponse<AuditItemReviewResponse>(response);
-}
-
 export async function getCompareQuality(taskId: string, signal?: AbortSignal): Promise<CompareQualitySummary> {
   const response = await readAuthorizedFetch(`/api/compare/${taskId}/quality`, signal);
   return parseJsonResponse<CompareQualitySummary>(response);
@@ -142,4 +95,22 @@ function readAuthorizedFetch(path: string, signal?: AbortSignal): Promise<Respon
     signal ? { signal } : undefined,
     { timeoutMs: READ_REQUEST_TIMEOUT_MS },
   );
+}
+
+export async function getEvents(taskId: string, signal?: AbortSignal): Promise<import('../types').DiffEventResponse> {
+  return parseJsonResponse(await readAuthorizedFetch(`/api/compare/${taskId}/events`, signal));
+}
+export async function updateEventReview(taskId: string, eventId: string, revision: number, reviewStatus: import('../types').ReviewStatus): Promise<import('../types').DiffEventResponse> {
+  return parseJsonResponse(await authorizedFetch(toApiUrl(`/api/compare/${taskId}/events/${eventId}/review`), {
+    method: 'PUT', body: JSON.stringify({ revision, review_status: reviewStatus }), headers: { 'Content-Type': 'application/json' },
+  }));
+}
+
+export async function getPreviewMetadata(taskId: string, signal?: AbortSignal): Promise<import('./pdfPreviewTypes').PreviewMetadata> {
+  const data = await parseJsonResponse<import('./pdfPreviewTypes').PreviewMetadata>(await readAuthorizedFetch(`/api/compare/${encodeURIComponent(taskId)}/preview-metadata`, signal));
+  if (data.schema_version !== 1 || data.coordinate_space !== 'display_pdf_points' || !['original', 'compare'].every(side => {
+    const doc = data.documents?.[side as 'original' | 'compare'];
+    return doc && typeof doc.source_revision === 'string' && doc.source_revision.length > 0 && Number.isInteger(doc.page_count) && doc.page_count > 0 && Array.isArray(doc.pages) && doc.pages.length === doc.page_count && doc.pages.every((page, i) => page.page_no === i + 1 && Number.isFinite(page.width_points) && page.width_points > 0 && Number.isFinite(page.height_points) && page.height_points > 0 && [0, 90, 180, 270].includes(page.rotation));
+  })) throw new Error('PDF 页面尺寸数据无效');
+  return data;
 }

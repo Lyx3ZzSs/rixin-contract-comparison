@@ -123,6 +123,19 @@ class DocumentUnderstandingService:
             ],
         }
 
+    @classmethod
+    def is_quote_title_text(cls, text: str) -> bool:
+        """A pricing-sheet mention inside prose does not establish a section."""
+        compact = re.sub(r"\s+", "", text or "")
+        if not compact or len(compact) > 80:
+            return False
+        if re.search(r"[。；;,，]|应当|应提供|应提交|须提供|须提交|需要|需提供|需提交|本合同|同等|为准|作为|详见|包括", compact):
+            return False
+        return bool(re.search(
+            cls.quote_pattern.pattern + r"(?:格式|模板|样表)?(?:[（(][^（）()]{0,20}[）)])?$",
+            compact,
+        ))
+
     def _apply_rule_page(self, page: Page, page_ir: dict[str, Any], result: DocumentUnderstandingResult) -> None:
         blocks = page.blocks
         compact_texts = [self._compact(block.text) for block in blocks if self._compact(block.text)]
@@ -141,7 +154,7 @@ class DocumentUnderstandingService:
             role = "cover"
             confidence = 0.86
             reasons = ["first_page_cover_metadata"]
-        elif self.quote_pattern.search(full_text[:500]):
+        elif any(self.is_quote_title_text(text) for text in compact_texts[:8]):
             role = "quote"
             confidence = 0.88
             reasons = ["quote_title_terms"]

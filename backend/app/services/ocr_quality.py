@@ -164,7 +164,7 @@ class OcrQualityProfiler:
                 for profile in matched_profiles:
                     flags, needs_review = self._diff_flags_for_profile(diff, profile)
                     self._add_review_flags(diff, flags)
-                    if needs_review:
+                    if needs_review and "VISUAL_OBJECT_EXISTENCE_CONFIRMED" not in diff.review_flags:
                         diff.quality_status = "NEEDS_REVIEW"
                     self._add_affected_diff_id(profile, diff.diff_id)
                 continue

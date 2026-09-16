@@ -633,9 +633,9 @@ class TestPreClauseDiffStage:
         assert any(block.block_type == "header" for block in ctx.original_extraction.document.pages[0].blocks)
         assert any(block.block_type == "header" for block in ctx.compare_extraction.document.pages[0].blocks)
 
-    def test_filters_header_footer_diffs_when_option_enabled(self, tmp_path: Path) -> None:
+    def test_keeps_header_footer_diffs_with_retired_history_option(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        ctx.task.compare_options = CompareOptions(ignore_headers_footers=True)
+        ctx.task.compare_options = CompareOptions.model_validate({"ignore_headers_footers": True})
         original = make_document("正文条款一致。")
         compare = make_document("正文条款一致。")
         original.pages[0].blocks.insert(
@@ -663,7 +663,8 @@ class TestPreClauseDiffStage:
 
         PreClauseDiffStage().execute(ctx)
 
-        assert ctx.header_footer_diffs == []
+        assert len(ctx.header_footer_diffs) == 1
+        assert ctx.header_footer_diffs[0].source_type == "header_footer"
 
     def test_keeps_stamp_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
@@ -697,9 +698,9 @@ class TestPreClauseDiffStage:
         assert any(block.block_type == "seal" for block in ctx.original_extraction.document.pages[0].blocks)
         assert any(block.block_type == "seal" for block in ctx.compare_extraction.document.pages[0].blocks)
 
-    def test_filters_stamp_diffs_when_option_enabled(self, tmp_path: Path) -> None:
+    def test_keeps_stamp_diffs_with_retired_history_option(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        ctx.task.compare_options = CompareOptions(ignore_stamps=True)
+        ctx.task.compare_options = CompareOptions.model_validate({"ignore_stamps": True})
         original = make_document("正文条款一致。")
         compare = make_document("正文条款一致。")
         original.pages[0].blocks.append(
@@ -725,7 +726,8 @@ class TestPreClauseDiffStage:
 
         PreClauseDiffStage().execute(ctx)
 
-        assert ctx.seal_diffs == []
+        assert len(ctx.seal_diffs) == 1
+        assert ctx.seal_diffs[0].source_type == "seal"
 
     def test_writes_table_repair_debug_artifact(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
@@ -825,9 +827,9 @@ class TestSummaryStage:
         assert ctx.task.diff_count == 1
         assert "diff_decisions" in ctx.task.debug_artifact_paths
 
-    def test_filters_header_footer_diffs_when_option_enabled(self, tmp_path: Path) -> None:
+    def test_keeps_header_footer_diffs_with_retired_history_option(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        ctx.task.compare_options = CompareOptions(ignore_headers_footers=True)
+        ctx.task.compare_options = CompareOptions.model_validate({"ignore_headers_footers": True})
         header_diff = DiffItem(
             diff_id="D001",
             diff_type="MODIFY",
@@ -848,12 +850,12 @@ class TestSummaryStage:
 
         SummaryStage().execute(ctx)
 
-        assert [diff.diff_id for diff in ctx.task.diffs] == ["D002"]
-        assert ctx.task.diff_count == 1
+        assert [diff.diff_id for diff in ctx.task.diffs] == ["D001", "D002"]
+        assert ctx.task.diff_count == 2
 
-    def test_ignore_stamps_only_hides_seal_diffs_in_summary(self, tmp_path: Path) -> None:
+    def test_keeps_seals_and_signing_fields_with_retired_history_option(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
-        ctx.task.compare_options = CompareOptions(ignore_stamps=True)
+        ctx.task.compare_options = CompareOptions.model_validate({"ignore_stamps": True})
         signing_region_diff = DiffItem(
             diff_id="D001",
             diff_type="MODIFY",
@@ -880,8 +882,10 @@ class TestSummaryStage:
 
         SummaryStage().execute(ctx)
 
-        assert {diff.diff_id for diff in ctx.task.diffs} == {signing_field_diff.diff_id, clause_diff.diff_id}
-        assert ctx.task.diff_count == 2
+        assert {diff.diff_id for diff in ctx.task.diffs} == {
+            signing_region_diff.diff_id, seal_diff.diff_id, signing_field_diff.diff_id, clause_diff.diff_id
+        }
+        assert ctx.task.diff_count == 4
 
     def test_same_id_final_dedupe_merges_evidence_flags_sources_and_review_projection(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
@@ -993,7 +997,7 @@ class TestSummaryStage:
 
         assert [diff.diff_id for diff in ctx.task.diffs] == ["D010", "D020"]
 
-    def test_final_dedupe_aggregates_seal_subregions_on_same_page(self, tmp_path: Path) -> None:
+    def test_final_dedupe_preserves_distinct_seals_on_same_page(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)
         first = DiffItem(
             diff_id="D010",
@@ -1019,10 +1023,8 @@ class TestSummaryStage:
 
         SummaryStage().execute(ctx)
 
-        assert [diff.diff_id for diff in ctx.task.diffs] == ["D010"]
-        assert len(ctx.task.diffs[0].compare_evidence) == 2
-        assert ctx.task.diffs[0].quality_status == "NEEDS_REVIEW"
-        assert "FINAL_DEDUPE_FIELD_CONFLICT" in ctx.task.diffs[0].review_flags
+        assert {diff.diff_id for diff in ctx.task.diffs} == {"D010", "D011"}
+        assert all(len(diff.compare_evidence) == 1 for diff in ctx.task.diffs)
 
     def test_different_id_final_dedupe_never_text_merges_unlocated_diffs(self, tmp_path: Path) -> None:
         ctx = make_ctx(tmp_path)

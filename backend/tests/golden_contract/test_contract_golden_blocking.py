@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,6 +30,7 @@ def test_contract_golden_blocking(tmp_path: Path) -> None:
     negative_passed = 0
     review_passed = 0
     warnings: list[str] = []
+    reports = []
 
     print(
         "GOLDEN ORACLE: "
@@ -48,20 +51,29 @@ def test_contract_golden_blocking(tmp_path: Path) -> None:
         )
         actual = [item.model_dump(mode="json") for item in task.diffs]
         report = matcher.match(contract.contract_key, contract.oracle["assertions"], actual)
-        report.assert_passed()
+        reports.append(report)
+        saved_report = asdict(report)
+        saved_report["consumed_actual"] = sorted(report.consumed_actual)
+        (tmp_path / f"{contract.contract_key}-report.json").write_text(
+            json.dumps(saved_report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         executed.append(contract.contract_key)
         positive_passed += report.matched_positive
         negative_passed += report.matched_negative
         review_passed += report.matched_review
         warnings.extend(report.warnings)
         print(
-            f"GOLDEN CONTRACT PASS: {contract.contract_key} "
+            f"GOLDEN CONTRACT {'FAIL' if report.failures else 'PASS'}: {contract.contract_key} "
             f"actual={len(actual)} positive={report.matched_positive} "
-            f"negative={report.matched_negative} review={report.matched_review}"
+            f"negative={report.matched_negative} review={report.matched_review} failures={len(report.failures)}"
         )
 
     expected_keys = [item["contract_key"] for item in load_manifest()["contracts"]]
     validate_execution(expected_keys, [item.contract_key for item in corpus], executed)
+    print(f"GOLDEN EXECUTION: expected={len(expected_keys)} loaded={len(corpus)} executed={len(executed)} skipped=0")
+    print(f"GOLDEN REPORTS: {tmp_path}")
+    failures = [failure for report in reports for failure in report.failures]
+    assert not failures, "\n\n".join(failure.render() for failure in failures)
     assert positive_passed == stats["must_exist"] + stats["must_review"]
     assert negative_passed == stats["must_not_exist"] + stats["must_not_confirm"]
     assert review_passed == stats["must_review"]
@@ -69,7 +81,7 @@ def test_contract_golden_blocking(tmp_path: Path) -> None:
         print(f"GOLDEN WARNING: {warning}")
     print(
         "GOLDEN REGRESSION: PASS\n"
-        "10 expected\n10 loaded\n10 executed\n0 skipped\n"
+        f"{len(expected_keys)} expected\n{len(corpus)} loaded\n{len(executed)} executed\n0 skipped\n"
         f"positive: {positive_passed}/{positive_passed} PASS\n"
         f"negative: {negative_passed}/{negative_passed} PASS\n"
         f"review: {review_passed}/{review_passed} PASS\n"

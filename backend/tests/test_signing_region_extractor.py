@@ -1696,3 +1696,83 @@ def test_extractor_does_not_parse_seal_html_as_signing_field() -> None:
     region = SigningRegionExtractor().extract_from_blocks([signing_block], _document([seal]))[0]
 
     assert not any(element.element_type == SigningElementType.FIELD for element in region.elements)
+
+
+def test_wrapped_address_excludes_floating_seal_text_but_keeps_house_number() -> None:
+    source = _block("address", "地址：江苏省南京市栖霞区八卦洲街", _bbox(60, 160, 275, 180))
+    serial = _block("serial", "26310", _bbox(187, 181, 212, 195))
+    company = _block("company", "有限公司", _bbox(138, 181, 198, 202))
+    continuation = _block("wrapped", "道鹏岛路254号悦福大厦12-0044", _bbox(60, 192, 275, 216))
+    selected = SigningRegionExtractor._field_continuation_blocks(
+        source, source.bbox, 300, [source, serial, company, continuation]
+    )
+    assert [item.block_id for item in selected] == ["wrapped"]
+
+
+def test_three_business_roles_follow_local_headings_even_when_reordered() -> None:
+    blocks = [
+        _block("design", "设计方：设计有限公司", _bbox(80, 120, 260, 145), block_type="seal"),
+        _block("design-phone", "电话：111", _bbox(80, 160, 200, 180)),
+        _block("buyer", "买方：青岛特锐德电气股份有限公司", _bbox(80, 280, 320, 305), block_type="seal"),
+        _block("buyer-phone", "电话：222", _bbox(80, 340, 200, 360)),
+        _block("seller", "卖方：国能日新科技股份有限公司", _bbox(80, 420, 320, 445)),
+        _block("seller-phone", "电话：333", _bbox(80, 480, 200, 500)),
+    ]
+    signing = SigningBlock(block_id="three", page_no=1, bbox=_bbox(60,100,550,600), confidence=.9,
+                           source_block_ids=[item.block_id for item in blocks])
+    region = SigningRegionExtractor().extract_from_blocks([signing], _document(blocks))[0]
+    parties = [e for e in region.elements if e.element_type == SigningElementType.PARTY_FIELD]
+    assert {e.raw_ref["party_role"] for e in parties} == {"买方", "卖方", "设计方"}
+    phones = [e for e in region.elements if e.raw_ref.get("field_key") == "phone"]
+    assert {e.raw_ref["party_role"]: e.text for e in phones} == {"设计方": "111", "买方": "222", "卖方": "333"}
+
+
+def test_weak_ocr_fragment_near_signature_does_not_establish_handwriting() -> None:
+    fragment = _block("fragment", "员房品员总房", _bbox(112,234,177,291))
+    fragment.confidence = .576
+    signing = SigningBlock(block_id="mixed", page_no=1, bbox=_bbox(60,180,300,340), confidence=.9,
+                           source_block_ids=[fragment.block_id])
+    field = SigningElement(element_id="label", element_type=SigningElementType.FIELD, page_no=1,
+                           bbox=_bbox(61,224,209,243), text="", confidence=.99,
+                           raw_ref={"field_key":"legal_representative","party_role":"甲方"})
+    assert SigningRegionExtractor()._signature_elements(signing, {fragment.block_id:fragment}, [field]) == []
+    fragment.text = "张三"
+    fragment.confidence = .99
+    assert len(SigningRegionExtractor()._signature_elements(signing, {fragment.block_id:fragment}, [field])) == 1
+
+
+def test_hanging_left_address_continuation_keeps_final_house_number() -> None:
+    source = _block("address", "地址：山西省太原市小店区平阳路65号平阳景苑B区第5幢720", _bbox(126.5,169,497.5,183.5))
+    number = _block("number", "号", _bbox(97.5,194,116,212.5))
+    selected = SigningRegionExtractor._field_continuation_blocks(source,source.bbox,300,[source,number],use_columns=False)
+    assert [item.text for item in selected] == ["号"]
+
+
+def test_empty_party_headings_do_not_put_left_signature_in_right_column() -> None:
+    blocks = [_block("a","甲方：",_bbox(70,300,105,317)),
+              _block("b","乙方：",_bbox(329,300,364,317)),
+              _block("left-label","或授权代表（签字或盖章）：",_bbox(69,390,217,403)),
+              _block("right-label","或授权代表（签字或盖章）：",_bbox(329,390,477,403)),
+              _block("name","林杨",_bbox(226,376,276,404)),
+              _block("stamp","合同专用章",_bbox(129,316,195,346),block_type="seal")]
+    signing = SigningBlock(block_id="middle",page_no=1,bbox=_bbox(49,290,495,469),confidence=.9,
+                           confidence_reasons=["two_column_layout"],source_block_ids=[b.block_id for b in blocks])
+    region = SigningRegionExtractor().extract_from_blocks([signing],_document(blocks))[0]
+    signatures = [e for e in region.elements if e.element_type == SigningElementType.SIGNATURE]
+    assert [(e.text,e.raw_ref["party_role"]) for e in signatures] == [("林杨","甲方")]
+    assert all(e.raw_ref["column_midpoint"] > 276 for e in region.elements if e.element_type == SigningElementType.FIELD)
+
+
+def test_left_handwritten_date_and_right_blank_label_in_one_ocr_line_are_split() -> None:
+    text = "2026.6.11日期："
+    mixed = _block("mixed",text,_bbox(240,190,350,210))
+    mixed.char_boxes = [CharBox(char=char,page_no=1,text_index=i,bbox=_bbox(240+i*10,190,250+i*10,210))
+                        for i,char in enumerate(text)]
+    blocks = [_block("a","甲方",_bbox(90,130,125,146)),
+              _block("b","乙方：(盖章)",_bbox(335,130,412,146)), mixed]
+    signing = SigningBlock(block_id="mixed-date",page_no=1,bbox=_bbox(74,123,434,215),confidence=.9,
+                           confidence_reasons=["two_column_layout"],source_block_ids=[b.block_id for b in blocks])
+    region = SigningRegionExtractor().extract_from_blocks([signing],_document(blocks))[0]
+    dates = [e for e in region.elements if e.raw_ref.get("field_key") == "date"]
+    assert {(e.raw_ref["party_role"],e.text) for e in dates} == {("甲方","2026.6.11"),("乙方","")}
+    assert next(e for e in dates if e.text).bbox.x1 <= next(e for e in dates if not e.text).bbox.x0

@@ -1,0 +1,892 @@
+{
+  "source_sha256": "e57786d14bb44a6c02d57eca88084562d1552ee233157c8ccf22628e3c265322",
+  "provider_counts": {
+    "change": 7,
+    "delete": 3,
+    "insert": 13,
+    "total": 24
+  },
+  "diff_result": [
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 0,
+            "sub_info": null
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 0,
+            "sub_info": null
+          }
+        ]
+      ],
+      "status": "INSERT",
+      "type": "text"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 0
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 0
+          }
+        ]
+      ],
+      "status": "CHANGE",
+      "type": "stamp"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 0,
+            "sub_info": null
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 1,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 1,
+            "sub_info": null
+          }
+        ]
+      ],
+      "status": "INSERT",
+      "type": "text"
+    },
+    {
+      "cell_cnt": 1,
+      "diff": [
+        {
+          "diff": [
+            [
+              {
+                "doc_index": 1,
+                "page_index": 0,
+                "sub_info": null
+              }
+            ],
+            [
+              {
+                "doc_index": 2,
+                "page_index": 1,
+                "sub_info": null
+              }
+            ]
+          ],
+          "status": "INSERT",
+          "type": "text"
+        }
+      ],
+      "status": "INSERT",
+      "type": "table"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 6,
+            "sub_info": null
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 6,
+            "sub_info": null
+          }
+        ]
+      ],
+      "status": "INSERT",
+      "type": "text"
+    },
+    {
+      "cell_cnt": 1,
+      "diff": [
+        {
+          "diff": [
+            [
+              {
+                "doc_index": 1,
+                "page_index": 6,
+                "sub_info": null
+              }
+            ],
+            [
+              {
+                "doc_index": 2,
+                "page_index": 6,
+                "sub_info": null
+              }
+            ]
+          ],
+          "status": "INSERT",
+          "type": "text"
+        }
+      ],
+      "status": "INSERT",
+      "type": "table"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 7
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 7
+          }
+        ]
+      ],
+      "status": "CHANGE",
+      "type": "stamp"
+    },
+    {
+      "cell_cnt": 2,
+      "diff": [
+        {
+          "diff": [
+            [
+              {
+                "doc_index": 1,
+                "page_index": 7,
+                "sub_info": [
+                  {}
+                ]
+              }
+            ],
+            [
+              {
+                "doc_index": 2,
+                "page_index": 7,
+                "sub_info": [
+                  {}
+                ]
+              }
+            ]
+          ],
+          "status": "INSERT",
+          "type": "text"
+        }
+      ],
+      "status": "INSERT",
+      "type": "cell"
+    },
+    {
+      "cell_cnt": 2,
+      "diff": [
+        {
+          "diff": [
+            [
+              {
+                "doc_index": 1,
+                "page_index": 7,
+                "sub_info": [
+                  {}
+                ]
+              }
+            ],
+            [
+              {
+                "doc_index": 2,
+                "page_index": 7,
+                "sub_info": [
+                  {}
+                ]
+              }
+            ]
+          ],
+          "status": "DELETE",
+          "type": "text"
+        }
+      ],
+      "status": "DELETE",
+      "type": "cell"
+    },
+    {
+      "cell_cnt": 2,
+      "diff": [
+        {
+          "diff": [
+            [
+              {
+                "doc_index": 1,
+                "page_index": 7,
+                "sub_info": [
+                  {},
+                  {}
+                ]
+              }
+            ],
+            [
+              {
+                "doc_index": 2,
+                "page_index": 7,
+                "sub_info": [
+                  {},
+                  {}
+                ]
+              }
+            ]
+          ],
+          "status": "CHANGE",
+          "type": "text"
+        }
+      ],
+      "status": "CHANGE",
+      "type": "cell"
+    },
+    {
+      "cell_cnt": 1,
+      "diff": [
+        {
+          "diff": [
+            [
+              {
+                "doc_index": 1,
+                "page_index": 7,
+                "sub_info": null
+              }
+            ],
+            [
+              {
+                "doc_index": 2,
+                "page_index": 7,
+                "sub_info": null
+              }
+            ]
+          ],
+          "status": "INSERT",
+          "type": "text"
+        }
+      ],
+      "status": "INSERT",
+      "type": "table"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 10
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 10
+          }
+        ]
+      ],
+      "status": "CHANGE",
+      "type": "stamp"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 10,
+            "sub_info": null
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 10,
+            "sub_info": null
+          }
+        ]
+      ],
+      "status": "DELETE",
+      "type": "text"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 10,
+            "sub_info": [
+              {}
+            ]
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 10,
+            "sub_info": [
+              {}
+            ]
+          }
+        ]
+      ],
+      "status": "CHANGE",
+      "type": "text"
+    },
+    {
+      "cell_cnt": 1,
+      "diff": [
+        {
+          "diff": [
+            [
+              {
+                "doc_index": 1,
+                "page_index": 10,
+                "sub_info": null
+              }
+            ],
+            [
+              {
+                "doc_index": 2,
+                "page_index": 10,
+                "sub_info": null
+              }
+            ]
+          ],
+          "status": "INSERT",
+          "type": "text"
+        }
+      ],
+      "status": "INSERT",
+      "type": "table"
+    },
+    {
+      "cell_cnt": 2,
+      "diff": [
+        {
+          "diff": [
+            [
+              {
+                "doc_index": 1,
+                "page_index": 14,
+                "sub_info": [
+                  {},
+                  {}
+                ]
+              }
+            ],
+            [
+              {
+                "doc_index": 2,
+                "page_index": 12,
+                "sub_info": [
+                  {},
+                  {}
+                ]
+              }
+            ]
+          ],
+          "status": "CHANGE",
+          "type": "text"
+        }
+      ],
+      "status": "CHANGE",
+      "type": "cell"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 14
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 12
+          }
+        ]
+      ],
+      "status": "MATCH",
+      "type": "stamp"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 14,
+            "sub_info": null
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 12,
+            "sub_info": [
+              {},
+              {}
+            ]
+          }
+        ]
+      ],
+      "status": "CHANGE",
+      "type": "text"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 16,
+            "sub_info": null
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 14,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 15,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 16,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          },
+          {
+            "doc_index": 2,
+            "page_index": 17,
+            "sub_info": null
+          }
+        ]
+      ],
+      "status": "INSERT",
+      "type": "text"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 16
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 14
+          }
+        ]
+      ],
+      "status": "INSERT",
+      "type": "stamp"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 16
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 14
+          }
+        ]
+      ],
+      "status": "INSERT",
+      "type": "stamp"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 19,
+            "sub_info": null
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 20,
+            "sub_info": null
+          }
+        ]
+      ],
+      "status": "INSERT",
+      "type": "text"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 19,
+            "sub_info": null
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 20,
+            "sub_info": []
+          }
+        ]
+      ],
+      "status": "INSERT",
+      "type": "text"
+    },
+    {
+      "diff": [
+        [
+          {
+            "doc_index": 1,
+            "page_index": 19,
+            "sub_info": null
+          }
+        ],
+        [
+          {
+            "doc_index": 2,
+            "page_index": 20,
+            "sub_info": null
+          }
+        ]
+      ],
+      "status": "DELETE",
+      "type": "text"
+    }
+  ]
+}

@@ -134,7 +134,9 @@ class SQLiteTaskRepository:
                     """
                 SELECT task_id, owner_sub, status, terminal_reason, revision, report_revision,
                        stage, progress_percent, created_at, updated_at,
-                       original_filename, compare_filename, diff_count
+                       original_filename, compare_filename, diff_count,
+                       json_extract(details_json, '$.event_summary.event_count') AS event_count,
+                       json_extract(details_json, '$.event_summary.event_version') AS event_version
                 FROM tasks
                 ORDER BY COALESCE(created_at, updated_at) DESC, task_id DESC
                 """
@@ -230,6 +232,10 @@ class SQLiteTaskRepository:
 
     def _serialize(self, task: CompareTask) -> dict[str, Any]:
         payload = to_jsonable(task)
+        from app.services.diff_events import source_fingerprint
+        snapshot = task.event_snapshot
+        payload["event_summary"] = ({"event_count": len(snapshot["events"]), "event_version": snapshot["version"]}
+                                    if snapshot and snapshot.get("source_fingerprint") == source_fingerprint(task) else None)
         values = {name: payload.pop(name) for name in _COLUMNS}
         for field in _RUNTIME_PATH_FIELDS:
             payload.pop(field, None)

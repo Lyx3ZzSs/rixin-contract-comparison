@@ -83,6 +83,10 @@ class SigningClauseDocumentBuilder:
                 return signing_block
 
         for signing_block in signing_blocks:
+            # Geometry may include interleaved prose or another column. Only
+            # positively owned blocks may disappear from content comparison.
+            if signing_block.source_block_ids:
+                continue
             if self._overlap_ratio(text_block.bbox, signing_block.bbox) >= self.overlap_threshold:
                 return signing_block
         return None

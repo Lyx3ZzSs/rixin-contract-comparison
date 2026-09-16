@@ -15,6 +15,9 @@ class TableMatcher:
     row_similarity_threshold: float = 0.55
     table_similarity_threshold: float = 0.3
 
+    def __init__(self) -> None:
+        self.page_alignment = None
+
     _split_merged_cell_text = staticmethod(utils.split_merged_cell_text)
     _cell_merge_similarity = staticmethod(utils.cell_merge_similarity)
 
@@ -74,7 +77,17 @@ class TableMatcher:
             )
             text_score = max(text_score, row_score)
         col_penalty = 1.0 if left.col_count == right.col_count else 0.7
-        return text_score * col_penalty
+        text_score *= col_penalty
+        alignment_score = self._page_alignment_score(left.page_no, right.page_no)
+        if alignment_score and text_score >= 0.12:
+            text_score = max(text_score, text_score * 0.72 + alignment_score * 0.28)
+        return min(1.0, text_score)
+
+    def _page_alignment_score(self, original_page: int, compare_page: int) -> float:
+        relationship_score = getattr(self.page_alignment, "relationship_score", None)
+        if not callable(relationship_score):
+            return 0.0
+        return float(relationship_score({original_page}, {compare_page}))
 
     def align_rows(self, original: StructuredTable, compare: StructuredTable) -> list[tuple[int | None, int | None]]:
         n = len(original.rows)
@@ -241,6 +254,15 @@ class TableMatcher:
     def is_similar_ocr_noise(self, orig_norm: str, comp_norm: str, cell_similarity_threshold: float = 0.85) -> bool:
         if not orig_norm or not comp_norm:
             return False
+        # Similarity cannot establish numeric equivalence (including a sign,
+        # rate, account digit, or a number embedded in a long service clause).
+        def numeric_tokens(text):
+            # Preserve the existing letter-confusion handling inside words;
+            # this must not erase digits in a model's numeric suffix.
+            text = re.sub(r"(?<=[a-zA-Z])[1Il|](?=[a-zA-Z-])", "l", text)
+            return re.findall(r"[+-]?\d+(?:\.\d+)?", text)
+        if numeric_tokens(orig_norm) != numeric_tokens(comp_norm):
+            return False
         if self._has_contextual_box_or_kou_noise(orig_norm, comp_norm):
             return True
         if SequenceMatcher(None, orig_norm, comp_norm).ratio() < cell_similarity_threshold:
@@ -249,8 +271,8 @@ class TableMatcher:
         comp_fold = utils.punctuation_fold(comp_norm)
         if orig_fold == comp_fold:
             return True
-        if min(len(orig_fold), len(comp_fold)) >= 15 and SequenceMatcher(None, orig_fold, comp_fold).ratio() >= 0.96:
-            return True
+        # A highly similar sentence may differ by a decisive negation. Only
+        # the explicit OCR confusions below can support an OCR-noise decision.
 
         opcodes = [
             opcode for opcode in SequenceMatcher(None, orig_norm, comp_norm).get_opcodes()

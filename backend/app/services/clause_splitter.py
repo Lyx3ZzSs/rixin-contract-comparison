@@ -600,6 +600,7 @@ class ClauseSplitter:
         return unit.source_block_ids or (unit.block_id,)
 
     def _detect_clause_items(self, units: list[ClauseUnit]) -> tuple[list[ClauseItem], bool]:
+        sequence_indexes = self._numbered_sequence_indexes(units)
         clauses: list[ClauseItem] = []
         current: ClauseItem | None = None
         saw_marker = False
@@ -608,12 +609,18 @@ class ClauseSplitter:
             number_parser=self.number_parser,
             is_formal_clause_marker=self._is_formal_clause_marker,
         )
-        for unit in units:
+        for unit_index, unit in enumerate(units):
             marker = self._parse_marker(unit.text)
             block_type = unit.block_type
             if not entered_body and self._is_pre_body_noise(unit, marker):
                 continue
             candidate = self._heading_candidate(unit, marker, current)
+            if candidate is not None and unit_index in sequence_indexes:
+                candidate = replace(
+                    candidate, score=max(candidate.score, self.heading_accept_score + 0.06),
+                    signals=(*candidate.signals, "consecutive_numbered_body"),
+                    risk_flags=tuple(flag for flag in candidate.risk_flags if flag != "WEAK_NUMERIC_MARKER"),
+                )
             starts_clause = candidate is not None and candidate.score >= self.heading_accept_score
             if starts_clause:
                 saw_marker = True
@@ -621,7 +628,8 @@ class ClauseSplitter:
             elif block_type not in self.cover_block_types and current is not None:
                 entered_body = True
             section_changed = current is not None and current.section_type != unit.section_type
-            if starts_clause or current is None or section_changed:
+            attachment_body = self._starts_body_after_attachment_cover(current, unit)
+            if starts_clause or current is None or section_changed or attachment_body:
                 if current is not None:
                     clauses.append(current)
                 clause_no = candidate.marker if candidate else ""
@@ -645,7 +653,8 @@ class ClauseSplitter:
                     bboxes=self._unit_evidences(unit),
                     source_block_ids=self._unit_source_block_ids(unit),
                     segmentation_reason=self._segmentation_reason(
-                        self._heading_reason(candidate, "section_change" if section_changed and not starts_clause else "initial_unit_without_marker"),
+                        self._heading_reason(candidate, "attachment_cover_body_boundary" if attachment_body else
+                                             "section_change" if section_changed and not starts_clause else "initial_unit_without_marker"),
                         unit,
                     ),
                     segmentation_confidence=round(candidate.score, 2) if candidate else 0.55,
@@ -663,6 +672,58 @@ class ClauseSplitter:
         if current is not None:
             clauses.append(current)
         return clauses, saw_marker
+
+    @staticmethod
+    def _starts_body_after_attachment_cover(current: ClauseItem | None, unit: ClauseUnit) -> bool:
+        """An incomplete numbered list after an attachment cover is body text.
+
+        Missing the preceding page/heading must not make technical list items
+        part of the cover's party/date fields.
+        """
+        if (current is None or current.clause_no or unit.section_type != "appendix"
+                or not current.page_numbers or unit.page_no <= max(current.page_numbers)
+                or not re.match(r"^(?:[（(]\d+[）)]\s*\S|甲方\s*[:：])", unit.text.strip())):
+            return False
+        text = "\n".join(current.texts)
+        return bool(len(text) < 600 and re.search(r"技术协议|专用部分", text)
+                    and re.search(r"甲方\s*[:：]", text) and re.search(r"乙方\s*[:：]", text))
+
+    def _numbered_sequence_indexes(self, units: list[ClauseUnit]) -> set[int]:
+        """Long numbered paragraphs are siblings when a chapter establishes
+        three consecutive, left-aligned items. Amounts alone are not markers.
+        """
+        result: set[int] = set()
+        group: list[tuple[int, int, ClauseUnit]] = []
+        in_chapter = False
+
+        def flush() -> None:
+            if len(group) >= 3:
+                result.update(index for index, _, _ in group)
+            group.clear()
+
+        for index, unit in enumerate(units):
+            marker = self._parse_marker(unit.text)
+            if marker and re.match(r"^第.+[章节]$", marker[0]):
+                flush()
+                in_chapter = unit.section_type == "main_contract"
+                continue
+            if unit.section_type != "main_contract":
+                flush()
+                in_chapter = False
+            if not in_chapter or not marker or not re.fullmatch(r"\d+", marker[0]):
+                continue
+            if (not re.match(r"^\d+[.．、]\s*[\u4e00-\u9fff]", unit.text)
+                    or self._is_quantity_or_amount_marker(unit.text, marker)):
+                flush()
+                continue
+            number = int(marker[0])
+            if group and (number != group[-1][1] + 1
+                          or (unit.page_no == group[-1][2].page_no
+                              and abs(unit.bbox.x0 - group[-1][2].bbox.x0) > 30)):
+                flush()
+            group.append((index, number, unit))
+        flush()
+        return result
 
     def _repair_adjacent_clause_boundary(self, clauses: list[ClauseItem]) -> list[ClauseItem]:
         for index in range(1, len(clauses)):
@@ -877,6 +938,16 @@ class ClauseSplitter:
         text = unit.text
         if self._is_formal_marker_tuple(marker):
             return False
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(lines) > 1:
+            # A mixed OCR/paragraph unit can only be discarded when every
+            # source line is metadata. Its leading label is not the role of
+            # the substantive text that follows it.
+            return all(
+                self._is_standalone_body_title(line)
+                or self._is_cover_noise_text(re.sub(r"\s+", "", line))
+                for line in lines
+            )
         if self._is_standalone_body_title(text):
             return True
         if block_type in self.cover_block_types:
@@ -958,7 +1029,11 @@ class ClauseSplitter:
         return self.heading_detector.is_attachment_title(compact)
 
     def _is_cover_noise_text(self, compact: str) -> bool:
+        from app.services.cover.patterns import parse_labeled_line
+        field = parse_labeled_line(compact)
         return bool(
+            (field and field[0] in {"buyer", "seller"})
+            or
             re.search(r"合同编号|项目编号|采购合同$|买方[:：]|卖方[:：]|甲方[:：]|乙方[:：]|签订地点|签订日期", compact)
             or compact in {"甲方", "乙方", "买方", "卖方"}
             or re.fullmatch(r"共\d+页第\d+页", compact)
@@ -1100,7 +1175,7 @@ class ClauseSplitter:
         if not re.fullmatch(r"第[零〇一二两三四五六七八九十百千万0-9]+(?:\.\d+)*条", clause_no or ""):
             return False
         compact_title = re.sub(r"\s+", "", title or "")
-        if re.match(r"^(所列|所述|上述|前述|规定|约定|列明|所列明)", compact_title):
+        if re.match(r"^(?:第[零〇一二两三四五六七八九十百千万0-9]+款)?(所列|所述|上述|前述|规定|约定|列明|所列明)", compact_title):
             return True
         first_line = re.sub(r"\s+", "", (text or "").strip().splitlines()[0] if (text or "").strip() else "")
         return bool(re.match(r"^第[零〇一二两三四五六七八九十百千万0-9]+(?:\.\d+)*条(所列|所述|上述|前述|规定|约定|列明|所列明)", first_line))
@@ -1139,13 +1214,7 @@ class ClauseSplitter:
         unit: ClauseUnit,
         marker: tuple[str, str],
     ) -> bool:
-        if unit.section_type not in {"appendix", "safety_agreement"}:
-            return False
-        if unit.block_type not in {"paragraph_title", "doc_title", "title"}:
-            return False
-        _, title = marker
-        compact_title = re.sub(r"\s+", "", title or "")
-        return len(compact_title) >= 4
+        return self.heading_detector._allow_numbered_non_contract_heading(unit, marker)
 
     def _page_looks_like_toc(self, page) -> bool:
         texts = [self.normalizer.normalize(block.text) for block in page.blocks if block.text]

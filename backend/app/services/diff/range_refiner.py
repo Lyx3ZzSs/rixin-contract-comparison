@@ -31,6 +31,16 @@ LAYOUT_WEAK_PUNCTUATION_PATTERN = re.compile(r"[\s,，.。;；:：、”“‘�
 def changed_snippets(left: str, right: str) -> tuple[str, str, list[TextRange], list[TextRange]]:
     if layout_punctuation_equivalent(left, right):
         return "", "", [], []
+    if "\n" in left and "\n" in right:
+        left_head, left_body = left.split("\n", 1)
+        right_head, right_body = right.split("\n", 1)
+        left_literal_body = re.sub(r"\s+", "", left_body)
+        right_literal_body = re.sub(r"\s+", "", right_body)
+        if len(left_literal_body) >= 8 and left_literal_body == right_literal_body:
+            # A moved OCR line break in the otherwise identical body must
+            # not turn its repeated words into edits when the heading changes.
+            # The heading remains fully compared, including its clause number.
+            return changed_snippets(left_head, right_head)
     if _should_use_line_first(left, right):
         return changed_snippets_line_first(left, right)
     if configured_diff_engine() == "diff_match_patch":

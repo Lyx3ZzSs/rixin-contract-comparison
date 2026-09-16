@@ -5,9 +5,8 @@ import json
 from datetime import date, datetime
 from math import ceil
 from pathlib import Path
-from typing import Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.api_errors import http_error
@@ -33,6 +32,7 @@ from app.api_schemas import (
     DiffReviewRequest,
     DiffReviewResponse,
     TaskExecutionResponse,
+    PreviewMetadata,
 )
 from app.models import CompareOptions, CompareTask
 from app.services.review_service import (
@@ -50,21 +50,27 @@ task_access_policy = TaskAccessPolicy()
 require_app_role = require_roles(AGENT_ADMIN, AGENT_MANAGER, AGENT_USER)
 
 
+@router.get("/{task_id}/preview-metadata", response_model=PreviewMetadata)
+def get_preview_metadata(task_id: str, user: CurrentUser = Depends(get_current_user)) -> PreviewMetadata:
+    from app.services.pdf_preview_metadata import preview_metadata
+
+    task = _load_accessible_or_404(task_id, user)
+    try:
+        return preview_metadata(task)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="PDF 文件不存在。") from exc
+    except (ValueError, FileValidationError) as exc:
+        raise HTTPException(status_code=422, detail="无法读取 PDF 页面尺寸。") from exc
+
+
 @router.post("", response_model=CompareTaskResponse)
 async def compare_contracts(
     original_file: UploadFile = File(...),
     compare_file: UploadFile = File(...),
-    ignore_stamps: bool = Form(False),
-    ignore_headers_footers: bool = Form(False),
-    signing_region_mode: Literal["full", "off"] = Form("full"),
     user: CurrentUser = Depends(require_app_role),
 ) -> CompareTaskResponse:
     task_id = generate_task_id()
-    compare_options = CompareOptions(
-        ignore_stamps=ignore_stamps,
-        ignore_headers_footers=ignore_headers_footers,
-        signing_region_mode=signing_region_mode,
-    )
+    compare_options = CompareOptions()
     try:
         task = await default_compare_task_application.submit_uploads(
             task_id=task_id,

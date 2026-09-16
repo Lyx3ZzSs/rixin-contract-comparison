@@ -6601,7 +6601,8 @@ def test_diff_quality_keeps_row_level_table_protected_value_changes_critical() -
     result = DiffQualityProcessor().process([diff])
     processed = result.diffs[0]
 
-    assert processed.quality_status == "NORMAL"
+    assert processed.quality_status == "NEEDS_REVIEW"
+    assert processed.match_score_details["change_decision"] == "NEEDS_REVIEW"
     assert "CRITICAL_VALUE_CHANGE" in processed.review_flags
 
 

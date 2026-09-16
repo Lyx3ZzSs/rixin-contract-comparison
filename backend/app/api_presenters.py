@@ -40,7 +40,9 @@ def compare_task_response(task: CompareTask, *, retry_eligible: bool = False) ->
         "retry_eligible": retry_eligible,
         "stage": task.stage,
         "progress_percent": task.progress_percent,
+        "preview_available": _preview_available(task),
         "diff_count": task.diff_count,
+        **event_summary(task),
         "reviewed_count": len([item for item in audit_items if item.review_status != "UNREVIEWED"]),
         "confirmed_count": review_counts["CONFIRMED"],
         "false_positive_count": review_counts["FALSE_POSITIVE"],
@@ -64,6 +66,14 @@ def compare_task_response(task: CompareTask, *, retry_eligible: bool = False) ->
     return CompareTaskResponse(**data)
 
 
+def _preview_available(task: CompareTask) -> bool:
+    """Only advertise the pair after both staged uploads have been published."""
+    try:
+        return all(path and Path(path).is_file() for path in (task.original_pdf_path, task.compare_pdf_path))
+    except OSError:
+        return False
+
+
 def compare_task_detail_response(task: CompareTask, *, retry_eligible: bool = False) -> CompareTaskDetailResponse:
     data = compare_task_response(task, retry_eligible=retry_eligible).model_dump()
     data.update(
@@ -81,7 +91,7 @@ def compare_task_artifact_urls(task: CompareTask) -> dict[str, str]:
     return {
         "original_pdf_url": f"/api/compare/{task.task_id}/original" if task.original_pdf_path else "",
         "compare_pdf_url": f"/api/compare/{task.task_id}/compare" if task.compare_pdf_path else "",
-        "report_url": f"/api/compare/{task.task_id}/report" if task.status == "COMPLETED" else "",
+        "report_url": f"/api/compare/{task.task_id}/events/report" if task.status == "COMPLETED" else "",
         "report_filename": build_report_filename(task),
         "original_highlight_pdf_url": "",
         "compare_highlight_pdf_url": "",
@@ -106,7 +116,9 @@ def compare_record_summary_from_index(record: Mapping[str, Any], *, retry_eligib
         original_filename=record.get("original_filename") or "",
         compare_filename=record.get("compare_filename") or "",
         diff_count=int(record.get("diff_count") or 0),
-        report_url=f"/api/compare/{task_id}/report" if status == "COMPLETED" else "",
+        event_count=record.get("event_count"),
+        event_version=record.get("event_version") or "",
+        report_url=f"/api/compare/{task_id}/events/report" if status == "COMPLETED" else "",
     )
 
 
@@ -125,7 +137,8 @@ def compare_record_summary(task: CompareTask, *, retry_eligible: bool = False) -
         original_filename=task.original_filename,
         compare_filename=task.compare_filename,
         diff_count=task.diff_count,
-        report_url=f"/api/compare/{task.task_id}/report" if task.status == "COMPLETED" else "",
+        **event_summary(task),
+        report_url=f"/api/compare/{task.task_id}/events/report" if task.status == "COMPLETED" else "",
     )
 
 
@@ -226,6 +239,7 @@ def audit_item_response(item: AuditItem) -> AuditItemResponse:
         compare_evidence=[to_jsonable(evidence) for evidence in valid_evidence_copies(item.compare_evidence)],
         evidence_state=item.evidence_state,
         quality_status=item.quality_status,
+        change_decision=item.change_decision,
         content_recognition_status=item.content_recognition_status,
         content_recognition_reason=item.content_recognition_reason,
         content_candidates=item.content_candidates,
@@ -286,3 +300,11 @@ def _match_confidence_or_none(value: object) -> str | None:
         return value
     finite_value = _finite_number_or_none(value)
     return str(finite_value) if finite_value is not None else None
+
+
+def event_summary(task):
+    from app.services.diff_events import source_fingerprint
+    snapshot = task.event_snapshot
+    if snapshot and snapshot.get("source_fingerprint") == source_fingerprint(task):
+        return {"event_count": len(snapshot["events"]), "event_version": snapshot["version"]}
+    return {"event_count": None, "event_version": ""}

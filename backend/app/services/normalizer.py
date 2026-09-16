@@ -53,6 +53,10 @@ class TextNormalizer:
 
     @classmethod
     def _normalize_document_number_year_brackets(cls, text: str) -> str:
+        # In a four-character Chinese year, 0 and 〇 denote the same zero.
+        # Do not fold account numbers, prices or arbitrary digit strings.
+        text = re.sub(r"[一二三四五六七八九〇零0]{4}(?=年)",
+                      lambda m: m[0].replace('0', '〇').replace('零', '〇'), text)
         return cls._DOCUMENT_NUMBER_YEAR_BRACKET_RE.sub(
             lambda match: f"({next(value for value in match.groups() if value is not None)})",
             text,

@@ -131,6 +131,8 @@ export interface CompareResponse {
   stage: string;
   progress_percent: number;
   diff_count: number;
+  event_count?: number | null;
+  event_version?: string;
   reviewed_count?: number;
   confirmed_count?: number;
   false_positive_count?: number;
@@ -150,17 +152,10 @@ export interface CompareResponse {
   report_filename: string;
   original_pdf_url: string;
   compare_pdf_url: string;
+  preview_available?: boolean;
   original_highlight_pdf_url: string;
   compare_highlight_pdf_url: string;
   errors: string[];
-}
-
-export type SigningRegionMode = "full" | "off";
-
-export interface CompareContractOptions {
-  ignoreStamps: boolean;
-  ignoreHeadersFooters: boolean;
-  signingRegionMode?: SigningRegionMode;
 }
 
 export interface CompareTask extends CompareResponse {
@@ -184,6 +179,8 @@ export interface CompareRecordSummary {
   original_filename: string;
   compare_filename: string;
   diff_count: number;
+  event_count?: number | null;
+  event_version?: string;
   report_url: string;
 }
 
@@ -264,11 +261,6 @@ export interface DiffItem {
   compare_evidence?: EvidenceBox[];
 }
 
-export interface DiffReviewPayload {
-  review_status: ReviewStatus;
-  review_comment?: string;
-}
-
 export interface AuditItemReview {
   audit_item_id?: string;
   review_status: ReviewStatus;
@@ -292,6 +284,7 @@ export interface AuditItem {
   compare_evidence: EvidenceBox[];
   evidence_state: "LOCATED" | "UNLOCATED";
   quality_status: DiffQualityStatus;
+  change_decision?: "CONFIRMED" | "CANDIDATE" | "NEEDS_REVIEW";
   content_recognition_status?: ContentRecognitionStatus;
   content_recognition_reason?: string;
   content_candidates?: Record<string, unknown>[];
@@ -336,13 +329,6 @@ export interface DiffReviewResponse {
   };
 }
 
-export interface AuditItemReviewResponse {
-  task_id: string;
-  audit_item: AuditItem;
-  review_stats: DiffReviewResponse["review_stats"];
-  report_revision: number;
-}
-
 export interface QualityDiffItem {
   diff_id: string;
   title: string;
@@ -361,6 +347,8 @@ export interface CompareQualitySummary {
   task_id: string;
   status: TaskStatus;
   diff_count: number;
+  event_count?: number | null;
+  event_version?: string;
   review_stats: DiffReviewResponse["review_stats"];
   source_counts: Record<string, number>;
   needs_review_count?: number;
@@ -387,4 +375,35 @@ export interface CompareQualitySummary {
   low_confidence_diffs: QualityDiffItem[];
   low_similarity_diffs: QualityDiffItem[];
   debug_artifacts: Record<string, string>;
+}
+
+export interface DiffEvent {
+  event_id: string;
+  raw_diff_ids: string[];
+  direction: DiffType;
+  grouping_reason: string;
+  diff: DiffItem;
+  children: DiffItem[];
+  audit_item_ids: string[];
+  review_conflict: boolean;
+}
+export interface PageAlignmentEntry {
+  status: string;
+  original_pages: number[];
+  compare_pages: number[];
+  alignment_score: number;
+}
+export interface DiffEventResponse {
+  graphic_observations?: { side: "original" | "compare"; page: number; bbox: number[]; counterpart_page?: number; counterpart_bbox?: number[]; decision: string; reason: string }[];
+  task_id: string;
+  revision: number;
+  version: string;
+  snapshot_persisted: boolean;
+  context_available: boolean;
+  merge_diff: boolean;
+  raw_diff_count: number;
+  event_count: number;
+  counts: { insert: number; delete: number; change: number; total: number };
+  page_alignment: PageAlignmentEntry[];
+  events: DiffEvent[];
 }

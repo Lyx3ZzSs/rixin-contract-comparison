@@ -1,0 +1,10 @@
+{
+  "status": "PASS",
+  "mode": "snapshot_integrity_only",
+  "contracts": 5,
+  "pdf_hashes_and_page_counts_verified": 10,
+  "result_snapshots_verified": 5,
+  "observations_verified": 55,
+  "formal_golden_assertions_added": 0,
+  "formal_gate_rerun": false
+}

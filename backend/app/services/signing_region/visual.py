@@ -598,25 +598,34 @@ class OpenCvVisualSignatureDetector:
 
     @staticmethod
     def _longest_dark_stroke_ratio(mask: Any) -> float:
+        import numpy as np
+
         height, width = mask.shape[:2]
         if height <= 0 or width <= 0:
             return 0.0
 
-        def longest_run(values: Any) -> int:
-            current = 0
-            longest = 0
-            for value in values:
-                current = current + 1 if bool(value) else 0
-                longest = max(longest, current)
-            return longest
+        def longest_runs(rows: Any) -> Any:
+            # At each pixel, subtract the position of the most recent blank.
+            # Chunk the rows to bound temporary memory for large scan regions.
+            count, length = rows.shape
+            runs = np.empty(count, dtype=np.int64)
+            positions = np.arange(1, length + 1, dtype=np.int64)
+            chunk_size = max(1, 131072 // length)
+            for start in range(0, count, chunk_size):
+                chunk = rows[start:start + chunk_size]
+                blanks = np.where(chunk, 0, positions)
+                np.maximum.accumulate(blanks, axis=1, out=blanks)
+                np.subtract(positions, blanks, out=blanks)
+                runs[start:start + len(chunk)] = blanks.max(axis=1)
+            return runs
 
-        horizontal_runs = [longest_run(row) for row in mask]
-        vertical_runs = [longest_run(column) for column in mask.T]
+        horizontal_runs = longest_runs(mask)
+        vertical_runs = longest_runs(mask.T)
         horizontal = (
-            max(horizontal_runs, default=0) / width if sum(run >= width * 0.12 for run in horizontal_runs) >= 3 else 0.0
+            horizontal_runs.max() / width if np.count_nonzero(horizontal_runs >= width * 0.12) >= 3 else 0.0
         )
         vertical = (
-            max(vertical_runs, default=0) / height if sum(run >= height * 0.30 for run in vertical_runs) >= 3 else 0.0
+            vertical_runs.max() / height if np.count_nonzero(vertical_runs >= height * 0.30) >= 3 else 0.0
         )
         return float(max(horizontal, vertical))
 

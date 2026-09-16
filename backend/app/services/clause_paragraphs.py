@@ -60,6 +60,10 @@ class ParagraphBuilder:
         current_text = str(getattr(current, "text", "") or "").strip()
         if not previous_text or not current_text:
             return False
+        # Party metadata is a separate source span. Do not attach a contract
+        # preamble to it and later discard the merged paragraph as cover noise.
+        if self._is_party_metadata_line(previous_text) or self._is_party_metadata_line(current_text):
+            return False
         if self._has_strong_boundary_block_type(current) and not self._is_bare_marker_title_continuation(
             previous,
             current,
@@ -97,6 +101,13 @@ class ParagraphBuilder:
                 return True
             return self._visually_close(previous, current) and not current_is_standalone_label
         return self._visually_continues_across_adjacent_pages(previous, current) and not current_is_standalone_label
+
+    @staticmethod
+    def _is_party_metadata_line(text: str) -> bool:
+        return bool(re.fullmatch(
+            r"\s*(?:甲方|乙方|丙方|买方|卖方|委托方|受托方)\s*[:：][^\n。；;！？!?]{0,100}",
+            text,
+        ))
 
     @staticmethod
     def _marker_title(marker: object) -> str:
@@ -174,6 +185,10 @@ class ParagraphBuilder:
         if not current_text:
             return current
         previous_section = getattr(previous, "section_type", "main_contract")
+        if re.fullmatch(r"[（(]?(?:以下|此页|本页)无正文[）)]?", self._compact_text(current_text)):
+            # A closing marker has the same role whether the preceding
+            # paragraph was merged across a page break or kept as OCR lines.
+            return self._replace_unit(current, section_type="signature")
         has_cross_page_signature_context = self._visually_continues_across_adjacent_pages(previous, current)
         is_signing_boundary = self._looks_like_signing_boundary(current_text)
         if previous_section == "signature" and is_signing_boundary:

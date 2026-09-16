@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "PO202604090100",
-  "expected_case_count": 16,
+  "expected_case_count": 17,
   "assertions": [
     {
       "case_id": "PO202604090100_P1_HEADER_FOOTER_ADD_F3064A8725",
@@ -200,13 +200,13 @@
       "region": "signing",
       "source_type": "signing_region",
       "diff_type": "ADD",
-      "title": "乙方 · 印章",
+      "title": "乙方 · 其他印章",
       "party": "乙方",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
       "content_recognition_status": "CONFIRMED",
       "change_decision": "CANDIDATE",
-      "semantic_after": "seal",
+      "semantic_after": "视觉印章",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
@@ -218,7 +218,9 @@
         "min_iou": 0.35,
         "party_column": "right",
         "page_width": 597.0
-      }
+      },
+      "object_type": "OTHER_STAMP",
+      "review_note": "旧目标页/物理框对应 release D012，同页最大 IoU=0.94982；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 原件可见局部红色圆弧/印章残片，暂不硬判公司章或姓名章；OTHER_STAMP表示类型未定，允许保留人工复核。"
     },
     {
       "case_id": "PO202604090100_P7_SIGNATURE_ADD_50C56D35CF",
@@ -308,6 +310,14 @@
       "field_type": "date",
       "diff_type": "DELETE",
       "forbidden_value_pattern": "日期[:：]"
+    },
+    {
+      "case_id": "PO202604090100_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
     }
-  ]
+  ],
+  "baseline_version": "contract-golden-v2"
 }

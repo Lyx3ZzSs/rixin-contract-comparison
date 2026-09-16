@@ -54,11 +54,19 @@ class SemanticGoldenMatcher:
         positives = [item for item in assertions if item["assertion"] in POSITIVE_ASSERTIONS]
         negatives = [item for item in assertions if item["assertion"] not in POSITIVE_ASSERTIONS]
 
+        diagnosed_actual: set[int] = set()
+        consumed_pages: dict[int, set[int]] = {}
         for expected in positives:
+            def available(index: int) -> bool:
+                if index not in report.consumed_actual:
+                    return True
+                return (expected.get("object_type") == "EDGE_SEAM_SEAL"
+                        and expected.get("page") not in consumed_pages.get(index, set()))
+
             candidates = [
                 index
                 for index, diff in enumerate(actual)
-                if index not in report.consumed_actual and self._matches(expected, diff)
+                if available(index) and self._matches(expected, diff)
             ]
             if not candidates:
                 identity_matches = [
@@ -66,6 +74,8 @@ class SemanticGoldenMatcher:
                     for index, diff in enumerate(actual)
                     if index not in report.consumed_actual and self._matches_identity(expected, diff)
                 ]
+                if identity_matches:
+                    diagnosed_actual.update(index for index, diff in enumerate(actual) if diff is identity_matches[0])
                 failure_type = "DECISION_REGRESSION" if identity_matches else "FALSE_NEGATIVE_REGRESSION"
                 reason = (
                     "Business diff exists but decision/content status differs from Golden"
@@ -101,6 +111,8 @@ class SemanticGoldenMatcher:
                 )
                 continue
             report.consumed_actual.add(index)
+            if expected.get("page") is not None:
+                consumed_pages.setdefault(index, set()).add(expected["page"])
             report.matched_positive += 1
             if expected["assertion"] == "MUST_REVIEW":
                 report.matched_review += 1
@@ -129,7 +141,7 @@ class SemanticGoldenMatcher:
                 report.matched_negative += 1
 
         for index, diff in enumerate(actual):
-            if index in report.consumed_actual:
+            if index in report.consumed_actual or index in diagnosed_actual:
                 continue
             if self._is_confirmed(diff):
                 report.failures.append(
@@ -168,8 +180,13 @@ class SemanticGoldenMatcher:
             "party": self._party(actual),
             "visual_object_type": self._visual_object_type(actual),
             "page": self._page(actual),
+            "object_type": (actual.get("match_score_details") or {}).get("object_type"),
             "region": self._region(actual),
         }
+        if expected.get("object_type") == "EDGE_SEAM_SEAL":
+            pages = {box["page_no"] for box in actual.get("compare_evidence") or []}
+            if expected.get("page") in pages:
+                checks["page"] = expected["page"]
         for key, actual_value in checks.items():
             if key in expected and expected[key] not in (None, "") and expected[key] != actual_value:
                 return False
@@ -198,11 +215,17 @@ class SemanticGoldenMatcher:
         return True
 
     @staticmethod
-    def _score(expected: dict[str, Any], actual: dict[str, Any]) -> int:
+    def _score(expected: dict[str, Any], actual: dict[str, Any]) -> float:
         score = 0
         for key in ("title", "page", "party", "field_type", "visual_object_type", "semantic_before", "semantic_after"):
             if expected.get(key) not in (None, ""):
                 score += 1
+        spec = expected.get("bbox_expectation")
+        if spec:
+            target = BBox.model_validate(spec["target_bbox"])
+            boxes = actual.get(f"{spec.get('side', 'compare')}_evidence") or []
+            score += max((_iou(target, BBox.model_validate(box["bbox"])) for box in boxes
+                          if box.get("page_no") == expected.get("page")), default=0.0)
         return score
 
     def _bbox_failure(self, expected: dict[str, Any], actual: dict[str, Any]) -> str:
@@ -215,7 +238,8 @@ class SemanticGoldenMatcher:
             return f"expected {side} evidence bbox but actual has none"
         target = BBox.model_validate(bbox_spec["target_bbox"])
         minimum_iou = float(bbox_spec.get("min_iou", 0.35))
-        candidates = [BBox.model_validate(item["bbox"]) for item in boxes]
+        candidates = [BBox.model_validate(item["bbox"]) for item in boxes
+                      if expected.get("page") is None or item.get("page_no") == expected["page"]]
         best_iou = max((_iou(target, candidate) for candidate in candidates), default=0.0)
         if best_iou < minimum_iou:
             return f"bbox IoU {best_iou:.3f} below semantic threshold {minimum_iou:.3f}"
@@ -258,6 +282,9 @@ class SemanticGoldenMatcher:
 
     @staticmethod
     def _visual_object_type(actual: dict[str, Any]) -> str:
+        kind = str((actual.get("match_score_details") or {}).get("object_type") or "")
+        if kind in {"COMPANY_ROUND_SEAL", "PERSONAL_NAME_SEAL", "EDGE_SEAM_SEAL", "OTHER_STAMP"}:
+            return "seal"
         source = str(actual.get("source_type") or "")
         section = str(actual.get("section_type") or "")
         title = str(actual.get("title") or "")

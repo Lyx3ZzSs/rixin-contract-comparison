@@ -1,0 +1,304 @@
+{
+  "schema_version": 1,
+  "contract_key": "SHENNENG_NAIMAN",
+  "expected_case_count": 13,
+  "review_provenance": {
+    "method": "agent_visual_pdf_review",
+    "authorization": "用户明确要求：加入正式GOlden",
+    "source_run_id": "24715bf0-4f6b-4196-9483-2e26fcc9b28d",
+    "date": "2026-09-08",
+    "evidence_root": "output/analysis/golden-v3-update"
+  },
+  "assertions": [
+    {
+      "case_id": "SHENNENG_NAIMAN_7A3862D66667",
+      "assertion": "MUST_REVIEW",
+      "page": 8,
+      "diff_type": "ADD",
+      "source_type": "seal",
+      "review_note": "第8页新增甲方圆章。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 144.66666666666666,
+          "y0": 104.0,
+          "x1": 311.33333333333337,
+          "y1": 241.33333333333334,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_13B227857D4C",
+      "assertion": "MUST_REVIEW",
+      "page": 19,
+      "diff_type": "ADD",
+      "source_type": "seal",
+      "review_note": "第19页新增甲方圆章。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 101.94308035714286,
+          "y0": 256.5622457282343,
+          "x1": 215.87946428571428,
+          "y1": 367.85028478437755,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_8528442F1595",
+      "assertion": "MUST_REVIEW",
+      "page": 20,
+      "diff_type": "ADD",
+      "source_type": "seal",
+      "review_note": "第20页新增甲方圆章。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 118.0,
+          "y0": 94.66666666666667,
+          "x1": 232.66666666666666,
+          "y1": 206.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_65C5B3925E71",
+      "assertion": "MUST_EXIST",
+      "page": 8,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第8页底部合同签订日期补填2026年6月11日；不把页面共用日期强行归属乙方。",
+      "semantic_after": "2026年6月11日",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 270.5,
+          "y0": 671.0,
+          "x1": 402.5,
+          "y1": 699.5,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_100948CF9F8D",
+      "assertion": "MUST_EXIST",
+      "page": 19,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第19页甲方日期补填2026年6月11日。",
+      "semantic_after": "2026年6月11日",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 90.5,
+          "y0": 429.5,
+          "x1": 212.5,
+          "y1": 453.5,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_FAEC495E3C57",
+      "assertion": "MUST_REVIEW",
+      "page": 19,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第19页新增个人姓名章。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "PERSONAL_NAME_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 223.875,
+          "y0": 375.8470301057771,
+          "x1": 277.84486607142856,
+          "y1": 427.1594792514239,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_81F683AF3271",
+      "assertion": "MUST_EXIST",
+      "page": 20,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第20页甲方日期补填2026.6.11。",
+      "semantic_after": "2026.6.11",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 291.0,
+          "y0": 180.5,
+          "x1": 336.5,
+          "y1": 205.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_B7640E207470",
+      "assertion": "MUST_REVIEW",
+      "page": 20,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第20页新增个人姓名章。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "PERSONAL_NAME_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 235.33333333333334,
+          "y0": 144.0,
+          "x1": 287.3333333333333,
+          "y1": 194.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_695DAA8AB11F",
+      "assertion": "MUST_EXIST",
+      "page": 30,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第30页甲方日期补填2026.6.11。",
+      "semantic_after": "2026.6.11",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 133.5,
+          "y0": 176.5,
+          "x1": 202.0,
+          "y1": 197.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_CF456BB2D1FC",
+      "assertion": "MUST_REVIEW",
+      "page": 30,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第30页新增甲方圆章。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 145.33333333333331,
+          "y0": 42.0,
+          "x1": 310.66666666666663,
+          "y1": 179.33333333333331,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_E0B2F1F2AB44",
+      "assertion": "MUST_REVIEW",
+      "page": 30,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第30页矩形章为个人姓名章，不能仅用无类型seal文本作为业务身份。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "PERSONAL_NAME_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 260.0,
+          "y0": 128.66666666666666,
+          "x1": 309.2892857142857,
+          "y1": 179.33333333333334,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_6C62C3602A6B",
+      "assertion": "MUST_EXIST",
+      "page": 1,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第1页右边缘新增骑缝章。",
+      "visual_object_type": "seal",
+      "object_type": "EDGE_SEAM_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 582.6666666666666,
+          "y0": 583.3333333333333,
+          "x1": 598.0,
+          "y1": 657.3333333333333,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_P8_PERSONAL_NAME_SEAL_ADD",
+      "assertion": "MUST_EXIST",
+      "page": 8,
+      "diff_type": "ADD",
+      "visual_object_type": "seal",
+      "object_type": "PERSONAL_NAME_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 258,
+          "y0": 192,
+          "x1": 310,
+          "y1": 243
+        },
+        "min_iou": 0.35
+      },
+      "review_note": "核对原件签署页：甲方代表处从空白变为红色方形姓名章。实际来源任务漏报；真值独立来自PDF图形。"
+    }
+  ],
+  "regression_coverage": {
+    "updated_at": "2026-09-08",
+    "authorization": "用户要求：根据根本原因优化改进，并更新Golden数据",
+    "tests": "backend/tests/test_golden_v3_root_repairs.py",
+    "verification_evidence": "output/analysis/golden-v3-root-fix/",
+    "cases": [
+      {
+        "case_id": "SHENNENG_NAIMAN_P8_PERSONAL_NAME_SEAL_ADD",
+        "invariant": "保护圆章旁的独立姓名章，碎片重组不吞并已确认对象。"
+      },
+      {
+        "case_id": "SHENNENG_NAIMAN_E0B2F1F2AB44",
+        "invariant": "保留姓名章类型，使既有seal能够按同一物理对象补齐身份。"
+      }
+    ]
+  }
+}

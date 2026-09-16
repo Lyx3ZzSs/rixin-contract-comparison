@@ -41,7 +41,7 @@ include = ["app*"]
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
-    "golden_contract_blocking: executes the 10-contract semantic blocking regression gate",
+    "golden_contract_blocking: executes the 15-contract semantic blocking regression gate",
 ]
 
 [tool.ruff]

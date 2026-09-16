@@ -25,7 +25,12 @@ class SigningRegionMatcher:
         self,
         original: list[SigningRegion],
         compare: list[SigningRegion],
+        *,
+        page_alignment=None,
     ) -> list[tuple[SigningRegion | None, SigningRegion | None, float]]:
+        self.page_alignment = page_alignment
+        original = self._join_continuation_groups(original)
+        compare = self._join_continuation_groups(compare)
         pairs: list[tuple[SigningRegion | None, SigningRegion | None, float]] = []
         used_compare: set[int] = set()
         for orig in original:
@@ -48,11 +53,49 @@ class SigningRegionMatcher:
                 pairs.append((None, comp, 0.0))
         return pairs
 
+    @staticmethod
+    def _join_continuation_groups(regions: list[SigningRegion]) -> list[SigningRegion]:
+        """Join only continuations established by same-side form boundaries.
+
+        Elements retain their original page and bounding box; coordinates on
+        different pages must never be unioned into a fictitious page region.
+        """
+        joined: list[SigningRegion] = []
+        groups: dict[str, SigningRegion] = {}
+        for region in regions:
+            if not region.group_id:
+                joined.append(region)
+                continue
+            if region.group_id not in groups:
+                copy = region.model_copy(deep=True)
+                groups[region.group_id] = copy
+                joined.append(copy)
+            else:
+                target = groups[region.group_id]
+                target.elements.extend(region.elements)
+                target.confidence_reasons = list(dict.fromkeys([
+                    *target.confidence_reasons, "cross_page_signing_group",
+                ]))
+        return joined
+
+    @staticmethod
+    def _explicit_form_roles(region: SigningRegion) -> set[str]:
+        text = "\n".join(element.text for element in region.elements)
+        if not re.search(r"签字页|签署页", text):
+            return set()
+        return set(re.findall(r"(甲方|乙方|丙方|丁方|买方|卖方|设计方|采购方|供货方)[:：]", text))
+
     def _score(self, original: SigningRegion, compare: SigningRegion) -> float:
         text_score = self._text_structure_score(original, compare)
         page_score = self._page_score(original, compare)
         same_explicit_role = original.region_role == compare.region_role and original.region_role.value != "unknown"
-        semantic_pair = same_explicit_role and text_score >= 0.65
+        original_roles = self._explicit_form_roles(original)
+        compare_roles = self._explicit_form_roles(compare)
+        same_explicit_form = (page_score > 0 and len(original_roles & compare_roles) >= 2
+                              and original_roles == compare_roles)
+        if same_explicit_form:
+            text_score = max(text_score, 0.8)
+        semantic_pair = (same_explicit_role and text_score >= 0.65) or same_explicit_form
         if page_score == 0.0 and not semantic_pair:
             return 0.0
         if page_score == 0.0:
@@ -82,14 +125,20 @@ class SigningRegionMatcher:
         )
         if high_confidence_adjacent_signing_pair:
             return max(score, self.threshold)
+        if same_explicit_form and min(original.confidence, compare.confidence) >= 0.5:
+            return max(score, self.threshold)
         if semantic_pair and min(original.confidence, compare.confidence) >= 0.7:
             return max(score, self.threshold)
         return score
 
-    @staticmethod
-    def _page_score(original: SigningRegion, compare: SigningRegion) -> float:
+    def _page_score(self, original: SigningRegion, compare: SigningRegion) -> float:
         if original.page_no == compare.page_no:
             return 1.0
+        relationship_score = getattr(getattr(self, "page_alignment", None), "relationship_score", None)
+        if callable(relationship_score):
+            aligned = float(relationship_score({original.page_no}, {compare.page_no}))
+            if aligned:
+                return aligned
         if abs(original.page_no - compare.page_no) <= 1:
             return 0.5
         return 0.0

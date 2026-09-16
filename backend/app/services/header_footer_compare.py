@@ -97,16 +97,100 @@ class HeaderFooterComparator:
             )
             diffs.extend(slot_diffs)
             next_index += len(slot_diffs)
+        from app.services.recognition_evidence import retain_recognition_evidence
+        retain_recognition_evidence(diffs, original, compare)
         return diffs
 
+    def owned_footer_blocks(self, document: Document) -> set[tuple[int, str]]:
+        """Route confirmed footer evidence away from the body comparison.
+
+        Use the same document-level repetition decision as the footer output,
+        and match physical evidence rather than deleting equal body strings.
+        One-off lower body lines and signing fields remain untouched.
+        """
+        evidences = [e for entry in self._entries_by_slot(document).get("footer", [])
+                     for e in entry.evidences]
+        return {
+            (page.page_no, block.block_id)
+            for page in document.pages for block in page.blocks
+            if page.height > 0 and block.bbox.y0 >= page.height * 0.85
+            and len(self._compact(block.text)) <= self.footer_variant_max_characters
+            and any(e.page_no == page.page_no and e.bbox == block.bbox for e in evidences)
+        }
+
     def _entries_by_slot(self, document: Document) -> dict[str, list[HeaderFooterEntry]]:
+        # A scan canvas may extend below the printed page (watermark/padding).
+        # Trust a consecutive, explicitly classified page-number sequence there.
+        sequence = []
+        for page in document.pages:
+            numbers = [b for b in page.blocks if b.block_type == "number"
+                       and re.fullmatch(r"\d+", self._compact(b.text))
+                       and page.height > 0 and b.bbox.y0 >= page.height * 0.75]
+            if len(numbers) == 1:
+                sequence.append((page, numbers[0]))
+        trusted_numbers: set[str] = set()
+        for (lp, lb), (rp, rb) in zip(sequence, sequence[1:]):
+            if (rp.page_no == lp.page_no + 1
+                    and int(self._compact(rb.text)) == int(self._compact(lb.text)) + 1
+                    and abs(lb.bbox.y0 / lp.height - rb.bbox.y0 / rp.height) <= 0.04):
+                trusted_numbers.update((lb.block_id, rb.block_id))
         candidates_by_slot: dict[str, list[HeaderFooterCandidate]] = {"header": [], "footer": []}
         for page in document.pages:
             for block in page.blocks:
-                candidate = self._candidate(block, page.height)
+                candidate = self._candidate(block, page.height, trusted_page_number=block.block_id in trusted_numbers)
                 if candidate is None:
                     continue
                 candidates_by_slot[candidate.slot].append(candidate)
+
+        # The scan canvas can shift a repeated handwritten footer just above
+        # the fixed 90% band. Recall it from its physical multi-page column,
+        # never from its characters alone. Keep changed handwriting as its own
+        # footer entry; this is role assignment, not OCR text correction.
+        footer_candidates = candidates_by_slot["footer"]
+        prototypes = [c for c in footer_candidates
+                      if c.is_lower_footer_annotation and not c.is_page_number
+                      and len(self._compact(c.text)) <= self.footer_variant_max_characters]
+        selected = {(c.page_no, c.block_id) for c in footer_candidates}
+        body_height_ratios = [(b.bbox.y1-b.bbox.y0)/p.height
+                              for p in document.pages if p.height > 0 for b in p.blocks
+                              if b.block_type == "text" and len(self._compact(b.text)) >= 20
+                              and b.bbox.y1 < p.height * 0.85]
+        for page in document.pages:
+            if page.width <= 0 or page.height <= 0:
+                continue
+            for block in page.blocks:
+                if (page.page_no, block.block_id) in selected:
+                    continue
+                if "UNVERIFIED_LAYOUT_FOOTER" in block.semantic_reasons:
+                    continue
+                text = self._clean_text(block.text)
+                if not (re.fullmatch(r"[\u4e00-\u9fff☑]{1,8}", self._compact(text))
+                        and block.bbox.y0 >= page.height * 0.85
+                        and block.block_type not in self.excluded_types
+                        and block.block_role not in {"revision_artifact", "table_caption", "table_note"}):
+                    continue
+                height = block.bbox.y1 - block.bbox.y0
+                # Handwritten glyphs here are larger than the printed body.
+                # Do not route a small sentence continuation at a page break.
+                body_heights = [b.bbox.y1-b.bbox.y0 for b in page.blocks
+                                if b.block_type == "text" and len(self._compact(b.text)) >= 20
+                                and b.bbox.y1 < page.height * 0.85]
+                printed_height = (median(body_heights) if body_heights else
+                                  median(body_height_ratios) * page.height if body_height_ratios else None)
+                if printed_height is None or height < printed_height * 1.5:
+                    continue
+                peers = [c for c in prototypes
+                         if abs((c.bbox.y0+c.bbox.y1)/2 - (block.bbox.y0+block.bbox.y1)/2) <= page.height * 0.045
+                         and block.bbox.x0 - 15 <= (c.bbox.x0+c.bbox.x1)/2 <= block.bbox.x1 + 15
+                         and 0.45 <= height / max(1, c.bbox.y1-c.bbox.y0) <= 2.2]
+                if len({c.page_no for c in peers}) < 3:
+                    continue
+                footer_candidates.append(HeaderFooterCandidate(
+                    slot="footer", text=text, page_no=page.page_no, bbox=block.bbox,
+                    block_id=block.block_id, explicit=True, is_lower_footer_annotation=True,
+                    is_handwritten_annotation=True, confidence=block.confidence,
+                ))
+                selected.add((page.page_no, block.block_id))
 
         entries: dict[str, list[HeaderFooterEntry]] = {}
         for slot, candidates in candidates_by_slot.items():
@@ -118,7 +202,13 @@ class HeaderFooterComparator:
                 entries[slot] = slot_entries
         return entries
 
-    def _candidate(self, block: TextBlock, page_height: float) -> HeaderFooterCandidate | None:
+    def _candidate(self, block: TextBlock, page_height: float, *, trusted_page_number: bool = False) -> HeaderFooterCandidate | None:
+        # A layout-only footer can locate handwriting without reading all of
+        # it. Visual comparison owns this candidate until text is verified.
+        if "UNVERIFIED_LAYOUT_FOOTER" in block.semantic_reasons:
+            return None
+        if block.block_role in {"revision_artifact", "repeated_document_title", "table_caption", "table_note"}:
+            return None
         text = self._clean_text(block.text)
         if not text:
             return None
@@ -138,7 +228,7 @@ class HeaderFooterComparator:
         if not is_handwritten_annotation and self._looks_like_short_edge_noise(text, block, page_height):
             return None
         if is_page_number:
-            if page_height <= 0 or block.bbox.y0 < page_height * self.page_number_footer_band:
+            if not trusted_page_number and (page_height <= 0 or block.bbox.y0 < page_height * self.page_number_footer_band):
                 return None
             slot = "footer"
         else:
@@ -582,7 +672,11 @@ class HeaderFooterComparator:
         return len(entry.key) >= 4
 
     def _can_fallback_modify(self, left: HeaderFooterEntry, right: HeaderFooterEntry) -> bool:
-        return self._is_fuzzy_matchable(left) or self._is_fuzzy_matchable(right)
+        return (
+            self._is_fuzzy_matchable(left) and self._is_fuzzy_matchable(right)
+            and self._page_overlap_score(left.evidences, right.evidences) > 0
+            and self._position_similarity(left.evidences, right.evidences) >= 50
+        )
 
     def _text_similarity(self, left: str, right: str) -> float:
         return SequenceMatcher(None, left, right).ratio() * 100.0
@@ -741,7 +835,8 @@ class HeaderFooterComparator:
                     bbox=candidate.bbox,
                     method="header_footer",
                     text=candidate.text,
-                    confidence=0.8,
+                    confidence=candidate.confidence if candidate.confidence is not None else 0.8,
+                    text_confidence=candidate.confidence,
                 )
             )
             seen_pages.add(candidate.page_no)

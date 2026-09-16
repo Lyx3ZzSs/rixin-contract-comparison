@@ -15,7 +15,15 @@ from .types import CoverExtraFragment, CoverExtraText, CoverExtraction
 def extra_texts(document: Document, extraction: CoverExtraction, cover_blocks_fn) -> list[CoverExtraText]:
     width_by_page = {page.page_no: page.width for page in document.pages}
     fragments: list[CoverExtraFragment] = []
+    # An explicit participant section is already compared as body text. Giving
+    # its individual rows a second owner creates DELETE + ADD duplicates.
+    participant_pages = {page.page_no for page in document.pages if any(
+        clean_text(b.text) == "签约主体" and b.block_type in {"paragraph_title", "title", "doc_title"}
+        for b in page.blocks
+    )}
     for block in cover_blocks_fn(document):
+        if block.page_no in participant_pages:
+            continue
         if block.block_id in extraction.consumed_block_ids or skip_extra_block(block):
             continue
         from .patterns import lines

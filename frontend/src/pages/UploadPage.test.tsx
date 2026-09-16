@@ -34,13 +34,7 @@ describe("UploadPage", () => {
     expect(screen.getByRole("button", { name: "开始对比" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "使用示例" })).not.toBeInTheDocument();
     expect(screen.queryByText("等待上传两份 PDF 合同")).not.toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "排除对比项" })).toBeInTheDocument();
-    expect(screen.getByLabelText("排除印章区域")).not.toBeChecked();
-    expect(screen.getByLabelText("排除印章区域")).toHaveAccessibleDescription(
-      "忽略印章及其遮挡差异，不影响签字和签署信息比对",
-    );
-    expect(screen.getByLabelText("排除页眉页脚差异项")).not.toBeChecked();
-    expect(screen.getByLabelText("排除页眉页脚差异项")).toHaveAccessibleDescription("不生成页眉、页脚、页码等差异");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
   it("submits basic comparison without blocking on AI analysis", async () => {
@@ -53,11 +47,7 @@ describe("UploadPage", () => {
     await user.click(screen.getByRole("button", { name: "开始对比" }));
 
     await waitFor(() => expect(compareContracts).toHaveBeenCalled());
-    expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File), {
-      ignoreStamps: false,
-      ignoreHeadersFooters: false,
-      signingRegionMode: "full",
-    });
+    expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File));
     expect(onTaskCreated).toHaveBeenCalledWith("task-1");
     const taskNotice = screen.getByRole("status", { name: "后台对比任务通知" });
     expect(taskNotice).toHaveTextContent("后台比对已开始");
@@ -68,40 +58,6 @@ describe("UploadPage", () => {
     expect(screen.queryByText("original.pdf")).not.toBeInTheDocument();
     expect(screen.queryByText("compare.pdf")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始对比" })).toBeDisabled();
-  });
-
-  it("submits the stamp exclusion option when selected", async () => {
-    const user = userEvent.setup();
-    render(<UploadPage onTaskCreated={vi.fn()} onOpenRecords={vi.fn()} />);
-
-    await user.upload(screen.getByLabelText("原版文件"), new File(["original"], "original.pdf", { type: "application/pdf" }));
-    await user.upload(screen.getByLabelText("新版文件"), new File(["compare"], "compare.pdf", { type: "application/pdf" }));
-    await user.click(screen.getByLabelText("排除印章区域"));
-    await user.click(screen.getByRole("button", { name: "开始对比" }));
-
-    await waitFor(() => expect(compareContracts).toHaveBeenCalled());
-    expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File), {
-      ignoreStamps: true,
-      ignoreHeadersFooters: false,
-      signingRegionMode: "off",
-    });
-  });
-
-  it("submits the header footer exclusion option when selected", async () => {
-    const user = userEvent.setup();
-    render(<UploadPage onTaskCreated={vi.fn()} onOpenRecords={vi.fn()} />);
-
-    await user.upload(screen.getByLabelText("原版文件"), new File(["original"], "original.pdf", { type: "application/pdf" }));
-    await user.upload(screen.getByLabelText("新版文件"), new File(["compare"], "compare.pdf", { type: "application/pdf" }));
-    await user.click(screen.getByLabelText("排除页眉页脚差异项"));
-    await user.click(screen.getByRole("button", { name: "开始对比" }));
-
-    await waitFor(() => expect(compareContracts).toHaveBeenCalled());
-    expect(compareContracts).toHaveBeenCalledWith(expect.any(File), expect.any(File), {
-      ignoreStamps: false,
-      ignoreHeadersFooters: true,
-      signingRegionMode: "full",
-    });
   });
 
   it("opens comparison records from the background task notice", async () => {

@@ -78,9 +78,6 @@ def build_document_extractor(
 
     Delegates to ``ExtractorRegistry`` for named extractors.
     ``auto`` and ``default`` use the ``AutoDocumentExtractor`` wrapper.
-
-    When ``extraction_cache_enabled`` is set, wraps the extractor with
-    ``CachedExtractor`` for file-based caching of extraction results.
     """
     from app.services.extractors.registry import default_extractor_registry
 
@@ -107,19 +104,6 @@ def build_document_extractor(
         except ValueError:
             raise DocumentExtractionError(f"不支持的文档识别器: {extractor_name}")
 
-    if False:  # extraction cache disabled (extraction feature removed)
-        from app.infrastructure.extraction_cache import CachedExtractor, FileExtractionCache
-
-        cache = FileExtractionCache(
-            cache_dir=settings.storage_dir / "cache",
-            default_ttl_hours=24,
-        )
-        fingerprint = _extractor_config_fingerprint(
-            extractor_name,
-            require_structured_ocr=require_structured_ocr,
-        )
-        extractor = CachedExtractor(extractor, cache, fingerprint)
-
     return extractor
 
 
@@ -128,36 +112,16 @@ def build_compare_document_extractor(
     artifact_store: ArtifactStore = default_artifact_store,
     client_provider: HttpClientProvider = default_http_client_provider,
 ):
-    return build_document_extractor(
+    extractor = build_document_extractor(
         settings.compare_document_extractor,
         require_structured_ocr=settings.compare_require_structured_ocr,
         artifact_store=artifact_store,
         client_provider=client_provider,
     )
-
-
-def _extractor_config_fingerprint(extractor_name: str, *, require_structured_ocr: bool = False) -> str:
-    """Deterministic hash of the config fields that affect extraction output."""
-    import hashlib
-    import json
-
-    parts: dict[str, str] = {
-        "name": extractor_name,
-        "require_structured_ocr": str(require_structured_ocr),
-        "layout_parser_version": "v3" if settings.layout_analysis_mode in {"v3", "v3_shadow"} else "v2",
-        "layout_analysis_mode": settings.layout_analysis_mode,
-    }
-
-    if extractor_name in {"ppocrv5", "paddleocr", "paddle_ocr", "paddle", "pp_ocrv5"}:
-        parts["ppocrv5"] = settings.ppocrv5.model_dump_json()
-    elif extractor_name in {"ppstructure_ocr_hybrid", "ppstructure", "structure_ocr", "ppstructure_ppocrv5"}:
-        parts["ppstructure"] = settings.ppstructure.model_dump_json()
-        parts["ppocrv5"] = settings.ppocrv5.model_dump_json()
-        parts["hybrid"] = settings.hybrid.model_dump_json()
-    elif extractor_name in {"auto", "default"}:
-        parts["pymupdf_min"] = str(settings.pymupdf_min_text_chars)
-        parts["ppstructure"] = settings.ppstructure.model_dump_json()
-        parts["ppocrv5"] = settings.ppocrv5.model_dump_json()
-
-    payload = json.dumps(parts, sort_keys=True)
-    return hashlib.md5(payload.encode()).hexdigest()[:12]
+    if settings.compare_native_page_mode != "off":
+        from app.services.extractors.page_routing import PageRoutingExtractor
+        extractor = PageRoutingExtractor(
+            extractor, mode=settings.compare_native_page_mode,
+            max_ocr_segments=settings.compare_native_page_max_ocr_segments,
+        )
+    return extractor

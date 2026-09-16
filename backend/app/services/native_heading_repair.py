@@ -889,6 +889,12 @@ class NativeHeadingRepairService:
                     continue
                 if self._has_equivalent_text(page, candidate.text):
                     continue
+                if self._has_same_physical_text(page, candidate):
+                    result.decisions.append({
+                        "action": "skipped", "page_no": page_no, "title": candidate.text,
+                        "reason": "native_title_same_physical_ocr_span",
+                    })
+                    continue
                 block_id = f"p{page_no}_native_section_title_{len(inserted) + 1}"
                 block_type = candidate.block_type
                 if page_no in catalog_continuation_pages and block_type in TITLE_BLOCK_TYPES:
@@ -946,6 +952,30 @@ class NativeHeadingRepairService:
         )
 
     @classmethod
+    def _has_same_physical_text(cls, page: Page, candidate: NativeSectionTitleCandidate) -> bool:
+        """Two extractions of one printed line must not create two clauses.
+
+        Confusable alphanumeric glyphs are used only to associate same-side
+        physical evidence. They are never normalized in the contract diff.
+        """
+        expected = normalize_heading_text(candidate.text)
+        if len(expected) < 8:
+            return False
+        confusables = ({"0", "o"}, {"1", "i", "l"})
+        for block in page.blocks:
+            actual = normalize_heading_text(block.text)
+            if len(actual) != len(expected):
+                continue
+            mismatches = [(a, b) for a, b in zip(actual, expected) if a != b]
+            if len(mismatches) > 2 or not all(any({a, b} <= group for group in confusables)
+                                              for a, b in mismatches):
+                continue
+            if (cls._bbox_coverage(candidate.bbox, block.bbox) >= 0.5
+                    and cls._bbox_coverage(block.bbox, candidate.bbox) >= 0.5):
+                return True
+        return False
+
+    @classmethod
     def _candidate_overlaps_table(
         cls,
         page: Page,
@@ -958,9 +988,26 @@ class NativeHeadingRepairService:
             block.block_type == "table"
             and cls._bbox_coverage(candidate.bbox, block.bbox)
             >= TABLE_SECTION_TITLE_COVERAGE_THRESHOLD
-            and candidate_text in normalize_heading_text(block.text)
+            and cls._table_contains_native_line(candidate_text, block.text)
             for block in page.blocks
         )
+
+    @staticmethod
+    def _table_contains_native_line(expected: str, table_text: str) -> bool:
+        if expected in normalize_heading_text(table_text):
+            return True
+        # Same-side ownership only. Never normalize these glyphs in a diff:
+        # an OCR table line and its native copy can spell Latin I as 1/l.
+        if len(expected) < 8:
+            return False
+        for line in table_text.splitlines():
+            actual = normalize_heading_text(line)
+            if len(actual) != len(expected):
+                continue
+            pairs = [(a, b) for a, b in zip(actual, expected) if a != b]
+            if len(pairs) <= 2 and all({a, b} <= {"1", "i", "l"} for a, b in pairs):
+                return True
+        return False
 
     @staticmethod
     def _bbox_coverage(inner: BBox, outer: BBox) -> float:
@@ -1015,4 +1062,10 @@ class NativeHeadingRepairService:
         texts = [block.text for item in document.pages if item.page_no in context_pages for block in item.blocks]
         child = re.compile(rf"^\s*{number_value}\.\d+")
         next_parent = re.compile(rf"^\s*{number_value + 1}\s*[.．、]")
+        previous_parent = re.compile(rf"^\s*{number_value - 1}\s*[.．、]")
+        # The final numbered section has neither a child nor a next parent.
+        # Its native heading is already spatially corroborated; a preceding
+        # section and a closing-body marker supply the missing local context.
+        if any(previous_parent.match(text) for text in texts) and any("以下无正文" in text for text in texts):
+            return True
         return any(child.match(text) for text in texts) or any(next_parent.match(text) for text in texts)

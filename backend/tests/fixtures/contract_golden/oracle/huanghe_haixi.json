@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "HUANGHE_HAIXI",
-  "expected_case_count": 13,
+  "expected_case_count": 14,
   "assertions": [
     {
       "case_id": "HUANGHE_HAIXI_P1_DATE_ADD_1DF7104CDC",
@@ -49,11 +49,11 @@
       "region": "signing",
       "source_type": "seal",
       "diff_type": "ADD",
-      "title": "印章区域（第1页）",
+      "title": "乙方 · 骑缝章",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
       "content_recognition_status": "CONFIRMED",
-      "semantic_after": "日新科技美医合同专11010813(1)",
+      "semantic_after": "骑缝章",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
@@ -63,7 +63,9 @@
           "y1": 496.5
         },
         "min_iou": 0.35
-      }
+      },
+      "object_type": "EDGE_SEAM_SEAL",
+      "review_note": "旧目标页/物理框对应 release D011，同页最大 IoU=1.00000；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 多页骑缝章已聚合，必须用object_type=EDGE_SEAM_SEAL以启用matcher同一对象按不同页消费，保留每页物理框断言。"
     },
     {
       "case_id": "HUANGHE_HAIXI_P2_SEAL_ADD_C3361F414A",
@@ -311,6 +313,14 @@
         "party_column": "left",
         "page_width": 595.2999877929688
       }
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
     }
-  ]
+  ],
+  "baseline_version": "contract-golden-v2"
 }

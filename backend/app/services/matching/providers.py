@@ -3,12 +3,15 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import Any
 
 import httpx
 
 from app.models import Clause
+from app.services.matching.similarity_cache import VectorSimilarityCache
 from app.services.matching.types import MatchCandidate
 from app.services.pipeline_metrics import PerformanceRecorder
 
@@ -58,6 +61,28 @@ class SemanticMatcher:
 
     def set_performance_recorder(self, recorder: PerformanceRecorder | None) -> None:
         self.performance_recorder = recorder
+
+    @contextmanager
+    def cache_similarities(
+        self, *, max_vectors: int = 4096, max_pairs: int = 100_000,
+    ) -> Iterator[VectorSimilarityCache]:
+        cache = VectorSimilarityCache(max_vectors=max_vectors, max_pairs=max_pairs)
+        was_overridden = "_cosine_score" in vars(self)
+        previous = vars(self).get("_cosine_score")
+        self._cosine_score = cache
+        try:
+            yield cache
+        finally:
+            if was_overridden:
+                self._cosine_score = previous
+            else:
+                del self._cosine_score
+            try:
+                if self.performance_recorder is not None:
+                    for name, value in cache.snapshot().items():
+                        self.performance_recorder.set_counter(f"similarity_cache_{name}", value)
+            finally:
+                cache.clear()
 
     def _enable_local(self) -> None:
         if not self.model_path:
@@ -136,6 +161,8 @@ class SemanticMatcher:
             return [[] for _ in texts]
         results: list[list[float] | None] = []
         missing: list[str] = []
+        missing_seen: set[str] = set()
+        deduplicate = getattr(self, "deduplicate_inputs", False)
         for text in texts:
             if not text:
                 results.append([])
@@ -143,9 +170,18 @@ class SemanticMatcher:
                 results.append(self._cache[text])
             else:
                 results.append(None)
-                missing.append(text)
+                if not deduplicate or text not in missing_seen:
+                    missing.append(text)
+                    missing_seen.add(text)
+        if self.performance_recorder is not None:
+            self.performance_recorder.increment("embedding_unique_uncached_inputs", len(missing_seen))
+            self.performance_recorder.increment("embedding_reused_inputs", sum(bool(text) for text in texts) - len(missing))
         if missing:
-            embedded = self._embed_uncached(missing)
+            if self.performance_recorder is not None:
+                with self.performance_recorder.measure("embedding_batch_wall"):
+                    embedded = self._embed_uncached(missing)
+            else:
+                embedded = self._embed_uncached(missing)
             for text, vector in zip(missing, embedded, strict=False):
                 self._cache[text] = vector
         return [
@@ -383,16 +419,30 @@ class RerankMatcher:
     ) -> list[list[tuple[float, bool, str]]]:
         if not self.enabled or not groups:
             return [[(0.0, False, "") for _ in group] for group in groups]
-        worker_count = min(self.max_inflight, len(groups))
+        unique = groups
+        indexes = None
+        if getattr(self, "deduplicate_inputs", False):
+            unique, indexes, by_input = [], [], {}
+            for group in groups:
+                key = (self._rerank_text(group[0].original), tuple(self._rerank_text(c.compare) for c in group)) if group else ("", ())
+                if key not in by_input:
+                    by_input[key] = len(unique)
+                    unique.append(group)
+                indexes.append(by_input[key])
+        worker_count = min(self.max_inflight, len(unique))
         recorder = self.performance_recorder
         if recorder is not None:
             recorder.set_counter("rerank_max_inflight", self.max_inflight)
             recorder.set_counter("rerank_parallel_worker_count", worker_count)
+            recorder.set_counter("rerank_unique_groups", len(unique))
+            recorder.set_counter("rerank_reused_groups", len(groups) - len(unique))
         if worker_count <= 1:
-            return [self.score_candidates(group) for group in groups]
-        self._get_http_client()
-        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="clause-rerank") as executor:
-            return list(executor.map(self.score_candidates, groups))
+            scores = [self.score_candidates(group) for group in unique]
+        else:
+            self._get_http_client()
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="clause-rerank") as executor:
+                scores = list(executor.map(self.score_candidates, unique))
+        return scores if indexes is None else [list(scores[index]) for index in indexes]
 
     def _get_http_client(self) -> httpx.Client:
         with self._http_client_lock:

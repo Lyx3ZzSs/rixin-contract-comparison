@@ -36,6 +36,7 @@ _SOURCE_TYPE_LABELS = {
     "table": "表格",
     "metadata": "封面",
     "seal": "印章",
+    "graphic": "图形",
     "signing_region": "签章区",
     "header_footer": "页眉页脚",
 }
@@ -66,7 +67,7 @@ class ReportGenerator:
     ``ReportStore``; callers must not pass the final report path directly.
     """
 
-    def generate(self, task: CompareTask, output_path: str | Path) -> Path:
+    def generate(self, task: CompareTask, output_path: str | Path, *, event_view: bool = False) -> Path:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         font_name = self._register_font()
@@ -74,21 +75,26 @@ class ReportGenerator:
         styles = self._styles(font_name)
 
         report_title = build_report_title(task)
-        audit_items = _visible_audit_items(task)
+        if event_view:
+            from app.services.diff_events import event_audit_items
+            audit_items = event_audit_items(task)
+        else:
+            audit_items = _visible_audit_items(task)
         indexed_items = self._indexed_items(audit_items)
         story = [
             Paragraph(escape(report_title), styles["Title"]),
             Spacer(1, 0.45 * cm),
             self._metadata_table(task, styles),
             Spacer(1, 0.5 * cm),
-            Paragraph("审计统计与差异概览", styles["Heading2"]),
-            self._summary_table(audit_items, styles),
+            Paragraph("差异项统计与概览" if event_view else "审计统计与差异概览", styles["Heading2"]),
+            self._summary_table(audit_items, styles, event_view=event_view),
             Spacer(1, 0.35 * cm),
             Paragraph("差异类型与证据说明", styles["Heading2"]),
             self._legend_table(styles),
+            *([Paragraph("修改项左右对照：红色加粗下划线为原文变化片段，绿色为新版变化片段，其余文字为上下文。新增、删除项直接展示对应全文。跨页重复标题不增加差异项数。", styles["Small"])] if event_view else []),
             Spacer(1, 0.35 * cm),
             Paragraph("差异明细", styles["Heading2"]),
-            *self._diff_grouped_tables(indexed_items, styles),
+            *(self._event_flowables(indexed_items, styles) if event_view else self._diff_grouped_tables(indexed_items, styles)),
         ]
 
         doc = SimpleDocTemplate(
@@ -103,6 +109,11 @@ class ReportGenerator:
         return output_path
 
     # ── Font & Styles ──────────────────────────────────────────────
+
+    def _event_flowables(self, indexed_items, styles):
+        from app.services.report_comparison import comparison_cards
+
+        return comparison_cards(indexed_items, styles, A4[0] - 3 * cm, self._page_label)
 
     def _register_font(self) -> str:
         candidates = [settings.report_font_path] if settings.report_font_path else []
@@ -250,14 +261,14 @@ class ReportGenerator:
         )
         return table
 
-    def _summary_table(self, audit_items: list[AuditItem], styles: dict[str, ParagraphStyle]) -> Table:
+    def _summary_table(self, audit_items: list[AuditItem], styles: dict[str, ParagraphStyle], *, event_view: bool = False) -> Table:
         confirmed_items = [item for item in audit_items if item.quality_status != "NEEDS_REVIEW"]
-        counts = Counter(item.diff_type for item in confirmed_items)
+        counts = Counter(item.diff_type for item in (audit_items if event_view else confirmed_items))
         items = [
             ("全部差异", len(audit_items), "#111827"),
-            ("确定新增", counts["ADD"], "#15804F"),
-            ("确定删除", counts["DELETE"], "#C9362C"),
-            ("确定修改", counts["MODIFY"], "#A96300"),
+            ("新增" if event_view else "确定新增", counts["ADD"], "#15804F"),
+            ("删除" if event_view else "确定删除", counts["DELETE"], "#C9362C"),
+            ("修改" if event_view else "确定修改", counts["MODIFY"], "#A96300"),
             ("待复核", len(audit_items) - len(confirmed_items), "#7C3AED"),
         ]
         row = []

@@ -75,6 +75,7 @@ class PipelineContext:
     pairs: list[ClausePair] = field(default_factory=list)
     clause_diffs: list[DiffItem] = field(default_factory=list)
     seal_diffs: list[DiffItem] = field(default_factory=list)
+    seal_equivalence: list[dict] = field(default_factory=list)
     signing_pages_original: list[Any] = field(default_factory=list)
     signing_pages_compare: list[Any] = field(default_factory=list)
     signing_blocks_original: list[Any] = field(default_factory=list)
@@ -86,8 +87,10 @@ class PipelineContext:
     signing_region_diffs: list[DiffItem] = field(default_factory=list)
     signing_region_covered_diff_ids: set[str] = field(default_factory=set)
     signing_region_debug: dict[str, Any] = field(default_factory=dict)
+    page_alignment: Any | None = None
     diffs: list[DiffItem] = field(default_factory=list)
     progress_callback: Callable[[int, str, dict[str, Any] | None], None] | None = None
+    page_render_cache: Any | None = None
 
     def set_extractions(self, original: ExtractionResult, compare: ExtractionResult) -> ExtractionPair:
         self.original_extraction = original
@@ -205,6 +208,17 @@ class ComparePipeline:
         self.repository = repository
 
     def run(self, ctx: PipelineContext) -> CompareTask:
+        from app.config import settings
+        from app.services.page_render_cache import PageRenderCache
+
+        ctx.page_render_cache = PageRenderCache(settings.compare_page_render_cache_mb * 1024**2)
+        try:
+            return self._run(ctx)
+        finally:
+            ctx.task.metrics.setdefault("performance", {})["page_render"] = ctx.page_render_cache.metrics.snapshot()
+            ctx.page_render_cache.clear()
+
+    def _run(self, ctx: PipelineContext) -> CompareTask:
         pipeline_t0 = time.perf_counter()
         metrics = PipelineMetrics(
             task_id=ctx.task.task_id,
@@ -282,6 +296,7 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.diffs = _merge_review_state(target.diffs, source.diffs)
     target.errors = source.errors
     target.metrics = source.metrics
+    target.event_snapshot = source.event_snapshot
 
 
 def _merge_review_state(existing: list[DiffItem], incoming: list[DiffItem]) -> list[DiffItem]:
@@ -326,6 +341,7 @@ def _default_stages() -> list[PipelineStage]:
         ModelRoutingStage,
         OcrQualityStage,
         OcrRemediationStage,
+        PageAlignmentStage,
         PreClauseDiffStage,
         SigningRegionStage,
         SplitStage,
@@ -337,6 +353,7 @@ def _default_stages() -> list[PipelineStage]:
         ExtractionStage(),
         DocumentUnderstandingStage(),
         DocumentPreparationStage(),
+        PageAlignmentStage(),
         PreClauseDiffStage(),
         SigningRegionStage(),
         SplitStage(),

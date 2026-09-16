@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "SUIZHOU_CHANGYUAN",
-  "expected_case_count": 81,
+  "expected_case_count": 83,
   "assertions": [
     {
       "case_id": "SUIZHOU_CHANGYUAN_P1_HEADER_FOOTER_ADD_1F4A48F439",
@@ -702,11 +702,11 @@
       "region": "signing",
       "source_type": "seal",
       "diff_type": "ADD",
-      "title": "印章区域（第29页）",
+      "title": "甲方 · 公司圆章",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
-      "content_recognition_status": "CONFIRMED",
-      "semantic_after": "甲方(盖章)法定代表人(负责人)/授权代表(签字)42130130002406",
+      "content_recognition_status": "NEEDS_REVIEW",
+      "semantic_after": "公司圆章",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
@@ -716,7 +716,9 @@
           "y1": 215.5
         },
         "min_iou": 0.35
-      }
+      },
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "旧目标页/物理框对应 release D063，同页最大 IoU=0.82390；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 章存在与章文可读性分开；content应NEEDS_REVIEW，不能把缺字/正文污染章文标CONFIRMED。"
     },
     {
       "case_id": "SUIZHOU_CHANGYUAN_P53_SEAL_ADD_7895E282C7",
@@ -725,11 +727,11 @@
       "region": "signing",
       "source_type": "seal",
       "diff_type": "ADD",
-      "title": "印章区域（第53页）",
+      "title": "甲方 · 公司圆章",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
-      "content_recognition_status": "CONFIRMED",
-      "semantic_after": "州发电有限公甲方:国能长源随州发电有限公司首同",
+      "content_recognition_status": "NEEDS_REVIEW",
+      "semantic_after": "公司圆章",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
@@ -739,7 +741,9 @@
           "y1": 193.0
         },
         "min_iou": 0.35
-      }
+      },
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "旧目标页/物理框对应 release D065，同页最大 IoU=0.94937；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 章存在与章文可读性分开；content应NEEDS_REVIEW，不能把缺字/正文污染章文标CONFIRMED。"
     },
     {
       "case_id": "SUIZHOU_CHANGYUAN_P13_SIGNATURE_ADD_0A779B55E1",
@@ -804,13 +808,13 @@
       "region": "signing",
       "source_type": "signing_region",
       "diff_type": "ADD",
-      "title": "甲方 · 印章",
+      "title": "甲方 · 公司圆章",
       "party": "甲方",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
-      "content_recognition_status": "CONFIRMED",
+      "content_recognition_status": "NEEDS_REVIEW",
       "change_decision": "CANDIDATE",
-      "semantic_after": "seal",
+      "semantic_after": "公司圆章",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
@@ -822,7 +826,9 @@
         "min_iou": 0.35,
         "party_column": "left",
         "page_width": 595.0
-      }
+      },
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "旧目标页/物理框对应 release D069，同页最大 IoU=0.53340；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 章存在与章文可读性分开；content应NEEDS_REVIEW，不能把缺字/正文污染章文标CONFIRMED。"
     },
     {
       "case_id": "SUIZHOU_CHANGYUAN_P13_SEAL_ADD_23B7FFAEBD",
@@ -831,13 +837,13 @@
       "region": "signing",
       "source_type": "signing_region",
       "diff_type": "ADD",
-      "title": "乙方 · 印章",
+      "title": "乙方 · 公司圆章",
       "party": "乙方",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
-      "content_recognition_status": "CONFIRMED",
+      "content_recognition_status": "NEEDS_REVIEW",
       "change_decision": "CANDIDATE",
-      "semantic_after": "seal",
+      "semantic_after": "公司圆章",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
@@ -849,7 +855,9 @@
         "min_iou": 0.35,
         "party_column": "right",
         "page_width": 595.0
-      }
+      },
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "旧目标页/物理框对应 release D070，同页最大 IoU=0.90757；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 章存在与章文可读性分开；content应NEEDS_REVIEW，不能把缺字/正文污染章文标CONFIRMED。"
     },
     {
       "case_id": "SUIZHOU_CHANGYUAN_P13_SIGNATURE_ADD_1CCC683918",
@@ -1152,16 +1160,14 @@
     },
     {
       "case_id": "SUIZHOU_CHANGYUAN_P11_CLAUSE_MODIFY_4736BD8B27",
-      "assertion": "MUST_REVIEW",
+      "assertion": "MUST_NOT_EXIST",
       "page": 11,
       "region": "clause",
       "source_type": "clause",
       "diff_type": "MODIFY",
-      "title": "若争议经协商仍无法解决的,按以下第二种方式处理:",
-      "quality_status": "NEEDS_REVIEW",
-      "content_recognition_status": "CONFIRMED",
-      "semantic_before": "15.2.若争议经协商仍无法解决的,按以下第一种方式处理:方式一:诉讼。向甲方住所地人民法院提起诉讼。方式二:仲裁。提交/仲裁委员会,按照申请仲",
-      "semantic_after": "15.2.若争议经协商仍无法解决的,按以下第二种方式处理:方式一:诉讼。向甲方住所地人民法院提起诉讼。方式二:仲裁。提交/仲裁委员会,按照申请仲"
+      "semantic_before": "第一种",
+      "semantic_after": "第二种",
+      "review_note": "已独立查看放大原件original-p11-phrase.png和compare-p11-phrase.png：两侧都是“一”加下划线，同形；先前低分辨率整页图读成二是错误判断，予以纠正。原OCR将下划线和一合读成二，旧positive本身是误标。改成同物理页、正文通道、MODIFY的第一种→第二种MUST_NOT_EXIST；移除title与状态限制避免遗漏同事实不同标题/状态的假修改。不是放宽真实变化。"
     },
     {
       "case_id": "SUIZHOU_CHANGYUAN_P33_CLAUSE_MODIFY_C994D5FA3A",
@@ -1173,8 +1179,9 @@
       "title": "附件三:合同谈判纪要",
       "quality_status": "NEEDS_REVIEW",
       "content_recognition_status": "CONFIRMED",
-      "semantic_before": "附件三:合同谈判纪要甲方:国能长源随州发电有限公司随县分公司乙方:国能日新科技股份有限公司时间:2026年5月6日地点:视频会议参加单位及人员:",
-      "semantic_after": "附件三:合同谈判纪要甲方:国能长源随州发电有限公司随县分公司乙方:国能日新科技股份有限公司时间:2026年5月6日地点:视频会议参加单位及人员:"
+      "semantic_before": "国能日新科技股份有限公司:彭丹",
+      "semantic_after": "国能日新科技股份有限公司:黄科",
+      "review_note": "原图确认彭丹→黄科，实际任务34f791e2准确定位并保留待复核状态。正例继续要求真实姓名替换和第33页；采用实际任务审核口径，不沿用简化离线运行的NORMAL状态。"
     },
     {
       "case_id": "SUIZHOU_CHANGYUAN_P33_CLAUSE_MODIFY_A85E56FABD",
@@ -1193,25 +1200,27 @@
       "case_id": "SUIZHOU_CHANGYUAN_P34_SIGNATURE_ADD_0FAE5DF597",
       "assertion": "MUST_REVIEW",
       "page": 34,
-      "region": "cover",
-      "source_type": "metadata",
+      "region": "signing",
+      "source_type": "signing_region",
       "diff_type": "ADD",
       "title": "参与人员手写签名",
       "visual_object_type": "signature",
       "quality_status": "NEEDS_REVIEW",
       "content_recognition_status": "CONFIRMED",
-      "semantic_before": "未签",
-      "semantic_after": "已签",
+      "semantic_after": "参与人员手写签名",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
-          "x0": 139.7,
-          "y0": 438.7,
-          "x1": 161.3,
-          "y1": 488.3
+          "x0": 119,
+          "y0": 449,
+          "x1": 238,
+          "y1": 481
         },
         "min_iou": 0.35
-      }
+      },
+      "object_type": "HANDWRITTEN_SIGNATURE",
+      "change_decision": "NEEDS_REVIEW",
+      "review_note": "独立渲染原/扫描物理第34页：原稿参与人员栏空白，扫描有并排两组手写签名。旧bbox139.7,438.7–161.3,488.3仅截窄字片，不能表示整组签名；依据页图重标整组119,449–238,481，保留0.35阈值。现签署通道报告同一事实而非封面metadata，姓名未可靠读出，应保留签名存在及待复核。"
     },
     {
       "case_id": "SUIZHOU_CHANGYUAN_P36_SIGNATURE_ADD_9DDD6BD7AE",
@@ -1255,6 +1264,23 @@
       "region": "signing",
       "diff_type": "MODIFY",
       "forbidden_value_pattern": "12048144@ceic[.]com"
+    },
+    {
+      "case_id": "SUIZHOU_CHANGYUAN_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "SUIZHOU_CHANGYUAN_P4_EXISTING_OBLIGATIONS_HEADING_NOT_ADD",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 4,
+      "source_type": "clause",
+      "diff_type": "ADD",
+      "semantic_after": "双方义务",
+      "review_note": "原件含双方义务，字体呈现缺失不构成新增。实际任务34f791e2已按对侧编号和子条款覆盖过滤D103；保留负例防止回归。"
     }
-  ]
+  ],
+  "baseline_version": "contract-golden-v2.1"
 }

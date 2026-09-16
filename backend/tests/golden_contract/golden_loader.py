@@ -13,9 +13,9 @@ import fitz
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "contract_golden"
 MANIFEST_PATH = FIXTURE_ROOT / "manifest.json"
 DATA_ROOT_ENV = "GOLDEN_CONTRACT_DATA_ROOT"
-EXPECTED_BASELINE_VERSION = "contract-golden-v1"
-EXPECTED_CONTRACT_COUNT = 10
-EXPECTED_ASSERTION_COUNT = 186
+EXPECTED_BASELINE_VERSION = "contract-golden-v3"
+EXPECTED_CONTRACT_COUNT = 15
+EXPECTED_ASSERTION_COUNT = 255
 
 
 class GoldenDataError(AssertionError):
@@ -175,7 +175,7 @@ def validate_execution(expected: list[str], loaded: list[str], executed: list[st
         raise GoldenDataError(f"GOLDEN EXECUTION ERROR: loaded corpus mismatch: expected={expected} loaded={loaded}")
     if executed != expected:
         raise GoldenDataError(
-            f"GOLDEN EXECUTION ERROR: all 10 contracts must execute in manifest order: "
+            f"GOLDEN EXECUTION ERROR: all {EXPECTED_CONTRACT_COUNT} contracts must execute in manifest order: "
             f"expected={expected} executed={executed}"
         )
 

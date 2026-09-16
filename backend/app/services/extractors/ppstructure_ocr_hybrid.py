@@ -309,7 +309,7 @@ class PPStructureOCRHybridExtractor:
         merged = self._consolidate_table_blocks(merged, html_tables)
         merged = self._repair_short_structure_annotations(merged, structure_by_id)
         merged = self._consolidate_structure_text_blocks(merged, structure_by_id, set(html_tables))
-        return self._append_structure_only_regions(merged, structure_blocks)
+        return self._append_structure_only_regions(merged, structure_blocks, page_height=page_height)
 
     def _repair_short_structure_annotations(
         self,
@@ -577,16 +577,51 @@ class PPStructureOCRHybridExtractor:
         match = re.search(r"_b(\d+)$", block_id or "")
         return int(match.group(1)) if match else None
 
-    @staticmethod
     def _append_structure_only_regions(
+        self,
         blocks: list[TextBlock],
         structure_blocks: list[TextBlock],
+        *,
+        page_height: float = 0,
     ) -> list[TextBlock]:
         attached = {block.layout_block_id for block in blocks if block.layout_block_id}
         keep_types = {"seal", "figure", "image", "chart", "formula", "abandon"}
         result = list(blocks)
         for structure_block in structure_blocks:
-            if structure_block.block_id in attached or structure_block.block_type not in keep_types:
+            footer_candidate = (structure_block.block_type in {"footnote", "vision_footnote", "footer", "page_footer"}
+                and page_height > 0 and structure_block.bbox.y0 >= page_height * .85
+                and structure_block.bbox.y1 - structure_block.bbox.y0 <= page_height * .15)
+            # Recover a field row missed by line OCR only from this side's
+            # independently located layout OCR, inside a signing form.
+            field_anchor = bool(
+                structure_block.block_type == "text"
+                and re.match(r"^(?:地址|电话|传真|开户银行|账号|税号|邮编)[:：]", structure_block.text.strip())
+                and any(re.search(r"法定代表|法人代表|授权代表|授权委托人", block.text)
+                        and abs(block.bbox.y0 - structure_block.bbox.y0) <= 180
+                        and abs(block.bbox.x0 - structure_block.bbox.x0) <= 40
+                        for block in blocks)
+                and not any(self._intersection_area(block.bbox, structure_block.bbox)
+                            > 0.2 * bbox_area(structure_block.bbox) for block in blocks)
+            )
+            # A stamp may hide a party header from line OCR while layout OCR
+            # still locates it. Retain that structural anchor and its real box;
+            # do not infer the obscured company name from the other document.
+            signing_anchor = bool(
+                structure_block.block_type == "text"
+                and re.fullmatch(r"[甲乙丙丁]方[（(](?:盖章|签章)[）)][:：]?", re.sub(r"\s+", "", structure_block.text))
+                and any(
+                    re.search(r"法定代表|授权代表", block.text)
+                    and 0 <= block.bbox.y0 - structure_block.bbox.y1 <= 40
+                    and abs(block.bbox.x0 - structure_block.bbox.x0) <= 30
+                    for block in blocks
+                )
+                and not any(
+                    self._intersection_area(block.bbox, structure_block.bbox)
+                    > 0.2 * bbox_area(structure_block.bbox)
+                    for block in blocks
+                )
+            )
+            if structure_block.block_id in attached or (structure_block.block_type not in keep_types and not signing_anchor and not field_anchor and not footer_candidate):
                 continue
             result.append(
                 structure_block.model_copy(
@@ -599,6 +634,8 @@ class PPStructureOCRHybridExtractor:
                         ),
                         "layout_match_status": "structure_only",
                         "layout_match_reason": "PP-Structure region has no OCR child",
+                        **({"char_boxes": [], "semantic_reasons": [*structure_block.semantic_reasons, "UNVERIFIED_LAYOUT_FOOTER"]}
+                           if footer_candidate else {}),
                     }
                 )
             )

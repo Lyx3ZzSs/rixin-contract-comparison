@@ -33,6 +33,10 @@ class TextCoordinateLocator:
                 snippet = diff.original_snippet if side == "original" else diff.compare_snippet
                 highlight_type = self._side_highlight_type(diff, side)
                 existing = diff.original_evidence if side == "original" else diff.compare_evidence
+                if not existing and diff.source_type in {"table", "signing_region", "seal"}:
+                    # A repeated value elsewhere is not the missing cell's
+                    # location. Structured ownership must supply a page first.
+                    continue
                 if not self._should_refine(existing):
                     continue
                 refined = self._locate_snippet(pdf, snippet, existing, highlight_type)
@@ -88,9 +92,7 @@ class TextCoordinateLocator:
                     segmented.extend(self._locate_snippet(pdf, segment_query, [evidence], highlight_type) or [evidence])
                 return segmented
         preferred_pages = sorted({evidence.page_no for evidence in existing if evidence.page_no})
-        page_numbers = preferred_pages + [
-            page_no for page_no in range(1, len(pdf) + 1) if page_no not in set(preferred_pages)
-        ]
+        page_numbers = preferred_pages or list(range(1, len(pdf) + 1))
         candidates: list[EvidenceBox] = []
         for page_no in page_numbers:
             if page_no < 1 or page_no > len(pdf):

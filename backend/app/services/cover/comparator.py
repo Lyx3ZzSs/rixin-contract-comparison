@@ -37,6 +37,17 @@ def build_diffs(normalizer, original: Document, compare: Document, start_index: 
         if key == "project_title" and _project_title_covered_by_opposite_document(left, right, original, compare):
             continue
         diff = _build_diff(key, left, right, next_index)
+        if key == "cover_date":
+            from .date_ocr import date_precision
+            # Keep the established display contract for unlabeled cover text;
+            # field identity and precision belong in structured evidence.
+            diff.title = "封面额外文本"
+            if diff.diff_type == "ADD":
+                diff.readable_change = f"新增封面额外文本：{right_value}"
+            elif diff.diff_type == "DELETE":
+                diff.readable_change = f"删除封面额外文本：{left_value}"
+            diff.match_score_details.update(field_key="cover_date",
+                original_date_precision=date_precision(left_value), compare_date_precision=date_precision(right_value))
         if _cover_field_supported_elsewhere(key, left, right, original, compare, normalizer):
             diff.review_flags.append("CROSS_PAGE_FIELD_CONFIRMED")
         diffs.append(diff)
@@ -58,6 +69,8 @@ def build_diffs(normalizer, original: Document, compare: Document, start_index: 
     next_index += len(preamble_field_diffs)
     extra_diffs = _build_extra_text_diffs(original, compare, original_extraction, compare_extraction, next_index)
     diffs.extend(extra_diffs)
+    from app.services.recognition_evidence import retain_recognition_evidence
+    retain_recognition_evidence(diffs, original, compare)
     return diffs
 
 
@@ -266,8 +279,8 @@ def _build_extra_text_diffs(
     compare_extras = extra_texts(compare, compare_extraction, get_cover_blocks)
     compare_keys = {normalize_extra(extra.value) for extra in compare_extras}
     original_keys = {normalize_extra(extra.value) for extra in original_extras}
-    original_has_filled_date = any(_looks_like_filled_cover_date(extra.value) for extra in original_extras)
-    compare_has_filled_date = any(_looks_like_filled_cover_date(extra.value) for extra in compare_extras)
+    original_has_filled_date = any(_looks_like_filled_cover_date(extra.value) for extra in original_extras) or "cover_date" in original_extraction.fields
+    compare_has_filled_date = any(_looks_like_filled_cover_date(extra.value) for extra in compare_extras) or "cover_date" in compare_extraction.fields
     diffs: list[DiffItem] = []
     next_index = start_index
 

@@ -68,6 +68,39 @@ class LogicalTableParser:
                     source_text=block.text if block.raw_html and block.text != block.raw_html else "",
                 )
                 for t in parsed:
+                    # A located HTML cell is not automatically a reliable
+                    # reading. Stamp glyphs can leak into a merged total label
+                    # while the independent line OCR sees only the label.
+                    primary_lines = {re.sub(r"\s+", "", line) for line in block.text.splitlines()}
+                    for row in t.rows:
+                        for cell in row.cells:
+                            if cell.bbox is not None and block.char_boxes:
+                                box = cell.bbox
+                                primary = "".join(char.char for char in block.char_boxes if char is not None
+                                    and box.x0 <= (char.bbox.x0 + char.bbox.x1) / 2 <= box.x1
+                                    and box.y0 <= (char.bbox.y0 + char.bbox.y1) / 2 <= box.y1)
+                                if cell.text.strip() in {"1", "7"} and primary.strip() == "/":
+                                    cell.text = "/"
+                                if "蓄电池" in cell.text or "电池容量" in cell.text:
+                                    for token in re.findall(r"\d+(?:\.\d+)?H\b", cell.text):
+                                        corrected = token[:-1] + "AH"
+                                        if corrected in re.sub(r"\s+", "", primary):
+                                            cell.text = cell.text.replace(token, corrected)
+                                # Correct an OCR letter in a numeric unit only
+                                # when same-side line OCR inside this cell agrees.
+                                for token in re.findall(r"\d+O(?:V|A|W|Hz)\b", cell.text):
+                                    corrected = token.replace("O", "0")
+                                    if corrected in re.sub(r"\s+", "", primary) and token not in primary:
+                                        cell.text = cell.text.replace(token, corrected)
+                            label = re.match(r"^(合计|总计|小计)\s+(.+)$", cell.text.strip())
+                            if (label and cell.colspan > 1 and label.group(1) in primary_lines
+                                    and re.fullmatch(r"[\u4e00-\u9fff](?:\s+[\u4e00-\u9fff]){1,3}", label.group(2))
+                                    and re.sub(r"\s+", "", cell.text) not in primary_lines):
+                                cell.observation_reason = "TABLE_LABEL_OCR_CONFLICT"
+                                # The independent line recognizer supplies the
+                                # total label. Do not compare stamp glyphs as
+                                # cell content; retain the conflict provenance.
+                                cell.text = label.group(1)
                     if t.rows and any(cell.text.strip() for row in t.rows for cell in row.cells):
                         if pending_caption:
                             t.caption = pending_caption
@@ -410,6 +443,7 @@ class LogicalTableParser:
                 source_col=col,
                 colspan=cell.colspan,
                 rowspan=cell.rowspan,
+                observation_reason=cell.observation_reason,
             ))
         return cells
 
@@ -470,6 +504,8 @@ class LogicalTableParser:
             return ""
         cell = nonempty[0]
         text = utils.normalize(cell.text)
+        if len(text) > 100 or re.search(r"[。；;]", cell.text):
+            return ""
         if utils.summary_labels(text):
             return ""
         if utils.is_quote_remark_text(text):

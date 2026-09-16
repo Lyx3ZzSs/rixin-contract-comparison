@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "contract_key": "TIANJIN_XINKOU",
+  "expected_case_count": 2,
+  "review_provenance": {
+    "method": "agent_visual_pdf_review",
+    "authorization": "用户明确要求：加入正式GOlden",
+    "source_run_id": "bc755fda-af6f-4733-80f6-9a68ea55956c",
+    "date": "2026-09-08",
+    "evidence_root": "output/analysis/golden-v3-update"
+  },
+  "assertions": [
+    {
+      "case_id": "TIANJIN_XINKOU_4B3B8D095920",
+      "assertion": "MUST_REVIEW",
+      "page": 5,
+      "diff_type": "ADD",
+      "source_type": "seal",
+      "review_note": "第5页甲方圆章从无到有，章文不作为真值。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 138.66666666666666,
+          "y0": 90.62987012987013,
+          "x1": 256.0,
+          "y1": 203.9172077922078,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "TIANJIN_XINKOU_F81E4600B2B7",
+      "assertion": "MUST_EXIST",
+      "page": 1,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第1页右边缘有新增骑缝章；以物理图形定位，不确认归属方。",
+      "visual_object_type": "seal",
+      "object_type": "EDGE_SEAM_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 567.0156774916013,
+          "y0": 597.7561174551387,
+          "x1": 595.0,
+          "y1": 692.384176182708,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    }
+  ]
+}

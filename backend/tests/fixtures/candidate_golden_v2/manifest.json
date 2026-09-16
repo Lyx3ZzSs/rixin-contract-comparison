@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "oracle_version": "candidate-golden-v2",
+  "blocking": false,
+  "contracts": [
+    {
+      "contract_key": "NANJING",
+      "source_task_id": "2f04f14c-e6e0-4ac3-9d80-88b0850d817c",
+      "original": "storage/tasks/2f04f14c-e6e0-4ac3-9d80-88b0850d817c/input/original/original_已签章-南京顶益食品有限公司5952KW屋顶分布式光伏发电项目徐州邦渝集中式光伏项目5.98兆瓦分布式功率预测系统V1.0采购合同.pdf",
+      "compare": "storage/tasks/2f04f14c-e6e0-4ac3-9d80-88b0850d817c/input/compare/compare_南京.pdf"
+    },
+    {
+      "contract_key": "NUOYANG",
+      "source_task_id": "08d34497-c8d8-419c-8bf8-f019ddcb5e29",
+      "original": "storage/tasks/08d34497-c8d8-419c-8bf8-f019ddcb5e29/input/original/original_诺阳光伏电站功率预测接集控服务合同-改_3_.pdf",
+      "compare": "storage/tasks/08d34497-c8d8-419c-8bf8-f019ddcb5e29/input/compare/compare_诺阳.pdf"
+    },
+    {
+      "contract_key": "NAIMAN",
+      "source_task_id": "807b0673-6ef8-407e-bdfe-c8eb1241a359",
+      "original": "storage/tasks/807b0673-6ef8-407e-bdfe-c8eb1241a359/input/original/original_GWZX-CG-202606018-国能日新-深能奈曼光伏电站功率预测系统-采购合同1.pdf",
+      "compare": "storage/tasks/807b0673-6ef8-407e-bdfe-c8eb1241a359/input/compare/compare_深能奈曼.pdf"
+    },
+    {
+      "contract_key": "NORTH_CHINA_SHANXI",
+      "source_task_id": "96c61da0-1a70-40b1-ab0f-a8e802273537",
+      "original": "storage/tasks/96c61da0-1a70-40b1-ab0f-a8e802273537/input/original/original_副本副本华北公司所属5个场站2026年功率预测服务合同.pdf",
+      "compare": "storage/tasks/96c61da0-1a70-40b1-ab0f-a8e802273537/input/compare/compare_华北-山西.pdf"
+    },
+    {
+      "contract_key": "TIANJIN",
+      "source_task_id": "d79b8d46-0a87-4965-bb7a-ee30d8786482",
+      "original": "storage/tasks/d79b8d46-0a87-4965-bb7a-ee30d8786482/input/original/original_国电投天津辛口光伏电站气象服务合同.pdf",
+      "compare": "storage/tasks/d79b8d46-0a87-4965-bb7a-ee30d8786482/input/compare/compare_国电投天津.pdf"
+    }
+  ]
+}

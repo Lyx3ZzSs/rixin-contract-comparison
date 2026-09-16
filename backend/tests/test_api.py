@@ -154,3 +154,38 @@ def test_report_keeps_only_current_revision_without_manifest(tmp_path: Path) -> 
     assert current.name == "report-r2.pdf"
     assert not old.exists()
     assert not list(current.parent.glob("*.manifest.json"))
+
+
+@pytest.mark.parametrize("form", [{}, {"ignore_stamps": "true", "ignore_headers_footers": "true", "signing_region_mode": "off"}])
+def test_upload_contract_always_submits_full_comparison(monkeypatch, form) -> None:
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app import api
+    from app.models import CompareOptions
+
+    submitted = {}
+
+    async def submit(**kwargs):
+        submitted.update(kwargs)
+        return CompareTask(task_id=kwargs["task_id"], compare_options=kwargs["compare_options"])
+
+    monkeypatch.setattr(api, "default_compare_task_application", SimpleNamespace(
+        submit_uploads=submit, is_retry_eligible=lambda task: False,
+    ))
+    application = FastAPI()
+    application.include_router(api.router)
+    application.dependency_overrides[api.require_app_role] = lambda: ADMIN
+    client = TestClient(application)
+    schema = application.openapi()
+    body_ref = schema["paths"]["/api/compare"]["post"]["requestBody"]["content"]["multipart/form-data"]["schema"]["$ref"]
+    assert set(schema["components"]["schemas"][body_ref.rsplit("/", 1)[1]]["properties"]) == {
+        "original_file", "compare_file",
+    }
+    response = client.post("/api/compare", data=form, files={
+        "original_file": ("original.pdf", _pdf_bytes(), "application/pdf"),
+        "compare_file": ("compare.pdf", _pdf_bytes(), "application/pdf"),
+    })
+    assert response.status_code == 200
+    assert submitted["compare_options"].model_dump() == CompareOptions().model_dump()

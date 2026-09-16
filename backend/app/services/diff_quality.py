@@ -13,8 +13,10 @@ import fitz
 from app.models import Clause, DiffItem, DiffType, Document, EvidenceBox, TextRange
 from app.services.diff.boundary_coverage import BoundaryCoverageContext, ClauseBoundaryCoverageFilter
 from app.services.diff.range_refiner import layout_punctuation_equivalent
+from app.services.field_observation import ObservationReason
 from app.services.red_seal_visual import RedSealVisualInspector
 from app.services.text_evidence import EvidenceConsensusDecision, EvidenceConsensusEvaluator
+from app.services.source_consensus import confirmed_paragraph_equivalence
 
 
 def _is_signing_contact_table_label_loss(diff: DiffItem, flags: set[str]) -> bool:
@@ -127,6 +129,7 @@ class DiffQualityProcessor:
     single_latin_layout_glyphs = {"i", "l", "|"}
     header_footer_pattern = re.compile(r"(?:页眉|页脚|页码|第\s*\d+\s*页|共\s*\d+\s*页)")
     directly_suppressible_review_reasons = {
+        "corroborated_financial_ocr_equivalence",
         "edge_annotation_clause_noise",
         "form_separator_equivalent",
         "page_number_edge_annotation_noise",
@@ -145,6 +148,7 @@ class DiffQualityProcessor:
         "NARROW_OCR_CONTINUATION_NOISE",
         "seal_occluded_party_label_noise",
         "cross_source_table_text_confirmed",
+        "same_page_clause_prefix_covered",
     }
 
     def __init__(self) -> None:
@@ -162,6 +166,16 @@ class DiffQualityProcessor:
     ) -> DiffQualityResult:
         working = [diff.model_copy(deep=True) for diff in diffs]
         decisions: list[DiffQualityDecision] = []
+        reconciled = []
+        for diff in working:
+            if confirmed_paragraph_equivalence(diff, original_document, compare_document):
+                decisions.append(DiffQualityDecision(action="independent_paragraph_consensus", diff_id=diff.diff_id,
+                                                     detail={"reason": "BOTH_SIDES_SAME_LOCATED_LAYOUT_READING"}))
+            else:
+                reconciled.append(diff)
+        working = reconciled
+        working = self._reconcile_participant_visual_diffs(working, decisions)
+        working = self._dedupe_cover_fields_owned_by_body(working, decisions)
         working = self._dedupe_cross_source(working, decisions)
         working = self._merge_cover_annotation_fragments(working, decisions)
         working = self._reconcile_attachment_boundary_drift(working, decisions)
@@ -204,6 +218,31 @@ class DiffQualityProcessor:
         self._propagate_text_confidence(working)
         return DiffQualityResult(diffs=working, decisions=decisions)
 
+    def _reconcile_participant_visual_diffs(self, diffs: list[DiffItem], decisions: list[DiffQualityDecision]) -> list[DiffItem]:
+        visual = [d for d in diffs if d.title == "参与人员手写签名" and d.match_method == "whole_page_visual_recall"]
+        kept: list[DiffItem] = []
+        for diff in diffs:
+            old = re.search(r"参与人员\s*[:：]\s*(.*)$", diff.original_text or "", re.DOTALL)
+            new = re.search(r"参与人员\s*[:：]\s*(.*)$", diff.compare_text or "", re.DOTALL)
+            match = None
+            if diff.source_type == "clause" and old and new and not self._compact(old.group(1)) and self._compact(new.group(1)):
+                if self._compact(diff.original_text[:old.start()]) == self._compact(diff.compare_text[:new.start()]):
+                    match = next((v for v in visual if diff.compare_evidence and all(
+                        any(e.page_no == box.page_no and self._evidence_center_inside(e, box)
+                            for box in v.compare_evidence) for e in diff.compare_evidence)), None)
+            if match:
+                decisions.append(DiffQualityDecision(action="participant_visual_text_reconciled", diff_id=diff.diff_id,
+                                                     detail={"visual_diff_id": match.diff_id}))
+            else:
+                kept.append(diff)
+        return kept
+
+    @staticmethod
+    def _evidence_center_inside(evidence: EvidenceBox, target: EvidenceBox) -> bool:
+        x = (evidence.bbox.x0 + evidence.bbox.x1) / 2
+        y = (evidence.bbox.y0 + evidence.bbox.y1) / 2
+        return target.bbox.x0 - 8 <= x <= target.bbox.x1 + 8 and target.bbox.y0 - 8 <= y <= target.bbox.y1 + 8
+
     def _suppress_confirmed_equivalent_evidence(
         self,
         diffs: list[DiffItem],
@@ -239,7 +278,76 @@ class DiffQualityProcessor:
         compare_document: Document | None,
     ) -> None:
         for diff in diffs:
+            if "FINANCIAL_UPPERCASE_AMOUNT_CONTEXT_REVIEW" in diff.review_flags:
+                diff.quality_status = "NEEDS_REVIEW"
+                self._set_change_decision(diff, "NEEDS_REVIEW")
+                decisions.append(DiffQualityDecision(action="review_required", diff_id=diff.diff_id,
+                    detail={"reason": "FINANCIAL_AMOUNT_WITH_ADDITIONAL_TEXT_CONFLICT"}))
+                continue
+            if (
+                diff.diff_id.startswith("WHOLE-PAGE-")
+                and diff.match_method == "whole_page_visual_recall"
+                and diff.match_score_details.get("change_decision") in {"CANDIDATE", "NEEDS_REVIEW"}
+                and "VISUAL_OBJECT_EXISTENCE_CONFIRMED" not in diff.review_flags
+            ):
+                diff.quality_status = "NEEDS_REVIEW"
+                decisions.append(
+                    DiffQualityDecision(
+                        action="review_required",
+                        diff_id=diff.diff_id,
+                        detail={"reason": "VISUAL_SIGNING_CANDIDATE_NOT_CONFIRMED"},
+                    )
+                )
+                continue
+            if diff.match_score_details.get("decision_reason") == "ALIGNED_PAGE_STRUCTURE_NOT_EXTRACTED":
+                self._add_flag(diff, "ALIGNED_PAGE_STRUCTURE_NOT_EXTRACTED")
+                diff.quality_status = "NEEDS_REVIEW"
+                self._set_change_decision(diff, "CANDIDATE")
+                decisions.append(
+                    DiffQualityDecision(
+                        action="review_required",
+                        diff_id=diff.diff_id,
+                        detail={"reason": "ALIGNED_PAGE_STRUCTURE_NOT_EXTRACTED"},
+                    )
+                )
+                continue
             flags = set(diff.review_flags) | set(diff.structural_flags)
+            if self._has_unobserved_side(diff):
+                self._add_flag(diff, "OBSERVATION_UNOBSERVED")
+                diff.quality_status = "NEEDS_REVIEW"
+                current_decision = str(diff.match_score_details.get("change_decision") or "")
+                if current_decision not in {"CANDIDATE", "NEEDS_REVIEW"} and not self._business_removal_confirmed(
+                    diff
+                ):
+                    self._set_change_decision(diff, "CANDIDATE")
+                decisions.append(
+                    DiffQualityDecision(
+                        action="review_required",
+                        diff_id=diff.diff_id,
+                        detail={
+                            "reason": str(diff.match_score_details.get("decision_reason") or "UNOBSERVED_SIDE"),
+                            "original_observation_state": diff.match_score_details.get("original_observation_state"),
+                            "original_observation_reason": diff.match_score_details.get("original_observation_reason"),
+                            "compare_observation_state": diff.match_score_details.get("compare_observation_state"),
+                            "compare_observation_reason": diff.match_score_details.get("compare_observation_reason"),
+                        },
+                    )
+                )
+                continue
+            if "VISUAL_OBJECT_EXISTENCE_CONFIRMED" in flags:
+                diff.quality_status = "NORMAL"
+                self._set_change_decision(diff, "CONFIRMED")
+                decisions.append(
+                    DiffQualityDecision(
+                        action="confirmed_visual_object_change",
+                        diff_id=diff.diff_id,
+                        detail={
+                            "reason": "RELIABLE_VISUAL_OBJECT_EXISTENCE",
+                            "object_type": diff.match_score_details.get("object_type"),
+                        },
+                    )
+                )
+                continue
             critical = (
                 self._is_critical_change(diff)
                 or "CRITICAL_VALUE_CHANGE" in flags
@@ -260,9 +368,24 @@ class DiffQualityProcessor:
                 )
                 continue
             unreliable = bool(flags.intersection(self.ocr_quality_review_flags))
-            if consensus.verdict == "CONFLICT" or unreliable:
+            unsupported_but_located = (
+                consensus.verdict == "UNKNOWN" and consensus.reason == "NOT_EQUIVALENT"
+                and diff.diff_type == "MODIFY"
+                and all(
+                    evidences and all(
+                        evidence.method == "char_exact" and evidence.confidence >= 0.9
+                        and evidence.text.strip() and evidence.bbox.x1 > evidence.bbox.x0
+                        and evidence.bbox.y1 > evidence.bbox.y0
+                        for evidence in evidences
+                    )
+                    for evidences in (diff.original_evidence, diff.compare_evidence)
+                )
+            )
+            if consensus.verdict == "CONFLICT" or (consensus.verdict == "UNKNOWN" and not unsupported_but_located) or unreliable:
                 reason = (
-                    consensus.reason
+                    "CRITICAL_EVIDENCE_INSUFFICIENT"
+                    if consensus.verdict == "UNKNOWN" and not unreliable
+                    else consensus.reason
                     if consensus.reason == "CRITICAL_IDENTIFIER_SOURCE_CONFLICT"
                     else "CRITICAL_ENTITY_SOURCE_CONFLICT"
                     if "CRITICAL_FIELD_PARTY_ROLE_CHANGE" in flags
@@ -298,6 +421,25 @@ class DiffQualityProcessor:
     @staticmethod
     def _set_change_decision(diff: DiffItem, decision: str) -> None:
         diff.match_score_details = {**diff.match_score_details, "change_decision": decision}
+
+    @staticmethod
+    def _has_unobserved_side(diff: DiffItem) -> bool:
+        details = diff.match_score_details or {}
+        return "UNOBSERVED" in {
+            details.get("original_observation_state"),
+            details.get("compare_observation_state"),
+        }
+
+    @staticmethod
+    def _business_removal_confirmed(diff: DiffItem) -> bool:
+        details = diff.match_score_details or {}
+        return (
+            details.get("change_decision") == "CONFIRMED"
+            and details.get("original_observation_state") == "OBSERVED_VALUE"
+            and details.get("compare_observation_state") == "UNOBSERVED"
+            and details.get("compare_observation_reason")
+            == ObservationReason.BUSINESS_CONTENT_REMOVED_OR_COVERED.value
+        )
 
     @staticmethod
     def _apply_content_recognition_semantics(
@@ -337,6 +479,82 @@ class DiffQualityProcessor:
             "sources": list(consensus.sources),
             **consensus.detail,
         }
+
+    def _dedupe_cover_fields_owned_by_body(
+        self, diffs: list[DiffItem], decisions: list[DiffQualityDecision],
+    ) -> list[DiffItem]:
+        """A cover field and a changed body span can describe one physical edit."""
+        removed: set[str] = set()
+        for extra in diffs:
+            if extra.source_type != "metadata" or extra.title != "封面额外文本":
+                continue
+            if extra.diff_type not in {"ADD", "DELETE"}:
+                continue
+            side = "compare" if extra.diff_type == "ADD" else "original"
+            text = getattr(extra, f"{side}_text").strip()
+            field = re.fullmatch(r"[^:\n：]{2,20}[:：]\s*[【\[]?([^【】\[\]\n]*?)[】\]]?", text)
+            evidence = getattr(extra, f"{side}_evidence")
+            if not field or not evidence:
+                continue
+            for body in diffs:
+                if body.source_type != "clause":
+                    continue
+                body_text = getattr(body, f"{side}_text")
+                if body_text.count(text) != 1:
+                    continue
+                blank_owned = False
+                if not field.group(1).strip():
+                    # A blank placeholder has no changed characters on this
+                    # side. Check the corresponding filled field, its changed
+                    # span and its actual row evidence on the other side.
+                    opposite = "compare" if side == "original" else "original"
+                    label = re.split(r"[:：]", text, maxsplit=1)[0]
+                    pattern = re.compile(re.escape(label) + r"[:：]\s*[【\[]([^【】\[\]\n]*)[】\]]")
+                    old_fields = list(pattern.finditer(body_text))
+                    new_fields = list(pattern.finditer(getattr(body, f"{opposite}_text")))
+                    ordinal = next((i for i, match in enumerate(old_fields)
+                                    if match.start() == body_text.index(text)), None)
+                    if ordinal is None or len(old_fields) != len(new_fields):
+                        continue
+                    changed = new_fields[ordinal]
+                    other_ranges = getattr(body, f"{opposite}_change_ranges")
+                    blank_owned = bool(changed.group(1).strip()) and all(
+                        any(r.start <= i < r.end for r in other_ranges)
+                        for i in range(changed.start(1), changed.end(1))) and all(
+                        any(a.page_no == b.page_no
+                            and abs(a.bbox.y0-b.bbox.y0) <= 12
+                            and a.bbox.x0 <= b.bbox.x0 <= a.bbox.x1 + 60
+                            and changed.group(1).strip() == b.text.strip()
+                            for b in getattr(body, f"{opposite}_evidence")) for a in evidence)
+                    if not blank_owned:
+                        continue
+                start = body_text.index(text) + field.start(1)
+                end = body_text.index(text) + field.end(1)
+                ranges = getattr(body, f"{side}_change_ranges")
+                if not all(any(r.start <= i < r.end for r in ranges)
+                           for i in range(start, end) if not body_text[i].isspace()):
+                    continue
+                body_evidence = getattr(body, f"{side}_evidence")
+                def same_region(a: EvidenceBox, b: EvidenceBox) -> bool:
+                    if a.page_no != b.page_no or a.bbox is None or b.bbox is None:
+                        return False
+                    x = max(0, min(a.bbox.x1, b.bbox.x1) - max(a.bbox.x0, b.bbox.x0))
+                    y = max(0, min(a.bbox.y1, b.bbox.y1) - max(a.bbox.y0, b.bbox.y0))
+                    area = min((a.bbox.x1-a.bbox.x0)*(a.bbox.y1-a.bbox.y0),
+                               (b.bbox.x1-b.bbox.x0)*(b.bbox.y1-b.bbox.y0))
+                    return area > 0 and x*y / area >= 0.8
+                if not blank_owned and not all(any(same_region(a, b) for b in body_evidence) for a in evidence):
+                    continue
+                removed.add(extra.diff_id)
+                body.merged_sources = sorted(set([*body.merged_sources, "metadata"]))
+                self._add_flag(body, "CROSS_SOURCE_MERGED")
+                decisions.append(DiffQualityDecision(
+                    action="cross_source_merged", diff_id=body.diff_id,
+                    detail={"merged_diff_id": extra.diff_id, "source_type": "metadata",
+                            "reason": "same_physical_field_change_owned_by_body"},
+                ))
+                break
+        return [diff for diff in diffs if diff.diff_id not in removed]
 
     def _dedupe_cross_source(
         self,
@@ -387,6 +605,26 @@ class DiffQualityProcessor:
             for duplicate in group:
                 if duplicate.diff_id == winner.diff_id:
                     continue
+                if ("table" in {winner.source_type, duplicate.source_type}
+                        and all(re.fullmatch(r"[\d\s|.,+\-]*", value) for value in
+                                (winner.original_text or winner.original_snippet,
+                                 winner.compare_text or winner.compare_snippet))):
+                    # Equal short cell values on unrelated pages/rows are
+                    # separate edits, not multiple sources of one edit.
+                    def overlaps_cell(side: str) -> bool:
+                        first = getattr(winner, f"{side}_evidence")
+                        second = getattr(duplicate, f"{side}_evidence")
+                        if not first and not second:
+                            return True
+                        return bool(first and second) and all(any(
+                            a.page_no == b.page_no
+                            and max(0, min(a.bbox.x1,b.bbox.x1)-max(a.bbox.x0,b.bbox.x0))
+                                * max(0, min(a.bbox.y1,b.bbox.y1)-max(a.bbox.y0,b.bbox.y0))
+                                >= 0.5 * max(1, min((a.bbox.x1-a.bbox.x0)*(a.bbox.y1-a.bbox.y0),
+                                                  (b.bbox.x1-b.bbox.x0)*(b.bbox.y1-b.bbox.y0)))
+                            for b in first) for a in second)
+                    if not all(overlaps_cell(side) for side in ("original", "compare")):
+                        continue
                 remove_ids.add(duplicate.diff_id)
                 merged_sources.add(duplicate.source_type)
                 if winner.original_snippet or winner.original_change_ranges:
@@ -679,6 +917,41 @@ class DiffQualityProcessor:
             kept.append(diff)
         return kept
 
+    def _corroborated_financial_ocr_equivalence(
+        self, diff: DiffItem, original: Document | None, compare: Document | None,
+    ) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        amount = re.compile(r"[零壹贰叁参肆伍陆柒捌玖拾佰仟任万亿]+元整")
+        def normalized(text: str) -> str:
+            return amount.sub(lambda m: m[0].replace("任", "仟"), self._compact(text))
+        if (not re.search(r"\d[\d,.]*元", self._compact(diff.original_text))
+                or normalized(diff.original_text) != normalized(diff.compare_text)):
+            return False
+        repaired = False
+        for text, document, evidences in (
+            (diff.original_text, original, diff.original_evidence),
+            (diff.compare_text, compare, diff.compare_evidence),
+        ):
+            for match in amount.finditer(self._compact(text)):
+                token = match[0]
+                if "任" not in token:
+                    continue
+                if document is None:
+                    return False
+                pages = {e.page_no for e in evidences}
+                corrected = token.replace("任", "仟")
+                supported = any(
+                    token in self._compact(block.text)
+                    and any(source.source == "ppstructure" and source.page_no == page.page_no
+                            and corrected in self._compact(source.raw_text) for source in block.source_evidence)
+                    for page in document.pages if page.page_no in pages for block in page.blocks
+                )
+                if not supported:
+                    return False
+                repaired = True
+        return repaired
+
     def _suppression_reason(
         self,
         diff: DiffItem,
@@ -686,6 +959,8 @@ class DiffQualityProcessor:
         original_document: Document | None = None,
         compare_document: Document | None = None,
     ) -> str:
+        if self._corroborated_financial_ocr_equivalence(diff, original_document, compare_document):
+            return "corroborated_financial_ocr_equivalence"
         if "CROSS_PAGE_FIELD_CONFIRMED" in diff.review_flags:
             return "CROSS_PAGE_FIELD_CONFIRMED"
         if "NARROW_OCR_CONTINUATION_NOISE" in diff.review_flags:
@@ -709,6 +984,10 @@ class DiffQualityProcessor:
             return ""
         if self._is_cross_source_merged_multi_page_footer(diff):
             return ""
+        if "COVER_ANNOTATION_REVIEW" in diff.review_flags or self._is_visible_cover_annotation_review(diff):
+            return ""
+        if self._same_page_clause_prefix_covered(diff, original_document, compare_document):
+            return "same_page_clause_prefix_covered"
         if self._looks_like_header_footer_noise(diff):
             return "header_footer_noise"
         if self._looks_like_edge_annotation_clause_noise(diff):
@@ -752,6 +1031,10 @@ class DiffQualityProcessor:
         if self._is_layout_punctuation_equivalent_clause_change(diff):
             return "layout_punctuation_equivalent"
         if "FINANCIAL_UPPERCASE_AMOUNT_CHANGE" in diff.review_flags:
+            return ""
+        if (self._choice_numeral_snippet(diff.original_snippet)
+                and self._choice_numeral_snippet(diff.compare_snippet)
+                and re.search(r"第[一二三]种方式", self._compact(diff.original_text + diff.compare_text))):
             return ""
         if self._looks_like_single_cjk_ocr_substitution(diff):
             return "single_cjk_ocr_substitution"
@@ -867,9 +1150,7 @@ class DiffQualityProcessor:
                     native_key = cls._table_text_key(page.get_text())
                     if rejected and rejected in native_key:
                         continue
-                    if len(target) >= 8 and (
-                        target in native_key or cls._table_tokens_in_order(text, page.get_text())
-                    ):
+                    if len(target) >= 8 and (target in native_key or cls._table_tokens_in_order(text, page.get_text())):
                         return True
                     if len(target) < 8 and (
                         cls._short_native_word_overlaps(page, target, evidences)
@@ -1763,6 +2044,8 @@ class DiffQualityProcessor:
         if self._should_downgrade_non_body_change(diff):
             return False
         changed = self._changed_text(diff)
+        if diff.diff_type in {"ADD", "DELETE"} and diff.clause_no:
+            changed = re.sub(r"^\s*" + re.escape(diff.clause_no) + r"[.．、]?\s*", "", changed, count=1)
         return bool(self.critical_pattern.search(changed or ""))
 
     def _has_critical_field_change(self, diff: DiffItem) -> bool:
@@ -1855,15 +2138,19 @@ class DiffQualityProcessor:
         return ""
 
     def _changed_text(self, diff: DiffItem) -> str:
+        if diff.diff_type in {"ADD", "DELETE"} and diff.match_score_details.get("overlap_coverage_verified"):
+            side = "compare" if diff.diff_type == "ADD" else "original"
+            text = getattr(diff, f"{side}_text")
+            return " ".join(text[item.start:item.end] for item in getattr(diff, f"{side}_change_ranges"))
         if diff.diff_type == "MODIFY":
             snippet_text = f"{diff.original_snippet} {diff.compare_snippet}".strip()
             if snippet_text:
                 return snippet_text
             return f"{diff.original_text} {diff.compare_text}"
         if diff.diff_type == "ADD":
-            return diff.compare_snippet or diff.compare_text
+            return diff.compare_text or diff.compare_snippet
         if diff.diff_type == "DELETE":
-            return diff.original_snippet or diff.original_text
+            return diff.original_text or diff.original_snippet
         return f"{diff.original_snippet} {diff.compare_snippet}"
 
     def _add_flag(self, diff: DiffItem, flag: str) -> None:
@@ -1874,6 +2161,8 @@ class DiffQualityProcessor:
         diff.review_flags = [item for item in diff.review_flags if item != flag]
 
     def _should_downgrade_non_body_change(self, diff: DiffItem) -> bool:
+        if "VISUAL_OBJECT_EXISTENCE_CONFIRMED" in diff.review_flags:
+            return False
         if diff.source_type == "header_footer":
             return True
         if diff.source_type == "seal":
@@ -1906,12 +2195,60 @@ class DiffQualityProcessor:
             return "SIGNING_REGION_REVIEW"
         return "NON_BODY_SECTION_REVIEW"
 
+    def _same_page_clause_prefix_covered(self, diff: DiffItem, original: Document | None, compare: Document | None = None) -> bool:
+        if diff.source_type != "clause" or not diff.clause_no:
+            return False
+        if diff.diff_type == "ADD":
+            document, text, evidences = original, self._compact(diff.compare_text), diff.compare_evidence
+            visible = [diff.compare_snippet, *(e.text for e in evidences)]
+        elif diff.diff_type == "MODIFY" and not self._compact(diff.compare_snippet):
+            document, text, evidences = compare, self._compact(diff.original_snippet), diff.original_evidence
+            visible = [e.text for e in evidences]
+            old, new = self._compact(diff.original_text), self._compact(diff.compare_text)
+            if not text or not old.startswith(text) or old[len(text):] != new:
+                return False
+        else:
+            return False
+        if document is None or not 12 <= len(text) <= 80 or not evidences:
+            return False
+        if any(self._compact(item) not in text for item in visible if self._compact(item)):
+            return False
+        pages = {item.page_no for item in evidences}
+        number = re.compile(r"^\s*" + re.escape(diff.clause_no) + r"(?:[.．\s]|(?=[^\d.]))")
+        candidates = []
+        for page in document.pages:
+            if page.page_no not in pages:
+                continue
+            for block in page.blocks:
+                if not number.match(block.text or ""):
+                    continue
+                # A PDF line may be split into several text runs around form fields.
+                y = (block.bbox.y0 + block.bbox.y1) / 2
+                height = block.bbox.y1 - block.bbox.y0
+                row = sorted((item for item in page.blocks
+                              if abs((item.bbox.y0 + item.bbox.y1) / 2 - y) <= height * 0.5
+                              and item.bbox.x0 >= block.bbox.x0 - 2), key=lambda item: item.bbox.x0)
+                line_supported = self._compact("".join(item.text for item in row)).startswith(text)
+                layout_supported = any(
+                    source.source == "ppstructure" and source.page_no == page.page_no
+                    and source.bbox is not None and source.bbox.y1 - source.bbox.y0 <= height * 1.5
+                    and abs(source.bbox.y0 - block.bbox.y0) <= height
+                    and self._compact(source.raw_text).startswith(text)
+                    for source in block.source_evidence
+                )
+                if line_supported or layout_supported:
+                    candidates.append(block)
+        return len(candidates) == 1
+
     def _looks_like_header_footer_noise(self, diff: DiffItem) -> bool:
         if diff.source_type != "header_footer":
             return False
         if "HANDWRITTEN_ANNOTATION_REVIEW" in diff.review_flags:
             return False
-        text = f"{diff.title} {self._changed_text(diff)}"
+        text = self._changed_text(diff)
+        # Region labels are not proof that their contents are page-number noise.
+        if re.search(r"[A-Za-z][A-Za-z0-9/()（）-]*[-/]\d{4,}", text):
+            return False
         if self.header_footer_pattern.search(text):
             return True
         return len(self._compact(self._changed_text(diff))) <= 12
@@ -1956,6 +2293,14 @@ class DiffQualityProcessor:
         updated = changed
         for text in self._changed_evidence_texts_near_page_edge(diff):
             compact = self._compact(text)
+            # A short rightmost character box can still be part of an address
+            # or account line. Page-edge heuristics must not cut that value.
+            field_lines = re.findall(
+                r"(?:地址|账号|帐号|开户银行|开户行|联系电话|电话)\s*[:：][^\n]*",
+                diff.compare_text,
+            )
+            if compact and any(compact in self._compact(line) for line in field_lines):
+                continue
             if compact and len(compact) <= 4 and not self.business_token_pattern.search(compact):
                 if compact in {"/", "／"}:
                     # A slash can also be meaningful inside a title.  Edge
@@ -2002,14 +2347,28 @@ class DiffQualityProcessor:
         if diff.source_type != "clause" or diff.diff_type != "MODIFY":
             return False
         pattern = re.compile(r"([零壹贰叁肆伍陆柒捌玖拾佰仟任万亿]+元整)")
-        original_match = pattern.search(diff.original_text or "")
-        compare_match = pattern.search(diff.compare_text or "")
-        if original_match is None or compare_match is None:
+        original_matches = list(pattern.finditer(re.sub(r"\s+", "", diff.original_text or "")))
+        compare_matches = list(pattern.finditer(re.sub(r"\s+", "", diff.compare_text or "")))
+        if not original_matches or len(original_matches) != len(compare_matches):
             return False
-        original = original_match.group(1).replace("任", "仟")
-        compare = compare_match.group(1).replace("任", "仟")
-        if original == compare:
+        changes = [(a.group(1).replace("任", "仟"), b.group(1).replace("任", "仟"))
+                   for a, b in zip(original_matches, compare_matches)
+                   if a.group(1).replace("任", "仟") != b.group(1).replace("任", "仟")]
+        # Multiple payment changes cannot be represented by the first amount.
+        if len(changes) != 1:
             return False
+        if pattern.sub("<amount>", re.sub(r"\s+", "", diff.original_text)) != pattern.sub(
+            "<amount>", re.sub(r"\s+", "", diff.compare_text)
+        ):
+            # Preserve the full event/ranges if there are other changed terms.
+            # It still contains a disputed financial value, not a confirmed
+            # ordinary paragraph edit merely because narrowing is unsafe.
+            if "FINANCIAL_UPPERCASE_AMOUNT_CONTEXT_REVIEW" not in diff.review_flags:
+                diff.review_flags.append("FINANCIAL_UPPERCASE_AMOUNT_CONTEXT_REVIEW")
+            if re.search(r"总价|总金额|总额", diff.original_text):
+                diff.title = "合同总价（大写）"
+            return False
+        original, compare = changes[0]
         prefix = 0
         while prefix < min(len(original), len(compare)) and original[prefix] == compare[prefix]:
             prefix += 1
@@ -2022,9 +2381,20 @@ class DiffQualityProcessor:
             suffix += 1
         diff.original_snippet = original[prefix : len(original) - suffix if suffix else None]
         diff.compare_snippet = compare[prefix : len(compare) - suffix if suffix else None]
+        changed_index = next(i for i, (a, b) in enumerate(zip(original_matches, compare_matches))
+                             if a.group().replace("任", "仟") != b.group().replace("任", "仟"))
+        for side, matches in (("original", original_matches), ("compare", compare_matches)):
+            text = getattr(diff, f"{side}_text")
+            offsets = [i for i, char in enumerate(text) if not char.isspace()]
+            match = matches[changed_index]
+            start, end = match.start() + prefix, match.end() - suffix
+            ranges = ([TextRange(start=offsets[start], end=offsets[end - 1] + 1, highlight_type="MODIFY")]
+                      if end > start else [])
+            setattr(diff, f"{side}_change_ranges", ranges)
+            setattr(diff, f"{side}_evidence", [])
         if "FINANCIAL_UPPERCASE_AMOUNT_CHANGE" not in diff.review_flags:
             diff.review_flags.append("FINANCIAL_UPPERCASE_AMOUNT_CHANGE")
-        diff.title = "合同总价（大写）"
+        diff.title = "合同总价（大写）" if re.search(r"总价|总金额|总额", diff.original_text) else "付款金额（大写）"
         diff.readable_change = f"原文：{diff.original_snippet}\n修改后：{diff.compare_snippet}"
         return bool(diff.original_snippet or diff.compare_snippet)
 

@@ -9,6 +9,7 @@ import fitz
 
 from app.models import Clause, DiffItem, Document, EvidenceBox, TextRange
 from app.services.diff.text_utils import shorten
+from app.services.clause_numbering import ClauseNumberParser
 from app.services.native_heading_repair import NativeHeadingIndex, load_native_heading_index, normalize_heading_text
 
 STRUCTURAL_RISK_FLAGS = {
@@ -154,6 +155,8 @@ class ClauseBoundaryCoverageFilter:
         return kept, decisions
 
     def _suppression_reason(self, diff: DiffItem, context: BoundaryCoverageContext) -> str:
+        if self._has_explicit_heading_renumbering(diff):
+            return ""
         if "FINANCIAL_UPPERCASE_AMOUNT_CHANGE" in diff.review_flags:
             return ""
         if self._short_appendix_heading_covered(diff, context):
@@ -185,6 +188,23 @@ class ClauseBoundaryCoverageFilter:
         if self._changed_fragments_covered_by_neighbor_clauses(diff, context):
             return "changed_fragments_covered_by_neighbor_clauses"
         return ""
+
+    @staticmethod
+    def _has_explicit_heading_renumbering(diff: DiffItem) -> bool:
+        if diff.source_type != "clause" or diff.diff_type != "MODIFY":
+            return False
+        parser = ClauseNumberParser()
+        left = parser.parse_line((diff.original_text or "").split("\n", 1)[0])
+        right = parser.parse_line((diff.compare_text or "").split("\n", 1)[0])
+        if left is None or right is None or left.non_clause or right.non_clause:
+            return False
+        # A digit occurring elsewhere on the page is not evidence that the
+        # corresponding heading has the same number. Preserve the comparison.
+        return bool(
+            left.title and right.title
+            and normalize_for_coverage(left.title) == normalize_for_coverage(right.title)
+            and left.canonical_number != right.canonical_number
+        )
 
     def _short_appendix_heading_covered(self, diff: DiffItem, context: BoundaryCoverageContext) -> bool:
         if diff.source_type != "clause" or diff.diff_type not in {"ADD", "DELETE"}:

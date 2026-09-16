@@ -13,6 +13,7 @@ from app.models import Document, ParseWarningDetail
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.layout_analysis import LayoutResult, PPStructureLayoutAdapter
 from app.services.pipeline_metrics import PerformanceRecorder
+from app.services.remote_metrics import record_remote_metrics
 
 
 class PPStructureExtractor:
@@ -106,6 +107,7 @@ class PPStructureExtractor:
             recorder.set_counter("http_response_bytes", len(getattr(response, "content", b"")))
             with recorder.measure("response_json_decode"):
                 payload = response.json()
+            record_remote_metrics(recorder, getattr(response, "headers", {}), payload)
         except httpx.HTTPStatusError as exc:
             recorder.increment("http_failure_count")
             detail = exc.response.text[:500] if exc.response is not None else str(exc)

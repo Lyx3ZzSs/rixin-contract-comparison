@@ -159,6 +159,7 @@ class BusinessRepairMixin:
             source_col=source_col,
             colspan=previous_cell.colspan,
             rowspan=previous_cell.rowspan,
+            observation_reason=previous_cell.observation_reason or continuation_cell.observation_reason,
         )
 
     @staticmethod
@@ -698,6 +699,17 @@ class BusinessRepairMixin:
         if not labels:
             return None
 
+        # A summary rewrite must account for every value and every word. A
+        # quantity, a second price column, or numbered service prose cannot be
+        # silently replaced with a single label/amount pair.
+        if len(amounts) > len(labels):
+            return None
+        remainder = " ".join(cell.text for cell in row.cells)
+        for token in [*labels, *amounts]:
+            remainder = remainder.replace(token, "", 1)
+        if re.search(r"[\w\u4e00-\u9fff]", remainder):
+            return None
+
         result: list[_LogicalRow] = []
         for index, label in enumerate(labels):
             label_source = label_cell or row.cells[0]
@@ -804,6 +816,7 @@ class BusinessRepairMixin:
             source_col=source.source_col,
             colspan=1,
             rowspan=1,
+            observation_reason=source.observation_reason,
         )
 
     def _summary_label_from_row(self, row: _LogicalRow) -> str:

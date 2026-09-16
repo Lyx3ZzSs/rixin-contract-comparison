@@ -5,7 +5,10 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Iterator
+from typing import Callable, Iterator, TypeVar
+
+
+T = TypeVar("T")
 
 
 def get_process_memory_mb() -> float:
@@ -59,6 +62,7 @@ class PerformanceRecorder:
         self._started_at = time.perf_counter()
         self._operations: dict[str, dict[str, float | int]] = {}
         self._counters: dict[str, int | float] = {}
+        self._attributes: dict[str, str] = {}
         self._lock = threading.Lock()
 
     @contextmanager
@@ -84,6 +88,10 @@ class PerformanceRecorder:
             metric["duration_seconds"] = float(metric["duration_seconds"]) + duration
             metric["max_duration_seconds"] = max(float(metric["max_duration_seconds"]), duration)
 
+    def call(self, operation: str, function: Callable[..., T], *args, **kwargs) -> T:
+        with self.measure(operation):
+            return function(*args, **kwargs)
+
     def increment(self, counter: str, value: int | float = 1) -> None:
         with self._lock:
             self._counters[counter] = self._counters.get(counter, 0) + value
@@ -91,6 +99,10 @@ class PerformanceRecorder:
     def set_counter(self, counter: str, value: int | float) -> None:
         with self._lock:
             self._counters[counter] = value
+
+    def set_attribute(self, name: str, value: str) -> None:
+        with self._lock:
+            self._attributes[name] = value
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
@@ -103,8 +115,10 @@ class PerformanceRecorder:
                 for name, metric in sorted(self._operations.items())
             }
             counters = dict(sorted(self._counters.items()))
+            attributes = dict(sorted(self._attributes.items()))
         return {
             "duration_seconds": round(time.perf_counter() - self._started_at, 6),
             "operations": operations,
             "counters": counters,
+            **({"attributes": attributes} if attributes else {}),
         }

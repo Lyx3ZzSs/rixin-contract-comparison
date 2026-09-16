@@ -20,7 +20,7 @@ def main() -> int:
     stats = oracle_statistics(corpus)
     for index, contract in enumerate(corpus, start=1):
         print(
-            f"[{index:02d}/10] {contract.contract_key}: "
+            f"[{index:02d}/{len(corpus)}] {contract.contract_key}: "
             f"original={contract.original_pdf.name} compare={contract.compare_pdf.name} HASH/PAGES OK"
         )
     print(

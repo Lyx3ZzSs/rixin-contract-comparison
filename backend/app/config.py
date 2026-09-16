@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     base_dir: Path = BASE_DIR
     storage_dir: Path = Field(default_factory=lambda: BASE_DIR / "storage")
     max_upload_size_mb: int = Field(default=30, ge=1)
+    textin_preview_base_url: str = ""
 
     # -- Document extraction/OCR ------------------------------------------
 
@@ -73,7 +74,12 @@ class Settings(BaseSettings):
     compare_parallel_extraction_enabled: bool = False
     compare_parallel_extraction_max_inflight: int = Field(default=2, ge=1, le=16)
     compare_footer_visual_max_inflight: int = Field(default=4, ge=1, le=16)
+    compare_page_alignment_cache_size: int = Field(default=50_000, ge=0, le=100_000)
+    compare_page_render_cache_mb: int = Field(default=64, ge=0, le=256)
+    compare_image_analysis_max_inflight: int = Field(default=2, ge=1, le=4)
     compare_native_fast_path_mode: str = "off"
+    compare_native_page_mode: str = Field(default="off", pattern="^(off|shadow|enabled)$")
+    compare_native_page_max_ocr_segments: int = Field(default=4, ge=1, le=8)
     compare_native_fast_path_min_chars_per_page: int = Field(default=80, ge=1)
     compare_native_fast_path_min_char_box_coverage: float = Field(default=0.98, ge=0.0, le=1.0)
     compare_native_fast_path_max_suspicious_char_ratio: float = Field(default=0.01, ge=0.0, le=1.0)
@@ -132,6 +138,9 @@ class Settings(BaseSettings):
 
     match_threshold: int = Field(default=85, ge=0, le=100)
     match_use_prefilter: bool = True
+    match_performance_strategy: str = Field(default="enabled", pattern="^(off|shadow|enabled)$")
+    match_feature_cache_enabled: bool = True
+    match_deduplicate_model_inputs: bool = False
     match_assignment_strategy: str = "greedy"
     match_enable_semantic_match: bool = False
     match_semantic_provider: str = "local"

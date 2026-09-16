@@ -1,0 +1,366 @@
+{
+  "schema_version": 1,
+  "contract_key": "HUABEI_FIVE_STATIONS",
+  "expected_case_count": 17,
+  "review_provenance": {
+    "method": "agent_visual_pdf_review",
+    "authorization": "用户明确要求：加入正式GOlden",
+    "source_run_id": "80093c2d-a528-4fe5-9fc0-7738ffb88b9a",
+    "date": "2026-09-08",
+    "evidence_root": "output/analysis/golden-v3-update"
+  },
+  "assertions": [
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_EC6D1EBAA748",
+      "assertion": "MUST_EXIST",
+      "page": 7,
+      "diff_type": "ADD",
+      "source_type": "table",
+      "review_note": "第7页山阴行增值税额补填4528.30。",
+      "semantic_after": "4528.30",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 457.0,
+          "y0": 364.0,
+          "x1": 486.0,
+          "y1": 376.5,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_7521FBBC7703",
+      "assertion": "MUST_EXIST",
+      "page": 7,
+      "diff_type": "ADD",
+      "source_type": "table",
+      "review_note": "第7页平定行增值税额补填4528.30。",
+      "semantic_after": "4528.30",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 457.0,
+          "y0": 397.0,
+          "x1": 486.0,
+          "y1": 409.5,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_2127F95AA024",
+      "assertion": "MUST_EXIST",
+      "page": 7,
+      "diff_type": "ADD",
+      "source_type": "table",
+      "review_note": "第7页灵丘行补填不含税价150943.40、税额9056.6。",
+      "semantic_after": "150943.40 | 9056.6",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 397.0,
+          "y0": 431.0,
+          "x1": 433.5,
+          "y1": 442.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_D6C926D8DB47",
+      "assertion": "MUST_EXIST",
+      "page": 7,
+      "diff_type": "ADD",
+      "source_type": "table",
+      "review_note": "第7页太重行增值税额补填4528.30。",
+      "semantic_after": "4528.30",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 457.0,
+          "y0": 462.5,
+          "x1": 485.0,
+          "y1": 474.5,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_F00FD3E77D1B",
+      "assertion": "MUST_EXIST",
+      "page": 7,
+      "diff_type": "ADD",
+      "source_type": "table",
+      "review_note": "第7页晋中行增值税额补填4528.30。",
+      "semantic_after": "4528.30",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 457.0,
+          "y0": 496.0,
+          "x1": 485.0,
+          "y1": 506.5,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_4EA36334D2AC",
+      "assertion": "MUST_EXIST",
+      "page": 7,
+      "diff_type": "ADD",
+      "source_type": "table",
+      "review_note": "第7页合计补填不含税价452830.2、税额27169.8。",
+      "semantic_after": "452830.2 | 27169.8",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 399.5,
+          "y0": 525.0,
+          "x1": 433.0,
+          "y1": 537.5,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_8D14762BB640",
+      "assertion": "MUST_EXIST",
+      "page": 19,
+      "diff_type": "ADD",
+      "source_type": "table",
+      "review_note": "第19页崞山不含税总价原为空白，补填150943.4。",
+      "semantic_after": "150943.4",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 705.5,
+          "y0": 339.5,
+          "x1": 742.0,
+          "y1": 350.5,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_F7F7C6B97A15",
+      "assertion": "MUST_EXIST",
+      "page": 20,
+      "diff_type": "ADD",
+      "source_type": "table",
+      "review_note": "第20页合计不含税总价原为空白，补填150943.4。",
+      "semantic_after": "150943.4",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 703.0,
+          "y0": 384.0,
+          "x1": 744.5,
+          "y1": 398.5,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_BA0D970B338F",
+      "assertion": "MUST_EXIST",
+      "page": 14,
+      "diff_type": "MODIFY",
+      "source_type": "signing_region",
+      "review_note": "第14页甲方账户替换。",
+      "semantic_before": "0502207509200033381",
+      "semantic_after": "485110100100298440",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 172.0,
+          "y0": 301.5,
+          "x1": 287.5,
+          "y1": 315.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_ED15B24B17AB",
+      "assertion": "MUST_EXIST",
+      "page": 14,
+      "diff_type": "MODIFY",
+      "source_type": "signing_region",
+      "review_note": "第14页甲方地址从王家峰小区改为平阳景苑。",
+      "semantic_before": "山西省太原市迎泽区王家峰小区东2排4号一层",
+      "semantic_after": "山西省太原市小店区平阳路65号平阳景苑B区第5幢720号",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 160.5,
+          "y0": 169.0,
+          "x1": 497.5,
+          "y1": 183.5,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_AF56387CFB40",
+      "assertion": "MUST_EXIST",
+      "page": 14,
+      "diff_type": "MODIFY",
+      "source_type": "signing_region",
+      "review_note": "第14页开户行从工商银行改为兴业银行。",
+      "semantic_before": "中国工商银行股份有限公司太原桃园南路支行",
+      "semantic_after": "兴业银行太原体育路支行",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 195.0,
+          "y0": 274.5,
+          "x1": 342.5,
+          "y1": 289.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_185A7FCBD72D",
+      "assertion": "MUST_REVIEW",
+      "page": 14,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第14页新增甲方圆章。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 179.33333333333334,
+          "y0": 77.30194805194806,
+          "x1": 297.3333333333333,
+          "y1": 192.58847402597402,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_337AF966173E",
+      "assertion": "MUST_REVIEW",
+      "page": 14,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第14页新增个人姓名章；不要求识别姓名。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "PERSONAL_NAME_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 303.33333333333337,
+          "y0": 121.28409090909092,
+          "x1": 362.0,
+          "y1": 178.59415584415584,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_E4682B3D11C9",
+      "assertion": "MUST_EXIST",
+      "page": 2,
+      "diff_type": "MODIFY",
+      "source_type": "clause",
+      "review_note": "第2页补填柳文斌并更换甲方地址。",
+      "semantic_before": "山西省太原市迎泽区王家峰小区东2排4号一层",
+      "semantic_after": "柳文斌",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 194.7,
+          "y0": 215.2,
+          "x1": 238.8,
+          "y1": 233.3,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_EC04818E2524",
+      "assertion": "MUST_EXIST",
+      "page": 12,
+      "diff_type": "MODIFY",
+      "source_type": "clause",
+      "review_note": "第12页合同份数及双方副本分配发生真实修改。",
+      "semantic_before": "本合同一式柒份",
+      "semantic_after": "本合同一式肆份",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 233.7,
+          "y0": 643.7,
+          "x1": 249.3,
+          "y1": 660.8,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_D93AF317BE78",
+      "assertion": "MUST_REVIEW",
+      "page": 13,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第13页有淡红方章痕迹，疑似透印，必须保留待复核，不确认独立盖章行为。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "OTHER_STAMP",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 237.33333333333334,
+          "y0": 155.9366883116883,
+          "x1": 294.0,
+          "y1": 178.59415584415584,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUABEI_FIVE_STATIONS_96018A925F60",
+      "assertion": "MUST_EXIST",
+      "page": 1,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第1页右边缘出现红色骑缝章痕迹，原件无该图形。",
+      "visual_object_type": "seal",
+      "object_type": "EDGE_SEAM_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 586.0,
+          "y0": 217.99999999999997,
+          "x1": 598.0,
+          "y1": 283.33333333333337,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    }
+  ]
+}

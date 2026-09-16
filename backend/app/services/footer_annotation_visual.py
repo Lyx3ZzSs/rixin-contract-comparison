@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import re
 from typing import Any, Protocol
 
-from app.models import BBox, DiffItem, DiffType, Document, EvidenceBox
+from app.models import BBox, DiffItem, DiffType, Document, EvidenceBox, Page
 from app.utils.id_utils import generate_diff_id
 
 
@@ -174,7 +175,7 @@ class OpenCvPageRegistrar:
 
 
 class FooterAnnotationVisualComparator:
-    """Find handwritten lower-left footer annotations after page registration."""
+    """Find footer ink changes using printed page numbers or layout regions."""
 
     roi_left = 0.02
     roi_right = 0.34
@@ -219,9 +220,9 @@ class FooterAnnotationVisualComparator:
         *,
         start_index: int = 1,
     ) -> list[DiffItem]:
-        original_pages = {page.page_no for page in original.pages}
-        compare_pages = {page.page_no for page in compare.pages}
-        shared_pages = sorted(original_pages & compare_pages)
+        original_pages = {page.page_no: page for page in original.pages}
+        compare_pages = {page.page_no: page for page in compare.pages}
+        shared_pages = sorted(original_pages.keys() & compare_pages.keys())
 
         def compare_page(page_no: int) -> list[DiffItem]:
             original_page = self.renderer.render(str(original.path), page_no)
@@ -233,6 +234,8 @@ class FooterAnnotationVisualComparator:
                 compare_page,
                 page_no=page_no,
                 start_index=1,
+                original_model=original_pages[page_no],
+                compare_model=compare_pages[page_no],
             )
 
         worker_count = min(self.max_inflight, len(shared_pages))
@@ -383,6 +386,8 @@ class FooterAnnotationVisualComparator:
         *,
         page_no: int,
         start_index: int,
+        original_model: Page | None = None,
+        compare_model: Page | None = None,
     ) -> list[DiffItem]:
         try:
             import cv2
@@ -412,8 +417,16 @@ class FooterAnnotationVisualComparator:
         except Exception:
             return []
 
-        compare_components = self._annotation_regions(self._one_sided_components(compare_image, aligned_original))
-        original_components = self._annotation_regions(self._one_sided_components(original_image, aligned_compare))
+        compare_components = self._annotation_regions(
+            self._one_sided_components(
+                compare_image, aligned_original, search_region=self._footer_search_region(compare_model)
+            )
+        )
+        original_components = self._annotation_regions(
+            self._one_sided_components(
+                original_image, aligned_compare, search_region=self._footer_search_region(original_model)
+            )
+        )
         diffs: list[DiffItem] = []
         next_index = start_index
         if original_components:
@@ -486,7 +499,42 @@ class FooterAnnotationVisualComparator:
             novel_pixels=left.novel_pixels + right.novel_pixels,
         )
 
-    def _one_sided_components(self, source: Any, aligned_opposite: Any) -> list[_InkComponent]:
+    @staticmethod
+    def _footer_search_region(page: Page | None) -> tuple[float, float, float, float] | None:
+        if page is None or page.width <= 0 or page.height <= 0:
+            return None
+        numbers = [
+            b
+            for b in page.blocks
+            if b.block_type == "number"
+            and re.fullmatch(r"\d{1,4}", b.text.strip())
+            and b.bbox.y0 >= page.height * 0.75
+            and b.bbox.y1 < page.height * 0.97
+            and 0.3 * page.width <= (b.bbox.x0 + b.bbox.x1) / 2 <= 0.7 * page.width
+            and b.bbox.y1 - b.bbox.y0 <= 25
+        ]
+        if len(numbers) == 1:
+            # The printed number marks the end of this page's body. Search
+            # all footer columns, without requiring a recognized name/label.
+            top = (numbers[0].bbox.y1 + 3) / page.height
+            return (0.025, 0.97, top, 0.995) if top < 0.98 else None
+        regions = [
+            b
+            for b in page.blocks
+            if b.block_type in {"footnote", "vision_footnote", "footer", "page_footer"}
+            and b.bbox.y0 >= page.height * 0.85
+            and b.bbox.y1 - b.bbox.y0 >= 12
+        ]
+        if regions:
+            return (
+                max(0.025, min(b.bbox.x0 for b in regions) / page.width - 0.025),
+                min(0.97, max(b.bbox.x1 for b in regions) / page.width + 0.025),
+                max(0.85, min(b.bbox.y0 for b in regions) / page.height - 0.02),
+                0.995,
+            )
+        return None
+
+    def _one_sided_components(self, source: Any, aligned_opposite: Any, *, search_region=None) -> list[_InkComponent]:
         try:
             import cv2
             import numpy as np
@@ -495,7 +543,7 @@ class FooterAnnotationVisualComparator:
             source_seed_mask = self._ink_mask(source, self.source_seed_threshold)
             opposite_mask = self._ink_mask(aligned_opposite, self.aligned_ink_threshold)
             opposite_mask = cv2.dilate(opposite_mask, np.ones((7, 7), dtype=np.uint8))
-            candidates = self._candidate_components(source_mask)
+            candidates = self._candidate_components(source_mask, search_region=search_region)
             result: list[_InkComponent] = []
             for component in candidates:
                 seed_pixels = int(
@@ -525,15 +573,25 @@ class FooterAnnotationVisualComparator:
         except Exception:
             return []
 
-    def _candidate_components(self, ink_mask: Any) -> list[_InkComponent]:
+    def _candidate_components(self, ink_mask: Any, *, search_region=None) -> list[_InkComponent]:
         import cv2
         import numpy as np
 
         height, width = ink_mask.shape[:2]
-        x0 = int(width * self.roi_left)
-        x1 = int(width * self.roi_right)
-        y0 = int(height * self.roi_top)
-        y1 = int(height * self.roi_bottom)
+        if search_region is not None:
+            # Remove scan shadows before cropping the footer. Cropping first
+            # detaches border ink and makes it look like an isolated pen mark.
+            connected_mask = cv2.morphologyEx(ink_mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+            _, labels = cv2.connectedComponents(connected_mask)
+            edge_labels = np.unique(np.concatenate((labels[0], labels[-1], labels[:, 0], labels[:, -1])))
+            edge_labels = edge_labels[edge_labels != 0]
+            ink_mask = ink_mask.copy()
+            ink_mask[np.isin(labels, edge_labels)] = 0
+        left, right, top, bottom = search_region or (self.roi_left, self.roi_right, self.roi_top, self.roi_bottom)
+        x0 = int(width * left)
+        x1 = int(width * right)
+        y0 = int(height * top)
+        y1 = int(height * bottom)
         roi_mask = np.zeros_like(ink_mask)
         roi_mask[y0:y1, x0:x1] = ink_mask[y0:y1, x0:x1]
         roi_view = roi_mask[y0:y1, x0:x1]
@@ -593,7 +651,9 @@ class FooterAnnotationVisualComparator:
                 y1=int(ys.max()) + 1,
                 ink_pixels=int(len(source_pixels)),
             )
-            if self._plausible_component(component, width, height, stats[label]):
+            if self._plausible_component(
+                component, width, height, stats[label], footer_context=search_region is not None
+            ):
                 components.append(component)
         return components
 
@@ -603,6 +663,8 @@ class FooterAnnotationVisualComparator:
         page_width: int,
         page_height: int,
         grouped_stats: Any,
+        *,
+        footer_context: bool = False,
     ) -> bool:
         width = component.x1 - component.x0
         height = component.y1 - component.y0
@@ -610,7 +672,7 @@ class FooterAnnotationVisualComparator:
         grouped_height = int(grouped_stats[3])
         if component.ink_pixels < self.min_ink_pixels or width < 2 or height < 4:
             return False
-        if width > max(40, page_width * 0.13) or height > max(30, page_height * 0.06):
+        if width > max(40, page_width * 0.13) or height > max(30, page_height * (0.15 if footer_context else 0.06)):
             return False
         if height > width * 8 or width > height * 8:
             return False
@@ -629,7 +691,9 @@ class FooterAnnotationVisualComparator:
         registration: PageRegistration,
     ) -> DiffItem:
         label = "新增" if diff_type == "ADD" else "删除"
-        text = "检测到左下角手写签注"
+        left_only = all(c.x1 <= rendered.image.shape[1] * self.roi_right for c in components)
+        location = "左下角" if left_only else "页脚"
+        text = f"检测到{location}手写签注"
         evidences = [
             self._make_evidence(
                 component,
@@ -644,12 +708,12 @@ class FooterAnnotationVisualComparator:
         return DiffItem(
             diff_id=generate_diff_id(index),
             diff_type=diff_type,
-            title=f"第{page_no}页左下角手写签注",
+            title=f"第{page_no}页{location}手写签注",
             original_text=text if diff_type == "DELETE" else "",
             compare_text=text if diff_type == "ADD" else "",
             original_snippet=text if diff_type == "DELETE" else "",
             compare_snippet=text if diff_type == "ADD" else "",
-            readable_change=f"{label}左下角手写签注：第{page_no}页",
+            readable_change=f"{label}{location}手写签注：第{page_no}页",
             source_type="header_footer",
             review_flags=[
                 "HEADER_FOOTER_REVIEW",
@@ -657,6 +721,8 @@ class FooterAnnotationVisualComparator:
                 self.visual_flag,
             ],
             quality_status="NEEDS_REVIEW",
+            content_recognition_status="NEEDS_REVIEW",
+            content_recognition_reason="VISUAL_FOOTER_INK_TEXT_UNVERIFIED",
             original_evidence=evidences if diff_type == "DELETE" else [],
             compare_evidence=evidences if diff_type == "ADD" else [],
         )

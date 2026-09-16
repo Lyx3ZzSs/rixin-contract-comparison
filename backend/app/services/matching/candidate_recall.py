@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections import Counter
+import time
 
 from app.models import Clause
 from app.services.matching._fuzz import RAPIDFUZZ_RATIO, RAPIDFUZZ_TOKEN_SET, top_k_indices
@@ -56,6 +58,11 @@ class CandidateRecallMixin:
         return self._apply_rerank(candidates)
 
     def _build_candidates_prefiltered(self, original: list[Clause], compare: list[Clause]) -> list[MatchCandidate]:
+        exact = self._unique_aligned_exact_matches(original, compare)
+        self._exact_shadow_expected = {
+            original[left].clause_id: compare[right].clause_id for left, right in exact.items()
+        }
+        self._performance.set_counter("unambiguous_exact_groups", len(exact))
         compare_no_index = self._build_clause_no_index(compare)
         compare_key_index = self._build_clause_key_index(compare)
         compare_path_index = self._build_canonical_path_index(compare)
@@ -86,6 +93,20 @@ class CandidateRecallMixin:
         for original_index, left in enumerate(original):
             candidate_sources: dict[int, set[str]] = {}
 
+            if self.performance_strategy == "enabled" and original_index in exact:
+                ci = exact[original_index]
+                details = self._score_details(left, compare[ci], original_index, ci, original, compare,
+                                              original_count, compare_count)
+                score = self._weighted_score(details)
+                candidate = MatchCandidate(left, compare[ci], score,
+                    self._match_method(left, compare[ci], details, score), details, ("unique_aligned_exact",))
+                if self._candidate_acceptable(candidate):
+                    candidates.append(candidate)
+                    self._exact_selected[left.clause_id] = compare[ci].clause_id
+                    self._performance.increment("exact_groups_selected")
+                    continue
+                self._performance.increment("exact_groups_fallback")
+
             def add_candidate(index: int, source: str) -> None:
                 if 0 <= index < len(compare):
                     candidate_sources.setdefault(index, set()).add(source)
@@ -103,6 +124,20 @@ class CandidateRecallMixin:
             if left_path and left_path in compare_path_index:
                 for ci in compare_path_index[left_path]:
                     add_candidate(ci, "canonical_path")
+
+            counterpart_pages: set[int] = set()
+            counterparts_for_original = getattr(
+                getattr(self, "page_alignment", None),
+                "counterparts_for_original",
+                None,
+            )
+            if callable(counterparts_for_original):
+                for page_no in left.page_numbers:
+                    counterpart_pages.update(counterparts_for_original(page_no))
+            if counterpart_pages:
+                for ci, right in enumerate(compare):
+                    if counterpart_pages.intersection(right.page_numbers):
+                        add_candidate(ci, "page_alignment")
 
             orig_ratio = original_index / original_count
             for ci, _right in enumerate(compare):
@@ -158,6 +193,10 @@ class CandidateRecallMixin:
                 for ci in range(len(compare)):
                     add_candidate(ci, "fallback_all")
 
+            scoring_started = time.perf_counter()
+            for sources in candidate_sources.values():
+                for source in sources:
+                    self._performance.increment(f"recall_source_{source}")
             for compare_index, sources in candidate_sources.items():
                 right = compare[compare_index]
                 details = self._score_details(
@@ -185,6 +224,7 @@ class CandidateRecallMixin:
                 score = self._weighted_score(details)
                 method = self._match_method(left, right, details, score)
                 candidates.append(MatchCandidate(left, right, score, method, details, tuple(sorted(sources))))
+            self._performance.record_duration("rule_candidate_scoring", time.perf_counter() - scoring_started)
 
         candidates.sort(
             key=lambda item: (
@@ -197,6 +237,54 @@ class CandidateRecallMixin:
         )
         return self._apply_rerank(candidates)
 
+    def _unique_aligned_exact_matches(self, original: list[Clause], compare: list[Clause]) -> dict[int, int]:
+        """Conservative pilot: literal, unique, structurally compatible matches.
+
+        Changed text, uncertain/reflowed pages and competing identical clauses
+        retain the existing broad search and all model scoring.
+        """
+        if self.performance_strategy == "off" or self.page_alignment is None:
+            return {}
+        left_counts = Counter(c.text for c in original)
+        right_counts = Counter(c.text for c in compare)
+        right_index = {c.text: i for i, c in enumerate(compare) if right_counts[c.text] == 1}
+        result = {}
+        reasons: Counter[str] = Counter()
+        for i, left in enumerate(original):
+            if len(left.text.strip()) < 30:
+                reasons["short_text"] += 1
+                continue
+            if left_counts[left.text] != 1:
+                reasons["duplicate_original"] += 1
+                continue
+            if left.text not in right_index:
+                reasons["duplicate_compare" if right_counts[left.text] > 1 else "text_changed"] += 1
+                continue
+            ci = right_index[left.text]
+            right = compare[ci]
+            if self._match_text(left) != self._match_text(right):
+                reasons["match_text_changed"] += 1
+                continue
+            if self._canonical_path(left) != self._canonical_path(right) or left.clause_no != right.clause_no:
+                reasons["structure_changed"] += 1
+                continue
+            if left.title != right.title or left.clause_key != right.clause_key:
+                reasons["identity_changed"] += 1
+                continue
+            if len(left.page_numbers) != 1 or len(right.page_numbers) != 1:
+                reasons["multiple_pages"] += 1
+                continue
+            entry = self.page_alignment.entry_for_original(left.page_numbers[0])
+            if (entry is None or entry.status.value != "MATCHED" or entry.alignment_score < 0.8
+                    or entry.compare_pages != tuple(right.page_numbers)):
+                reasons["page_relation_uncertain"] += 1
+                continue
+            result[i] = ci
+            reasons["eligible"] += 1
+        for reason, count in reasons.items():
+            self._performance.increment(f"exact_screen_{reason}", count)
+        return result
+
     def _apply_rerank(self, candidates: list[MatchCandidate]) -> list[MatchCandidate]:
         if not self.rerank_matcher.enabled or not candidates:
             return candidates
@@ -204,11 +292,12 @@ class CandidateRecallMixin:
         groups = self._rerank_groups(candidates)
         self._performance.set_counter("rerank_candidate_group_count", len(groups))
         score_groups = getattr(self.rerank_matcher, "score_candidate_groups", None)
-        grouped_scores = (
-            score_groups(groups)
-            if callable(score_groups)
-            else [self.rerank_matcher.score_candidates(group) for group in groups]
-        )
+        with self._performance.measure("rerank_batch_wall"):
+            grouped_scores = (
+                score_groups(groups)
+                if callable(score_groups)
+                else [self.rerank_matcher.score_candidates(group) for group in groups]
+            )
         for group, rerank_scores in zip(groups, grouped_scores, strict=False):
             if not any(available for _, available, _ in rerank_scores):
                 continue
@@ -263,6 +352,9 @@ class CandidateRecallMixin:
             by_original.setdefault(candidate.original.clause_id, []).append(candidate)
         groups: list[list[MatchCandidate]] = []
         for group in by_original.values():
+            if len(group) == 1 and "unique_aligned_exact" in group[0].sources:
+                self._performance.increment("rerank_exact_groups_skipped")
+                continue
             group.sort(
                 key=lambda item: (
                     item.score,

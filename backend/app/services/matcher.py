@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
+from functools import lru_cache
+
 import httpx
 
 from app.models import Clause, ClausePair
@@ -62,8 +65,15 @@ class ClauseMatcher(
         rerank_max_retries: int = 1,
         rerank_weight: float = 0.12,
         low_confidence_review_threshold: float = 78.0,
+        performance_strategy: str = "off",
+        feature_cache_enabled: bool = True,
+        deduplicate_model_inputs: bool = False,
     ) -> None:
         self.threshold = threshold
+        if performance_strategy not in {"off", "shadow", "enabled"}:
+            raise ValueError("performance_strategy must be off, shadow or enabled")
+        self.performance_strategy = performance_strategy
+        self.feature_cache_enabled = feature_cache_enabled
         self.normalizer = TextNormalizer()
         self.alignment_analyzer = ClauseAlignmentAnalyzer(self.normalizer)
         self.number_parser = ClauseNumberParser()
@@ -103,10 +113,16 @@ class ClauseMatcher(
             timeout_seconds=rerank_timeout_seconds,
             max_retries=rerank_max_retries,
         )
+        self.semantic_matcher.deduplicate_inputs = deduplicate_model_inputs
+        self.rerank_matcher.deduplicate_inputs = deduplicate_model_inputs
         self._performance = PerformanceRecorder()
         self.last_performance_metrics: dict[str, object] = {}
+        self.page_alignment = None
 
-    def match(self, original: list[Clause], compare: list[Clause]) -> list[ClausePair]:
+    def match(self, original: list[Clause], compare: list[Clause], *, page_alignment=None) -> list[ClausePair]:
+        self.page_alignment = page_alignment
+        self._exact_selected: dict[str, str] = {}
+        self._exact_shadow_expected: dict[str, str] = {}
         self._performance = PerformanceRecorder()
         for provider in (self.semantic_matcher, self.rerank_matcher):
             set_recorder = getattr(provider, "set_performance_recorder", None)
@@ -115,12 +131,63 @@ class ClauseMatcher(
         self._performance.set_counter("original_clause_count", len(original))
         self._performance.set_counter("compare_clause_count", len(compare))
         try:
-            return self._match_clauses(original, compare)
+            with ExitStack() as stack:
+                if self.feature_cache_enabled:
+                    cache_similarities = getattr(self.semantic_matcher, "cache_similarities", None)
+                    if callable(cache_similarities):
+                        stack.enter_context(cache_similarities())
+                    for owner, names in (
+                        (self, ("_normalize_clause_no", "_business_tokens", "_weak_title",
+                                "_canonical_path_from_parts", "_page_relationship_score")),
+                        (self.alignment_analyzer, ("_normalized_body", "_critical_tokens", "_clause_no_key", "_stable_key")),
+                    ):
+                        for name in names:
+                            method = getattr(owner, name)
+                            memo = lru_cache(maxsize=8192)(method)
+                            setattr(owner, name, memo)
+                            stack.callback(setattr, owner, name, method)
+                            stack.callback(memo.cache_clear)
+                            if name in {"_canonical_path_from_parts", "_page_relationship_score"}:
+                                stack.callback(self._record_cache_metrics, name, memo)
+                pairs = self._match_clauses(original, compare)
+                if self.performance_strategy == "shadow":
+                    actual = {p.original.clause_id: p.compare.clause_id for p in pairs if p.original and p.compare}
+                    self._performance.set_counter("exact_shadow_agreed", sum(
+                        actual.get(left) == right for left, right in self._exact_shadow_expected.items()
+                    ))
+                    self._performance.set_counter("exact_shadow_disagreed", sum(
+                        actual.get(left) != right for left, right in self._exact_shadow_expected.items()
+                    ))
+                if self.performance_strategy == "enabled" and self._exact_selected:
+                    actual = {p.original.clause_id: p.compare.clause_id for p in pairs if p.original and p.compare}
+                    if any(actual.get(left) != right for left, right in self._exact_selected.items()):
+                        self._performance.increment("exact_assignment_conflict_fallback")
+                        self.performance_strategy = "off"
+                        try:
+                            pairs = self._match_clauses(original, compare)
+                        finally:
+                            self.performance_strategy = "enabled"
+                return pairs
         finally:
+            # Context cleanup records cache statistics on both success and error.
+            self.last_performance_metrics = self._performance.snapshot()
             for provider in (self.semantic_matcher, self.rerank_matcher):
                 close = getattr(provider, "close", None)
                 if callable(close):
                     close()
+
+    def _page_alignment_score(self, left: Clause, right: Clause) -> float:
+        return self._page_relationship_score(tuple(left.page_numbers), tuple(right.page_numbers))
+
+    def _page_relationship_score(self, original_pages: tuple[int, ...], compare_pages: tuple[int, ...]) -> float:
+        relationship_score = getattr(self.page_alignment, "relationship_score", None)
+        if not callable(relationship_score):
+            return 0.0
+        return float(relationship_score(set(original_pages), set(compare_pages)))
+
+    def _record_cache_metrics(self, name: str, memo) -> None:
+        for key, value in memo.cache_info()._asdict().items():
+            self._performance.set_counter(f"{name.lstrip('_')}_cache_{key}", value)
 
     def _match_clauses(self, original: list[Clause], compare: list[Clause]) -> list[ClausePair]:
         pairs: list[ClausePair] = []
@@ -162,6 +229,8 @@ class ClauseMatcher(
                 compare_order.get(pair.compare.clause_id if pair.compare is not None else "", len(compare)),
             )
         )
+
+        pairs.extend(self._recover_adjacent_heading_from_body_pair(original, pairs, matched_original))
 
         with self._performance.measure("structural_drift_matching"):
             structural_pairs = self._match_structural_drift_candidates(

@@ -8,6 +8,7 @@ FIELD_LABELS: dict[str, str] = {
     "tax_no": "税号",
     "sign_place": "签订地点",
     "sign_date": "签订日期",
+    "cover_date": "封面日期",
     "validity_period": "有效期限",
 }
 
@@ -31,6 +32,8 @@ LABEL_TO_KEY: dict[str, str] = {
 }
 
 LABEL_PREFIX_TO_KEY: dict[str, str] = {
+    "委托人合同编号": "contract_no_buyer",
+    "承包人合同编号": "contract_no_seller",
     "甲方合同编号": "contract_no_buyer",
     "乙方合同编号": "contract_no_seller",
 }
@@ -45,6 +48,7 @@ FIELD_ORDER: list[str] = [
     "tax_no",
     "sign_place",
     "sign_date",
+    "cover_date",
     "validity_period",
 ]
 

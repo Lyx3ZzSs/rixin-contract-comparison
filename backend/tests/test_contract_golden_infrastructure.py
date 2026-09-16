@@ -154,7 +154,45 @@ def test_modified_pdf_hash_fails(tmp_path: Path) -> None:
         )
 
 
-def test_only_nine_executed_contracts_fails() -> None:
-    expected = [f"CONTRACT_{index}" for index in range(10)]
-    with pytest.raises(GoldenDataError, match="all 10 contracts"):
+def test_missing_executed_contract_fails() -> None:
+    expected = [f"CONTRACT_{index}" for index in range(15)]
+    with pytest.raises(GoldenDataError, match="all 15 contracts"):
         validate_execution(expected, expected, expected[:-1])
+
+
+def _v2_cases(filename):
+    import json
+    return json.loads((Path(__file__).parent / 'fixtures/contract_golden/oracle' / filename).read_text())['assertions']
+
+
+def test_v2_aggregated_seal_still_requires_each_original_page_box():
+    cases=[c for c in _v2_cases('haneng_gonghe.json') if c.get('object_type')=='EDGE_SEAM_SEAL']
+    actual=_actual(source_type='seal',title='乙方 · 骑缝章',compare_text='骑缝章',
+                   quality_status='NEEDS_REVIEW',content_recognition_status='CONFIRMED',
+                   match_score_details={'object_type':'EDGE_SEAM_SEAL'},
+                   compare_evidence=[{'page_no':c['page'],'bbox':c['bbox_expectation']['target_bbox']} for c in cases])
+    SemanticGoldenMatcher().match('HANENG_GONGHE',cases,[actual]).assert_passed()
+    actual['compare_evidence'][1]['page_no']=99
+    assert SemanticGoldenMatcher().match('HANENG_GONGHE',cases,[actual]).failures
+
+
+def test_v2_partial_signature_candidate_does_not_excuse_conflicting_presentation():
+    case=next(c for c in _v2_cases('haneng_gonghe.json') if c['case_id'].endswith('A1EB09EADF'))
+    actual=_actual(compare_text='手写填写（姓名未可靠识别）',quality_status='NORMAL',
+                   section_type='signature:field',readable_change='空白 → 未观察',
+                   match_score_details={'field_key':'legal_representative','change_decision':'CONFIRMED'})
+    assert SemanticGoldenMatcher().match('HANENG_GONGHE',[case],[actual]).failures
+    actual['readable_change']='新增手写填写；内容识别待确认'
+    SemanticGoldenMatcher().match('HANENG_GONGHE',[case],[actual]).assert_passed()
+
+
+def test_v2_underlined_one_and_existing_heading_remain_forbidden_changes():
+    cases=_v2_cases('suizhou_changyuan.json')
+    for suffix,page,before,after in [('4736BD8B27',11,'第一种','第二种'),
+                                     ('EXISTING_OBLIGATIONS_HEADING_NOT_ADD',4,'','5. 双方义务')]:
+        case=next(c for c in cases if c['case_id'].endswith(suffix))
+        actual=_actual(source_type='clause',diff_type=case['diff_type'],title='任意展示标题',
+                       original_text=before,compare_text=after,
+                       compare_evidence=[{'page_no':page,'bbox':{'x0':60,'y0':700,'x1':150,'y1':730}}])
+        assert any(f.failure_type=='FALSE_POSITIVE_REGRESSION' for f in
+                   SemanticGoldenMatcher().match('SUIZHOU_CHANGYUAN',[case],[actual]).failures)

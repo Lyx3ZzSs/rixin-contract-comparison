@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "dataset_id": "golden-intake-20260908-five-tasks",
+  "status": "PROMOTED",
+  "blocking": true,
+  "source": "completed_actual_task_snapshots",
+  "contract_count": 5,
+  "diff_count": 55,
+  "local_data_root": "storage/golden-intake/2026-09-08-five-tasks",
+  "contracts": [
+    {
+      "contract_key": "TIANJIN_XINKOU",
+      "display_name": "天津辛口",
+      "source_run_id": "bc755fda-af6f-4733-80f6-9a68ea55956c",
+      "status": "PROMOTED",
+      "diff_count": 2,
+      "revision": 64,
+      "original": {
+        "file": "TIANJIN_XINKOU/original.pdf",
+        "source_filename": "original_国电投天津辛口光伏电站气象服务合同.pdf",
+        "sha256": "23e52a9ff18818e3559a89ae5607bdcaf7540db48014371a88f5d692e99c59d4",
+        "pages": 5
+      },
+      "compare": {
+        "file": "TIANJIN_XINKOU/compare.pdf",
+        "source_filename": "compare_国电投天津.pdf",
+        "sha256": "52414f52d98e19ad9f16e1a29f4b323e562edfd6f613225c11a344ea2322bd98",
+        "pages": 5
+      },
+      "snapshot": {
+        "file": "TIANJIN_XINKOU/actual-task.json",
+        "sha256": "dd34c815cfbc1378f9739486da9d5691f913228370a7a7beeb2377b0bbb48f67"
+      },
+      "formal_oracle": "oracle/tianjin_xinkou.json"
+    },
+    {
+      "contract_key": "HUABEI_FIVE_STATIONS",
+      "display_name": "华北5场站",
+      "source_run_id": "80093c2d-a528-4fe5-9fc0-7738ffb88b9a",
+      "status": "PROMOTED",
+      "diff_count": 17,
+      "revision": 64,
+      "original": {
+        "file": "HUABEI_FIVE_STATIONS/original.pdf",
+        "source_filename": "original_副本副本华北公司所属5个场站2026年功率预测服务合同.pdf",
+        "sha256": "b02b5a406a08285009965b3e65ff938aff9d90605189e41ce509af96c9581a34",
+        "pages": 48
+      },
+      "compare": {
+        "file": "HUABEI_FIVE_STATIONS/compare.pdf",
+        "source_filename": "compare_华北-山西.pdf",
+        "sha256": "4444ea4c89edf7d3bd209299a1c5244311f6d0fa432011dc6334a7d03baf36c7",
+        "pages": 47
+      },
+      "snapshot": {
+        "file": "HUABEI_FIVE_STATIONS/actual-task.json",
+        "sha256": "386fdb73336db3ae53eac9b0be76861ad0a07467f13964d606a119e7160951fe"
+      },
+      "formal_oracle": "oracle/huabei_five_stations.json"
+    },
+    {
+      "contract_key": "SHENNENG_NAIMAN",
+      "display_name": "深能奈曼",
+      "source_run_id": "24715bf0-4f6b-4196-9483-2e26fcc9b28d",
+      "status": "PROMOTED",
+      "diff_count": 12,
+      "revision": 64,
+      "original": {
+        "file": "SHENNENG_NAIMAN/original.pdf",
+        "source_filename": "original_GWZX-CG-202606018-国能日新-深能奈曼光伏电站功率预测系统-采购合同1.pdf",
+        "sha256": "53f085f1fadd7f63aeaf7fdda53a1659e1779201f648c71eb727dbf8cf22a8a0",
+        "pages": 31
+      },
+      "compare": {
+        "file": "SHENNENG_NAIMAN/compare.pdf",
+        "source_filename": "compare_深能奈曼.pdf",
+        "sha256": "2a66e2d4dd2e2f65f6f33cba2c29eb26e3dbfd7852cff8a51e6a6e57010df167",
+        "pages": 31
+      },
+      "snapshot": {
+        "file": "SHENNENG_NAIMAN/actual-task.json",
+        "sha256": "1b26dcc525094646d4f73fc52e77c7606cb77d5827b406d9515248f2473f5e34"
+      },
+      "formal_oracle": "oracle/shenneng_naiman.json"
+    },
+    {
+      "contract_key": "NUOYANG",
+      "display_name": "诺阳",
+      "source_run_id": "6bd0c5a4-20f4-4ff9-b605-edf08686c21e",
+      "status": "PROMOTED",
+      "diff_count": 19,
+      "revision": 64,
+      "original": {
+        "file": "NUOYANG/original.pdf",
+        "source_filename": "original_诺阳光伏电站功率预测接集控服务合同-改_3_.pdf",
+        "sha256": "1a1501da5593d48ca098899c44739d13d99c808a406b4c65f0daa82c629e0284",
+        "pages": 6
+      },
+      "compare": {
+        "file": "NUOYANG/compare.pdf",
+        "source_filename": "compare_诺阳.pdf",
+        "sha256": "4b9320407bd2a55845dc529417f6fd89d3e73706e13db680759efdc1a22003bb",
+        "pages": 6
+      },
+      "snapshot": {
+        "file": "NUOYANG/actual-task.json",
+        "sha256": "a3d5705e9e22baf165a236eb58f817e248682d0bcb0917a7c73803d5a11959ee"
+      },
+      "formal_oracle": "oracle/nuoyang.json"
+    },
+    {
+      "contract_key": "NANJING_DINGYI_XUZHOU_BANGYU",
+      "display_name": "南京顶益/徐州邦渝",
+      "source_run_id": "593d2c7b-ffae-4822-bd6a-4c369f5c1909",
+      "status": "PROMOTED",
+      "diff_count": 5,
+      "revision": 64,
+      "original": {
+        "file": "NANJING_DINGYI_XUZHOU_BANGYU/original.pdf",
+        "source_filename": "original_已签章-南京顶益食品有限公司5952KW屋顶分布式光伏发电项目徐州邦渝集中式光伏项目5.98兆瓦分布式功率预测系统V1.0采购合同.pdf",
+        "sha256": "7d76c9387a1cdf2cf8f76af81fd6e856b66c8c4a69f36848eebb4559321e46b5",
+        "pages": 8
+      },
+      "compare": {
+        "file": "NANJING_DINGYI_XUZHOU_BANGYU/compare.pdf",
+        "source_filename": "compare_南京.pdf",
+        "sha256": "3d706111bdf7dce72c54986a33d2c82720d4a098707ba3162cb8bb2b71dd8e18",
+        "pages": 8
+      },
+      "snapshot": {
+        "file": "NANJING_DINGYI_XUZHOU_BANGYU/actual-task.json",
+        "sha256": "9378c3b63b44d05fccdca9ae5953e7b19fa24fd2d52fe31ef135940ad1707f1a"
+      },
+      "formal_oracle": "oracle/nanjing_dingyi_xuzhou_bangyu.json"
+    }
+  ],
+  "promoted_to": "contract-golden-v3",
+  "formal_assertion_count": 56
+}

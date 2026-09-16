@@ -17,6 +17,12 @@ class CompareDebugWriter:
         self.artifact_store = artifact_store
         self.number_parser = ClauseNumberParser()
 
+    def write_cover_date_ocr(self, task_id: str, payload: dict[str, Any]) -> str:
+        return str(self._write_json(task_id, "cover_date_ocr.json", payload))
+
+    def write_cover_party_ocr(self, task_id: str, payload: list[dict[str, Any]]) -> str:
+        return str(self._write_json(task_id, "cover_party_ocr.json", payload))
+
     def write_profiles(
         self,
         task_id: str,
@@ -86,6 +92,9 @@ class CompareDebugWriter:
     def write_document_preparation(self, task_id: str, decisions: list[dict[str, Any]]) -> str:
         return str(self._write_json(task_id, "document_preparation.json", {"decisions": decisions}))
 
+    def write_page_alignment(self, task_id: str, payload: dict[str, Any]) -> str:
+        return str(self._write_json(task_id, "page_alignment.json", payload))
+
     def write_document_understanding(self, task_id: str, payload: dict[str, Any]) -> str:
         return str(self._write_json(task_id, "document_understanding.json", payload))
 
@@ -113,8 +122,10 @@ class CompareDebugWriter:
             )
         )
 
-    def write_diff_quality(self, task_id: str, decisions: list[dict[str, Any]]) -> str:
-        return str(self._write_json(task_id, "diff_quality.json", {"decisions": decisions}))
+    def write_diff_quality(
+        self, task_id: str, decisions: list[dict[str, Any]], *, candidates: list[dict[str, Any]] | None = None,
+    ) -> str:
+        return str(self._write_json(task_id, "diff_quality.json", {"decisions": decisions, "candidates": candidates or []}))
 
     def write_ocr_quality(self, task_id: str, summary) -> str:
         return str(self._write_json(task_id, "ocr_quality.json", to_jsonable(summary)))

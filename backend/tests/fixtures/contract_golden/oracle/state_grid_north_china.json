@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "STATE_GRID_NORTH_CHINA",
-  "expected_case_count": 20,
+  "expected_case_count": 21,
   "assertions": [
     {
       "case_id": "STATE_GRID_NORTH_CHINA_P1_METADATA_ADD_A5ED1AD126",
@@ -37,11 +37,11 @@
       "region": "signing",
       "source_type": "seal",
       "diff_type": "ADD",
-      "title": "印章区域（第1页）",
+      "title": "骑缝章",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
       "content_recognition_status": "CONFIRMED",
-      "semantic_after": "<divstyle=\"text-align:center;\"><imgsrc=\"imgs/img_in_seal_box_1124_1097_1",
+      "semantic_after": "骑缝章",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
@@ -51,7 +51,9 @@
           "y1": 656.0
         },
         "min_iou": 0.35
-      }
+      },
+      "object_type": "EDGE_SEAM_SEAL",
+      "review_note": "旧目标页/物理框对应 release D003，同页最大 IoU=1.00000；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 多页骑缝章已聚合，必须用object_type=EDGE_SEAM_SEAL以启用matcher同一对象按不同页消费，保留每页物理框断言。"
     },
     {
       "case_id": "STATE_GRID_NORTH_CHINA_P2_SEAL_ADD_3CE9A856A0",
@@ -60,11 +62,11 @@
       "region": "signing",
       "source_type": "seal",
       "diff_type": "ADD",
-      "title": "印章区域（第2页）",
+      "title": "甲方 · 其他印章",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
       "content_recognition_status": "CONFIRMED",
-      "semantic_after": "<divstyle=\"text-align:center;\"><imgsrc=\"imgs/img_in_seal_box_0_1119_69_1",
+      "semantic_after": "视觉印章",
       "bbox_expectation": {
         "side": "compare",
         "target_bbox": {
@@ -74,7 +76,9 @@
           "y1": 656.0
         },
         "min_iou": 0.35
-      }
+      },
+      "object_type": "OTHER_STAMP",
+      "review_note": "旧目标页/物理框对应 release D004，同页最大 IoU=0.57888；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 原件可见局部红色圆弧/印章残片，暂不硬判公司章或姓名章；OTHER_STAMP表示类型未定，允许保留人工复核。"
     },
     {
       "case_id": "STATE_GRID_NORTH_CHINA_P12_SIGNATURE_DELETE_3633BFCB53",
@@ -519,6 +523,14 @@
         "party_column": "left",
         "page_width": 595.2999877929688
       }
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
     }
-  ]
+  ],
+  "baseline_version": "contract-golden-v2"
 }

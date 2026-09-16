@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import fitz
+import pytest
 
 from app.models import BBox, Document, Page, TextBlock
 from app.services.signing_region.models import (
@@ -117,6 +118,20 @@ def _region(*elements: SigningElement) -> SigningRegion:
     )
 
 
+@pytest.mark.parametrize("prior_status", ["NEEDS_REVIEW", "CONFIRMED"])
+def test_consistent_date_rereads_do_not_clear_existing_content_review(tmp_path: Path, prior_status: str) -> None:
+    field = _field(value="2026年5月8日", supporting="206年5月8日")
+    field.raw_ref.update(field_key="date", content_recognition_status=prior_status,
+                         content_recognition_reason="CONFLICTING_VALUE_CANDIDATES")
+    ocr = SigningFieldValueOCR(extractor=_FakeOCRExtractor(["2026年5月8日", "2026年5月8日"]))
+    with fitz.open(_pdf(tmp_path)) as pdf:
+        diagnostic = ocr._recover_occluded_printed_field(pdf, field)
+    assert diagnostic["status"] == "RECOVERED"
+    assert field.text == "2026年5月8日"
+    assert field.raw_ref["content_recognition_status"] == prior_status
+    assert diagnostic["content_review_preserved"] == (prior_status == "NEEDS_REVIEW")
+
+
 def test_targeted_roi_ocr_can_localize_supported_complete_value(tmp_path: Path) -> None:
     field = _field()
     service = SigningFieldValueOCR(extractor=_FakeOCRExtractor(["郑伟"]))
@@ -152,3 +167,48 @@ def test_targeted_roi_ocr_never_uses_contaminated_cross_column_evidence(tmp_path
     assert diagnostics == []
     assert field.text == "伟"
     assert len(field.raw_ref["value_evidence"]) == 1
+
+
+def _occluded_address(value=""):
+    field = _field(value=value)
+    field.raw_ref.update(field_key="address", supporting_unlocalized_evidence=[], rejected_contaminated_evidence=[])
+    seal = SigningElement(element_id="seal", element_type=SigningElementType.SEAL, page_no=1,
+                          bbox=BBox(x0=180,y0=300,x1=270,y1=350), source="visual_model", confidence=.95)
+    return field, _region(field,seal)
+
+
+def test_red_suppressed_local_ocr_recovers_only_consistent_same_side_value(tmp_path):
+    field, region = _occluded_address()
+    service = SigningFieldValueOCR(extractor=_FakeOCRExtractor(["北京市昌平区商业街32号", "北京市昌平区商业街32号"]))
+    result = service.enrich_occluded_fields(_pdf(tmp_path), [region])
+    assert result[0]["status"] == "RECOVERED"
+    assert field.text == "北京市昌平区商业街32号"
+    assert field.observation_state.value == "OBSERVED_VALUE"
+    assert len(result[0]["attempted_inputs"]) == 2
+    assert all(len(item["input_sha256"]) == 64 for item in result[0]["attempted_inputs"])
+    # Coordinates are in the returned OCR page's coordinate system, not raw
+    # PNG pixels (the two dimensions differ for image files opened by PyMuPDF).
+    assert 180 <= field.raw_ref["value_bbox"]["x0"] < field.raw_ref["value_bbox"]["x1"] <= 280
+
+
+def test_disagreeing_recovery_does_not_overwrite_or_call_a_field_blank(tmp_path):
+    field, region = _occluded_address()
+    service = SigningFieldValueOCR(extractor=_FakeOCRExtractor(["北京市昌平区商业街32号", "北京市昌平区商业街33号"]))
+    result = service.enrich_occluded_fields(_pdf(tmp_path), [region])
+    assert result[0]["status"] == "LOCAL_READINGS_DISAGREE"
+    assert field.text == ""
+    assert field.observation_state is None
+
+
+def test_recovery_never_replaces_conflicting_readable_account_like_address(tmp_path):
+    field, region = _occluded_address("北京市昌平区商业街32号")
+    service = SigningFieldValueOCR(extractor=_FakeOCRExtractor(["北京市昌平区商业街33号", "北京市昌平区商业街33号"]))
+    result = service.enrich_occluded_fields(_pdf(tmp_path), [region])
+    assert result[0]["status"] == "LOCAL_READING_CONFLICTS_WITH_EXISTING_VALUE"
+    assert field.text.endswith("32号")
+
+
+def test_recovery_requires_same_page_visual_stamp(tmp_path):
+    field, region = _occluded_address()
+    region.elements[-1].page_no = 2
+    assert SigningFieldValueOCR(extractor=_FakeOCRExtractor([])).enrich_occluded_fields(_pdf(tmp_path), [region]) == []

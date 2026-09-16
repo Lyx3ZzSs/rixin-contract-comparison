@@ -55,3 +55,12 @@ export function computeRenderWindow(
   }
   return end < start ? { start: 1, end: 1 } : { start, end };
 }
+
+export function previewPageMetrics(pages: { page_no: number; height_points: number }[], zoom: number, gap: number): PageScrollMetric[] {
+  let top = 0;
+  return pages.map(page => { const metric = { pageNumber: page.page_no, offsetTop: top, offsetHeight: page.height_points * zoom }; top += metric.offsetHeight + gap; return metric; });
+}
+export function previewAnchorTop(pages: PageScrollMetric[], page: number, fraction: number): number | null {
+  const metric = pages.find(p => p.pageNumber === page);
+  return metric ? metric.offsetTop + metric.offsetHeight * Math.max(0, Math.min(1, fraction)) : null;
+}

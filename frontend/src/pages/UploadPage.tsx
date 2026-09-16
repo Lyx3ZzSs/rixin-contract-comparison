@@ -18,8 +18,6 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
   const [error, setError] = useState("");
   const [createdTask, setCreatedTask] = useState<CompareResponse | null>(null);
   const [isTaskToastVisible, setIsTaskToastVisible] = useState(false);
-  const [ignoreStamps, setIgnoreStamps] = useState(false);
-  const [ignoreHeadersFooters, setIgnoreHeadersFooters] = useState(false);
 
   const canSubmit = useMemo(
     () => Boolean(originalFile && compareFile && !isSubmitting),
@@ -50,11 +48,7 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
     setIsTaskToastVisible(false);
     setMessage("正在上传并创建合同对比任务...");
     try {
-      const payload = await compareContracts(originalFile, compareFile, {
-        ignoreStamps,
-        ignoreHeadersFooters,
-        signingRegionMode: ignoreStamps ? "off" : "full",
-      });
+      const payload = await compareContracts(originalFile, compareFile);
       setOriginalFile(null);
       setCompareFile(null);
       setCreatedTask(payload);
@@ -125,36 +119,6 @@ export function UploadPage({ onTaskCreated, onOpenRecords, taskToastDurationMs =
             onChange={setCompareFile}
           />
         </div>
-
-        <fieldset className="compare-options">
-          <legend>排除对比项</legend>
-          <label className="compare-option">
-            <input
-              type="checkbox"
-              aria-labelledby="ignore-stamps-label"
-              aria-describedby="ignore-stamps-helper"
-              checked={ignoreStamps}
-              onChange={(event) => setIgnoreStamps(event.target.checked)}
-            />
-            <span>
-              <strong id="ignore-stamps-label">排除印章区域</strong>
-              <small id="ignore-stamps-helper">忽略印章及其遮挡差异，不影响签字和签署信息比对</small>
-            </span>
-          </label>
-          <label className="compare-option">
-            <input
-              type="checkbox"
-              aria-labelledby="ignore-headers-footers-label"
-              aria-describedby="ignore-headers-footers-helper"
-              checked={ignoreHeadersFooters}
-              onChange={(event) => setIgnoreHeadersFooters(event.target.checked)}
-            />
-            <span>
-              <strong id="ignore-headers-footers-label">排除页眉页脚差异项</strong>
-              <small id="ignore-headers-footers-helper">不生成页眉、页脚、页码等差异</small>
-            </span>
-          </label>
-        </fieldset>
 
         <div className="compare-actions">
           <button className="compare-submit" type="submit" disabled={!canSubmit}>

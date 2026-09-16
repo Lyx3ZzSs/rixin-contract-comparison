@@ -1,0 +1,422 @@
+{
+  "schema_version": 1,
+  "contract_key": "NUOYANG",
+  "expected_case_count": 19,
+  "review_provenance": {
+    "method": "agent_visual_pdf_review",
+    "authorization": "用户明确要求：加入正式GOlden",
+    "source_run_id": "6bd0c5a4-20f4-4ff9-b605-edf08686c21e",
+    "date": "2026-09-08",
+    "evidence_root": "output/analysis/golden-v3-update"
+  },
+  "assertions": [
+    {
+      "case_id": "NUOYANG_96622D51ABEB",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "diff_type": "ADD",
+      "source_type": "header_footer",
+      "review_note": "第1页手写编号新增，编号前缀不可可靠确认，内容识别必须待复核，保留可读数字后缀。",
+      "semantic_after": "20260519-00019",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 252.5,
+          "y0": 19.0,
+          "x1": 476.5,
+          "y1": 72.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      },
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "NEEDS_REVIEW"
+    },
+    {
+      "case_id": "NUOYANG_0C775562BE22",
+      "assertion": "MUST_EXIST",
+      "page": 1,
+      "diff_type": "ADD",
+      "source_type": "header_footer",
+      "review_note": "扫描全能王创建水印新增。",
+      "semantic_after": "扫描全能王创建",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 478.5,
+          "y0": 777.0,
+          "x1": 573.5,
+          "y1": 791.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_C5E443B59BA1",
+      "assertion": "MUST_EXIST",
+      "page": 1,
+      "diff_type": "ADD",
+      "source_type": "metadata",
+      "review_note": "第1页印刷合同编号补填181211JX0120260019。",
+      "semantic_after": "181211JX0120260019",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 396.2,
+          "y0": 90.2,
+          "x1": 471.8,
+          "y1": 103.8,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_464E052D57C3",
+      "assertion": "MUST_EXIST",
+      "page": 1,
+      "diff_type": "MODIFY",
+      "source_type": "metadata",
+      "review_note": "第1页签订地点由广东省广州市改为浙江省金华市。",
+      "semantic_before": "广东省广州市",
+      "semantic_after": "浙江省金华市",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 325.2,
+          "y0": 604.2,
+          "x1": 350.3,
+          "y1": 622.8,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_6ABCBCDBDBBD",
+      "assertion": "MUST_EXIST",
+      "page": 1,
+      "diff_type": "ADD",
+      "source_type": "metadata",
+      "review_note": "第1页底部手写日期为2026年7月；226年不是原件真值。",
+      "semantic_after": "2026年7月",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 259.5,
+          "y0": 652.0,
+          "x1": 356.0,
+          "y1": 687.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_E87CB399E039",
+      "assertion": "MUST_EXIST",
+      "page": 1,
+      "diff_type": "ADD",
+      "source_type": "seal",
+      "review_note": "第1页右侧新增骑缝章。",
+      "visual_object_type": "seal",
+      "object_type": "EDGE_SEAM_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 541.6975446428571,
+          "y0": 311.3333333333333,
+          "x1": 557.6886160714286,
+          "y1": 378.6666666666667,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_8B780CE54A12",
+      "assertion": "MUST_REVIEW",
+      "page": 6,
+      "diff_type": "ADD",
+      "source_type": "seal",
+      "review_note": "第6页甲方新增公司圆章。",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 110.66666666666667,
+          "y0": 208.00000000000003,
+          "x1": 214.66666666666666,
+          "y1": 314.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_2986D9ADFEB8",
+      "assertion": "MUST_EXIST",
+      "page": 6,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第6页甲方签字日期补填2026年7月10日。",
+      "semantic_after": "2026年7月10日",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 176.5,
+          "y0": 649.0,
+          "x1": 273.0,
+          "y1": 674.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_988EF0FB325A",
+      "assertion": "MUST_REVIEW",
+      "page": 6,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第6页甲方有新增手写签名；不冻结无法可靠识别的姓名。",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "object_type": "HANDWRITTEN_SIGNATURE",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 176.00000000000003,
+          "y0": 282.6666666666667,
+          "x1": 223.99999999999997,
+          "y1": 316.6666666666667,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_0499C8286E26",
+      "assertion": "MUST_EXIST",
+      "page": 2,
+      "diff_type": "MODIFY",
+      "source_type": "clause",
+      "review_note": "第2页法定代表人由许峰改为吴峻。",
+      "semantic_before": "法定代表人:许峰",
+      "semantic_after": "法定代表人:吴峻",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 195.7,
+          "y0": 222.7,
+          "x1": 215.8,
+          "y1": 236.8,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_6AA182E8533D",
+      "assertion": "MUST_EXIST",
+      "page": 3,
+      "diff_type": "MODIFY",
+      "source_type": "clause",
+      "review_note": "第3页付款流程文字真实改写。",
+      "semantic_before": "提供100%合同总价的增值税专用发票",
+      "semantic_after": "甲方审核无误后30日内,将合同总价100%支付给乙方",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 207.7,
+          "y0": 657.7,
+          "x1": 211.3,
+          "y1": 668.3,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_5F1829574953",
+      "assertion": "MUST_EXIST",
+      "page": 4,
+      "diff_type": "MODIFY",
+      "source_type": "clause",
+      "review_note": "第4页5.2由有关人员参与项目改为相关人员配合。",
+      "semantic_before": "甲方有关人员参与项目",
+      "semantic_after": "甲方相关人员配合",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 277.2,
+          "y0": 209.7,
+          "x1": 287.3,
+          "y1": 220.3,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_705F99729F63",
+      "assertion": "MUST_EXIST",
+      "page": 5,
+      "diff_type": "MODIFY",
+      "source_type": "clause",
+      "review_note": "放大核对第5页：原件为辖权，扫描件印刷为轴权；确为原文字符差异，不能按法律常识纠正扫描件。",
+      "semantic_before": "辖权的人民法院起诉",
+      "semantic_after": "轴权的人民法院起诉",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 128.2,
+          "y0": 170.7,
+          "x1": 138.3,
+          "y1": 184.3,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_89957C047F82",
+      "assertion": "MUST_EXIST",
+      "page": 3,
+      "diff_type": "DELETE",
+      "source_type": "clause",
+      "review_note": "第3页原第2条合作方式被新工作内容条款替换。",
+      "semantic_before": "符合国家电投质量验收标准",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 91.17020725388602,
+          "y0": 355.65767066937445,
+          "x1": 101.26745466321243,
+          "y1": 367.75642394294647,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_D5EC7A7F076E",
+      "assertion": "MUST_EXIST",
+      "page": 3,
+      "diff_type": "ADD",
+      "source_type": "clause",
+      "review_note": "第3页新增具体工作内容标题。",
+      "semantic_after": "2. 具体工作内容:",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 125.7,
+          "y0": 332.2,
+          "x1": 135.3,
+          "y1": 345.3,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_FA536FC6E844",
+      "assertion": "MUST_EXIST",
+      "page": 3,
+      "diff_type": "ADD",
+      "source_type": "clause",
+      "review_note": "第3页新增2.1特定接口开发、联调及数据使用要求。",
+      "semantic_after": "2.1乙方负责开发诺阳光伏电站功率预测数据特定接口",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 125.2,
+          "y0": 357.7,
+          "x1": 136.8,
+          "y1": 368.8,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_0C44F0CFCE39",
+      "assertion": "MUST_EXIST",
+      "page": 3,
+      "diff_type": "ADD",
+      "source_type": "clause",
+      "review_note": "第3页新增2.2验收标准条款。",
+      "semantic_after": "2.2验收标准应满足国电投集团数据质量验收标准",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 126.2,
+          "y0": 407.7,
+          "x1": 137.8,
+          "y1": 419.3,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_708CBF1CE915",
+      "assertion": "MUST_EXIST",
+      "page": 3,
+      "diff_type": "ADD",
+      "source_type": "clause",
+      "review_note": "第3页新增2.3书面开工通知后30日工期。",
+      "semantic_after": "书面开工通知之日起30日内完成全部工作并通过最终验收",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 125.7,
+          "y0": 432.7,
+          "x1": 157.3,
+          "y1": 443.3,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NUOYANG_3AAAC4ACAF28",
+      "assertion": "MUST_EXIST",
+      "page": 4,
+      "diff_type": "ADD",
+      "source_type": "clause",
+      "review_note": "第4页新增6.4最终验收后12个月免费质保。",
+      "semantic_after": "提供为期[12]个月的免费质量保证期",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 128.7,
+          "y0": 383.2,
+          "x1": 139.8,
+          "y1": 393.3,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    }
+  ],
+  "regression_coverage": {
+    "updated_at": "2026-09-08",
+    "authorization": "用户要求：根据根本原因优化改进，并更新Golden数据",
+    "tests": "backend/tests/test_golden_v3_root_repairs.py",
+    "verification_evidence": "output/analysis/golden-v3-root-fix/",
+    "cases": [
+      {
+        "case_id": "NUOYANG_96622D51ABEB",
+        "invariant": "同一物理范围的多源OCR冲突必须传递到内容待复核状态。"
+      },
+      {
+        "case_id": "NUOYANG_6ABCBCDBDBBD",
+        "invariant": "异常封面年月须从本侧原图局部复核；不允许硬编码补字或复制对照值。"
+      }
+    ]
+  }
+}

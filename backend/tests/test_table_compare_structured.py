@@ -934,7 +934,8 @@ class TestStructuredTableComparison:
         second_row_text = " ".join(cell.text for cell in product_table.rows[1].cells)
         summary_cells = {cell.col_index: cell.text for cell in product_table.rows[2].cells}
         assert "合计" not in second_row_text
-        assert summary_cells == {0: "合计", 1: "200000.00元"}
+        # Amount words and the tax qualifier are content, not expendable noise.
+        assert summary_cells[0] == summary
 
     def test_evidence_has_page_and_bbox(self):
         orig_html = '<table><tr><td>名称</td><td>Server-X</td></tr></table>'
@@ -1295,13 +1296,13 @@ class TestStructuredTableComparison:
         diffs, warnings = TableComparator().build_diffs(orig, comp)
         assert diffs == []
 
-    def test_similarity_threshold_filters_single_ambiguous_ocr_character(self):
+    def test_similarity_does_not_erase_model_number_change(self):
         orig_html = '<table><tr><td>型号</td><td>StoneWall-2000BF</td></tr></table>'
         comp_html = '<table><tr><td>型号</td><td>StoneWall-200BF</td></tr></table>'
         orig = _make_doc([_make_table_block("o1", 1, orig_html)])
         comp = _make_doc([_make_table_block("c1", 1, comp_html)])
         diffs, warnings = TableComparator().build_diffs(orig, comp)
-        assert diffs == []
+        assert any("2000BF" in diff.original_text and "200BF" in diff.compare_text for diff in diffs)
 
     def test_contextual_box_character_in_interface_is_filtered_as_ocr_noise(self):
         orig_html = _product_table([
