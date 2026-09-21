@@ -52,7 +52,9 @@ def recover_ruled_tables(document: Document, *, max_inflight: int = 1,
                                        minLineLength=width * .25, maxLineGap=12)
             angles = []
             if segments is not None:
-                for x0, y0, x1, y1 in segments[:, 0]:
+                # OpenCV 4 returns (N, 1, 4); OpenCV 5 returns (N, 4).
+                # Reshape preserves line order, coordinate values and dtype.
+                for x0, y0, x1, y1 in segments.reshape(-1, 4):
                     angle = float(np.degrees(np.arctan2(y1-y0, x1-x0)))
                     if abs(angle) <= 4:
                         angles.append(angle)
