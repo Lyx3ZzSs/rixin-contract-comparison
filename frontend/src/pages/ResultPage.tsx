@@ -14,7 +14,7 @@ import type { PreviewMetadata } from '../lib/pdfPreviewTypes';
 
 const labels = { ADD: '新增', DELETE: '删除', MODIFY: '修改' };
 export function ResultPage({ taskId, onBack, accessToken = '' }: { taskId: string; onBack: () => void; accessToken?: string }) {
-  const { task, error: taskError, isLoading, retry, isRetrying } = useTaskProgress(taskId);
+  const { task, error: taskError, isLoading, retry, isRetrying, completionAnimating } = useTaskProgress(taskId);
   const [runtime, setRuntime] = useState<PdfPreviewRuntime | null>(null);
   const [metadata, setMetadata] = useState<PreviewMetadata | null | undefined>(undefined);
   const processing = task?.status === 'PROCESSING';
@@ -112,11 +112,12 @@ export function ResultPage({ taskId, onBack, accessToken = '' }: { taskId: strin
     <div className="event-workspace"><div className="event-documents">
       {(['original', 'compare'] as const).map(side => <div className="event-document" key={side}><header><strong>{side === 'original' ? '标准文档' : '比对文档'}</strong><span title={task[`${side}_filename`]}>{task[`${side}_filename`]}</span></header>{runtime && runtime.taskId === taskId && <PdfDocumentViewer runtime={runtime} metadata={metadata === null ? null : metadata?.documents[side]} ref={side === 'original' ? original : compare} side={side} title={side === 'original' ? '标准文档' : '比对文档'} src={toApiUrl(task[`${side}_pdf_url`])} accessToken={accessToken} diffs={diffs} zoom={zoom} activeDiffId={active} syncEnabled={sync} onScrollRatio={syncRatio} onPageScroll={hasPageAlignment ? syncPage : undefined} onActivateDiff={id => { const e = events.find(e => e.event_id === id); if(e) locate(e); }} />}</div>)}
     </div><aside className="event-list" aria-label="比对结果">
-      {processing ? <div className="state-screen" aria-live="polite">
-        <h2>{task.stage || '处理中'}</h2>
-        <ProgressRing value={Math.max(0, Math.min(100, task.progress_percent || 0))} label={task.stage || '处理中'} size="large" />
-        <p>可以先查看两份文档。差异检查完成后，结果会自动显示。</p>
-      </div> : <>
+      {(processing || completionAnimating) && <div className={processing ? 'state-screen' : 'event-completion-animation'} aria-live="polite">
+        <h2>{processing ? task.stage || '处理中' : '比对完成'}</h2>
+        <ProgressRing value={Math.max(0, Math.min(100, task.progress_percent || 0))} label={processing ? task.stage || '处理中' : '比对完成'} size="large" />
+        {processing && <p>可以先查看两份文档。差异检查完成后，结果会自动显示。</p>}
+      </div>}
+      {!processing && <>
       <header><h2>差异项 <span>{data?.event_count ?? '—'}</span></h2><div><button aria-label="上一条差异" disabled={events.findIndex(e => e.event_id === active) <= 0} onClick={() => locate(events[events.findIndex(e => e.event_id === active) - 1])}><ChevronLeft size={17}/></button><button aria-label="下一条差异" disabled={!events.length || events.findIndex(e => e.event_id === active) >= events.length - 1} onClick={() => locate(events[events.findIndex(e => e.event_id === active) + 1])}><ChevronRight size={17}/></button></div></header>
       <div className="event-filters"><select aria-label="元素筛选" value={element} onChange={e => setElement(e.target.value)}><option value="ALL">元素 · 全部</option><option value="clause">文本</option><option value="seal">印章</option><option value="table">表格</option><option value="graphic">图形</option><option value="metadata">封面 / 水印</option><option value="signing_region">签章区</option></select><select aria-label="类型筛选" value={filter} onChange={e => setFilter(e.target.value as typeof filter)}><option value="ALL">类型 · 全部</option>{(['ADD','DELETE','MODIFY'] as const).map(t => <option key={t} value={t}>{labels[t]}</option>)}</select><label><input type="checkbox" checked={needsReview} onChange={e => setNeedsReview(e.target.checked)} />仅看待复核</label></div>
       <p className="event-count">已筛选出 {events.length} 条 <small>共 {data?.event_count ?? 0} 项 · 展开不增计数</small></p>

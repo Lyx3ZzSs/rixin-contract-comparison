@@ -2,9 +2,9 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { ResultPage } from './ResultPage';
 import type { CompareTask, DiffEventResponse } from '../types';
-const mocks = vi.hoisted(() => ({getEvents:vi.fn(),review:vi.fn(),scroll:vi.fn(),scrollPage:vi.fn(),scrollRatio:vi.fn(),retry:vi.fn(),download:vi.fn(),task:null as Partial<CompareTask> | null,error:'',isLoading:false}));
+const mocks = vi.hoisted(() => ({getEvents:vi.fn(),review:vi.fn(),scroll:vi.fn(),scrollPage:vi.fn(),scrollRatio:vi.fn(),retry:vi.fn(),download:vi.fn(),task:null as Partial<CompareTask> | null,error:'',isLoading:false,completionAnimating:false}));
 vi.mock('../lib/api',()=>({getEvents:mocks.getEvents,getPreviewMetadata:vi.fn().mockRejectedValue(new Error('metadata unavailable')),updateEventReview:mocks.review,toApiUrl:(s:string)=>s}));
-vi.mock('../lib/hooks',()=>({useTaskProgress:()=>({task:mocks.task,error:mocks.error,isLoading:mocks.isLoading,retry:mocks.retry,isRetrying:false})}));
+vi.mock('../lib/hooks',()=>({useTaskProgress:()=>({task:mocks.task,error:mocks.error,isLoading:mocks.isLoading,retry:mocks.retry,isRetrying:false,completionAnimating:mocks.completionAnimating})}));
 vi.mock('../lib/authFetch',()=>({downloadAuthenticatedFile:mocks.download}));
 vi.mock('../components/PdfDocumentViewer', async()=>{const {forwardRef,useImperativeHandle}=await import('react');return {PdfDocumentViewer:forwardRef(function Viewer({diffs,side,syncEnabled,onPageScroll,onScrollRatio}:any,ref){
  useImperativeHandle(ref,()=>({scrollToDiff:mocks.scroll,scrollToPage:(...args:any[])=>mocks.scrollPage(side,...args),syncScrollFrom:(ratio:number)=>mocks.scrollRatio(side,ratio)}));
@@ -16,7 +16,7 @@ beforeEach(()=>{
  vi.clearAllMocks();
  window.history.replaceState({}, '', '/tasks/x');
  mocks.task={status:'COMPLETED',revision:1,original_filename:'原.pdf',compare_filename:'新.pdf',original_pdf_url:'/o',compare_pdf_url:'/c'};
- mocks.error=''; mocks.isLoading=false;
+ mocks.error=''; mocks.isLoading=false; mocks.completionAnimating=false;
  mocks.getEvents.mockResolvedValue(data); mocks.review.mockResolvedValue(data); mocks.download.mockResolvedValue(undefined);
 });
 it('synchronizes legacy documents by reading progress in both directions and honors the checkbox',async()=>{
@@ -157,4 +157,20 @@ it.each([
  expect(screen.getByText('处理已终止')).toBeInTheDocument();
  if(retryable){fireEvent.click(screen.getByRole('button',{name:'重试'}));expect(mocks.retry).toHaveBeenCalledOnce();}
  else expect(screen.queryByRole('button',{name:'重试'})).not.toBeInTheDocument();
+});
+
+it('requests events during completion animation and does not refetch or remount when it ends', async () => {
+ mocks.completionAnimating=true; mocks.task={...mocks.task,progress_percent:100};
+ const {rerender}=render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(await screen.findByText('连续新增内容')).toBeInTheDocument();
+ expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow','100');
+ const viewer=screen.getAllByTestId('viewer')[0];
+ const card=screen.getByText('连续新增内容');
+ expect(mocks.getEvents).toHaveBeenCalledTimes(1);
+ mocks.completionAnimating=false;
+ rerender(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+ expect(screen.getAllByTestId('viewer')[0]).toBe(viewer);
+ expect(screen.getByText('连续新增内容')).toBe(card);
+ expect(mocks.getEvents).toHaveBeenCalledTimes(1);
 });

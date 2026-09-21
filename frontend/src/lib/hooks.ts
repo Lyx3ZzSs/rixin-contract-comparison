@@ -219,6 +219,7 @@ interface UseTaskProgressResult {
   error: string;
   progressMode: ProgressMode;
   isRetrying: boolean;
+  completionAnimating: boolean;
   retry: () => Promise<void>;
 }
 
@@ -228,6 +229,7 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
   const [error, setError] = useState("");
   const [progressMode, setProgressMode] = useState<ProgressMode>("INITIAL_LOAD");
   const [isRetrying, setIsRetrying] = useState(false);
+  const [completionAnimating, setCompletionAnimating] = useState(false);
   const [synchronizationGeneration, setSynchronizationGeneration] = useState(0);
 
   useEffect(() => {
@@ -235,6 +237,7 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
     setIsLoading(true);
     setError("");
     setProgressMode("INITIAL_LOAD");
+    setCompletionAnimating(false);
 
     const synchronization = startProgressSynchronization({
       taskId,
@@ -259,14 +262,18 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
           progress_percent: progress.status === "COMPLETED" ? 100 : current.progress_percent,
         } : current);
       },
-      async onTerminal(terminalTask, source, signal) {
-        if (source === "poll" && terminalTask.status === "COMPLETED") {
-          await abortableDelay(RESULT_COMPLETION_ANIMATION_MS, signal);
-        }
+      onTerminal(terminalTask, source, signal) {
         if (signal.aborted) return;
         setTask(terminalTask);
         setError("");
         setIsLoading(false);
+        // Persisted data is ready now; animation has its own cancellable lifetime.
+        if (source === "poll" && terminalTask.status === "COMPLETED") {
+          setCompletionAnimating(true);
+          void abortableDelay(RESULT_COMPLETION_ANIMATION_MS, signal).then(() => {
+            if (!signal.aborted) setCompletionAnimating(false);
+          });
+        }
       },
       onError(nextError) {
         setError(nextError instanceof Error ? nextError.message : "读取任务失败。");
@@ -290,7 +297,7 @@ export function useTaskProgress(taskId: string): UseTaskProgressResult {
     }
   }, [taskId]);
 
-  return { task, isLoading, error, progressMode, isRetrying, retry };
+  return { task, isLoading, error, progressMode, isRetrying, completionAnimating, retry };
 }
 
 export function useRecordProgressSSE(
