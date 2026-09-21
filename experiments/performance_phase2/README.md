@@ -12,3 +12,19 @@
 - C-pathological 每次硬超时 300 秒（另记超时阶段及下界），不得无限运行。普通 case 每次上限 600 秒。
 
 输出目录：`output/analysis/perf-phase2-20260921/`。诊断脚本按阶段记录代码 SHA256 与输入 SHA256。缓存实验单列 cold miss/warm hit，首次上传与重复上传分开报告。
+
+## 复现入口
+
+从仓库根目录使用 `backend/.venv/bin/python`。实验模块只通过独立进程注入，不修改生产默认配置；禁止同时设置两个优化变量。
+
+- `run_browser_pairs.py --space <已有Ego TaskSpace id>`：既有production baseline/candidate构建的A–E交替真实浏览器实验。端口4179/4180与8019/8020必须空闲；固定构建位于本轮output，不静默重新构建baseline。
+- `run_native.py`：优先B的三个配置，出现block/section语义退化立即终止该配置。
+- `run_cpu_pipelines.py`：页对齐B三组、评分B三组分别交替；病理单对及完整pipeline分别每进程300秒上限。输出目录必须尚不存在，避免覆盖证据。
+- `run_alignment.py` / `run_alignment_matrix.py`：冻结提取结果重建原准备流程；先断言baseline与保存的page mapping一致，再做候选全字段比较。只计组件时间。
+- `run_score_cutoff.py`：前模型组件隔离对照，两侧禁用provider；不作为真实E2E。
+- `run_golden_candidate.py reference|alignment|scoring`：原样执行15合同/255断言，另保存完整pipeline语义快照。`summarize_golden.py`比较失败项及快照，不以失败总数代替逐字段比较。
+- `run_cache.py`：A小范围私有跨进程缓存；`PHASE2_CACHE_EXPERIMENT_OUTPUT`可指定新输出目录。显式UNVERIFIED session版本仅用于试点，不是生产模型版本。
+- `run_event_wire.py`、`browser_event_wire.mjs`：保存的A–E全响应序列化/解码等价及真实浏览器fetch/parse/hydrate；不替代UI审核/导出验收。
+- `summarize_pipeline.py <目录>`、`summarize_final.py`：从原始spans与browser数据生成数值表，不改变计时边界。
+
+实验测试：`PYTHONPATH=backend:experiments/performance_phase2 backend/.venv/bin/python -m pytest -q experiments/performance_phase2/test_*.py`。当前模型服务仍不提供内部时序，客户端等待只能记为远端请求墙钟时间。

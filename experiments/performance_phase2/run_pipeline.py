@@ -18,12 +18,42 @@ args.output.mkdir(parents=True, exist_ok=True)
 os.environ.update(DIAG_OUTPUT=str(args.output), STORAGE_DIR=str(args.output / "runtime"), AUTH_MODE="disabled")
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "backend/scripts"), str(ROOT / "experiments/e2e_diagnosis")]
 cases = json.loads((ROOT / "output/analysis/e2e-20260921/cases.json").read_text())
-case = cases[args.case]
+if args.case == "C-pathological":
+    historical = ROOT / "output/analysis/e2e-20260921/runtime-C/tasks/42e90acf-021e-429d-a03f-e29ad79fa2ff/input"
+    paths = [historical / side / f"C-{side}.pdf" for side in ("original", "compare")]
+    for path in paths:
+        assert path.read_bytes() == (ROOT / "output/analysis/e2e-20260921/cases" / path.name).read_bytes()
+    case = {"paths": [str(p) for p in paths], "files": [{"sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in paths]}
+else:
+    case = cases[args.case]
 paths = [Path(p) for p in case["paths"]]
 for path, info in zip(paths, case["files"]):
     assert hashlib.sha256(path.read_bytes()).hexdigest() == info["sha256"]
 from probe import install
 install()
+from app.services.matching.candidate_scoring import CandidateScoringMixin
+original_score_details = CandidateScoringMixin._score_details
+original_partial = CandidateScoringMixin._partial_score
+def count_score_details(self, *args, **kwargs):
+    self._performance.increment("score_details_count_actual")
+    return original_score_details(self, *args, **kwargs)
+def count_partial(self, left, right):
+    self._performance.increment("partial_score_baseline_impl_called")
+    self._performance.increment("partial_chars_baseline_impl", len(left) + len(right))
+    return original_partial(self, left, right)
+CandidateScoringMixin._score_details = count_score_details
+CandidateScoringMixin._partial_score = count_partial
+assert sum(bool(os.getenv(key)) for key in ("PHASE2_PAGE_BOUND", "PHASE2_EXACT_CUTOFF", "PHASE2_CACHE_DIR")) <= 1, "One performance variable per experiment"
+if os.getenv("PHASE2_EXACT_CUTOFF") == "1":
+    from score_cutoff import ExactCutoffScoring
+    import app.services.pipeline_stages as stages
+    from app.services.matcher import ClauseMatcher
+    class CutoffMatcher(ExactCutoffScoring, ClauseMatcher):
+        def match(self, *args, **kwargs):
+            result = super().match(*args, **kwargs)
+            self.last_performance_metrics.setdefault("counters", {}).update(getattr(self, "cutoff_counts", {}))
+            return result
+    stages.ClauseMatcher = CutoffMatcher
 if os.getenv("PHASE2_PAGE_BOUND") == "1":
     from anchor_bound import AnchorBoundAligner
     import app.services.pipeline_stages as stages
@@ -35,7 +65,10 @@ if os.getenv("PHASE2_CACHE_DIR"):
     from app.config import settings
     factory = stages.build_compare_document_extractor
     config = settings.model_dump(mode="json")
-    relevant = {k:v for k,v in config.items() if k.startswith(("ppocrv5_","ppstructure_","layout_","compare_native_")) and "token" not in k}
+    # Conservative superset: missing a selection/config key could create a false
+    # hit. Runtime storage roots are excluded so independent tasks can reuse it.
+    # Only the digest is stored; no settings or credentials are written to cache.
+    relevant = {k:v for k,v in config.items() if k not in {"storage_dir", "base_dir"}}
     code_version = hashlib.sha256(b"".join(p.read_bytes() for p in sorted((ROOT/"backend/app").rglob("*.py")))).hexdigest()
     def cached_factory(*args, **kwargs):
         cached = ExtractionCache(factory(*args,**kwargs), Path(os.environ["PHASE2_CACHE_DIR"]),
@@ -91,7 +124,7 @@ try:
               "original_sections": dump(ctx.original_clauses), "compare_sections": dump(ctx.compare_clauses),
               "cache_hits": sum(c.hits for c in cache_instances), "cache_misses": sum(c.misses for c in cache_instances)}
     (args.output / "result.json").write_text(json.dumps(result, ensure_ascii=False, default=dump))
-    (args.output / "code-hashes.json").write_text(json.dumps({str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for base in ["backend/app", "frontend/src"] for p in sorted((ROOT/base).rglob("*")) if p.is_file() and "__pycache__" not in p.parts}))
+    (args.output / "code-hashes.json").write_text(json.dumps({str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for base in ["backend/app", "frontend/src", "experiments/performance_phase2"] for p in sorted((ROOT/base).rglob("*")) if p.is_file() and "__pycache__" not in p.parts}))
     print(json.dumps({"case": args.case, "pipeline_seconds": seconds, "diff_count": len(task.diffs), "event_count": payload["event_count"]}))
 finally:
     close_clients()
