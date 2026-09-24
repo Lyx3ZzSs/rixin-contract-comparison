@@ -85,13 +85,16 @@ def comparison_cards(indexed_items, styles, width: float, page_label):
     for index, item in indexed_items:
         # A one-sided change uses full width; modifications always show both versions together.
         sides = ["compare"] if item.diff_type == "ADD" else ["original"] if item.diff_type == "DELETE" else ["original", "compare"]
-        title = f"{index:02d}  {labels[item.diff_type]} | {item.title}"
+        unresolved = item.quality_status == "NEEDS_REVIEW" or item.change_decision != "CONFIRMED"
+        direction = f"待复核·疑似{labels[item.diff_type]}" if unresolved and len(sides) == 1 else labels[item.diff_type]
+        title = f"{index:02d}  {direction} | {item.title}"
         review = f"审核：{review_labels.get(item.review_status, item.review_status)}"
         if item.quality_status == "NEEDS_REVIEW":
             review += "；内容识读或变化证据需复核"
         header = [Paragraph(escape(title), heading), Paragraph(escape(f"{page_label(item)} · {review}"), styles["Small"])]
         if len(sides) == 1:
-            absence = "原文无对应新增内容" if item.diff_type == "ADD" else "新版无对应保留内容"
+            absence = ("原文对应内容未确认" if item.diff_type == "ADD" else "新版对应内容未确认") if unresolved else (
+                "原文无对应新增内容" if item.diff_type == "ADD" else "新版无对应保留内容")
             header.append(Paragraph(absence, styles["Small"]))
         original_ranges, compare_ranges = display_ranges(item)
         if item.diff_type == "MODIFY" and not original_ranges and not compare_ranges:

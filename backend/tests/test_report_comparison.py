@@ -47,7 +47,7 @@ def test_event_report_keeps_long_content_and_repeats_comparison_headers(tmp_path
         assert text.count("原文（删除或替换前）") > 1
         for marker in ("开始原文", "原文终点", "开始新版", "新版终点", "应提供培训。"):
             assert marker in compact
-        assert "原文无对应新增内容" in compact
+        assert "原文对应内容未确认" in compact
         assert "bbox" not in text
         for page in pdf:
             for block in page.get_text("dict")["blocks"]:
@@ -73,3 +73,19 @@ def test_report_links_use_event_export_for_records_and_detail():
     assert compare_task_artifact_urls(task)["report_url"] == expected
     assert compare_record_summary(task).report_url == expected
     assert compare_record_summary_from_index({"task_id": "x", "status": "COMPLETED"}).report_url == expected
+
+
+def test_event_export_counts_unresolved_add_as_review_not_confirmed(tmp_path):
+    task = CompareTask(task_id="unresolved-date", status="COMPLETED", diffs=[
+        DiffItem(diff_id="D007", diff_type="ADD", source_type="metadata", title="签署日期",
+                 compare_text="2026年4月2日", quality_status="NEEDS_REVIEW",
+                 match_score_details={"decision_reason": "TABLE_STRUCTURE_UNRESOLVED"}),
+    ])
+    path = ReportGenerator().generate(task, tmp_path / "unresolved.pdf", event_view=True)
+    with fitz.open(path) as pdf:
+        compact = "".join("".join(page.get_text() for page in pdf).split())
+    assert "待复核·疑似新增" in compact
+    assert "原文对应内容未确认" in compact
+    assert "原文无对应新增内容" not in compact
+    assert "确定新增0" in compact
+    assert "待复核1" in compact

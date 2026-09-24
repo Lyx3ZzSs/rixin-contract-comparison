@@ -60,6 +60,13 @@ it('counts a grouped change once, including after expand and filtering',async()=
  fireEvent.change(screen.getByLabelText('类型筛选'),{target:{value:'DELETE'}});
  expect(screen.getByText('当前筛选无差异')).toBeInTheDocument();
 });
+it.each(['TABLE_STRUCTURE_UNRESOLVED','TABLE_PRESENCE_UNKNOWN'])('labels uncertain metadata ADD as review after event serialization (%s)',async(reason)=>{
+ const uncertain={...data.events[0].diff,source_type:'metadata',quality_status:'NEEDS_REVIEW',match_score_details:{decision_reason:reason}};
+ mocks.getEvents.mockResolvedValue({...data,events:[{...data.events[0],diff:uncertain}]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('连续新增内容');
+ expect(document.querySelector('.event-badge')).toHaveTextContent('待复核');
+});
 it('locates children without changing parent event identity and submits a versioned group review',async()=>{
  render(<ResultPage taskId="x" onBack={()=>{}}/>);
  fireEvent.click(await screen.findByText('连续新增内容'));

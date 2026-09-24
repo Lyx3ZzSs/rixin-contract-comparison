@@ -263,12 +263,12 @@ class ReportGenerator:
 
     def _summary_table(self, audit_items: list[AuditItem], styles: dict[str, ParagraphStyle], *, event_view: bool = False) -> Table:
         confirmed_items = [item for item in audit_items if item.quality_status != "NEEDS_REVIEW"]
-        counts = Counter(item.diff_type for item in (audit_items if event_view else confirmed_items))
+        counts = Counter(item.diff_type for item in confirmed_items)
         items = [
             ("全部差异", len(audit_items), "#111827"),
-            ("新增" if event_view else "确定新增", counts["ADD"], "#15804F"),
-            ("删除" if event_view else "确定删除", counts["DELETE"], "#C9362C"),
-            ("修改" if event_view else "确定修改", counts["MODIFY"], "#A96300"),
+            ("确定新增", counts["ADD"], "#15804F"),
+            ("确定删除", counts["DELETE"], "#C9362C"),
+            ("确定修改", counts["MODIFY"], "#A96300"),
             ("待复核", len(audit_items) - len(confirmed_items), "#7C3AED"),
         ]
         row = []
