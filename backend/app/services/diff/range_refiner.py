@@ -4,6 +4,7 @@ import difflib
 import logging
 import os
 import re
+import unicodedata
 
 from app.models import TextRange
 
@@ -24,9 +25,22 @@ except Exception:  # pragma: no cover - dependency may be absent in fallback dep
 
 DIFF_MATCH_PATCH_TIMEOUT_SECONDS = 1.0
 logger = logging.getLogger(__name__)
+LAYOUT_WEAK_PUNCTUATION_PATTERN = re.compile(r"[\s,，.。;；:：、”“‘’\"'()（）\[\]【】《》!！?？]+")
 
 
 def changed_snippets(left: str, right: str) -> tuple[str, str, list[TextRange], list[TextRange]]:
+    if layout_punctuation_equivalent(left, right):
+        return "", "", [], []
+    if "\n" in left and "\n" in right:
+        left_head, left_body = left.split("\n", 1)
+        right_head, right_body = right.split("\n", 1)
+        left_literal_body = re.sub(r"\s+", "", left_body)
+        right_literal_body = re.sub(r"\s+", "", right_body)
+        if len(left_literal_body) >= 8 and left_literal_body == right_literal_body:
+            # A moved OCR line break in the otherwise identical body must
+            # not turn its repeated words into edits when the heading changes.
+            # The heading remains fully compared, including its clause number.
+            return changed_snippets(left_head, right_head)
     if _should_use_line_first(left, right):
         return changed_snippets_line_first(left, right)
     if configured_diff_engine() == "diff_match_patch":
@@ -36,6 +50,34 @@ def changed_snippets(left: str, right: str) -> tuple[str, str, list[TextRange], 
             logger.warning("diff-match-patch failed; falling back to difflib", exc_info=True)
             return changed_snippets_difflib(left, right)
     return changed_snippets_difflib(left, right)
+
+
+def layout_punctuation_equivalent(left: str, right: str) -> bool:
+    left_folded, left_breaks = semantic_fold_with_internal_breaks(left)
+    right_folded, right_breaks = semantic_fold_with_internal_breaks(right)
+    if not left_folded or left_folded != right_folded:
+        return False
+    if len(left_folded) < 6:
+        return False
+    if sum(1 for char in left_folded if char.isalnum() or "一" <= char <= "鿿") < 4:
+        return False
+    return left_breaks != right_breaks and bool(left_breaks or right_breaks)
+
+
+def semantic_fold_with_internal_breaks(text: str) -> tuple[str, set[int]]:
+    folded_chars: list[str] = []
+    internal_breaks: set[int] = set()
+    for char in unicodedata.normalize("NFKC", text or ""):
+        if char in "\r\n":
+            if folded_chars:
+                internal_breaks.add(len(folded_chars))
+            continue
+        if LAYOUT_WEAK_PUNCTUATION_PATTERN.fullmatch(char):
+            continue
+        folded_chars.append(char.lower())
+    folded = "".join(folded_chars)
+    internal_breaks = {position for position in internal_breaks if 0 < position < len(folded)}
+    return folded, internal_breaks
 
 
 def configured_diff_engine() -> str:
@@ -97,6 +139,10 @@ def changed_snippets_from_opcodes(
         right_start, right_end = compacted_range_to_original(
             c_right_start, c_right_end, right_segments
         )
+        if c_left_start == c_left_end:
+            left_start = left_end = compacted_position_to_original_boundary(c_left_start, left_segments)
+        if c_right_start == c_right_end:
+            right_start = right_end = compacted_position_to_original_boundary(c_right_start, right_segments)
 
         left_start, left_end = trim_range_whitespace(left, left_start, left_end)
         right_start, right_end = trim_range_whitespace(right, right_start, right_end)
@@ -125,9 +171,25 @@ def changed_snippets_from_opcodes(
             left_ranges.extend(refined_left_ranges)
             right_ranges.extend(refined_right_ranges)
         elif has_left_change:
-            left_ranges.append(expand_token_range(left, left_start, left_end, "DELETE"))
+            percent_ranges = percent_ocr_suffix_modify_ranges(
+                left, left_start, left_end, right, right_start, right_end,
+            )
+            if percent_ranges is not None:
+                refined_left_ranges, refined_right_ranges = percent_ranges
+                left_ranges.extend(refined_left_ranges)
+                right_ranges.extend(refined_right_ranges)
+            else:
+                left_ranges.append(expand_token_range(left, left_start, left_end, "DELETE", right, right_start))
         elif has_right_change:
-            right_ranges.append(expand_token_range(right, right_start, right_end, "ADD"))
+            percent_ranges = percent_ocr_suffix_modify_ranges(
+                left, left_start, left_end, right, right_start, right_end,
+            )
+            if percent_ranges is not None:
+                refined_left_ranges, refined_right_ranges = percent_ranges
+                left_ranges.extend(refined_left_ranges)
+                right_ranges.extend(refined_right_ranges)
+            else:
+                right_ranges.append(expand_token_range(right, right_start, right_end, "ADD", left, left_start))
 
     left_ranges = merge_ranges(left_ranges)
     right_ranges = merge_ranges(right_ranges)
@@ -311,9 +373,27 @@ def refine_inline_changed_ranges(
                     expand_token_range(right, current_right_start, current_right_end, "MODIFY", left, current_left_start)
                 )
         elif has_left:
-            left_ranges.append(expand_token_range(left, current_left_start, current_left_end, "DELETE"))
+            percent_ranges = percent_ocr_suffix_modify_ranges(
+                left, current_left_start, current_left_end,
+                right, current_right_start, current_right_end,
+            )
+            if percent_ranges is not None:
+                refined_left_ranges, refined_right_ranges = percent_ranges
+                left_ranges.extend(refined_left_ranges)
+                right_ranges.extend(refined_right_ranges)
+            else:
+                left_ranges.append(expand_token_range(left, current_left_start, current_left_end, "DELETE", right, current_right_start))
         elif has_right:
-            right_ranges.append(expand_token_range(right, current_right_start, current_right_end, "ADD"))
+            percent_ranges = percent_ocr_suffix_modify_ranges(
+                left, current_left_start, current_left_end,
+                right, current_right_start, current_right_end,
+            )
+            if percent_ranges is not None:
+                refined_left_ranges, refined_right_ranges = percent_ranges
+                left_ranges.extend(refined_left_ranges)
+                right_ranges.extend(refined_right_ranges)
+            else:
+                right_ranges.append(expand_token_range(right, current_right_start, current_right_end, "ADD", left, current_left_start))
     return left_ranges, right_ranges
 
 
@@ -426,10 +506,25 @@ def local_range_to_original(
     segments: list[tuple[int, int]],
     offset: int,
 ) -> tuple[int, int]:
-    if start >= end or not segments:
+    if not segments:
+        return offset, offset
+    if start == end:
+        boundary = compacted_position_to_original_boundary(start, segments)
+        return offset + boundary, offset + boundary
+    if start > end:
         return offset, offset
     local_start, local_end = compacted_range_to_original(start, end, segments)
     return offset + local_start, offset + local_end
+
+
+def compacted_position_to_original_boundary(position: int, segments: list[tuple[int, int]]) -> int:
+    if not segments:
+        return 0
+    if position <= 0:
+        return segments[0][0]
+    if position >= len(segments):
+        return segments[-1][1]
+    return segments[position][0]
 
 
 def expand_token_range(
@@ -443,6 +538,18 @@ def expand_token_range(
         start -= 1
     while end < len(text) and is_ascii_token_char(text[end]):
         end += 1
+
+    if other_text is not None and other_pos is not None and highlight_type in {"DELETE", "ADD"}:
+        # Missing letters inside a variable do not delete the letters which
+        # remain on the other side. Keep numeric-token expansion unchanged.
+        token = text[start:end]
+        prefix, suffix = text[start:original_start], text[original_end:end]
+        if (token.isascii() and token.isalpha() and (prefix or suffix)
+                and other_pos >= len(prefix)
+                and other_text[other_pos-len(prefix):other_pos] == prefix
+                and other_text[other_pos:other_pos+len(suffix)] == suffix):
+            return TextRange(start=original_start, end=original_end, highlight_type=highlight_type)
+        return TextRange(start=start, end=end, highlight_type=highlight_type)
 
     if other_text is not None and other_pos is not None:
         expanded_left = text[start:original_start]
@@ -463,6 +570,41 @@ def expand_token_range(
 
 def is_ascii_token_char(char: str) -> bool:
     return char.isascii() and (char.isalnum() or char in "._-/%")
+
+
+def percent_ocr_suffix_modify_ranges(
+    left: str,
+    left_start: int,
+    left_end: int,
+    right: str,
+    right_start: int,
+    right_end: int,
+) -> tuple[list[TextRange], list[TextRange]] | None:
+    left_range = percent_suffix_token_range(left, left_start, left_end)
+    right_range = percent_suffix_token_range(right, right_start, right_end)
+    if left_range is None or right_range is None:
+        return None
+    return (
+        [TextRange(start=left_range[0], end=left_range[1], highlight_type="MODIFY")],
+        [TextRange(start=right_range[0], end=right_range[1], highlight_type="MODIFY")],
+    )
+
+
+def percent_suffix_token_range(text: str, start: int, end: int) -> tuple[int, int] | None:
+    if not (0 <= start <= end <= len(text)):
+        return None
+    if start == 0 or text[start - 1] != "%" or not has_numeric_prefix(text, start - 1):
+        return None
+    if any(char not in "oO0。.．" for char in text[start:end]):
+        return None
+
+    token_start = start - 1
+    while token_start > 0 and (text[token_start - 1].isdigit() or text[token_start - 1] in ".,"):
+        token_start -= 1
+    token_end = end
+    if token_end == start:
+        token_end = start
+    return token_start, token_end
 
 
 def is_percent_unit_change(
@@ -533,6 +675,13 @@ def _match_lines_by_content(
     right_lines: list[tuple[str, int, int]],
     threshold: float = 0.5,
 ) -> list[tuple[int, int]]:
+    # Repeated explanations cannot be paired by globally identical text:
+    # one OCR error would move an earlier occurrence into a later section.
+    # Keep content-based reordering for unique form labels.
+    keys = [[re.sub(r"\s+", "", line[0]) for line in lines] for lines in (left_lines, right_lines)]
+    if any(any(items.count(text) > 1 and sum("一" <= c <= "鿿" for c in text) >= 10
+                   for text in items) for items in keys):
+        return _match_ordered_lines(left_lines, right_lines, threshold)
     candidates: list[tuple[float, int, int]] = []
     for li, (left_text, _, _) in enumerate(left_lines):
         for ri, (right_text, _, _) in enumerate(right_lines):
@@ -550,6 +699,32 @@ def _match_lines_by_content(
         used_left.add(li)
         used_right.add(ri)
     pairs.sort(key=lambda p: p[0])
+    return pairs
+
+
+def _match_ordered_lines(left_lines, right_lines, threshold):
+    """Maximum-similarity non-crossing alignment, allowing missing lines."""
+    n, m = len(left_lines), len(right_lines)
+    scores = [[0.0] * (m + 1) for _ in range(n + 1)]
+    choices = {}
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            score = line_similarity(left_lines[i][0], right_lines[j][0])
+            options = [(scores[i+1][j], "left"), (scores[i][j+1], "right")]
+            if score >= threshold:
+                options.insert(0, (score + scores[i+1][j+1], "pair"))
+            scores[i][j], choices[i, j] = max(options, key=lambda item: item[0])
+    pairs = []
+    i = j = 0
+    while i < n and j < m:
+        choice = choices[i, j]
+        if choice == "pair":
+            pairs.append((i, j))
+            i, j = i + 1, j + 1
+        elif choice == "left":
+            i += 1
+        else:
+            j += 1
     return pairs
 
 
@@ -598,4 +773,3 @@ def changed_snippets_line_first(
         left_ranges,
         right_ranges,
     )
-

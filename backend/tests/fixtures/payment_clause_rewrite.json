@@ -1,0 +1,629 @@
+{
+  "diff": {
+    "diff_id": "D020",
+    "diff_type": "MODIFY",
+    "original_clause_id": "OC006",
+    "compare_clause_id": "NC009",
+    "clause_no": "4",
+    "title": "付款方式:",
+    "original_text": "4.付款方式:\n乙方完成全部工作并经甲方验收合格后,提供100%合同总价的增值税专用发票及付款申请\n单;甲方应在收到100%合同总价的增值税专用发票、验收合格报告及付款申请单审核无误后30\n天内将应付款支付给乙方。",
+    "compare_text": "4. 付款方式:\n乙方完成全部工作,通过甲方最终验收合格后,向甲方提供等额、合规的增值税专用发票及付款\n申请单。甲方审核无误后30日内,将合同总价100%支付给乙方。",
+    "original_snippet": "并经100%同总价;应在收到100%合同总价的增值税专用发票、验收合格报告及付款申请单天应付款",
+    "compare_snippet": ",通过最终向甲方等额、规。日,合同总价100%",
+    "readable_change": "原文：并经100%同总价;应在收到100%合同总价的增值税专用发票、验收合格报告及付款申请单天应付款\n修改后：,通过最终向甲方等额、规。日,合同总价100%",
+    "source_type": "clause",
+    "section_type": "main_contract",
+    "section_path": [
+      "4 付款方式:"
+    ],
+    "match_score": 100.0,
+    "match_method": "same_clause_key_weighted",
+    "match_score_details": {},
+    "match_candidates": [],
+    "match_confidence": "NORMAL",
+    "structural_flags": [
+      "PARAGRAPH_MERGED"
+    ],
+    "review_flags": [
+      "CRITICAL_FIELD_CHANGE",
+      "CRITICAL_FIELD_DURATION_CHANGE",
+      "SEAL_OR_SIGNATURE_RISK",
+      "OCR_REMEDIATION_PLANNED",
+      "CRITICAL_VALUE_CHANGE",
+      "CRITICAL_NUMERIC_SOURCE_CONFLICT"
+    ],
+    "quality_status": "NEEDS_REVIEW",
+    "content_recognition_status": "CONFIRMED",
+    "content_recognition_reason": "",
+    "content_candidates": [],
+    "text_confidence": 0.9856421947479248,
+    "merged_sources": [],
+    "review_status": "UNREVIEWED",
+    "review_comment": "",
+    "reviewed_by": "",
+    "reviewed_at": "",
+    "original_evidence": [
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 189.8781768798828,
+          "y0": 635.934375,
+          "x1": 211.50787048339845,
+          "y1": 647.4843872070312,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "并经",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 1.0
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 313.24000854492186,
+          "y0": 635.934375,
+          "x1": 334.8142822265625,
+          "y1": 647.4843872070312,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "100%",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 1.0
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 343.3596984863281,
+          "y0": 635.934375,
+          "x1": 375.0691345214844,
+          "y1": 647.4843872070312,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "同总价",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 1.0
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 99.15899963378907,
+          "y0": 663.8943969726563,
+          "x1": 110.70899658203125,
+          "y1": 675.4444091796875,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": ";",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 1.0
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 129.15899963378905,
+          "y0": 663.8943969726563,
+          "x1": 443.2300231933594,
+          "y1": 675.4444091796875,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "应在收到100%合同总价的增值税专用发票、验收合格报告及付款申请单",
+        "highlight_type": "DELETE",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 1.0
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 89.2,
+          "y0": 691.8533813476563,
+          "x1": 100.74999694824218,
+          "y1": 703.4033935546875,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "天",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 1.0
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 119.2,
+          "y0": 691.8533813476563,
+          "x1": 150.789990234375,
+          "y1": 703.4033935546875,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "应付款",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 1.0
+      }
+    ],
+    "compare_evidence": [
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 207.7,
+          "y0": 657.7,
+          "x1": 210.8,
+          "y1": 668.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": ",",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9998553991317749
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 214.2,
+          "y0": 657.7,
+          "x1": 232.8,
+          "y1": 668.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "通过",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9998553991317749
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 247.7,
+          "y0": 657.7,
+          "x1": 264.3,
+          "y1": 668.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "最终",
+        "highlight_type": "ADD",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9998553991317749
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 310.7,
+          "y0": 657.7,
+          "x1": 337.8,
+          "y1": 668.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "向甲方",
+        "highlight_type": "ADD",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9998553991317749
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 352.7,
+          "y0": 657.7,
+          "x1": 374.3,
+          "y1": 668.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "等额、",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9998553991317749
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 384.2,
+          "y0": 657.7,
+          "x1": 394.3,
+          "y1": 668.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "规",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9998553991317749
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 150.7,
+          "y0": 682.2,
+          "x1": 153.8,
+          "y1": 694.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "。",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9856421947479248
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 227.7,
+          "y0": 682.2,
+          "x1": 238.3,
+          "y1": 694.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "日",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9856421947479248
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 246.2,
+          "y0": 682.2,
+          "x1": 249.8,
+          "y1": 694.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": ",",
+        "highlight_type": "ADD",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9856421947479248
+      },
+      {
+        "char_boxes": [],
+        "page_no": 3,
+        "bbox": {
+          "x0": 261.2,
+          "y0": 682.2,
+          "x1": 315.8,
+          "y1": 694.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "合同总价100%",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9856421947479248
+      }
+    ],
+    "original_change_ranges": [
+      {
+        "start": 16,
+        "end": 18,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 28,
+        "end": 32,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 33,
+        "end": 36,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 51,
+        "end": 52,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 54,
+        "end": 87,
+        "highlight_type": "DELETE"
+      },
+      {
+        "start": 95,
+        "end": 96,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 98,
+        "end": 101,
+        "highlight_type": "MODIFY"
+      }
+    ],
+    "compare_change_ranges": [
+      {
+        "start": 17,
+        "end": 20,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 22,
+        "end": 24,
+        "highlight_type": "ADD"
+      },
+      {
+        "start": 30,
+        "end": 33,
+        "highlight_type": "ADD"
+      },
+      {
+        "start": 35,
+        "end": 38,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 39,
+        "end": 40,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 55,
+        "end": 56,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 65,
+        "end": 66,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 67,
+        "end": 68,
+        "highlight_type": "ADD"
+      },
+      {
+        "start": 69,
+        "end": 77,
+        "highlight_type": "MODIFY"
+      }
+    ]
+  },
+  "clauses": {
+    "original": {
+      "clause_id": "OC006",
+      "clause_no": "4",
+      "title": "付款方式:",
+      "text": "4.付款方式:\n乙方完成全部工作并经甲方验收合格后,提供100%合同总价的增值税专用发票及付款申请\n单;甲方应在收到100%合同总价的增值税专用发票、验收合格报告及付款申请单审核无误后30\n天内将应付款支付给乙方。",
+      "normalized_text": "4.付款方式乙方完成全部工作并经甲方验收合格后,提供100%合同总价的增值税专用发票及付款申请单甲方应在收到100%合同总价的增值税专用发票验收合格报告及付款申请单审核无误后30天内将应付款支付给乙方",
+      "match_text": "4付款方式乙方完成全部工作并经甲方验收合格后提供100%合同总价的增值税专用发票及付款申请单甲方应在收到100%合同总价的增值税专用发票验收合格报告及付款申请单审核无误后30天内将应付款支付给乙方",
+      "page_numbers": [
+        3
+      ],
+      "bboxes": [
+        {
+          "char_boxes": [],
+          "page_no": 3,
+          "bbox": {
+            "x0": 90.0,
+            "y0": 608.6533813476562,
+            "x1": 149.86688232421875,
+            "y1": 618.6033935546875,
+            "normalized": null
+          },
+          "method": "block_fallback",
+          "granularity": "unknown",
+          "text": "4.付款方式:",
+          "highlight_type": null,
+          "confidence": 0.5,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        },
+        {
+          "char_boxes": [],
+          "page_no": 3,
+          "bbox": {
+            "x0": 110.04000091552734,
+            "y0": 636.734375,
+            "x1": 505.1878662109375,
+            "y1": 646.6843872070312,
+            "normalized": null
+          },
+          "method": "block_fallback",
+          "granularity": "unknown",
+          "text": "乙方完成全部工作并经甲方验收合格后,提供100%合同总价的增值税专用发票及付款申请",
+          "highlight_type": null,
+          "confidence": 0.5,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        },
+        {
+          "char_boxes": [],
+          "page_no": 3,
+          "bbox": {
+            "x0": 90.0,
+            "y0": 664.6943969726562,
+            "x1": 505.0150146484375,
+            "y1": 674.6444091796875,
+            "normalized": null
+          },
+          "method": "block_fallback",
+          "granularity": "unknown",
+          "text": "单;甲方应在收到100%合同总价的增值税专用发票、验收合格报告及付款申请单审核无误后30",
+          "highlight_type": null,
+          "confidence": 0.5,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        },
+        {
+          "char_boxes": [],
+          "page_no": 3,
+          "bbox": {
+            "x0": 90.0,
+            "y0": 692.6533813476562,
+            "x1": 209.9890899658203,
+            "y1": 702.6033935546875,
+            "normalized": null
+          },
+          "method": "block_fallback",
+          "granularity": "unknown",
+          "text": "天内将应付款支付给乙方。",
+          "highlight_type": null,
+          "confidence": 0.5,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        }
+      ],
+      "source_block_ids": [
+        "1a1501da5593-p3:native:17",
+        "1a1501da5593-p3:native:18",
+        "1a1501da5593-p3:native:19",
+        "1a1501da5593-p3:native:20"
+      ],
+      "char_boxes": [],
+      "segmentation_reason": "marker:4|heading_score:0.92|signals:marker,single_numeric_marker,strong_title_block,title_length,title_block,heading_business_term,inline_numeric_business_heading,consecutive_numbered_body",
+      "segmentation_confidence": 0.92,
+      "section_type": "main_contract",
+      "section_path": [
+        "4 付款方式:"
+      ],
+      "clause_key": "main_contract/n4付款方式|percent:100%",
+      "order_index": 6,
+      "split_flags": [
+        "PARAGRAPH_MERGED"
+      ]
+    },
+    "compare": {
+      "clause_id": "NC009",
+      "clause_no": "4",
+      "title": "付款方式:",
+      "text": "4. 付款方式:\n乙方完成全部工作,通过甲方最终验收合格后,向甲方提供等额、合规的增值税专用发票及付款\n申请单。甲方审核无误后30日内,将合同总价100%支付给乙方。",
+      "normalized_text": "4.付款方式乙方完成全部工作,通过甲方最终验收合格后,向甲方提供等额合规的增值税专用发票及付款申请单甲方审核无误后30日内,将合同总价100%支付给乙方",
+      "match_text": "4付款方式乙方完成全部工作通过甲方最终验收合格后向甲方提供等额合规的增值税专用发票及付款申请单甲方审核无误后30日内将合同总价100%支付给乙方",
+      "page_numbers": [
+        3
+      ],
+      "bboxes": [
+        {
+          "char_boxes": [],
+          "page_no": 3,
+          "bbox": {
+            "x0": 122.5,
+            "y0": 632.0,
+            "x1": 172.5,
+            "y1": 646.0,
+            "normalized": null
+          },
+          "method": "block_fallback",
+          "granularity": "unknown",
+          "text": "4. 付款方式:",
+          "highlight_type": null,
+          "confidence": 0.5,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        },
+        {
+          "char_boxes": [],
+          "page_no": 3,
+          "bbox": {
+            "x0": 140.5,
+            "y0": 657.0,
+            "x1": 483.5,
+            "y1": 669.0,
+            "normalized": null
+          },
+          "method": "block_fallback",
+          "granularity": "unknown",
+          "text": "乙方完成全部工作,通过甲方最终验收合格后,向甲方提供等额、合规的增值税专用发票及付款",
+          "highlight_type": null,
+          "confidence": 0.5,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        },
+        {
+          "char_boxes": [],
+          "page_no": 3,
+          "bbox": {
+            "x0": 124.0,
+            "y0": 682.0,
+            "x1": 362.5,
+            "y1": 694.5,
+            "normalized": null
+          },
+          "method": "block_fallback",
+          "granularity": "unknown",
+          "text": "申请单。甲方审核无误后30日内,将合同总价100%支付给乙方。",
+          "highlight_type": null,
+          "confidence": 0.5,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        }
+      ],
+      "source_block_ids": [
+        "4b9320407bd2-p3:ocr:0:line:23",
+        "4b9320407bd2-p3:ocr:0:line:24",
+        "4b9320407bd2-p3:ocr:0:line:25"
+      ],
+      "char_boxes": [],
+      "segmentation_reason": "marker:4|heading_score:0.84|signals:marker,single_numeric_marker,title_length,heading_business_term,inline_numeric_business_heading,consecutive_numbered_body",
+      "segmentation_confidence": 0.84,
+      "section_type": "main_contract",
+      "section_path": [
+        "4 付款方式:"
+      ],
+      "clause_key": "main_contract/n4付款方式|percent:100%",
+      "order_index": 9,
+      "split_flags": [
+        "PARAGRAPH_MERGED"
+      ]
+    }
+  }
+}

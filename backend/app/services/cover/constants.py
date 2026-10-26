@@ -1,11 +1,17 @@
 FIELD_LABELS: dict[str, str] = {
     "contract_no": "合同编号",
+    "contract_no_buyer": "合同编号（甲方）",
+    "contract_no_seller": "合同编号（乙方）",
     "project_title": "项目名称",
     "buyer": "甲方",
     "seller": "乙方",
     "tax_no": "税号",
     "sign_place": "签订地点",
     "sign_date": "签订日期",
+    "cover_date": "封面日期",
+    "validity_period": "有效期限",
+    "buyer_address": "甲方通讯地址",
+    "seller_address": "乙方通讯地址",
 }
 
 LABEL_TO_KEY: dict[str, str] = {
@@ -23,16 +29,29 @@ LABEL_TO_KEY: dict[str, str] = {
     "签订地点": "sign_place",
     "签订日期": "sign_date",
     "签订时间": "sign_date",
+    "有效期限": "validity_period",
+    "有效期": "validity_period",
+}
+
+LABEL_PREFIX_TO_KEY: dict[str, str] = {
+    "委托人合同编号": "contract_no_buyer",
+    "承包人合同编号": "contract_no_seller",
+    "甲方合同编号": "contract_no_buyer",
+    "乙方合同编号": "contract_no_seller",
 }
 
 FIELD_ORDER: list[str] = [
     "contract_no",
+    "contract_no_buyer",
+    "contract_no_seller",
     "project_title",
     "buyer",
     "seller",
     "tax_no",
     "sign_place",
     "sign_date",
+    "cover_date",
+    "validity_period",
 ]
 
 EXTRA_FIELD_LABELS: tuple[str, ...] = (

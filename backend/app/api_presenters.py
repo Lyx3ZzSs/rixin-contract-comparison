@@ -1,59 +1,80 @@
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Mapping
+from typing import Any
+import math
+from numbers import Real
 from pathlib import Path
 
 from app.api_schemas import (
-    AuditItemReviewResponse,
+    AuditItemResponse,
     AuditItemReviewUpdateResponse,
     CompareDiffListResponse,
     CompareDiffResponse,
-    CompareRecordListResponse,
     CompareRecordResponse,
     CompareTaskDetailResponse,
     CompareTaskResponse,
     DiffReviewResponse,
-    ExtractionRecordListResponse,
-    ExtractionRecordResponse,
-    ExtractionTaskResponse,
     ReviewStatsResponse,
     TaskExecutionResponse,
 )
 from app.infrastructure.task_runner import TaskJob
-from app.models import AuditItemReview, CompareTask
-from app.models_extraction import ExtractionTask
+from app.models import CompareTask
+from app.services.audit_summary import AuditItem, build_task_audit_items, project_diff_reviews
+from app.services.evidence_validity import valid_evidence_copies
 from app.services.report_generator import build_report_filename
 from app.utils.json_utils import to_jsonable
 
 
-def compare_task_response(task: CompareTask) -> CompareTaskResponse:
+def compare_task_response(task: CompareTask, *, retry_eligible: bool = False) -> CompareTaskResponse:
+    audit_items = build_task_audit_items(task)
+    review_counts = Counter(item.review_status for item in audit_items)
     data = {
         "task_id": task.task_id,
         "status": task.status,
+        "terminal_reason": task.terminal_reason,
+        "revision": task.revision,
+        "report_revision": task.report_revision,
+        "retry_eligible": retry_eligible,
         "stage": task.stage,
         "progress_percent": task.progress_percent,
+        "preview_available": _preview_available(task),
         "diff_count": task.diff_count,
-        "reviewed_count": task.reviewed_count,
-        "confirmed_count": task.confirmed_count,
-        "false_positive_count": task.false_positive_count,
-        "manual_review_count": task.manual_review_count,
-        "ignored_count": task.ignored_count,
-        "audit_item_reviews": {
-            item_id: to_jsonable(review)
-            for item_id, review in task.audit_item_reviews.items()
-        },
+        **event_summary(task),
+        "reviewed_count": len([item for item in audit_items if item.review_status != "UNREVIEWED"]),
+        "confirmed_count": review_counts["CONFIRMED"],
+        "false_positive_count": review_counts["FALSE_POSITIVE"],
+        "manual_review_count": review_counts["NEEDS_REVIEW"],
+        "ignored_count": review_counts["IGNORED"],
+        "audit_item_reviews": {item_id: to_jsonable(review) for item_id, review in task.audit_item_reviews.items()},
+        "audit_items": [audit_item_response(item) for item in audit_items],
         "extractor_used": task.extractor_used,
         "parse_warnings": task.parse_warnings,
         "parse_warning_details": [to_jsonable(item) for item in task.parse_warning_details],
         "document_profiles": {side: to_jsonable(profile) for side, profile in task.document_profiles.items()},
+        "ocr_quality_summary": to_jsonable(task.ocr_quality_summary) if task.ocr_quality_summary else None,
+        "ocr_remediation_summary": (
+            to_jsonable(task.ocr_remediation_summary) if task.ocr_remediation_summary else None
+        ),
         "debug_artifact_paths": artifact_filenames(task.debug_artifact_paths),
+        "signing_region_outlines": to_jsonable(task.signing_region_outlines),
         "errors": task.errors,
     }
     data.update(compare_task_artifact_urls(task))
     return CompareTaskResponse(**data)
 
 
-def compare_task_detail_response(task: CompareTask) -> CompareTaskDetailResponse:
-    data = compare_task_response(task).model_dump()
+def _preview_available(task: CompareTask) -> bool:
+    """Only advertise the pair after both staged uploads have been published."""
+    try:
+        return all(path and Path(path).is_file() for path in (task.original_pdf_path, task.compare_pdf_path))
+    except OSError:
+        return False
+
+
+def compare_task_detail_response(task: CompareTask, *, retry_eligible: bool = False) -> CompareTaskDetailResponse:
+    data = compare_task_response(task, retry_eligible=retry_eligible).model_dump()
     data.update(
         {
             "created_at": task.created_at,
@@ -69,17 +90,45 @@ def compare_task_artifact_urls(task: CompareTask) -> dict[str, str]:
     return {
         "original_pdf_url": f"/api/compare/{task.task_id}/original" if task.original_pdf_path else "",
         "compare_pdf_url": f"/api/compare/{task.task_id}/compare" if task.compare_pdf_path else "",
-        "report_url": f"/api/compare/{task.task_id}/report" if task.status == "COMPLETED" else "",
+        "report_url": f"/api/compare/{task.task_id}/events/report" if task.status == "COMPLETED" else "",
         "report_filename": build_report_filename(task),
         "original_highlight_pdf_url": "",
         "compare_highlight_pdf_url": "",
     }
 
 
-def compare_record_summary(task: CompareTask) -> CompareRecordResponse:
+def compare_record_summary_from_index(record: Mapping[str, Any], *, retry_eligible: bool = False) -> CompareRecordResponse:
+    """Project a record from the lightweight index summary instead of a full CompareTask."""
+    task_id = str(record["task_id"])
+    status = record.get("status") or "QUEUED"
+    return CompareRecordResponse(
+        task_id=task_id,
+        status=status,
+        terminal_reason=record.get("terminal_reason") or "NONE",
+        revision=int(record.get("revision") or 0),
+        report_revision=int(record.get("report_revision") or 0),
+        retry_eligible=retry_eligible,
+        stage=record.get("stage") or "",
+        progress_percent=int(record.get("progress_percent") or 0),
+        created_at=record.get("created_at") or "",
+        updated_at=record.get("updated_at") or "",
+        original_filename=record.get("original_filename") or "",
+        compare_filename=record.get("compare_filename") or "",
+        diff_count=int(record.get("diff_count") or 0),
+        event_count=record.get("event_count"),
+        event_version=record.get("event_version") or "",
+        report_url=f"/api/compare/{task_id}/events/report" if status == "COMPLETED" else "",
+    )
+
+
+def compare_record_summary(task: CompareTask, *, retry_eligible: bool = False) -> CompareRecordResponse:
     return CompareRecordResponse(
         task_id=task.task_id,
         status=task.status,
+        terminal_reason=task.terminal_reason,
+        revision=task.revision,
+        report_revision=task.report_revision,
+        retry_eligible=retry_eligible,
         stage=task.stage,
         progress_percent=task.progress_percent,
         created_at=task.created_at,
@@ -87,23 +136,25 @@ def compare_record_summary(task: CompareTask) -> CompareRecordResponse:
         original_filename=task.original_filename,
         compare_filename=task.compare_filename,
         diff_count=task.diff_count,
-        report_url=f"/api/compare/{task.task_id}/report" if task.status == "COMPLETED" else "",
+        **event_summary(task),
+        report_url=f"/api/compare/{task.task_id}/events/report" if task.status == "COMPLETED" else "",
     )
-
-
-def compare_record_list_response(tasks: list[CompareTask]) -> CompareRecordListResponse:
-    return CompareRecordListResponse(records=[compare_record_summary(task) for task in tasks])
 
 
 def diff_response(diff) -> CompareDiffResponse:
     data = to_jsonable(diff)
+    data["match_score"] = _finite_number_or_none(diff.match_score)
+    data["match_confidence"] = _match_confidence_or_none(diff.match_confidence)
+    data["original_evidence"] = [to_jsonable(item) for item in valid_evidence_copies(diff.original_evidence)]
+    data["compare_evidence"] = [to_jsonable(item) for item in valid_evidence_copies(diff.compare_evidence)]
     return CompareDiffResponse(**data)
 
 
 def compare_diff_list_response(task: CompareTask) -> CompareDiffListResponse:
+    projected_diffs = project_diff_reviews(task.diffs, build_task_audit_items(task))
     return CompareDiffListResponse(
         task_id=task.task_id,
-        diffs=[diff_response(diff) for diff in task.diffs],
+        diffs=[diff_response(diff) for diff in projected_diffs],
     )
 
 
@@ -112,12 +163,15 @@ def artifact_filenames(paths: dict[str, str]) -> dict[str, str]:
 
 
 def review_stats(task: CompareTask) -> ReviewStatsResponse:
+    items = build_task_audit_items(task)
     return ReviewStatsResponse(
+        total_count=len(items),
         reviewed_count=task.reviewed_count,
         confirmed_count=task.confirmed_count,
         false_positive_count=task.false_positive_count,
         manual_review_count=task.manual_review_count,
         ignored_count=task.ignored_count,
+        review_unit="audit_item",
     )
 
 
@@ -131,62 +185,62 @@ def diff_review_response(task: CompareTask, diff) -> DiffReviewResponse:
 
 def audit_item_review_response(
     task: CompareTask,
-    audit_item_id: str,
-    review: AuditItemReview,
+    item: AuditItem,
 ) -> AuditItemReviewUpdateResponse:
     return AuditItemReviewUpdateResponse(
         task_id=task.task_id,
-        audit_item_id=audit_item_id,
-        audit_item_review=AuditItemReviewResponse(
-            audit_item_id=audit_item_id,
-            review_status=review.review_status,
-            review_comment=review.review_comment,
-            reviewed_by=review.reviewed_by,
-            reviewed_at=review.reviewed_at,
-        ),
+        audit_item=audit_item_response(item),
         review_stats=review_stats(task),
+        report_revision=task.report_revision,
     )
 
 
-def extraction_task_response(task: ExtractionTask) -> ExtractionTaskResponse:
-    return ExtractionTaskResponse(
-        task_id=task.task_id,
-        task_type=task.task_type,
-        status=task.status,
-        stage=task.stage,
-        created_at=task.created_at,
-        updated_at=task.updated_at,
-        filename=task.filename,
-        file_url=f"/api/extract/{task.task_id}/file" if task.file_path else "",
-        extractor_used=task.extractor_used,
-        fields=[to_jsonable(field) for field in task.fields],
-        results=[to_jsonable(result) for result in task.results],
-        errors=task.errors,
+def audit_item_response(item: AuditItem) -> AuditItemResponse:
+    return AuditItemResponse(
+        audit_item_id=item.item_id,
+        diff_id=item.diff_id,
+        diff_type=item.diff_type,
+        source_type=item.source_type,
+        section_type=item.section_type,
+        section_path=item.section_path,
+        title=item.title,
+        summary=item.summary,
+        original_text=item.original_text,
+        compare_text=item.compare_text,
+        original_evidence=[to_jsonable(evidence) for evidence in valid_evidence_copies(item.original_evidence)],
+        compare_evidence=[to_jsonable(evidence) for evidence in valid_evidence_copies(item.compare_evidence)],
+        evidence_state=item.evidence_state,
+        quality_status=item.quality_status,
+        change_decision=item.change_decision,
+        content_recognition_status=item.content_recognition_status,
+        content_recognition_reason=item.content_recognition_reason,
+        content_candidates=item.content_candidates,
+        structural_flags=item.structural_flags,
+        review_flags=item.review_flags,
+        text_confidence=item.text_confidence,
+        match_confidence=_match_confidence_or_none(item.match_confidence),
+        ocr_context={
+            "scope": item.ocr_context.scope,
+            "affected": item.ocr_context.affected,
+            "statuses": list(item.ocr_context.statuses),
+            "reasons": list(item.ocr_context.reasons),
+            "sides": list(item.ocr_context.sides),
+            "page_numbers": list(item.ocr_context.page_numbers),
+        },
+        remediation_context={
+            "scope": item.remediation_context.scope,
+            "action_ids": list(item.remediation_context.action_ids),
+            "action_types": list(item.remediation_context.action_types),
+            "statuses": list(item.remediation_context.statuses),
+            "changed_evidence": item.remediation_context.changed_evidence,
+            "changed_diff_text": item.remediation_context.changed_diff_text,
+            "requires_manual_review": item.remediation_context.requires_manual_review,
+        },
+        review_status=item.review_status,
+        review_comment=item.review_comment,
+        reviewed_by=item.reviewed_by,
+        reviewed_at=item.reviewed_at,
     )
-
-
-def extraction_record_summary(task: ExtractionTask) -> ExtractionRecordResponse:
-    found_count = sum(1 for result in task.results if result.status == "found")
-    not_found_count = sum(1 for result in task.results if result.status == "not_found")
-    error_count = sum(1 for result in task.results if result.status == "error")
-    return ExtractionRecordResponse(
-        task_id=task.task_id,
-        task_type=task.task_type,
-        status=task.status,
-        created_at=task.created_at,
-        updated_at=task.updated_at,
-        filename=task.filename,
-        file_url=f"/api/extract/{task.task_id}/file" if task.file_path else "",
-        extractor_used=task.extractor_used,
-        field_count=len(task.fields),
-        found_count=found_count,
-        not_found_count=not_found_count,
-        error_count=error_count,
-    )
-
-
-def extraction_record_list_response(tasks: list[ExtractionTask]) -> ExtractionRecordListResponse:
-    return ExtractionRecordListResponse(records=[extraction_record_summary(task) for task in tasks])
 
 
 def task_execution_response(job: TaskJob) -> TaskExecutionResponse:
@@ -195,11 +249,35 @@ def task_execution_response(job: TaskJob) -> TaskExecutionResponse:
         task_id=job.task_id,
         task_type=job.task_type,
         status=job.status,
+        execution_no=job.execution_no,
         attempt=job.attempt,
         max_attempts=job.max_attempts,
         queued_at=job.queued_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
         updated_at=job.updated_at,
+        error_code=job.error_code,
         last_error=job.last_error,
     )
+
+
+def _finite_number_or_none(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(float(value)):
+        return None
+    return float(value)
+
+
+def _match_confidence_or_none(value: object) -> str | None:
+    if isinstance(value, str):
+        return value
+    finite_value = _finite_number_or_none(value)
+    return str(finite_value) if finite_value is not None else None
+
+
+def event_summary(task):
+    from app.services.diff_events import source_fingerprint
+    from app.services.comparison_observations import visible_snapshot_events
+    snapshot = task.event_snapshot
+    if snapshot and snapshot.get("source_fingerprint") == source_fingerprint(task):
+        return {"event_count": len(visible_snapshot_events(task, snapshot)), "event_version": snapshot["version"]}
+    return {"event_count": None, "event_version": ""}

@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 .DS_Store
 .idea/
+.worktrees/
 
 # C 扩展
 *.so
@@ -209,6 +210,8 @@ frontend/coverage/
 *.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+frontend/vite.pdf-cmaps.js
+frontend/vite.pdf-cmaps.d.ts
 .layout-report*/
 backend/.layout-report*/
 

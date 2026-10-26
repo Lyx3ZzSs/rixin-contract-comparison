@@ -2,6 +2,8 @@ fastapi
 uvicorn
 python-multipart
 pymupdf
+opencv-python-headless
+pillow
 diff-match-patch
 rapidfuzz
 reportlab
@@ -11,3 +13,4 @@ python-dotenv
 pytest
 httpx
 psutil
+PyJWT[crypto]>=2.13,<3

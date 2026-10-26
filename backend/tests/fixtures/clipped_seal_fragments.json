@@ -1,0 +1,274 @@
+[
+  {
+    "object_id": "VIS-1-R1",
+    "object_type": "COMPANY_ROUND_SEAL",
+    "page_no": 1,
+    "bbox": {
+      "x0": 556.3560267857143,
+      "y0": 207.9155844155844,
+      "x1": 597.0,
+      "y1": 309.87418831168833,
+      "normalized": null
+    },
+    "visual_detection_confidence": 0.78,
+    "text": "",
+    "text_recognition_confidence": 0.0,
+    "party_role": "甲方",
+    "party_attribution_reason": "NEAREST_PARTY_ANCHOR",
+    "party_attribution_confidence": 0.68,
+    "supporting_pages": [
+      1
+    ],
+    "fragment_bboxes": [],
+    "raw_ref": {
+      "reason": "PAGE_EDGE_ROUND_SEAL",
+      "red_pixel_count": 3964,
+      "page_width": 597.0,
+      "page_height": 821.0,
+      "document_page_count": 5
+    }
+  },
+  {
+    "object_id": "VIS-1-R2",
+    "object_type": "EDGE_SEAM_SEAL",
+    "page_no": 1,
+    "bbox": {
+      "x0": 574.3459821428571,
+      "y0": 282.55194805194805,
+      "x1": 597.0,
+      "y1": 322.5357142857143,
+      "normalized": null
+    },
+    "visual_detection_confidence": 0.9,
+    "text": "",
+    "text_recognition_confidence": 0.0,
+    "party_role": "unknown",
+    "party_attribution_reason": "PAGE_EDGE_LOGICAL_OBJECT",
+    "party_attribution_confidence": 0.98,
+    "supporting_pages": [
+      1
+    ],
+    "fragment_bboxes": [
+      {
+        "x0": 574.3459821428571,
+        "y0": 282.55194805194805,
+        "x1": 597.0,
+        "y1": 322.5357142857143,
+        "normalized": null
+      }
+    ],
+    "raw_ref": {
+      "reason": "PAGE_EDGE_RED_FRAGMENT",
+      "red_pixel_count": 924,
+      "page_width": 597.0,
+      "page_height": 821.0,
+      "document_page_count": 5
+    }
+  },
+  {
+    "object_id": "VIS-3-R1",
+    "object_type": "COMPANY_ROUND_SEAL",
+    "page_no": 3,
+    "bbox": {
+      "x0": 555.3333333333334,
+      "y0": 200.66666666666666,
+      "x1": 596.0,
+      "y1": 248.0,
+      "normalized": null
+    },
+    "visual_detection_confidence": 0.78,
+    "text": "",
+    "text_recognition_confidence": 0.0,
+    "party_role": "unknown",
+    "party_attribution_reason": "PARTY_ANCHOR_NOT_OBSERVED",
+    "party_attribution_confidence": 0.0,
+    "supporting_pages": [
+      3
+    ],
+    "fragment_bboxes": [],
+    "raw_ref": {
+      "reason": "PAGE_EDGE_ROUND_SEAL",
+      "red_pixel_count": 2451,
+      "page_width": 596.0,
+      "page_height": 818.0,
+      "document_page_count": 5
+    }
+  },
+  {
+    "object_id": "VIS-3-R2",
+    "object_type": "EDGE_SEAM_SEAL",
+    "page_no": 3,
+    "bbox": {
+      "x0": 573.3333333333334,
+      "y0": 243.33333333333331,
+      "x1": 577.3333333333334,
+      "y1": 250.66666666666669,
+      "normalized": null
+    },
+    "visual_detection_confidence": 0.9,
+    "text": "",
+    "text_recognition_confidence": 0.0,
+    "party_role": "unknown",
+    "party_attribution_reason": "PAGE_EDGE_LOGICAL_OBJECT",
+    "party_attribution_confidence": 0.98,
+    "supporting_pages": [
+      3
+    ],
+    "fragment_bboxes": [
+      {
+        "x0": 573.3333333333334,
+        "y0": 243.33333333333331,
+        "x1": 577.3333333333334,
+        "y1": 250.66666666666669,
+        "normalized": null
+      }
+    ],
+    "raw_ref": {
+      "reason": "PAGE_EDGE_RED_FRAGMENT",
+      "red_pixel_count": 40,
+      "page_width": 596.0,
+      "page_height": 818.0,
+      "document_page_count": 5
+    }
+  },
+  {
+    "object_id": "VIS-3-R3",
+    "object_type": "COMPANY_ROUND_SEAL",
+    "page_no": 3,
+    "bbox": {
+      "x0": 557.3333333333334,
+      "y0": 256.0,
+      "x1": 596.0,
+      "y1": 322.66666666666663,
+      "normalized": null
+    },
+    "visual_detection_confidence": 0.78,
+    "text": "",
+    "text_recognition_confidence": 0.0,
+    "party_role": "unknown",
+    "party_attribution_reason": "PARTY_ANCHOR_NOT_OBSERVED",
+    "party_attribution_confidence": 0.0,
+    "supporting_pages": [
+      3
+    ],
+    "fragment_bboxes": [],
+    "raw_ref": {
+      "reason": "PAGE_EDGE_ROUND_SEAL",
+      "red_pixel_count": 2538,
+      "page_width": 596.0,
+      "page_height": 818.0,
+      "document_page_count": 5
+    }
+  },
+  {
+    "object_id": "VIS-5-R1",
+    "object_type": "EDGE_SEAM_SEAL",
+    "page_no": 5,
+    "bbox": {
+      "x0": 555.0254988913525,
+      "y0": 204.66666666666669,
+      "x1": 574.3481152993348,
+      "y1": 233.33333333333334,
+      "normalized": null
+    },
+    "visual_detection_confidence": 0.9,
+    "text": "",
+    "text_recognition_confidence": 0.0,
+    "party_role": "unknown",
+    "party_attribution_reason": "PAGE_EDGE_LOGICAL_OBJECT",
+    "party_attribution_confidence": 0.98,
+    "supporting_pages": [
+      5
+    ],
+    "fragment_bboxes": [
+      {
+        "x0": 555.0254988913525,
+        "y0": 204.66666666666669,
+        "x1": 574.3481152993348,
+        "y1": 233.33333333333334,
+        "normalized": null
+      }
+    ],
+    "raw_ref": {
+      "reason": "PAGE_EDGE_RED_FRAGMENT",
+      "red_pixel_count": 387,
+      "page_width": 601.0,
+      "page_height": 822.0,
+      "document_page_count": 5
+    }
+  },
+  {
+    "object_id": "VIS-5-R2",
+    "object_type": "EDGE_SEAM_SEAL",
+    "page_no": 5,
+    "bbox": {
+      "x0": 577.0133037694013,
+      "y0": 234.66666666666669,
+      "x1": 594.3370288248337,
+      "y1": 300.66666666666663,
+      "normalized": null
+    },
+    "visual_detection_confidence": 0.9,
+    "text": "",
+    "text_recognition_confidence": 0.0,
+    "party_role": "unknown",
+    "party_attribution_reason": "PAGE_EDGE_LOGICAL_OBJECT",
+    "party_attribution_confidence": 0.98,
+    "supporting_pages": [
+      5
+    ],
+    "fragment_bboxes": [
+      {
+        "x0": 577.0133037694013,
+        "y0": 234.66666666666669,
+        "x1": 594.3370288248337,
+        "y1": 300.66666666666663,
+        "normalized": null
+      }
+    ],
+    "raw_ref": {
+      "reason": "PAGE_EDGE_RED_FRAGMENT",
+      "red_pixel_count": 432,
+      "page_width": 601.0,
+      "page_height": 822.0,
+      "document_page_count": 5
+    }
+  },
+  {
+    "object_id": "VIS-5-R3",
+    "object_type": "EDGE_SEAM_SEAL",
+    "page_no": 5,
+    "bbox": {
+      "x0": 557.0243902439024,
+      "y0": 236.66666666666669,
+      "x1": 563.0210643015521,
+      "y1": 248.00000000000003,
+      "normalized": null
+    },
+    "visual_detection_confidence": 0.9,
+    "text": "",
+    "text_recognition_confidence": 0.0,
+    "party_role": "unknown",
+    "party_attribution_reason": "PAGE_EDGE_LOGICAL_OBJECT",
+    "party_attribution_confidence": 0.98,
+    "supporting_pages": [
+      5
+    ],
+    "fragment_bboxes": [
+      {
+        "x0": 557.0243902439024,
+        "y0": 236.66666666666669,
+        "x1": 563.0210643015521,
+        "y1": 248.00000000000003,
+        "normalized": null
+      }
+    ],
+    "raw_ref": {
+      "reason": "PAGE_EDGE_RED_FRAGMENT",
+      "red_pixel_count": 60,
+      "page_width": 601.0,
+      "page_height": 822.0,
+      "document_page_count": 5
+    }
+  }
+]

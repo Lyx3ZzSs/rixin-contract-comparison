@@ -8,7 +8,13 @@ from typing import Any
 from app.errors import ConflictError, NotFoundError
 from app.infrastructure.task_repository import TaskRepository, default_task_repository, to_jsonable
 from app.models import AuditItemReview, CompareTask, DiffItem, EvidenceBox, ReviewStatus
-from app.services.audit_summary import build_audit_items
+from app.services.audit_summary import (
+    AuditItem,
+    build_audit_items,
+    build_task_audit_items,
+    normalized_audit_item_reviews,
+    project_diff_reviews,
+)
 
 
 class DiffNotFoundError(NotFoundError):
@@ -32,7 +38,7 @@ class CompareReviewService:
         task: CompareTask,
         diff_id: str,
         review_status: ReviewStatus,
-        review_comment: str = "",
+        review_comment: str | None = None,
         reviewed_by: str = "",
     ) -> tuple[CompareTask, DiffItem]:
         updated_diff: DiffItem | None = None
@@ -42,20 +48,23 @@ class CompareReviewService:
             if persisted.status != "COMPLETED":
                 raise InvalidReviewStateError("任务尚未完成，不能提交复核结果。")
 
-            for index, diff in enumerate(persisted.diffs):
+            for diff in persisted.diffs:
                 if diff.diff_id != diff_id:
                     continue
-                updated = diff.model_copy(
-                    update={
-                        "review_status": review_status,
-                        "review_comment": review_comment.strip(),
-                        "reviewed_by": reviewed_by.strip(),
-                        "reviewed_at": datetime.now(UTC).isoformat(),
-                    }
-                )
-                persisted.diffs[index] = updated
+                child_ids = {item.item_id for item in build_audit_items(persisted.diffs) if item.diff_id == diff_id}
+                normalized = self._normalized_reviews(persisted)
+                for item_id in child_ids:
+                    self._set_review(
+                        normalized,
+                        item_id,
+                        self._review(review_status, review_comment, reviewed_by, existing=normalized.get(item_id)),
+                    )
+                persisted.audit_item_reviews = normalized
+                persisted.audit_item_reviews_normalized = True
+                self._project_diff_reviews(persisted)
                 self.refresh_review_stats(persisted)
-                updated_diff = updated
+                persisted.report_revision += 1
+                updated_diff = next(item for item in persisted.diffs if item.diff_id == diff_id)
                 return
 
             raise DiffNotFoundError(f"差异不存在: {diff_id}")
@@ -69,49 +78,97 @@ class CompareReviewService:
         task: CompareTask,
         audit_item_id: str,
         review_status: ReviewStatus,
-        review_comment: str = "",
+        review_comment: str | None = None,
         reviewed_by: str = "",
-    ) -> tuple[CompareTask, AuditItemReview]:
-        updated_review: AuditItemReview | None = None
+    ) -> tuple[CompareTask, AuditItem]:
+        updated_item: AuditItem | None = None
 
         def mutate(persisted: CompareTask) -> None:
-            nonlocal updated_review
+            nonlocal updated_item
             if persisted.status != "COMPLETED":
                 raise InvalidReviewStateError("任务尚未完成，不能提交复核结果。")
-            valid_item_ids = {item.item_id for item in build_audit_items(persisted.diffs)}
-            if audit_item_id not in valid_item_ids:
+            generated_items = build_audit_items(persisted.diffs)
+            if audit_item_id not in {item.item_id for item in generated_items}:
                 raise AuditItemNotFoundError(f"审计点不存在: {audit_item_id}")
-            updated_review = AuditItemReview(
-                review_status=review_status,
-                review_comment=review_comment.strip(),
-                reviewed_by=reviewed_by.strip(),
-                reviewed_at=datetime.now(UTC).isoformat(),
+            normalized = self._normalized_reviews(persisted)
+            self._set_review(
+                normalized,
+                audit_item_id,
+                self._review(
+                    review_status,
+                    review_comment,
+                    reviewed_by,
+                    existing=normalized.get(audit_item_id),
+                ),
             )
-            persisted.audit_item_reviews[audit_item_id] = updated_review
+            persisted.audit_item_reviews = normalized
+            persisted.audit_item_reviews_normalized = True
+            self._project_diff_reviews(persisted)
             self.refresh_review_stats(persisted)
+            persisted.report_revision += 1
+            updated_item = next(item for item in build_task_audit_items(persisted) if item.item_id == audit_item_id)
 
         updated_task = self.repository.update_compare_task(task.task_id, mutate)
-        assert updated_review is not None
-        return updated_task, updated_review
+        assert updated_item is not None
+        return updated_task, updated_item
 
     def refresh_review_stats(self, task: CompareTask) -> CompareTask:
-        if task.audit_item_reviews:
-            counts = Counter(review.review_status for review in task.audit_item_reviews.values())
-            task.reviewed_count = len(
-                [
-                    review
-                    for review in task.audit_item_reviews.values()
-                    if review.review_status != "UNREVIEWED"
-                ]
-            )
-        else:
-            counts = Counter(diff.review_status for diff in task.diffs)
-            task.reviewed_count = len([diff for diff in task.diffs if diff.review_status != "UNREVIEWED"])
+        items = build_audit_items(
+            task.diffs,
+            task.audit_item_reviews,
+            broadcast_legacy=not task.audit_item_reviews_normalized,
+        )
+        counts = Counter(item.review_status for item in items)
+        task.reviewed_count = len([item for item in items if item.review_status != "UNREVIEWED"])
         task.confirmed_count = counts["CONFIRMED"]
         task.false_positive_count = counts["FALSE_POSITIVE"]
         task.manual_review_count = counts["NEEDS_REVIEW"]
         task.ignored_count = counts["IGNORED"]
         return task
+
+    def _normalized_reviews(self, task: CompareTask) -> dict[str, AuditItemReview]:
+        return normalized_audit_item_reviews(
+            task.diffs,
+            task.audit_item_reviews,
+            broadcast_legacy=not task.audit_item_reviews_normalized,
+        )
+
+    @staticmethod
+    def _review(
+        review_status: ReviewStatus,
+        review_comment: str | None,
+        reviewed_by: str,
+        *,
+        existing: AuditItemReview | None,
+    ) -> AuditItemReview:
+        return AuditItemReview(
+            review_status=review_status,
+            review_comment=existing.review_comment
+            if review_comment is None and existing is not None
+            else (review_comment or "").strip(),
+            reviewed_by=reviewed_by.strip(),
+            reviewed_at=datetime.now(UTC).isoformat(),
+        )
+
+    @staticmethod
+    def _set_review(
+        reviews: dict[str, AuditItemReview],
+        item_id: str,
+        review: AuditItemReview,
+    ) -> None:
+        if review.review_status == "UNREVIEWED":
+            reviews.pop(item_id, None)
+            return
+        reviews[item_id] = review
+
+    @staticmethod
+    def _project_diff_reviews(task: CompareTask) -> None:
+        items = build_audit_items(
+            task.diffs,
+            task.audit_item_reviews,
+            broadcast_legacy=False,
+        )
+        task.diffs = project_diff_reviews(task.diffs, items)
 
 
 class CompareQualityService:
@@ -119,15 +176,16 @@ class CompareQualityService:
     low_match_threshold = 70.0
 
     def build_summary(self, task: CompareTask) -> dict[str, Any]:
-        review_service = CompareReviewService()
-        review_service.refresh_review_stats(task)
-        source_counts = Counter(diff.source_type or "clause" for diff in task.diffs)
-        review_flag_counts = Counter(flag for diff in task.diffs for flag in diff.review_flags)
+        audit_items = build_task_audit_items(task)
+        projected_diffs = project_diff_reviews(task.diffs, audit_items)
+        review_counts = Counter(item.review_status for item in audit_items)
+        source_counts = Counter(diff.source_type or "clause" for diff in projected_diffs)
+        review_flag_counts = Counter(flag for diff in projected_diffs for flag in diff.review_flags)
         evidence_counts = Counter()
         low_confidence_diffs: list[dict[str, Any]] = []
         low_similarity_diffs: list[dict[str, Any]] = []
 
-        for diff in task.diffs:
+        for diff in projected_diffs:
             evidences = [*diff.original_evidence, *diff.compare_evidence]
             for evidence in evidences:
                 evidence_counts[evidence.evidence_quality] += 1
@@ -139,16 +197,18 @@ class CompareQualityService:
         return {
             "task_id": task.task_id,
             "status": task.status,
-            "diff_count": len(task.diffs),
+            "diff_count": len(projected_diffs),
             "review_stats": {
-                "reviewed_count": task.reviewed_count,
-                "confirmed_count": task.confirmed_count,
-                "false_positive_count": task.false_positive_count,
-                "manual_review_count": task.manual_review_count,
-                "ignored_count": task.ignored_count,
+                "total_count": len(audit_items),
+                "reviewed_count": len([item for item in audit_items if item.review_status != "UNREVIEWED"]),
+                "confirmed_count": review_counts["CONFIRMED"],
+                "false_positive_count": review_counts["FALSE_POSITIVE"],
+                "manual_review_count": review_counts["NEEDS_REVIEW"],
+                "ignored_count": review_counts["IGNORED"],
+                "review_unit": "audit_item",
             },
             "source_counts": dict(source_counts),
-            "needs_review_count": len([diff for diff in task.diffs if diff.quality_status == "NEEDS_REVIEW"]),
+            "needs_review_count": len([diff for diff in projected_diffs if diff.quality_status == "NEEDS_REVIEW"]),
             "review_flag_counts": dict(review_flag_counts),
             "cross_source_merged_count": review_flag_counts["CROSS_SOURCE_MERGED"],
             "evidence_quality_counts": {
@@ -158,6 +218,21 @@ class CompareQualityService:
             },
             "document_profile_summary": self._document_profile_summary(task),
             "parse_warning_details": [to_jsonable(item) for item in task.parse_warning_details],
+            "ocr_quality_summary": to_jsonable(task.ocr_quality_summary) if task.ocr_quality_summary else None,
+            "ocr_risk_page_count": task.ocr_quality_summary.risk_page_count if task.ocr_quality_summary else 0,
+            "ocr_affected_diff_count": task.ocr_quality_summary.affected_diff_count if task.ocr_quality_summary else 0,
+            "ocr_remediation_summary": (
+                to_jsonable(task.ocr_remediation_summary) if task.ocr_remediation_summary else None
+            ),
+            "ocr_remediation_action_count": (
+                task.ocr_remediation_summary.attempted_action_count if task.ocr_remediation_summary else 0
+            ),
+            "ocr_remediation_unresolved_count": (
+                task.ocr_remediation_summary.unresolved_action_count if task.ocr_remediation_summary else 0
+            ),
+            "manual_review_required_count": (
+                task.ocr_remediation_summary.manual_review_required_count if task.ocr_remediation_summary else 0
+            ),
             "low_confidence_diffs": low_confidence_diffs,
             "low_similarity_diffs": low_similarity_diffs,
             "debug_artifacts": self._debug_artifacts(task),

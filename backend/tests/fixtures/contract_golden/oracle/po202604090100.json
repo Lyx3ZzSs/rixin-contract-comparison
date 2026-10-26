@@ -1,0 +1,353 @@
+{
+  "schema_version": 1,
+  "contract_key": "PO202604090100",
+  "expected_case_count": 19,
+  "assertions": [
+    {
+      "case_id": "PO202604090100_P1_HEADER_FOOTER_ADD_F3064A8725",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "header_footer",
+      "source_type": "header_footer",
+      "diff_type": "ADD",
+      "title": "页眉",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "(NN/N-20260522-00041"
+    },
+    {
+      "case_id": "PO202604090100_P1_HEADER_FOOTER_ADD_E32A6CBA71",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "header_footer",
+      "source_type": "header_footer",
+      "diff_type": "ADD",
+      "title": "页眉",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "司"
+    },
+    {
+      "case_id": "PO202604090100_P7_SIGNATURE_MODIFY_2A2494C7BE",
+      "assertion": "MUST_REVIEW",
+      "page": 7,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "MODIFY",
+      "title": "乙方 · 签署主体变化",
+      "party": "乙方",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "乙方:【国能日新科技股份有限公司】(盖章)",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 493.0,
+          "y0": 327.0,
+          "x1": 527.5,
+          "y1": 344.0
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "PO202604090100_P7_SIGNATURE_DELETE_2457708011",
+      "assertion": "MUST_REVIEW",
+      "page": 7,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 地址",
+      "party": "乙方",
+      "field_type": "address",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "地址:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 284.9712858031919,
+          "y0": 405.34588720906095,
+          "x1": 321.4676083709691,
+          "y1": 418.340946478402
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.4400024414062
+      }
+    },
+    {
+      "case_id": "PO202604090100_P7_SIGNATURE_DELETE_67B7576352",
+      "assertion": "MUST_REVIEW",
+      "page": 7,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 授权代表签字",
+      "party": "乙方",
+      "field_type": "authorized_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "授权代表签字:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 286.9710843000564,
+          "y0": 371.3588091200151,
+          "x1": 358.46388056296246,
+          "y1": 383.8540584174584
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.4400024414062
+      }
+    },
+    {
+      "case_id": "PO202604090100_P7_SIGNATURE_DELETE_C8B4CDCC55",
+      "assertion": "MUST_REVIEW",
+      "page": 7,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 纳税人识别号",
+      "party": "乙方",
+      "field_type": "credit_code",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "纳税人识别号:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 287.47103392427255,
+          "y0": 388.8521581364358,
+          "x1": 357.96393093874633,
+          "y1": 400.84759746198137
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.4400024414062
+      }
+    },
+    {
+      "case_id": "PO202604090100_P7_SIGNATURE_ADD_E76A7D8B1E",
+      "assertion": "MUST_REVIEW",
+      "page": 7,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "乙方 · 日期",
+      "party": "乙方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "2026.4.17",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 338.0,
+          "y0": 487.0,
+          "x1": 408.0,
+          "y1": 522.0
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "PO202604090100_P7_SEAL_DELETE_A00AA6A329",
+      "assertion": "MUST_REVIEW",
+      "page": 7,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 印章",
+      "party": "甲方",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "seal",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 120.84409740191727,
+          "y0": 316.963825861915,
+          "x1": 260.9304731680409,
+          "y1": 412.823971340664
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.4400024414062
+      }
+    },
+    {
+      "case_id": "PO202604090100_P7_SEAL_ADD_F15460918C",
+      "assertion": "MUST_REVIEW",
+      "page": 7,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "乙方 · 其他印章",
+      "party": "乙方",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_after": "视觉印章",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 384.9769975786925,
+          "y0": 292.9827882960413,
+          "x1": 466.728813559322,
+          "y1": 310.30120481927713
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 597.0
+      },
+      "object_type": "OTHER_STAMP",
+      "review_note": "旧目标页/物理框对应 release D012，同页最大 IoU=0.94982；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 原件可见局部红色圆弧/印章残片，暂不硬判公司章或姓名章；OTHER_STAMP表示类型未定，允许保留人工复核。"
+    },
+    {
+      "case_id": "PO202604090100_P7_SIGNATURE_ADD_50C56D35CF",
+      "assertion": "MUST_REVIEW",
+      "page": 7,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "乙方 · 授权代表签字",
+      "party": "乙方",
+      "field_type": "signature",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "未签",
+      "semantic_after": "已签",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 493.5,
+          "y0": 348.0,
+          "x1": 571.5,
+          "y1": 384.5
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "PO202604090100_P8_PAGE_ADD_244807E55D",
+      "assertion": "MUST_REVIEW",
+      "page": 8,
+      "region": "page",
+      "source_type": "page",
+      "diff_type": "ADD",
+      "title": "整页新增：第8页",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "国能日新国能日新科技股份有限公司SPRIXIN风电场自动发电控制、自动电压控制系统V1.0报价明细24小时服务热线:400-6688-760感谢"
+    },
+    {
+      "case_id": "PO202604090100_P9_PAGE_ADD_E3A2D751E8",
+      "assertion": "MUST_REVIEW",
+      "page": 9,
+      "region": "page",
+      "source_type": "page",
+      "diff_type": "ADD",
+      "title": "整页新增：第9页",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "国能日新国能日新科技股份有限公司SPRIXIN新能源快速频率响应系统V1.0报价明细感谢您的询价,我公司将为您提供最优质的服务!24小时服务热线"
+    },
+    {
+      "case_id": "PO_P7_PARTY_B_PHONE_LABEL_FALSE_DIFF",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 7,
+      "region": "signing",
+      "party": "乙方",
+      "field_type": "phone"
+    },
+    {
+      "case_id": "PO_P7_PARTY_B_BANK_LABEL_FALSE_DIFF",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 7,
+      "region": "signing",
+      "party": "乙方",
+      "field_type": "bank"
+    },
+    {
+      "case_id": "PO_P7_PARTY_B_ACCOUNT_LABEL_FALSE_DIFF",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 7,
+      "region": "signing",
+      "party": "乙方",
+      "field_type": "account"
+    },
+    {
+      "case_id": "PO_P7_PARTY_B_DATE_LABEL_FALSE_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 7,
+      "region": "signing",
+      "party": "乙方",
+      "field_type": "date",
+      "diff_type": "DELETE",
+      "forbidden_value_pattern": "日期[:：]"
+    },
+    {
+      "case_id": "PO202604090100_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "PO202604090100_P1_IDENTICAL_TABLE_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 1,
+      "source_type": "table",
+      "review_note": "此固定PDF对的第1页表格业务内容一致，结构解析失败不得产生表格新增、修改或删除，也不得以整表结构待复核差异覆盖原表。来源为9ab5698b的D005及后续单元格恢复验证；本规则不禁止其他输入中的真实表格变化。"
+    },
+    {
+      "case_id": "PO202604090100_CLAUSE_22_5_NO_FOREIGN_TEXT_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "clause_identity": "本合同一式两份,双方各持一份,传真件有效。",
+      "review_note": "此固定PDF对第22.5条正文完全一致。第7页红章碎字“公技股”属于印章，第8页“国能日新科技股份有限公司”属于新增报价单抬头，均不得回挂第22.5条产生正文差异。不限差异类型或来源页，保留真实印章及第8、9页报价单新增的原有验收要求。"
+    }
+  ],
+  "baseline_version": "contract-golden-v3",
+  "review_revision": "2026-10-09-po-table-and-clause-verified",
+  "review_source_task_id": "10052fcf-a151-41bd-aca9-e6b928400ff7",
+  "regression_coverage": {
+    "source_task_id": "10052fcf-a151-41bd-aca9-e6b928400ff7",
+    "reference_tasks": [
+      "40c08765-fba3-402e-ad57-c1ac41eb8b2b",
+      "9ab5698b-93b4-4f02-aa4a-bfcb0d61fc34"
+    ],
+    "evidence_root": "output/analysis/golden-po-10052fcf-20261009",
+    "fix_evidence_roots": [
+      "output/analysis/ownership-fix-20261009",
+      "output/analysis/d005-fix-20261009"
+    ],
+    "approval": "用户在本任务修复及真实服务验证完成后明确要求更新该份对比任务的黄金集。",
+    "scope": "原17条断言保持不变，补充第1页相同表格及第22.5条外来文字污染两条负例；不以当前输出自动替代黄金真值，不放宽既有失败。"
+  }
+}

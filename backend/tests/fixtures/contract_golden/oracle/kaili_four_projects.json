@@ -1,0 +1,353 @@
+{
+  "schema_version": 1,
+  "contract_key": "KAILI_FOUR_PROJECTS",
+  "expected_case_count": 15,
+  "assertions": [
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P1_DATE_MODIFY_D36455B8CC",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "MODIFY",
+      "title": "封面字段：签订日期",
+      "field_type": "date",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "2026年月日",
+      "semantic_after": "2026年4月21日"
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P1_METADATA_ADD_5CC91C9DD7",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面额外文本",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "6NNYN-20260421-00039"
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P1_METADATA_ADD_A5C8FF5C23",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面额外文本",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "录反一"
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P2_SEAL_ADD_9611D6825F",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "甲方 · 公司圆章",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "NEEDS_REVIEW",
+      "semantic_after": "公司圆章",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 208.0,
+          "y0": 121.0,
+          "x1": 322.0,
+          "y1": 232.0
+        },
+        "min_iou": 0.35
+      },
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "旧目标页/物理框对应 release D005，同页最大 IoU=0.96350；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 章存在与章文可读性分开；content应NEEDS_REVIEW，不能把缺字/正文污染章文标CONFIRMED。"
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P9_SIGNATURE_MODIFY_2B2E70FC82",
+      "assertion": "MUST_REVIEW",
+      "page": 9,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "MODIFY",
+      "title": "乙方 · 地址",
+      "party": "乙方",
+      "field_type": "address",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "北京市海淀区西三旗建材城中路27号1幢2层227号",
+      "semantic_after": "北京市路27号1幢",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 337.5,
+          "y0": 181.5,
+          "x1": 382.5,
+          "y1": 197.0
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P9_SIGNATURE_DELETE_97D5DE489C",
+      "assertion": "MUST_REVIEW",
+      "page": 9,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 日期",
+      "party": "乙方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "日期:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 303.39806262832246,
+          "y0": 330.9606984335566,
+          "x1": 335.3873147011604,
+          "y1": 352.4581456127756
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P9_SIGNATURE_DELETE_4A7EE85A58",
+      "assertion": "MUST_REVIEW",
+      "page": 9,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 法人代表或授权委托人",
+      "party": "乙方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "法人代表或授权委托人:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 304.3977267555986,
+          "y0": 240.971384660082,
+          "x1": 447.84952901973134,
+          "y1": 256.9694848864775
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P9_SIGNATURE_DELETE_D3382D2235",
+      "assertion": "MUST_REVIEW",
+      "page": 9,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 邮编",
+      "party": "乙方",
+      "field_type": "postal_code",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "邮编:100096",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 302.89823056468435,
+          "y0": 301.9641417732148,
+          "x1": 385.3705210649697,
+          "y1": 319.9620045279097
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P9_SIGNATURE_DELETE_410432AFE0",
+      "assertion": "MUST_REVIEW",
+      "page": 9,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · (签字)",
+      "party": "乙方",
+      "field_type": "signature",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "(签字)",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 409.86229218323626,
+          "y0": 268.9680600562741,
+          "x1": 448.34936108336944,
+          "y1": 291.9653291317176
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P9_SIGNATURE_DELETE_1C1750AED4",
+      "assertion": "MUST_REVIEW",
+      "page": 9,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 日期",
+      "party": "甲方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "日期:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 63.47867208203781,
+          "y0": 331.96057969770635,
+          "x1": 94.96809209123768,
+          "y1": 352.9580862448504
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P9_SIGNATURE_DELETE_127AEF7FBB",
+      "assertion": "MUST_REVIEW",
+      "page": 9,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 法人代表或授权委托人",
+      "party": "甲方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "法人代表或授权委托人:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 63.47867208203781,
+          "y0": 240.971384660082,
+          "x1": 206.9304743461705,
+          "y1": 256.9694848864775
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P9_SIGNATURE_DELETE_91740E8D61",
+      "assertion": "MUST_REVIEW",
+      "page": 9,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 邮编",
+      "party": "甲方",
+      "field_type": "postal_code",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "邮编:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 62.47900795476163,
+          "y0": 300.96426050906507,
+          "x1": 97.46725240942814,
+          "y1": 321.96176705620917
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P9_SIGNATURE_DELETE_8C0F87BD82",
+      "assertion": "MUST_REVIEW",
+      "page": 9,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · (签字)",
+      "party": "甲方",
+      "field_type": "signature",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "(签字)",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 169.44306957331352,
+          "y0": 268.9680600562741,
+          "x1": 207.9301384734467,
+          "y1": 291.9653291317176
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P9_IDENTICAL_FOOTER_NO_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 9,
+      "source_type": "header_footer",
+      "review_note": "该固定PDF对的第9页页脚均为印刷页码“共9页第9页”，没有新增签注或其他页脚变化。不得输出页眉页脚差异；不限差异类型、标题或审核状态，改名为“视觉变化（待复核）”仍需拦截。此规则仅针对本合同该页，不禁止其他合同的真实手写签注。"
+    }
+  ],
+  "baseline_version": "contract-golden-v3",
+  "review_revision": "2026-10-08-kaili-footer-page-number-verified",
+  "review_source_task_id": "928b3727-d136-4a71-b767-2182e2d328d7",
+  "regression_coverage": {
+    "source_task_id": "928b3727-d136-4a71-b767-2182e2d328d7",
+    "reference_tasks": [
+      "fa4b163e-7809-49d6-bf87-0adda99388ee",
+      "9146476b-0a08-489a-9926-a9c4116dbe98"
+    ],
+    "evidence_root": "output/analysis/golden-kaili-928b3727-20261008",
+    "fix_evidence_root": "output/analysis/footer-fix-20261008",
+    "approval": "用户明确要求更新任务 928b3727-d136-4a71-b767-2182e2d328d7 黄金集。",
+    "scope": "保留全部14条原有断言，新增第9页相同页脚不得报差异的负例。更新来源，不把其余未标注候选自动认定为正确。"
+  }
+}

@@ -16,6 +16,7 @@ class ProgressEvent:
     progress_percent: int
     status: str  # "PROCESSING" | "COMPLETED" | "FAILED"
     detail: dict | None = None
+    revision: int = 0
 
 
 class ProgressBus:
@@ -44,12 +45,12 @@ class ProgressBus:
             queues = list(self._subscribers.get(event.task_id, []))
         for queue in queues:
             try:
-                self._loop.call_soon_threadsafe(queue.put_nowait, event)
+                self._loop.call_soon_threadsafe(self._offer_if_subscribed, event.task_id, queue, event)
             except RuntimeError:
                 pass
 
     async def subscribe(self, task_id: str) -> asyncio.Queue[ProgressEvent]:
-        queue: asyncio.Queue[ProgressEvent] = asyncio.Queue()
+        queue: asyncio.Queue[ProgressEvent] = asyncio.Queue(maxsize=1)
         with self._lock:
             self._subscribers.setdefault(task_id, []).append(queue)
         return queue
@@ -61,3 +62,25 @@ class ProgressBus:
                 subscribers.remove(queue)
             if not subscribers:
                 self._subscribers.pop(task_id, None)
+
+    def _offer_if_subscribed(
+        self,
+        task_id: str,
+        queue: asyncio.Queue[ProgressEvent],
+        event: ProgressEvent,
+    ) -> None:
+        with self._lock:
+            if queue not in self._subscribers.get(task_id, []):
+                return
+            self._offer_latest(queue, event)
+
+    @staticmethod
+    def _offer_latest(queue: asyncio.Queue[ProgressEvent], event: ProgressEvent) -> None:
+        if queue.empty():
+            queue.put_nowait(event)
+            return
+        pending = queue.get_nowait()
+        if pending.status in {"COMPLETED", "FAILED"}:
+            queue.put_nowait(pending)
+            return
+        queue.put_nowait(event)

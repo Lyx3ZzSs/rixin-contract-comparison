@@ -19,16 +19,20 @@ class ConflictError(AppError, ValueError):
     status_code = 409
 
 
-class ExternalServiceError(AppError, RuntimeError):
-    status_code = 502
-
-
 class DocumentProcessingError(AppError, ValueError):
     status_code = 422
 
 
 class TaskExecutionError(AppError, RuntimeError):
     status_code = 409
+
+
+class TaskCancelled(TaskExecutionError):
+    """Normal worker control flow when cancellation has been requested."""
+
+
+class TaskTransitionConflict(TaskExecutionError):
+    """The requested Task or Job state transition is not legal."""
 
 
 class PipelineContractError(TaskExecutionError):

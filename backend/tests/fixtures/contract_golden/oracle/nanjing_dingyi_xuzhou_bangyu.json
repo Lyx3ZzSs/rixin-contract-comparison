@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "contract_key": "NANJING_DINGYI_XUZHOU_BANGYU",
+  "expected_case_count": 5,
+  "review_provenance": {
+    "method": "agent_visual_pdf_review",
+    "authorization": "用户明确要求：加入正式GOlden",
+    "source_run_id": "593d2c7b-ffae-4822-bd6a-4c369f5c1909",
+    "date": "2026-09-08",
+    "evidence_root": "output/analysis/golden-v3-update"
+  },
+  "assertions": [
+    {
+      "case_id": "NANJING_DINGYI_XUZHOU_BANGYU_D80D70CFAA77",
+      "page": 1,
+      "diff_type": "DELETE",
+      "source_type": "header_footer",
+      "review_note": "第1页所指位置是两侧均已有的骑缝章；页眉乱码删除为误报。",
+      "assertion": "MUST_NOT_EXIST",
+      "semantic_before": "市品房路房民品用房"
+    },
+    {
+      "case_id": "NANJING_DINGYI_XUZHOU_BANGYU_E0B5EA68A674",
+      "assertion": "MUST_EXIST",
+      "page": 1,
+      "diff_type": "DELETE",
+      "source_type": "header_footer",
+      "review_note": "原件扫描全能王水印在扫描件消失。",
+      "semantic_before": "扫描全能王",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 528.5,
+          "y0": 808.0,
+          "x1": 583.5,
+          "y1": 822.0,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NANJING_DINGYI_XUZHOU_BANGYU_764C96061B1A",
+      "assertion": "MUST_EXIST",
+      "page": 1,
+      "diff_type": "DELETE",
+      "source_type": "header_footer",
+      "review_note": "原件3亿人都在用的扫描App水印在扫描件消失。",
+      "semantic_before": "3亿人都在用的扫描App",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 512.0,
+          "y0": 824.5,
+          "x1": 582.5,
+          "y1": 832.5,
+          "normalized": null
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "NANJING_DINGYI_XUZHOU_BANGYU_AA11F04D544D",
+      "page": 5,
+      "diff_type": "MODIFY",
+      "source_type": "seal",
+      "review_note": "第5页两侧为同一骑缝章的不同可见切片，章文OCR残片不构成修改。",
+      "assertion": "MUST_NOT_EXIST"
+    },
+    {
+      "case_id": "NANJING_DINGYI_XUZHOU_BANGYU_3B3E2A786FA1",
+      "page": 7,
+      "diff_type": "ADD",
+      "source_type": "signing_region",
+      "review_note": "第7页两侧均有右边缘骑缝章，不能报新增。",
+      "assertion": "MUST_NOT_EXIST",
+      "object_type": "EDGE_SEAM_SEAL"
+    }
+  ],
+  "regression_coverage": {
+    "updated_at": "2026-09-08",
+    "authorization": "用户要求：根据根本原因优化改进，并更新Golden数据",
+    "tests": "backend/tests/test_golden_v3_root_repairs.py",
+    "verification_evidence": "output/analysis/golden-v3-root-fix/",
+    "cases": [
+      {
+        "case_id": "NANJING_DINGYI_XUZHOU_BANGYU_D80D70CFAA77",
+        "invariant": "已对应的骑缝章拥有其纵向OCR区域，不形成页眉删除。"
+      },
+      {
+        "case_id": "NANJING_DINGYI_XUZHOU_BANGYU_AA11F04D544D",
+        "invariant": "须有红色图形几何对应证据，才撤回单侧章文不可读导致的修改。"
+      },
+      {
+        "case_id": "NANJING_DINGYI_XUZHOU_BANGYU_3B3E2A786FA1",
+        "invariant": "以对侧骑缝章引导对应页补探测，兼容留白与裁切。"
+      }
+    ]
+  }
+}

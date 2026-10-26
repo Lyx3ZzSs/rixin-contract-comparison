@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.models import BBox
-from app.services.models.layout_detector import LayoutRegion, LayoutResult
+from app.services.layout_analysis import LayoutRegion, LayoutResult
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class SealDetector:
     """Extracts seal regions from layout detection results.
 
     Does NOT make additional API calls — filters seal regions already
-    identified by ``LayoutDetector``.
+    identified by layout analysis.
     """
 
     name = "seal_detector"
@@ -37,7 +37,7 @@ class SealDetector:
         """Extract seal regions.
 
         Args:
-            input: A ``LayoutResult`` from LayoutDetector.
+            input: A ``LayoutResult`` from layout analysis.
 
         Returns:
             List of ``SealRegion`` s found in the layout.

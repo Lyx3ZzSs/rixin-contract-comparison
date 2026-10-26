@@ -6,7 +6,8 @@ import re
 from app.models import DiffItem, EvidenceBox, TextRange
 from app.services.clause_splitter import ClauseSplitter
 
-from app.services.diff.text_utils import shorten
+from app.services.diff.text_utils import merge_ranges, shorten
+from app.services.diff.range_refiner import expand_numeric_value_range
 
 try:
     from rapidfuzz import fuzz as rfuzz
@@ -15,9 +16,9 @@ except Exception:
 
 
 def deduplicate_overlaps(diffs: list[DiffItem]) -> list[DiffItem]:
-    add_diffs = [d for d in diffs if d.diff_type == "ADD"]
-    delete_diffs = [d for d in diffs if d.diff_type == "DELETE"]
-    modify_diffs = [d for d in diffs if d.diff_type == "MODIFY"]
+    add_diffs = [d for d in diffs if d.diff_type == "ADD" and d.source_type == "clause"]
+    delete_diffs = [d for d in diffs if d.diff_type == "DELETE" and d.source_type == "clause"]
+    modify_diffs = [d for d in diffs if d.diff_type == "MODIFY" and d.source_type != "signing_region"]
 
     # --- Phase 1: ADD vs MODIFY overlap ---
     result: list[DiffItem] = diffs
@@ -32,6 +33,8 @@ def deduplicate_overlaps(diffs: list[DiffItem]) -> list[DiffItem]:
             if not delete_evidence_text:
                 continue
             for add in add_diffs:
+                if not same_scope(add, mod):
+                    continue
                 body = add_bodies[add.diff_id]
                 if body and len(body) >= 10:
                     matched = text_is_contained(body, delete_evidence_text)
@@ -49,7 +52,11 @@ def deduplicate_overlaps(diffs: list[DiffItem]) -> list[DiffItem]:
                 }:
                     body = add_bodies.get(diff.diff_id, "")
                     if body and len(body) >= 10:
-                        result.append(shrink_add_to_prefix(diff))
+                        covered = {
+                            re.sub(r"\s+", "", _delete_evidence_text(mod)) for mod in modify_diffs
+                            if diff.diff_id in add_overlap_map.get(mod.diff_id, [])
+                        }
+                        result.append(trim_overlap(diff, "compare", covered))
                     else:
                         result.append(shrink_title_only_add(diff))
                     continue
@@ -71,6 +78,8 @@ def deduplicate_overlaps(diffs: list[DiffItem]) -> list[DiffItem]:
             if not add_ev_text:
                 continue
             for d in delete_diffs:
+                if not same_scope(d, mod):
+                    continue
                 body = delete_bodies[d.diff_id]
                 if body and len(body) >= 10:
                     matched = text_is_contained(body, add_ev_text)
@@ -88,7 +97,11 @@ def deduplicate_overlaps(diffs: list[DiffItem]) -> list[DiffItem]:
                 }:
                     body = delete_bodies.get(diff.diff_id, "")
                     if body and len(body) >= 10:
-                        final.append(shrink_delete_to_prefix(diff))
+                        covered = {
+                            re.sub(r"\s+", "", _add_evidence_text(mod)) for mod in modify_diffs
+                            if diff.diff_id in delete_overlap_map.get(mod.diff_id, [])
+                        }
+                        final.append(trim_overlap(diff, "original", covered))
                     else:
                         final.append(shrink_title_only_delete(diff))
                     continue
@@ -102,6 +115,29 @@ def deduplicate_overlaps(diffs: list[DiffItem]) -> list[DiffItem]:
             result = final
 
     return result
+
+
+def same_scope(left: DiffItem, right: DiffItem) -> bool:
+    if left.section_type != right.section_type:
+        return False
+    left_pages = {item.page_no for item in [*left.original_evidence, *left.compare_evidence]}
+    right_pages = {item.page_no for item in [*right.original_evidence, *right.compare_evidence]}
+    return bool(left_pages & right_pages)
+
+
+def trim_overlap(diff: DiffItem, side: str, covered: set[str]) -> DiffItem:
+    text = getattr(diff, f"{side}_text")
+    kind = "ADD" if side == "compare" else "DELETE"
+    ranges = getattr(diff, f"{side}_change_ranges") or [TextRange(start=0, end=len(text), highlight_type=kind)]
+    remaining = subtract_covered_ranges(text, ranges, covered)
+    snippet = rebuild_snippet(text, remaining)
+    return diff.model_copy(update={
+        f"{side}_change_ranges": remaining,
+        f"{side}_snippet": snippet,
+        f"{side}_evidence": retain_uncovered_evidence(text, ranges, remaining, getattr(diff, f"{side}_evidence")),
+        "readable_change": f"{'新增' if side == 'compare' else '删除'}：{snippet}",
+        "match_score_details": {**diff.match_score_details, "overlap_coverage_verified": True},
+    })
 
 
 def strip_clause_prefix(text: str) -> str:
@@ -137,11 +173,17 @@ def text_overlap_score(left: str, right: str) -> float:
 
 
 def text_is_contained(needle: str, haystack: str) -> bool:
-    if rfuzz is not None:
-        return float(rfuzz.partial_ratio(needle, haystack)) >= 85
+    # partial_ratio is symmetric: a paragraph and a single shared glyph can
+    # score 100. Containment must cover the needle, in the stated direction.
     norm_needle = re.sub(r"\s+", "", needle)
     norm_hay = re.sub(r"\s+", "", haystack)
-    return norm_needle in norm_hay
+    if not norm_needle or len(norm_needle) > len(norm_hay):
+        return False
+    if norm_needle in norm_hay:
+        return True
+    blocks = difflib.SequenceMatcher(None, norm_needle, norm_hay, autojunk=False).get_matching_blocks()
+    return (max(block.size for block in blocks) >= 16
+            and sum(block.size for block in blocks) / len(norm_needle) >= .85)
 
 
 def title_in_delete_evidence(add: DiffItem, mod: DiffItem) -> bool:
@@ -164,30 +206,6 @@ def title_in_compare_evidence(delete: DiffItem, mod: DiffItem) -> bool:
     return False
 
 
-def shrink_add_to_prefix(diff: DiffItem) -> DiffItem:
-    text = diff.compare_text
-    first_line = text.strip().splitlines()[0] if text.strip() else ""
-    match = ClauseSplitter.clause_start_pattern.match(first_line)
-    if not match:
-        return diff
-    prefix_len = len(match.group(1))
-    prefix = first_line[:prefix_len]
-
-    prefix_evidence = [
-        e for e in diff.compare_evidence
-        if e.highlight_type == "ADD" and len(e.text) <= prefix_len + 5
-    ]
-    if not prefix_evidence:
-        prefix_evidence = diff.compare_evidence[:1]
-
-    return diff.model_copy(update={
-        "compare_snippet": prefix,
-        "readable_change": f"缺失编号：{prefix}",
-        "compare_change_ranges": [TextRange(start=0, end=prefix_len, highlight_type="ADD")],
-        "compare_evidence": prefix_evidence,
-    })
-
-
 def shrink_title_only_add(diff: DiffItem) -> DiffItem:
     title = diff.title or diff.compare_snippet
     if not title:
@@ -197,29 +215,6 @@ def shrink_title_only_add(diff: DiffItem) -> DiffItem:
         "compare_snippet": title,
         "readable_change": f"缺失编号：{title}",
         "compare_change_ranges": [TextRange(start=0, end=title_len, highlight_type="ADD")],
-    })
-
-
-def shrink_delete_to_prefix(diff: DiffItem) -> DiffItem:
-    text = diff.original_text
-    first_line = text.strip().splitlines()[0] if text.strip() else ""
-    match = ClauseSplitter.clause_start_pattern.match(first_line)
-    if not match:
-        return diff
-    prefix_len = len(match.group(1))
-    prefix = first_line[:prefix_len]
-
-    prefix_evidence = [
-        e for e in diff.original_evidence
-        if e.highlight_type in ("DELETE", "MODIFY") and len(e.text) <= prefix_len + 5
-    ]
-    if not prefix_evidence:
-        prefix_evidence = diff.original_evidence[:1]
-    return diff.model_copy(update={
-        "original_snippet": prefix,
-        "readable_change": f"缺失编号：{prefix}",
-        "original_change_ranges": [TextRange(start=0, end=prefix_len, highlight_type="DELETE")],
-        "original_evidence": prefix_evidence,
     })
 
 
@@ -252,16 +247,10 @@ def remove_delete_overlap(
             if title:
                 delete_texts.add(re.sub(r"\s+", "", title))
 
-    filtered_evidence = [
-        e for e in diff.original_evidence
-        if e.highlight_type not in ("DELETE", "MODIFY")
-        or not evidence_in_set(e, delete_texts)
-    ]
-
-    remaining_ranges = [
-        r for r in diff.original_change_ranges
-        if r.highlight_type not in ("DELETE", "MODIFY") or not range_text_in_set(diff.original_text, r, delete_texts)
-    ]
+    remaining_ranges = subtract_covered_ranges(diff.original_text, diff.original_change_ranges, delete_texts)
+    filtered_evidence = retain_uncovered_evidence(
+        diff.original_text, diff.original_change_ranges, remaining_ranges, diff.original_evidence,
+    )
 
     return diff.model_copy(update={
         "original_evidence": filtered_evidence,
@@ -288,16 +277,10 @@ def remove_compare_overlap(
             if title:
                 overlap_texts.add(re.sub(r"\s+", "", title))
 
-    filtered_evidence = [
-        e for e in diff.compare_evidence
-        if e.highlight_type not in ("ADD", "MODIFY")
-        or not evidence_in_set(e, overlap_texts)
-    ]
-
-    remaining_ranges = [
-        r for r in diff.compare_change_ranges
-        if r.highlight_type not in ("ADD", "MODIFY") or not range_text_in_set(diff.compare_text, r, overlap_texts)
-    ]
+    remaining_ranges = subtract_covered_ranges(diff.compare_text, diff.compare_change_ranges, overlap_texts)
+    filtered_evidence = retain_uncovered_evidence(
+        diff.compare_text, diff.compare_change_ranges, remaining_ranges, diff.compare_evidence,
+    )
 
     return diff.model_copy(update={
         "compare_evidence": filtered_evidence,
@@ -307,29 +290,54 @@ def remove_compare_overlap(
     })
 
 
-def evidence_in_set(evidence: EvidenceBox, delete_texts: set[str]) -> bool:
-    compact = re.sub(r"\s+", "", evidence.text)
-    if not compact:
-        return False
-    for dt in delete_texts:
-        if dt and (compact in dt or dt in compact):
-            return True
-        if text_overlap_score(compact, dt) >= 80:
-            return True
-    return False
+def retain_uncovered_evidence(
+    text: str, before: list[TextRange], remaining: list[TextRange], evidence: list[EvidenceBox],
+) -> list[EvidenceBox]:
+    """Remove a box only when its uniquely located characters were subtracted.
+
+    A shared glyph elsewhere in the paragraph is not ownership evidence. Keep
+    ambiguous or partially covered boxes so retained changes never lose location.
+    """
+    removed = {i for r in before for i in range(r.start, min(r.end, len(text)))}
+    removed.difference_update(i for r in remaining for i in range(r.start, r.end))
+    if not removed:
+        return evidence
+    positions = [i for i, c in enumerate(text) if not c.isspace()]
+    compact = "".join(text[i] for i in positions)
+    kept = []
+    for box in evidence:
+        needle = re.sub(r"\s+", "", box.text)
+        start = compact.find(needle) if needle else -1
+        unique = start >= 0 and compact.find(needle, start + 1) < 0
+        covered = unique and all(i in removed for i in positions[start:start + len(needle)])
+        if not covered:
+            kept.append(box)
+    return kept
 
 
-def range_text_in_set(text: str, range_: TextRange, delete_texts: set[str]) -> bool:
-    fragment = re.sub(r"\s+", "", text[range_.start:range_.end])
-    if not fragment:
-        return False
-    for dt in delete_texts:
-        if dt and (
-            len(fragment) >= 10 and (fragment in dt or dt in fragment)
-            or text_overlap_score(fragment, dt) >= 80
-        ):
-            return True
-    return False
+def subtract_covered_ranges(text: str, ranges: list[TextRange], covered: set[str]) -> list[TextRange]:
+    """Subtract proven common characters, never drop a whole containing range."""
+    result: list[TextRange] = []
+    for item in ranges:
+        positions = [index for index in range(item.start, min(item.end, len(text))) if not text[index].isspace()]
+        compact = "".join(text[index] for index in positions)
+        removed: set[int] = set()
+        for other in covered:
+            for block in difflib.SequenceMatcher(None, compact, other, autojunk=False).get_matching_blocks():
+                if block.size < 16:
+                    continue
+                removed.update(range(positions[block.a], positions[block.a + block.size - 1] + 1))
+        start = item.start
+        for index in range(item.start, item.end + 1):
+            if index == item.end or index in removed:
+                if start < index and text[start:index].strip():
+                    result.append(TextRange(start=start, end=index, highlight_type=item.highlight_type))
+                start = index + 1
+    return merge_ranges([
+        expand_numeric_value_range(text, item.start, item.end, item.highlight_type)
+        if any(char.isdigit() for char in text[item.start:item.end]) else item
+        for item in result
+    ])
 
 
 def has_change_ranges(diff: DiffItem) -> bool:
@@ -339,10 +347,10 @@ def has_change_ranges(diff: DiffItem) -> bool:
 def rebuild_snippet(text: str, ranges: list[TextRange]) -> str:
     if not ranges:
         return ""
-    return shorten("".join(text[r.start:r.end] for r in ranges))
+    return shorten(" ".join(text[r.start:r.end] for r in ranges))
 
 
 def rebuild_readable(original: str, compare: str, orig_ranges: list[TextRange], comp_ranges: list[TextRange]) -> str:
-    orig_part = shorten("".join(original[r.start:r.end] for r in orig_ranges)) if orig_ranges else ""
-    comp_part = shorten("".join(compare[r.start:r.end] for r in comp_ranges)) if comp_ranges else ""
+    orig_part = shorten(" ".join(original[r.start:r.end] for r in orig_ranges)) if orig_ranges else ""
+    comp_part = shorten(" ".join(compare[r.start:r.end] for r in comp_ranges)) if comp_ranges else ""
     return f"原文：{orig_part}\n修改后：{comp_part}"

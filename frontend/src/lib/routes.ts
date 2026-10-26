@@ -1,22 +1,25 @@
 
+import { stripAppBasePath, withAppBasePath } from "./env";
+
 export type AppRoute =
   | { name: "home" }
   | { name: "records" }
   | { name: "task"; taskId: string };
 
 export function readRoute(pathname = window.location.pathname): AppRoute {
-  const match = pathname.match(/^\/tasks\/([^/]+)$/);
+  const routePath = stripAppBasePath(pathname);
+  const match = routePath.match(/^\/tasks\/([^/]+)$/);
   if (match) {
     return { name: "task", taskId: decodeURIComponent(match[1]) };
   }
-  if (pathname === "/compare/records") {
+  if (routePath === "/compare/records") {
     return { name: "records" };
   }
   return { name: "home" };
 }
 
 export function navigateTo(path: string): void {
-  window.history.pushState({}, "", path);
+  window.history.pushState({}, "", withAppBasePath(path));
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 

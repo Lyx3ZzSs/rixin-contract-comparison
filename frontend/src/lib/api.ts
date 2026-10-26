@@ -1,18 +1,22 @@
 import type {
-  AuditItemReviewResponse,
-  CompareRecordSummary,
+  CompareRecordListResponse,
+  CompareRecordQuery,
   CompareResponse,
-  CompareQualitySummary,
   CompareTask,
-  DiffReviewPayload,
-  DiffReviewResponse,
-  DiffItem,
+  TaskExecutionResponse,
 } from "../types";
+import {
+  getAppBasePath,
+  getConfiguredApiBasePath,
+  getLegacyApiBaseUrl,
+  normalizeBaseUrl,
+} from "./env";
+import { ApiError, authorizedFetch } from "./authFetch";
 
-const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
+export const READ_REQUEST_TIMEOUT_MS = 15_000;
 
 export function getApiBaseUrl(): string {
-  return (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/+$/, "");
+  return getLegacyApiBaseUrl() ?? getConfiguredApiBasePath() ?? normalizeBaseUrl(`${getAppBasePath()}/api`);
 }
 
 export function toApiUrl(path: string): string {
@@ -22,12 +26,15 @@ export function toApiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) {
     return path;
   }
-  return `${getApiBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
+  const apiBaseUrl = getApiBaseUrl();
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const endpointPath = apiBaseUrl.endsWith("/api") ? normalizedPath.replace(/^\/api(?=\/|$)/, "") : normalizedPath;
+  return `${apiBaseUrl}${endpointPath}`;
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    let message = `请求失败 (${response.status})`;
+    let message = new ApiError(response.status).message;
     try {
       const payload = (await response.json()) as { detail?: string };
       if (payload.detail) {
@@ -36,7 +43,7 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
     } catch {
       // Keep the status based message when the server does not return JSON.
     }
-    throw new Error(message);
+    throw new ApiError(response.status, message);
   }
   return (await response.json()) as T;
 }
@@ -48,65 +55,56 @@ export async function compareContracts(
   const formData = new FormData();
   formData.append("original_file", originalFile);
   formData.append("compare_file", compareFile);
-
-  const response = await fetch(toApiUrl("/api/compare"), {
+  const response = await authorizedFetch(toApiUrl("/api/compare"), {
     method: "POST",
     body: formData,
   });
   return parseJsonResponse<CompareResponse>(response);
 }
 
-export async function getTask(taskId: string): Promise<CompareTask> {
-  const response = await fetch(toApiUrl(`/api/compare/${taskId}`));
+export async function getTask(taskId: string, signal?: AbortSignal): Promise<CompareTask> {
+  const response = await readAuthorizedFetch(`/api/compare/${taskId}`, signal);
   return parseJsonResponse<CompareTask>(response);
 }
 
-export async function getCompareRecords(): Promise<CompareRecordSummary[]> {
-  const response = await fetch(toApiUrl("/api/compare/records"));
-  const payload = await parseJsonResponse<{ records: CompareRecordSummary[] }>(response);
-  return payload.records;
+export async function retryCompareTask(taskId: string): Promise<TaskExecutionResponse> {
+  const response = await authorizedFetch(toApiUrl(`/api/compare/${taskId}/retry`), { method: "POST" });
+  return parseJsonResponse<TaskExecutionResponse>(response);
 }
 
-
-
-export async function getDiffs(taskId: string): Promise<DiffItem[]> {
-  const response = await fetch(toApiUrl(`/api/compare/${taskId}/diffs`));
-  const payload = await parseJsonResponse<{ diffs: DiffItem[] }>(response);
-  return payload.diffs;
+export async function getCompareRecords(query: CompareRecordQuery = {}, signal?: AbortSignal): Promise<CompareRecordListResponse> {
+  const searchParams = new URLSearchParams();
+  if (query.page !== undefined) searchParams.set("page", String(query.page));
+  if (query.pageSize !== undefined) searchParams.set("page_size", String(query.pageSize));
+  if (query.startDate) searchParams.set("start_date", query.startDate);
+  if (query.endDate) searchParams.set("end_date", query.endDate);
+  const queryString = searchParams.toString();
+  const response = await readAuthorizedFetch(`/api/compare/records${queryString ? `?${queryString}` : ""}`, signal);
+  return parseJsonResponse<CompareRecordListResponse>(response);
 }
 
-export async function updateDiffReview(taskId: string, diffId: string, payload: DiffReviewPayload): Promise<DiffReviewResponse> {
-  const response = await fetch(toApiUrl(`/api/compare/${taskId}/diffs/${diffId}/review`), {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return parseJsonResponse<DiffReviewResponse>(response);
-}
-
-export async function updateAuditItemReview(
-  taskId: string,
-  auditItemId: string,
-  payload: DiffReviewPayload,
-): Promise<AuditItemReviewResponse> {
-  const response = await fetch(
-    toApiUrl(`/api/compare/${taskId}/audit-items/${encodeURIComponent(auditItemId)}/review`),
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
+function readAuthorizedFetch(path: string, signal?: AbortSignal): Promise<Response> {
+  return authorizedFetch(
+    toApiUrl(path),
+    signal ? { signal } : undefined,
+    { timeoutMs: READ_REQUEST_TIMEOUT_MS },
   );
-  return parseJsonResponse<AuditItemReviewResponse>(response);
 }
 
-export async function getCompareQuality(taskId: string): Promise<CompareQualitySummary> {
-  const response = await fetch(toApiUrl(`/api/compare/${taskId}/quality`));
-  return parseJsonResponse<CompareQualitySummary>(response);
+export async function getEvents(taskId: string, signal?: AbortSignal): Promise<import('../types').DiffEventResponse> {
+  return parseJsonResponse(await readAuthorizedFetch(`/api/compare/${taskId}/events`, signal));
+}
+export async function updateEventReview(taskId: string, eventId: string, revision: number, reviewStatus: import('../types').ReviewStatus, sealDecision?: import('../types').SealDecision): Promise<import('../types').DiffEventResponse> {
+  return parseJsonResponse(await authorizedFetch(toApiUrl(`/api/compare/${taskId}/events/${eventId}/review`), {
+    method: 'PUT', body: JSON.stringify({ revision, review_status: reviewStatus, ...(sealDecision ? {seal_decision:sealDecision} : {}) }), headers: { 'Content-Type': 'application/json' },
+  }));
 }
 
-
-
-
-
-
+export async function getPreviewMetadata(taskId: string, signal?: AbortSignal): Promise<import('./pdfPreviewTypes').PreviewMetadata> {
+  const data = await parseJsonResponse<import('./pdfPreviewTypes').PreviewMetadata>(await readAuthorizedFetch(`/api/compare/${encodeURIComponent(taskId)}/preview-metadata`, signal));
+  if (data.schema_version !== 1 || data.coordinate_space !== 'display_pdf_points' || !['original', 'compare'].every(side => {
+    const doc = data.documents?.[side as 'original' | 'compare'];
+    return doc && typeof doc.source_revision === 'string' && doc.source_revision.length > 0 && Number.isInteger(doc.page_count) && doc.page_count > 0 && Array.isArray(doc.pages) && doc.pages.length === doc.page_count && doc.pages.every((page, i) => page.page_no === i + 1 && Number.isFinite(page.width_points) && page.width_points > 0 && Number.isFinite(page.height_points) && page.height_points > 0 && [0, 90, 180, 270].includes(page.rotation));
+  })) throw new Error('PDF 页面尺寸数据无效');
+  return data;
+}

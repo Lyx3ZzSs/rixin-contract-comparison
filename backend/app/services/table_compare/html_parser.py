@@ -4,6 +4,7 @@ from html.parser import HTMLParser
 
 from app.models import BBox
 from app.models_table import TableCell, TableRow, StructuredTable
+from app.services.table_compare.bbox_grid import BBoxGridAnalyzer
 
 
 class TableHTMLParser(HTMLParser):
@@ -22,7 +23,7 @@ class TableHTMLParser(HTMLParser):
 
     def parse_tables(
         self, html: str, page_no: int = 0, source: str = "", source_block_id: str = "",
-        cell_bboxes: list[BBox] | None = None, source_text: str = "",
+        cell_bboxes: list[BBox] | None = None, source_text: str = "", trusted_topology: bool = False,
     ) -> list[StructuredTable]:
         self._tables = []
         self._current = None
@@ -34,7 +35,13 @@ class TableHTMLParser(HTMLParser):
         self._cell_bbox_idx = 0
         self.feed(html)
         return [
-            builder.build(page_no, source=source, source_block_id=source_block_id, source_text=source_text)
+            builder.build(
+                page_no,
+                source=source,
+                source_block_id=source_block_id,
+                source_text=source_text,
+                trusted_topology=trusted_topology,
+            )
             for builder in self._tables
         ]
 
@@ -56,8 +63,8 @@ class TableHTMLParser(HTMLParser):
         if tag_lower in ("td", "th"):
             self._in_cell = True
             self._cell_text = ""
-            self._cell_colspan = max(1, int(attr_dict.get("colspan", "1")))
-            self._cell_rowspan = max(1, int(attr_dict.get("rowspan", "1")))
+            self._cell_colspan = self._parse_span(attr_dict.get("colspan", "1"))
+            self._cell_rowspan = self._parse_span(attr_dict.get("rowspan", "1"))
 
     def handle_endtag(self, tag: str) -> None:
         tag_lower = tag.lower()
@@ -101,6 +108,13 @@ class TableHTMLParser(HTMLParser):
             except (ValueError, OverflowError):
                 self._cell_text += f"&#{name};"
 
+    @staticmethod
+    def _parse_span(value: str | None) -> int:
+        try:
+            return max(1, int(value or "1"))
+        except ValueError:
+            return 1
+
 
 class _TableBuilder:
     """Accumulates rows and cells during HTML parsing, then normalizes the grid."""
@@ -119,7 +133,13 @@ class _TableBuilder:
         self._current_row.append({"text": text, "colspan": colspan, "rowspan": rowspan, "bbox": bbox})
 
     def build(
-        self, page_no: int = 0, source: str = "", source_block_id: str = "", source_text: str = ""
+        self,
+        page_no: int = 0,
+        source: str = "",
+        source_block_id: str = "",
+        source_text: str = "",
+        provided_bbox_count: int | None = None,
+        trusted_topology: bool = False,
     ) -> StructuredTable:
         if not self._raw_rows:
             return StructuredTable(page_no=page_no, rows=[], col_count=0, source=source, source_block_id=source_block_id, source_text=source_text)
@@ -127,6 +147,19 @@ class _TableBuilder:
         max_cols = self._estimate_col_count()
         grid = self._normalize_grid(max_cols)
         rows = self._grid_to_rows(grid)
+        if trusted_topology:
+            # The publishing gate already owns logical spans. Axis-aligned
+            # bounds of inverse-rotated cells must not re-cluster that grid.
+            return StructuredTable(page_no=page_no, rows=rows, col_count=max_cols, source=source,
+                                   source_block_id=source_block_id, source_text=source_text,
+                                   geometry_status="consistent", geometry_strategy="published_cell_topology",
+                                   bbox_grid_row_count=len(grid), bbox_grid_col_count=max_cols,
+                                   bbox_cell_count=self._assigned_bbox_count(),
+                                   html_cell_count=sum(len(r) for r in self._raw_rows))
+        geometry_analyzer = BBoxGridAnalyzer()
+        bbox_count = provided_bbox_count if provided_bbox_count is not None else self._assigned_bbox_count()
+        geometry = geometry_analyzer.analyze(rows, max_cols, provided_bbox_count=bbox_count)
+        rows = geometry_analyzer.apply_col_corrections(rows, geometry)
         return StructuredTable(
             page_no=page_no,
             rows=rows,
@@ -134,6 +167,22 @@ class _TableBuilder:
             source=source,
             source_block_id=source_block_id,
             source_text=source_text,
+            geometry_status=geometry.status,
+            geometry_confidence=geometry.confidence,
+            geometry_warnings=geometry.warnings,
+            geometry_strategy=geometry.strategy,
+            bbox_grid_row_count=geometry.bbox_grid_row_count,
+            bbox_grid_col_count=geometry.bbox_grid_col_count,
+            bbox_cell_count=geometry.bbox_cell_count,
+            html_cell_count=geometry.html_cell_count,
+        )
+
+    def _assigned_bbox_count(self) -> int:
+        return sum(
+            1
+            for row in self._raw_rows
+            for cell in row
+            if cell.get("bbox") is not None
         )
 
     def _estimate_col_count(self) -> int:
@@ -206,7 +255,11 @@ class _TableBuilder:
 
 def parse_html_tables(
     html: str, page_no: int = 0, source: str = "", source_block_id: str = "",
-    cell_bboxes: list[BBox] | None = None, source_text: str = "",
+    cell_bboxes: list[BBox] | None = None, source_text: str = "", trusted_topology: bool = False,
+    cell_records: list[dict] | None = None,
 ) -> list[StructuredTable]:
+    if cell_records and all({"row", "column", "bbox"} <= cell.keys() for cell in cell_records):
+        cell_bboxes = [BBox(x0=c["bbox"][0], y0=c["bbox"][1], x1=c["bbox"][2], y1=c["bbox"][3])
+                       for c in sorted(cell_records, key=lambda c: (c["row"], c["column"]))]
     parser = TableHTMLParser()
-    return parser.parse_tables(html, page_no=page_no, source=source, source_block_id=source_block_id, cell_bboxes=cell_bboxes, source_text=source_text)
+    return parser.parse_tables(html, page_no=page_no, source=source, source_block_id=source_block_id, cell_bboxes=cell_bboxes, source_text=source_text, trusted_topology=trusted_topology)

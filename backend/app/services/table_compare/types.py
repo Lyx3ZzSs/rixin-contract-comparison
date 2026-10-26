@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from app.models import BBox
+
+
+@dataclass(frozen=True)
+class CellSourceFragment:
+    """A physical reading belonging to a logical cell (possibly on another page)."""
+
+    text: str
+    page_no: int
+    bbox: BBox | None
+    source_block_id: str
 
 
 class RowSignature:
@@ -56,6 +68,8 @@ class LogicalCell:
         "source_col",
         "colspan",
         "rowspan",
+        "observation_reason",
+        "source_fragments",
     )
 
     def __init__(
@@ -70,6 +84,7 @@ class LogicalCell:
         source_col: int,
         colspan: int = 1,
         rowspan: int = 1,
+        observation_reason: str = "",
     ):
         self.row_index = row_index
         self.col_index = col_index
@@ -81,6 +96,8 @@ class LogicalCell:
         self.source_col = source_col
         self.colspan = colspan
         self.rowspan = rowspan
+        self.observation_reason = observation_reason
+        self.source_fragments = [CellSourceFragment(text, page_no, bbox, source_block_id)]
 
 
 class LogicalRow:
@@ -106,7 +123,21 @@ class LogicalRow:
 
 
 class LogicalTable:
-    __slots__ = ("rows", "col_count", "page_no", "source_block_id", "source", "caption", "footnote")
+    __slots__ = (
+        "rows",
+        "col_count",
+        "page_no",
+        "source_block_id",
+        "source",
+        "caption",
+        "footnote",
+        "geometry_status",
+        "geometry_confidence",
+        "geometry_warnings",
+        "geometry_strategy",
+        "bbox_grid_row_count",
+        "bbox_grid_col_count",
+    )
 
     def __init__(
         self,
@@ -117,6 +148,12 @@ class LogicalTable:
         source: str = "",
         caption: str = "",
         footnote: str = "",
+        geometry_status: str = "not_available",
+        geometry_confidence: float = 1.0,
+        geometry_warnings: list[str] | None = None,
+        geometry_strategy: str = "",
+        bbox_grid_row_count: int = 0,
+        bbox_grid_col_count: int = 0,
     ):
         self.rows = rows
         self.col_count = col_count
@@ -125,6 +162,12 @@ class LogicalTable:
         self.source = source
         self.caption = caption
         self.footnote = footnote
+        self.geometry_status = geometry_status
+        self.geometry_confidence = geometry_confidence
+        self.geometry_warnings = geometry_warnings or []
+        self.geometry_strategy = geometry_strategy
+        self.bbox_grid_row_count = bbox_grid_row_count
+        self.bbox_grid_col_count = bbox_grid_col_count
 
     def get_cell(self, row: int, col: int) -> LogicalCell | None:
         for table_row in self.rows:

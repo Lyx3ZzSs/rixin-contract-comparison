@@ -43,3 +43,5 @@ class CoverExtraFragment:
 class CoverExtraction:
     fields: dict[str, CoverField] = field(default_factory=dict)
     consumed_block_ids: set[str] = field(default_factory=set)
+    preamble_titles: dict[int, CoverField] = field(default_factory=dict)
+    preamble_fields: dict[int, dict[str, CoverField]] = field(default_factory=dict)

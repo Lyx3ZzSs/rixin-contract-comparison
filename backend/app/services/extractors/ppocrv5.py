@@ -4,6 +4,7 @@ import base64
 import logging
 import re
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ from app.config import Settings, settings
 from app.infrastructure.artifact_store import ArtifactStore, default_artifact_store
 from app.models import BBox, CharBox, Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
+from app.services.pipeline_metrics import PerformanceRecorder
+from app.services.remote_metrics import record_remote_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +28,9 @@ class PPOCRV5Extractor:
         r"^(?:共\s*\d+\s*页\s*)?(?:第\s*)?\d+\s*页$|^第\s*\d+\s*/\s*共\s*\d+\s*页$|^[-—]?\s*\d+\s*[-—]?$",
         re.IGNORECASE,
     )
-    per_mille_ocr_pattern = re.compile(r"(?P<number>\d+(?:[.,]\d+)?)%0(?=\D|$)")
-    per_mille_contract_context_pattern = re.compile(
-        r"违约金|逾期|赔偿|罚金|滞纳金|费率|利率|违约责任"
-    )
+    per_mille_ocr_pattern = re.compile(r"(?P<number>\d+(?:[.,]\d+)?)%[0oO](?=\D|$)")
+    bare_percent_pattern = re.compile(r"(?P<number>\d+(?:[.,]\d+)?)%(?![0oO])(?=\D|$)")
+    per_mille_contract_context_pattern = re.compile(r"违约金|逾期|赔偿|罚金|滞纳金|费率|利率|违约责任")
 
     def __init__(
         self,
@@ -41,48 +43,109 @@ class PPOCRV5Extractor:
         self.artifact_store = artifact_store
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
+        return self._extract(path, task_id=task_id, encoded_file=None)
+
+    def extract_with_encoded_file(
+        self,
+        path: str | Path,
+        *,
+        encoded_file: str,
+        task_id: str | None = None,
+    ) -> ExtractionResult:
+        return self._extract(path, task_id=task_id, encoded_file=encoded_file)
+
+    def _extract(
+        self,
+        path: str | Path,
+        *,
+        task_id: str | None,
+        encoded_file: str | None,
+    ) -> ExtractionResult:
         path = Path(path)
         if not path.exists():
             raise DocumentExtractionError(f"文件不存在: {path}")
         if path.suffix.lower() != ".pdf":
             raise DocumentExtractionError("仅支持 PDF 文件。")
 
-        payload = self.predict(path, file_type=0)
-        raw_path = self._save_raw_result(payload, task_id, path) if self.settings.save_ocr_raw_result and task_id else ""
-        document = self.payload_to_document(payload, path)
-        return ExtractionResult(document=document, extractor_used=self.name, raw_result_path=raw_path)
+        recorder = PerformanceRecorder()
+        recorder.set_counter("file_size_bytes", path.stat().st_size)
+        recorder.set_counter("shared_encoded_file_used", int(encoded_file is not None))
+        payload = self.predict(
+            path,
+            file_type=0,
+            performance_recorder=recorder,
+            encoded_file=encoded_file,
+        )
+        raw_path = ""
+        if self.settings.save_ocr_raw_result and task_id:
+            with recorder.measure("raw_result_write"):
+                raw_path = self._save_raw_result(payload, task_id, path)
+        with recorder.measure("payload_to_document"):
+            document = self.payload_to_document(payload, path)
+        recorder.set_counter("page_count", document.page_count)
+        recorder.set_counter("text_block_count", sum(len(page.blocks) for page in document.pages))
+        return ExtractionResult(
+            document=document,
+            extractor_used=self.name,
+            raw_result_path=raw_path,
+            performance=recorder.snapshot(),
+        )
 
     def _predict_pdf(self, path: Path) -> list[dict[str, Any]]:
         return self.predict(path, file_type=0)
 
-    def predict(self, path: str | Path, file_type: int = 0) -> list[dict[str, Any]]:
+    def predict(
+        self,
+        path: str | Path,
+        file_type: int = 0,
+        *,
+        performance_recorder: PerformanceRecorder | None = None,
+        encoded_file: str | None = None,
+    ) -> list[dict[str, Any]]:
         path = Path(path)
+        recorder = performance_recorder or PerformanceRecorder()
         url = self._ocr_url()
         headers = {"Content-Type": "application/json"}
         if self.settings.ppocrv5_access_token:
             headers["Authorization"] = f"Bearer {self.settings.ppocrv5_access_token}"
         t = time.perf_counter()
-        body = self._request_body(path, file_type=file_type)
+        with recorder.measure("request_body_build"):
+            body = self._request_body(path, file_type=file_type, encoded_file=encoded_file)
         logger.info("OCR请求体构建(Base64编码) 耗时 %.2fs", time.perf_counter() - t)
         try:
             t = time.perf_counter()
             client = self.client_provider.get_ocr_client()
-            response = client.post(url, headers=headers, json=body)
-            response.raise_for_status()
-            payload = response.json()
+            recorder.increment("http_request_count")
+            with recorder.measure("http_request"):
+                response = client.post(url, headers=headers, json=body)
+                response.raise_for_status()
+            recorder.set_counter("http_response_bytes", len(getattr(response, "content", b"")))
+            with recorder.measure("response_json_decode"):
+                payload = response.json()
+            record_remote_metrics(recorder, getattr(response, "headers", {}), payload)
             logger.info("OCR HTTP请求 耗时 %.2fs", time.perf_counter() - t)
         except httpx.HTTPStatusError as exc:
+            recorder.increment("http_failure_count")
             detail = exc.response.text[:500] if exc.response is not None else str(exc)
-            raise DocumentExtractionError(f"远端 PP-OCRv5 请求失败 ({url}, HTTP {exc.response.status_code}): {detail}") from exc
+            raise DocumentExtractionError(
+                f"远端 PP-OCRv5 请求失败 ({url}, HTTP {exc.response.status_code}): {detail}"
+            ) from exc
         except httpx.ConnectError as exc:
+            recorder.increment("http_failure_count")
             raise DocumentExtractionError(f"无法连接远端 PP-OCRv5 服务 ({url}): {exc}") from exc
         except httpx.TimeoutException as exc:
+            recorder.increment("http_failure_count")
             raise DocumentExtractionError(f"远端 PP-OCRv5 请求超时 ({url}): {exc}") from exc
         except ValueError as exc:
+            recorder.increment("http_failure_count")
             raise DocumentExtractionError(f"远端 PP-OCRv5 返回内容不是 JSON: {exc}") from exc
         if payload.get("errorCode") not in (0, None):
+            recorder.increment("remote_error_count")
             raise DocumentExtractionError(f"远端 PP-OCRv5 识别失败: {payload.get('errorMsg') or payload}")
-        return self._normalize_remote_payload(payload)
+        with recorder.measure("response_normalization"):
+            normalized = self._normalize_remote_payload(payload)
+        recorder.set_counter("remote_page_count", len(normalized))
+        return normalized
 
     def _ocr_url(self) -> str:
         base = self.settings.ppocrv5_url.strip().rstrip("/")
@@ -90,12 +153,19 @@ class PPOCRV5Extractor:
             raise DocumentExtractionError("未配置 PPOCRV5_URL，无法调用远端 PP-OCRv5。")
         return base if base.endswith("/ocr") else f"{base}/ocr"
 
-    def _request_body(self, path: Path, file_type: int = 0) -> dict[str, Any]:
-        raw = path.read_bytes()
-        encoded = base64.b64encode(raw).decode("ascii")
-        del raw
+    def _request_body(
+        self,
+        path: Path,
+        file_type: int = 0,
+        *,
+        encoded_file: str | None = None,
+    ) -> dict[str, Any]:
+        if encoded_file is None:
+            raw = path.read_bytes()
+            encoded_file = base64.b64encode(raw).decode("ascii")
+            del raw
         return {
-            "file": encoded,
+            "file": encoded_file,
             "fileType": file_type,
             "useDocOrientationClassify": self.settings.ppocrv5_use_doc_orientation_classify,
             "useDocUnwarping": self.settings.ppocrv5_use_doc_unwarping,
@@ -160,7 +230,9 @@ class PPOCRV5Extractor:
             page_payload = page_results[fallback_index] if fallback_index < len(page_results) else {}
             page_no = self._page_no(page_payload, fallback_index)
             width, height = page_sizes[page_no - 1] if 0 <= page_no - 1 < len(page_sizes) else (595.0, 842.0)
-            blocks = self._classify_page_blocks(self._blocks_from_page(page_no, width, height, page_payload), width, height)
+            blocks = self._classify_page_blocks(
+                self._blocks_from_page(page_no, width, height, page_payload), width, height
+            )
             pages.append(Page(page_no=page_no, width=width, height=height, blocks=blocks))
 
         pages.sort(key=lambda page: page.page_no)
@@ -175,28 +247,58 @@ class PPOCRV5Extractor:
             return 0
 
         corrected_count = 0
-        for page in pages:
-            native_text = page_texts[page.page_no - 1] if 0 <= page.page_no - 1 < len(page_texts) else ""
-            native_compact = self._compact_text(native_text)
-            allow_contextual_repair = not native_compact
-            if "‰" not in native_compact and not allow_contextual_repair:
-                continue
-            for block in page.blocks:
-                corrected_text = self._correct_line_per_mille_text(
-                    block.text,
-                    native_compact,
-                    allow_contextual_repair=allow_contextual_repair,
-                )
-                if corrected_text == block.text:
+        visual_pdf: fitz.Document | None = None
+        visual_page_cache: dict[int, tuple[bytes, int, int, float]] = {}
+        try:
+            for page in pages:
+                native_text = page_texts[page.page_no - 1] if 0 <= page.page_no - 1 < len(page_texts) else ""
+                native_compact = self._compact_text(native_text)
+                allow_contextual_repair = not native_compact
+                if "‰" not in native_compact and not allow_contextual_repair:
                     continue
-                replacements = self._per_mille_replacements(
-                    block.text,
-                    native_compact,
-                    allow_contextual_repair=allow_contextual_repair,
-                )
-                block.text = corrected_text
-                block.char_boxes = self._correct_per_mille_char_boxes(block.text, block.char_boxes, replacements)
-                corrected_count += len(replacements)
+                for block in page.blocks:
+                    replacements = self._per_mille_replacements(
+                        block.text,
+                        native_compact,
+                        allow_contextual_repair=allow_contextual_repair,
+                    )
+                    if replacements:
+                        block.text = self._apply_per_mille_replacements(block.text, replacements)
+                        block.char_boxes = self._correct_per_mille_char_boxes(
+                            block.text, block.char_boxes, replacements
+                        )
+                        corrected_count += len(replacements)
+
+                    if not allow_contextual_repair or "%" not in block.text:
+                        continue
+                    if visual_pdf is None:
+                        try:
+                            visual_pdf = fitz.open(source_path)
+                        except Exception:
+                            visual_pdf = None
+                    if visual_pdf is None:
+                        continue
+                    visual_indices = self._visual_per_mille_indices(
+                        visual_pdf, block, visual_page_cache, context=self._adjacent_rate_context(page, block)
+                    )
+                    if not visual_indices:
+                        continue
+                    # A single printed glyph may be decoded as two characters
+                    # sharing one source box. Consume only that shared suffix.
+                    pairs = [(i, i + 1) for i in sorted(visual_indices) if self._shared_percent_suffix(block, i)]
+                    singles = visual_indices - {i for i, _ in pairs}
+                    block.text = self._apply_visual_per_mille_replacements(block.text, singles)
+                    block.text = self._apply_per_mille_replacements(block.text, pairs)
+                    block.char_boxes = self._correct_per_mille_char_boxes(block.text, block.char_boxes, pairs)
+                    block.char_boxes = [
+                        char_box.model_copy(update={"char": block.text[char_box.text_index]})
+                        if char_box.text_index is not None and char_box.text_index < len(block.text) else char_box
+                        for char_box in block.char_boxes
+                    ]
+                    corrected_count += len(visual_indices)
+        finally:
+            if visual_pdf is not None:
+                visual_pdf.close()
         return corrected_count
 
     def _pdf_page_texts(self, path: Path) -> list[str]:
@@ -223,9 +325,13 @@ class PPOCRV5Extractor:
         )
         if not replacements:
             return text
+        return self._apply_per_mille_replacements(text, replacements)
+
+    @staticmethod
+    def _apply_per_mille_replacements(text: str, replacements: list[tuple[int, int]]) -> str:
         corrected = text
         for percent_index, _ in reversed(replacements):
-            corrected = f"{corrected[:percent_index]}‰{corrected[percent_index + 2:]}"
+            corrected = f"{corrected[:percent_index]}‰{corrected[percent_index + 2 :]}"
         return corrected
 
     def _per_mille_replacements(
@@ -239,7 +345,7 @@ class PPOCRV5Extractor:
         for match in self.per_mille_ocr_pattern.finditer(text or ""):
             percent_index = match.end("number")
             zero_index = percent_index + 1
-            candidate = f"{text[:percent_index]}‰{text[zero_index + 1:]}"
+            candidate = f"{text[:percent_index]}‰{text[zero_index + 1 :]}"
             if self._verified_per_mille_context(text, candidate, match.start(), match.end(), native_compact):
                 replacements.append((percent_index, zero_index))
             elif allow_contextual_repair and self._contextual_per_mille_ocr_match(text, match):
@@ -275,6 +381,200 @@ class PPOCRV5Extractor:
         context_end = min(len(text), match.end() + 24)
         context = text[context_start:context_end]
         return bool(self.per_mille_contract_context_pattern.search(context))
+
+    def _visual_per_mille_indices(
+        self,
+        pdf: fitz.Document,
+        block: TextBlock,
+        page_cache: dict[int, tuple[bytes, int, int, float]] | None = None,
+        *, context: str = "",
+    ) -> set[int]:
+        indices: set[int] = set()
+        for match in self.bare_percent_pattern.finditer(block.text or ""):
+            if not self._contextual_per_mille_ocr_match(block.text + context, match):
+                continue
+            percent_index = match.end("number")
+            if self._visual_glyph_is_per_mille(pdf, block, percent_index, page_cache):
+                indices.add(percent_index)
+        return indices
+
+    @staticmethod
+    def _adjacent_rate_context(page: Page, block: TextBlock) -> str:
+        """Read the immediate continuation, never an unrelated page-wide keyword."""
+        height = max(1, block.bbox.y1 - block.bbox.y0)
+        candidates = [b for b in page.blocks if b is not block
+                      and 0 <= b.bbox.y0 - block.bbox.y1 <= height * 2.5
+                      and abs(b.bbox.x0 - block.bbox.x0) <= height * 2
+                      and b.block_type in {"text", "paragraph", "ocr_line"}]
+        return min(candidates, key=lambda b: b.bbox.y0).text[:24] if candidates else ""
+
+    @staticmethod
+    def _shared_percent_suffix(block: TextBlock, index: int) -> bool:
+        if block.text[index + 1:index + 2] not in {"。", "0", "o", "O"}:
+            return False
+        boxes = {c.text_index: c.bbox for c in block.char_boxes}
+        a, b = boxes.get(index), boxes.get(index + 1)
+        if a is None or b is None:
+            return False
+        overlap = max(0, min(a.x1, b.x1) - max(a.x0, b.x0)) * max(0, min(a.y1, b.y1) - max(a.y0, b.y0))
+        return overlap / max(1, (a.x1 - a.x0) * (a.y1 - a.y0), (b.x1 - b.x0) * (b.y1 - b.y0)) >= .8
+
+    def _visual_glyph_is_per_mille(
+        self,
+        pdf: fitz.Document,
+        block: TextBlock,
+        percent_index: int,
+        page_cache: dict[int, tuple[bytes, int, int, float]] | None = None,
+    ) -> bool:
+        return self._visual_percent_unit(pdf, block, percent_index, page_cache) == "‰"
+
+    def _visual_percent_unit(
+        self, pdf: fitz.Document, block: TextBlock, percent_index: int,
+        page_cache: dict[int, tuple[bytes, int, int, float]] | None = None,
+    ) -> str | None:
+        """Return only an observed unit; an incomplete crop is unknown."""
+        if not 1 <= block.page_no <= len(pdf):
+            return None
+        by_index = {char_box.text_index: char_box for char_box in block.char_boxes if char_box.text_index is not None}
+        previous = by_index.get(percent_index - 1)
+        current = by_index.get(percent_index)
+        following = by_index.get(percent_index + 1)
+        if previous is None or current is None:
+            return None
+        shared_suffix = self._shared_percent_suffix(block, percent_index)
+        if following is not None and following.bbox.x0 < current.bbox.x1 and not shared_suffix:
+            return None
+        if previous.bbox.x1 >= current.bbox.x1:
+            return None
+
+        left = previous.bbox.x1 + 0.5
+        # OCR word boxes on scans can end inside the final loop of a per-mille
+        # glyph. Keep a sub-character amount of the following box so the loop
+        # remains closed in the raster without admitting the following glyph.
+        if shared_suffix:
+            following = by_index.get(percent_index + 2)
+        right = following.bbox.x0 + 0.5 if following else max(current.bbox.x1, block.bbox.x1) + 2.0
+        top = block.bbox.y0 - 2.0
+        bottom = block.bbox.y1 + 2.0
+        if right - left < 4.0 or bottom - top < 4.0 or right - left > 32.0 or bottom - top > 48.0:
+            return None
+
+        clip = fitz.Rect(left, top, right, bottom) & pdf[block.page_no - 1].rect
+        if clip.is_empty:
+            return None
+        raster = self._grayscale_page_raster(pdf, block.page_no, page_cache)
+        if raster is None:
+            return None
+        samples, page_width, page_height, scale = raster
+        page_rect = pdf[block.page_no - 1].rect
+        x0 = max(0, min(page_width, int((clip.x0 - page_rect.x0) * scale)))
+        y0 = max(0, min(page_height, int((clip.y0 - page_rect.y0) * scale)))
+        x1 = max(x0, min(page_width, int((clip.x1 - page_rect.x0) * scale)))
+        y1 = max(y0, min(page_height, int((clip.y1 - page_rect.y0) * scale)))
+        if x1 - x0 < 3 or y1 - y0 < 3:
+            return None
+        glyph_samples = b"".join(samples[y * page_width + x0 : y * page_width + x1] for y in range(y0, y1))
+        counts = [self._enclosed_white_region_count(glyph_samples, x1 - x0, y1 - y0, t) for t in (180, 200)]
+        if counts == [3, 3]:
+            return "‰"
+        if counts == [2, 2]:
+            return "%"
+        return None
+
+    @staticmethod
+    def _grayscale_page_raster(
+        pdf: fitz.Document,
+        page_no: int,
+        page_cache: dict[int, tuple[bytes, int, int, float]] | None,
+    ) -> tuple[bytes, int, int, float] | None:
+        if page_cache is not None and page_no in page_cache:
+            return page_cache[page_no]
+        scale = 4.0
+        try:
+            pixmap = pdf[page_no - 1].get_pixmap(
+                matrix=fitz.Matrix(scale, scale),
+                colorspace=fitz.csGRAY,
+                alpha=False,
+            )
+        except Exception:
+            return None
+        raster = (bytes(pixmap.samples), pixmap.width, pixmap.height, scale)
+        if page_cache is not None:
+            page_cache[page_no] = raster
+        return raster
+
+    @staticmethod
+    def _apply_visual_per_mille_replacements(text: str, indices: set[int]) -> str:
+        characters = list(text)
+        for index in indices:
+            if 0 <= index < len(characters) and characters[index] == "%":
+                characters[index] = "‰"
+        return "".join(characters)
+
+    @staticmethod
+    def _enclosed_white_region_count(
+        grayscale: bytes,
+        width: int,
+        height: int,
+        threshold: int,
+    ) -> int:
+        if width <= 2 or height <= 2 or len(grayscale) < width * height:
+            return 0
+        white = bytearray(value >= threshold for value in grayscale[: width * height])
+        exterior = bytearray(width * height)
+        queue: deque[int] = deque()
+
+        def enqueue_exterior(index: int) -> None:
+            if white[index] and not exterior[index]:
+                exterior[index] = 1
+                queue.append(index)
+
+        for x in range(width):
+            enqueue_exterior(x)
+            enqueue_exterior((height - 1) * width + x)
+        for y in range(height):
+            enqueue_exterior(y * width)
+            enqueue_exterior(y * width + width - 1)
+        PPOCRV5Extractor._flood_regions(white, exterior, queue, width, height)
+
+        seen = bytearray(width * height)
+        min_region_area = max(4, int(width * height * 0.001))
+        region_count = 0
+        for index, is_white in enumerate(white):
+            if not is_white or exterior[index] or seen[index]:
+                continue
+            seen[index] = 1
+            queue.append(index)
+            region_area = PPOCRV5Extractor._flood_regions(white, seen, queue, width, height, exterior)
+            if region_area >= min_region_area:
+                region_count += 1
+        return region_count
+
+    @staticmethod
+    def _flood_regions(
+        mask: bytearray,
+        seen: bytearray,
+        queue: deque[int],
+        width: int,
+        height: int,
+        excluded: bytearray | None = None,
+    ) -> int:
+        area = 0
+        size = width * height
+        while queue:
+            index = queue.popleft()
+            area += 1
+            y, x = divmod(index, width)
+            for neighbor in (index - 1, index + 1, index - width, index + width):
+                if neighbor < 0 or neighbor >= size:
+                    continue
+                neighbor_y, neighbor_x = divmod(neighbor, width)
+                if abs(neighbor_y - y) + abs(neighbor_x - x) != 1:
+                    continue
+                if mask[neighbor] and not seen[neighbor] and not (excluded and excluded[neighbor]):
+                    seen[neighbor] = 1
+                    queue.append(neighbor)
+        return area
 
     def _correct_per_mille_char_boxes(
         self,
@@ -476,12 +776,7 @@ class PPOCRV5Extractor:
             return False
         margin_x = max(0.0, width * self.settings.ppocrv5_edge_noise_margin_ratio)
         margin_y = max(0.0, height * self.settings.ppocrv5_edge_noise_margin_ratio)
-        return (
-            bbox.x0 <= margin_x
-            or bbox.x1 >= width - margin_x
-            or bbox.y0 <= margin_y
-            or bbox.y1 >= height - margin_y
-        )
+        return bbox.x0 <= margin_x or bbox.x1 >= width - margin_x or bbox.y0 <= margin_y or bbox.y1 >= height - margin_y
 
     def _char_boxes_for_line(
         self,
@@ -595,9 +890,20 @@ class PPOCRV5Extractor:
         value = self._plain_value(value)
         if isinstance(value, dict):
             if all(key in value for key in ("x0", "y0", "x1", "y1")):
-                return self._clamp_bbox(value["x0"], value["y0"], value["x1"], value["y1"], width, height, image_width, image_height)
+                return self._clamp_bbox(
+                    value["x0"], value["y0"], value["x1"], value["y1"], width, height, image_width, image_height
+                )
             if all(key in value for key in ("left", "top", "right", "bottom")):
-                return self._clamp_bbox(value["left"], value["top"], value["right"], value["bottom"], width, height, image_width, image_height)
+                return self._clamp_bbox(
+                    value["left"],
+                    value["top"],
+                    value["right"],
+                    value["bottom"],
+                    width,
+                    height,
+                    image_width,
+                    image_height,
+                )
             if all(key in value for key in ("x", "y", "width", "height")):
                 return self._clamp_bbox(
                     value["x"],

@@ -1,0 +1,347 @@
+{
+  "schema_version": 1,
+  "contract_key": "HUANGHE_HAIXI",
+  "expected_case_count": 15,
+  "assertions": [
+    {
+      "case_id": "HUANGHE_HAIXI_P1_DATE_ADD_1DF7104CDC",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面字段：签订日期",
+      "field_type": "date",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "2026年5月22日"
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P1_METADATA_ADD_544FF0BCC8",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面额外文本",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "GNNYN-20260521-0013"
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P1_METADATA_ADD_35F412304B",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面额外文本",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "永"
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P1_SEAL_ADD_A0DD6CF5F7",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "乙方 · 骑缝章",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "骑缝章",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 538.5,
+          "y0": 386.5,
+          "x1": 597.0,
+          "y1": 496.5
+        },
+        "min_iou": 0.35
+      },
+      "object_type": "EDGE_SEAM_SEAL",
+      "review_note": "旧目标页/物理框对应 release D011，同页最大 IoU=1.00000；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 多页骑缝章已聚合，必须用object_type=EDGE_SEAM_SEAL以启用matcher同一对象按不同页消费，保留每页物理框断言。"
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P2_SEAL_ADD_C3361F414A",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第2页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "IROIA111",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 0.0,
+          "y0": 386.0,
+          "x1": 60.0,
+          "y1": 499.0
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P2_SIGNATURE_DELETE_AAA9E38C40",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 单位地址",
+      "party": "乙方",
+      "field_type": "address",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "单位地址:青海省西宁市城北区宁张路44号西宁创业孵化基地1号楼0814室",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 308.3963832647034,
+          "y0": 444.94716254662444,
+          "x1": 531.821315710931,
+          "y1": 454.9459751881216
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P2_SIGNATURE_DELETE_55FFCD7EA3",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 法人代表或授权委托人",
+      "party": "乙方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "法人代表或授权委托人:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 309.89587945561766,
+          "y0": 486.94217564091264,
+          "x1": 416.36010901053146,
+          "y1": 495.4411663861852
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P2_SIGNATURE_DELETE_D030E39494",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · 单位名称(章）",
+      "party": "乙方",
+      "field_type": "party_name",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "单位名称(章):斯美能源科技(青海)有限公司",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 308.8962153283415,
+          "y0": 422.94977473533066,
+          "x1": 529.8219874563786,
+          "y1": 435.4482905372021
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P2_SIGNATURE_DELETE_14AF3D018B",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · (签字)",
+      "party": "乙方",
+      "field_type": "signature",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "(签字)",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 390.8686737649887,
+          "y0": 503.440216499383,
+          "x1": 419.35910139236006,
+          "y1": 520.4381979899282
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P2_SIGNATURE_DELETE_1F158DE8BE",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 单位地址",
+      "party": "甲方",
+      "field_type": "address",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "单位地址:北京市海淀区西三旗建材城中路27号1幢2层227号",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 61.97917589112353,
+          "y0": 444.44722191454963,
+          "x1": 298.39974199194154,
+          "y1": 454.9459751881216
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P2_SIGNATURE_DELETE_F3E2F5764C",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 委托代理人",
+      "party": "甲方",
+      "field_type": "authorized_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "委托代理人:",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 60.97951176384735,
+          "y0": 505.4399790276824,
+          "x1": 137.95364956411368,
+          "y1": 517.9384948295539
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P2_SIGNATURE_DELETE_842B262EA4",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 法人代表",
+      "party": "甲方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CONFIRMED",
+      "semantic_before": "法人代表:雍正",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 60.97951176384735,
+          "y0": 485.44235374468803,
+          "x1": 166.94390925512306,
+          "y1": 496.44104765033495
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P2_SIGNATURE_DELETE_C77C8EAD4E",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · 单位名称（章）",
+      "party": "甲方",
+      "field_type": "party_name",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "单位名称(章):国能日新科技股份有限公司",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 61.97917589112353,
+          "y0": 424.44959663155527,
+          "x1": 276.40713119186546,
+          "y1": 434.44840927305245
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P3_QUOTE_METADATA_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 3,
+      "source_type": "table",
+      "forbidden_value_pattern": "项目名称|报价单位|Bi[àa]",
+      "review_note": "此固定PDF对的第3页项目名称及报价单位相同。扫描件右侧印章碎字Bià不属于表格业务内容，不得使相同表头产生新增、修改或删除；改名为整表/结构待复核且仍输出这些内容也应拦截。此规则仅约束本合同，不禁止其他输入中项目名称真实变更或真实采购行新增。"
+    }
+  ],
+  "baseline_version": "contract-golden-v3",
+  "review_revision": "2026-10-09-huanghe-table-row-verified",
+  "review_source_task_id": "f73b9b86-ffe0-443f-997d-7b8fbe5f3918",
+  "regression_coverage": {
+    "source_task_id": "f73b9b86-ffe0-443f-997d-7b8fbe5f3918",
+    "reference_tasks": [
+      "f688ade2-c25a-469a-b866-34ff88f05821",
+      "dc44c772-b47a-48ed-9d89-7253f875ed52"
+    ],
+    "evidence_root": "output/analysis/golden-huanghe-f73b9b86-20261009",
+    "fix_evidence_root": "output/analysis/table-row-fix-20261008",
+    "approval": "用户明确要求更新比对任务 f73b9b86-ffe0-443f-997d-7b8fbe5f3918 的黄金集。",
+    "scope": "保留原14条断言，新增第3页相同报价元信息及印章碎字不得成为表格差异的负例；原有3条失败继续保留验收要求，不将其他待复核候选直接升为黄金真值。"
+  }
+}

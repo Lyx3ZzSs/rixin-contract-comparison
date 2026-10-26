@@ -1,0 +1,159 @@
+{
+  "schema_version": 1,
+  "contract_key": "TIELING_SERVICE",
+  "expected_case_count": 9,
+  "assertions": [
+    {
+      "case_id": "TIELING_SERVICE_P1_SEAL_ADD_E0CDB62DC9",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "疑似骑缝章",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "页边印迹",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 551.5,
+          "y0": 325.5,
+          "x1": 598.0,
+          "y1": 439.0
+        },
+        "min_iou": 0.35
+      },
+      "object_type": "EDGE_SEAM_SEAL",
+      "review_note": "2026-10-15原PDF视觉复核：第1/2/3页右侧存在页边章印迹，不应固定为乙方章。跨页身份未核实时待复核；允许聚合，必须保留逐页完整定位。保留原bbox及min_iou=0.35。",
+      "change_decision": "NEEDS_REVIEW"
+    },
+    {
+      "case_id": "TIELING_SERVICE_P2_SEAL_ADD_D0F47F47E6",
+      "assertion": "MUST_REVIEW",
+      "page": 2,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "疑似骑缝章",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "页边印迹",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 550.5,
+          "y0": 326.0,
+          "x1": 598.0,
+          "y1": 443.0
+        },
+        "min_iou": 0.35
+      },
+      "object_type": "EDGE_SEAM_SEAL",
+      "review_note": "2026-10-15原PDF视觉复核：第1/2/3页右侧存在页边章印迹，不应固定为乙方章。跨页身份未核实时待复核；允许聚合，必须保留逐页完整定位。保留原bbox及min_iou=0.35。",
+      "change_decision": "NEEDS_REVIEW"
+    },
+    {
+      "case_id": "TIELING_SERVICE_P3_SEAL_ADD_FCD17862D5",
+      "assertion": "MUST_REVIEW",
+      "page": 3,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "甲方 · 公司圆章",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "NEEDS_REVIEW",
+      "semantic_after": "公司圆章",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 139.5,
+          "y0": 174.5,
+          "x1": 264.5,
+          "y1": 294.0
+        },
+        "min_iou": 0.35
+      },
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "旧目标页/物理框对应 release D003，同页最大 IoU=0.94207；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 章存在与章文可读性分开；content应NEEDS_REVIEW，不能把缺字/正文污染章文标CONFIRMED。"
+    },
+    {
+      "case_id": "TIELING_TAX_ID_NO_CONFIRMED_MODIFY",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 3,
+      "region": "signing",
+      "source_type": "signing_region",
+      "title": "甲方 · 税号",
+      "review_note": "两侧原图税号一致；各自局部复识均为91610103MABOHNNLOU。禁止O/0误识引起的任何税号差异，包含待复核差异。保留历史case_id，语义由不得确认加强为不得报告。"
+    },
+    {
+      "case_id": "TIELING_SERVICE_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "TIELING_SERVICE_P3_EDGE_SEAL_PRESENT",
+      "assertion": "MUST_REVIEW",
+      "page": 3,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "visual_object_type": "seal",
+      "object_type": "EDGE_SEAM_SEAL",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "页边印迹",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 554.5,
+          "y0": 344,
+          "x1": 585.5,
+          "y1": 442
+        },
+        "min_iou": 0.35
+      },
+      "review_note": "原稿无盖印，扫描稿第3页右侧有独立于左侧公司圆章的残缺页边印迹。可与第1/2页聚合，仍须保留本页定位；存在确认不代表跨页身份或章文确认。"
+    },
+    {
+      "case_id": "TIELING_SERVICE_P3_PARTY_NAME_NOT_CHANGED",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 3,
+      "region": "signing",
+      "source_type": "signing_region",
+      "title": "甲方 · 签署主体变化",
+      "review_note": "两侧均为陕西派能中和电力科技有限公司，司换行；扫描稿盖章遮挡和过窄OCR裁剪不能被报告为公司名称变化。局部恢复基于本侧原图，不复制另一侧文字。"
+    },
+    {
+      "case_id": "TIELING_SERVICE_P1_NO_SPLIT_COMPANY_SEAL",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 1,
+      "source_type": "seal",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "本页只有右侧页边印迹，无独立公司圆章；尤其第2页上方弧字、中心星形、下方章文属于同一物理章，不得拆为额外公司圆章差异。对应页边章正例同时保留。"
+    },
+    {
+      "case_id": "TIELING_SERVICE_P2_NO_SPLIT_COMPANY_SEAL",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 2,
+      "source_type": "seal",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "本页只有右侧页边印迹，无独立公司圆章；尤其第2页上方弧字、中心星形、下方章文属于同一物理章，不得拆为额外公司圆章差异。对应页边章正例同时保留。"
+    }
+  ],
+  "baseline_version": "contract-golden-v2",
+  "regression_coverage": {
+    "updated_at": "2026-10-15",
+    "authorization": "用户要求：更新刚验证比对任务黄金集",
+    "source_run_id": "056488e0-f88a-4996-9644-dbab6fb01a89",
+    "previous_analysis_task": "d377c1ba-a38f-444a-a808-c499b3d75837",
+    "visual_evidence": "output/analysis/golden-tieling-20261015/{original,compare}-{1,2,3}.png; output/analysis/tieling-fields-d377-20261015/",
+    "reason": "纳入公司名/税号误报保护与页边章完整性，纠正旧乙方归属；任务2条差异与9条验收规则分别计数。"
+  }
+}

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.services.table_compare.matcher import TableMatcher
 from app.services.table_compare import utils
 

@@ -1,0 +1,237 @@
+{
+  "diff": {
+    "clause_display_evidence": null,
+    "diff_id": "D021",
+    "diff_type": "MODIFY",
+    "original_clause_id": "OC010",
+    "compare_clause_id": "NC013",
+    "clause_no": "5.2",
+    "title": "与乙方组协作配合,并负责督促甲方相关人员配合。",
+    "original_text": "5.2 与乙方组协作配合,并负责督促甲方有关人员参与项目。",
+    "compare_text": "5.2与乙方组协作配合,并负责督促甲方相关人员配合。",
+    "original_snippet": "有参与项目",
+    "compare_snippet": "相配合",
+    "readable_change": "原文：有参与项目\n修改后：相配合",
+    "source_type": "clause",
+    "section_type": "main_contract",
+    "section_path": [
+      "5 甲方责任:",
+      "5.2 与乙方组协作配合,并负责督促甲方相关人员配合。"
+    ],
+    "match_score": 100.0,
+    "match_method": "same_clause_no_weighted",
+    "match_score_details": {},
+    "match_candidates": [],
+    "match_confidence": "NORMAL",
+    "structural_flags": [
+      "PUNCTUATED_HEADING"
+    ],
+    "review_flags": [],
+    "quality_status": "NORMAL",
+    "content_recognition_status": "CONFIRMED",
+    "content_recognition_reason": "",
+    "content_candidates": [],
+    "text_confidence": 0.9925129413604736,
+    "merged_sources": [],
+    "review_status": "UNREVIEWED",
+    "review_comment": "",
+    "reviewed_by": "",
+    "reviewed_at": "",
+    "original_evidence": [
+      {
+        "char_boxes": [],
+        "page_no": 4,
+        "bbox": {
+          "x0": 266.67186279296874,
+          "y0": 159.89439697265624,
+          "x1": 278.221875,
+          "y1": 171.44439392089845,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "有",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 1.0
+      },
+      {
+        "char_boxes": [],
+        "page_no": 4,
+        "bbox": {
+          "x0": 306.75010986328124,
+          "y0": 159.89439697265624,
+          "x1": 348.2986572265625,
+          "y1": 171.44439392089845,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "参与项目",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 1.0
+      }
+    ],
+    "compare_evidence": [
+      {
+        "char_boxes": [],
+        "page_no": 4,
+        "bbox": {
+          "x0": 277.2,
+          "y0": 209.7,
+          "x1": 287.3,
+          "y1": 220.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "相",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9925129413604736
+      },
+      {
+        "char_boxes": [],
+        "page_no": 4,
+        "bbox": {
+          "x0": 310.2,
+          "y0": 209.7,
+          "x1": 327.8,
+          "y1": 220.3,
+          "normalized": null
+        },
+        "method": "char_exact",
+        "granularity": "unknown",
+        "text": "配合",
+        "highlight_type": "MODIFY",
+        "confidence": 0.98,
+        "evidence_quality": "HIGH",
+        "text_confidence": 0.9925129413604736
+      }
+    ],
+    "original_change_ranges": [
+      {
+        "start": 20,
+        "end": 21,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 24,
+        "end": 28,
+        "highlight_type": "MODIFY"
+      }
+    ],
+    "compare_change_ranges": [
+      {
+        "start": 19,
+        "end": 20,
+        "highlight_type": "MODIFY"
+      },
+      {
+        "start": 23,
+        "end": 25,
+        "highlight_type": "MODIFY"
+      }
+    ]
+  },
+  "clauses": {
+    "original": {
+      "clause_id": "OC010",
+      "clause_no": "5.2",
+      "title": "与乙方组协作配合,并负责督促甲方有关人员参与项目。",
+      "text": "5.2 与乙方组协作配合,并负责督促甲方有关人员参与项目。",
+      "normalized_text": "5.2与乙方组协作配合,并负责督促甲方有关人员参与项目",
+      "match_text": "52与乙方组协作配合并负责督促甲方有关人员参与项目",
+      "page_numbers": [
+        4
+      ],
+      "bboxes": [
+        {
+          "char_boxes": [],
+          "page_no": 4,
+          "bbox": {
+            "x0": 90.0,
+            "y0": 160.69439697265625,
+            "x1": 357.45806884765625,
+            "y1": 170.64439392089844,
+            "normalized": null
+          },
+          "method": "block_fallback",
+          "granularity": "unknown",
+          "text": "5.2 与乙方组协作配合,并负责督促甲方有关人员参与项目。",
+          "highlight_type": null,
+          "confidence": 0.5,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        }
+      ],
+      "source_block_ids": [
+        "1a1501da5593-p4:native:4"
+      ],
+      "char_boxes": [],
+      "segmentation_reason": "marker:5.2|heading_score:0.78|signals:marker,decimal_marker,title_length|risks:PUNCTUATED_HEADING",
+      "segmentation_confidence": 0.78,
+      "section_type": "main_contract",
+      "section_path": [
+        "5 甲方责任:",
+        "5.2 与乙方组协作配合,并负责督促甲方有关人员参与项目"
+      ],
+      "clause_key": "main_contract/n5甲方责任/n5_2与乙方组协作配合并负责督促甲方有关人员参与项目",
+      "order_index": 10,
+      "split_flags": [
+        "PUNCTUATED_HEADING"
+      ]
+    },
+    "compare": {
+      "clause_id": "NC013",
+      "clause_no": "5.2",
+      "title": "与乙方组协作配合,并负责督促甲方相关人员配合。",
+      "text": "5.2与乙方组协作配合,并负责督促甲方相关人员配合。",
+      "normalized_text": "5.2与乙方组协作配合,并负责督促甲方相关人员配合",
+      "match_text": "52与乙方组协作配合并负责督促甲方相关人员配合",
+      "page_numbers": [
+        4
+      ],
+      "bboxes": [
+        {
+          "char_boxes": [],
+          "page_no": 4,
+          "bbox": {
+            "x0": 127.0,
+            "y0": 210.5,
+            "x1": 330.0,
+            "y1": 219.5,
+            "normalized": null
+          },
+          "method": "block_fallback",
+          "granularity": "unknown",
+          "text": "5.2与乙方组协作配合,并负责督促甲方相关人员配合。",
+          "highlight_type": null,
+          "confidence": 0.5,
+          "evidence_quality": "MEDIUM",
+          "text_confidence": null
+        }
+      ],
+      "source_block_ids": [
+        "4b9320407bd2-p4:ocr:0:line:4"
+      ],
+      "char_boxes": [],
+      "segmentation_reason": "marker:5.2|heading_score:0.78|signals:marker,decimal_marker,title_length|risks:PUNCTUATED_HEADING",
+      "segmentation_confidence": 0.78,
+      "section_type": "main_contract",
+      "section_path": [
+        "5 甲方责任:",
+        "5.2 与乙方组协作配合,并负责督促甲方相关人员配合。"
+      ],
+      "clause_key": "main_contract/n5甲方责任/n5_2与乙方组协作配合并负责督促甲方相关人员配合",
+      "order_index": 13,
+      "split_flags": [
+        "PUNCTUATED_HEADING"
+      ]
+    }
+  }
+}

@@ -7,12 +7,19 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
+TableStructureStatus = Literal[
+    "STRUCTURED_TABLE", "UNSTRUCTURED_TABLE_PRESENT", "TABLE_ABSENT", "UNKNOWN"
+]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
+ContentRecognitionStatus = Literal["CONFIRMED", "NEEDS_REVIEW"]
 TaskStatus = Literal["PROCESSING", "COMPLETED", "FAILED"]
+TaskTerminalReason = Literal["NONE", "EXECUTION_FAILED", "SUBMISSION_FAILED", "CANCELLED"]
+TaskExecutionStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED"]
 ReviewStatus = Literal["UNREVIEWED", "CONFIRMED", "FALSE_POSITIVE", "NEEDS_REVIEW", "IGNORED"]
-DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal"]
+DiffSourceType = Literal["clause", "header_footer", "table", "metadata", "seal", "page", "signing_region", "graphic"]
 LayoutMatchStatus = Literal[
     "matched",
     "ambiguous",
@@ -20,6 +27,36 @@ LayoutMatchStatus = Literal[
     "noise_unmatched",
     "structure_only",
     "not_applicable",
+]
+OcrQualityStatus = Literal[
+    "OK",
+    "LOW_TEXT_CONFIDENCE",
+    "LAYOUT_MISMATCH",
+    "READING_ORDER_RISK",
+    "TABLE_RISK",
+    "SEAL_OR_SIGNATURE_RISK",
+    "UNRELIABLE",
+]
+OcrQualitySide = Literal["original", "compare"]
+OcrRemediationActionType = Literal[
+    "NO_ACTION",
+    "MARK_REVIEW",
+    "RELOCATE_EVIDENCE",
+    "REPAIR_TABLE",
+    "RETRY_OCR_PAGE",
+    "ESCALATE_MANUAL_REVIEW",
+]
+OcrRemediationStatus = Literal[
+    "PLANNED",
+    "SKIPPED",
+    "SUCCEEDED",
+    "FAILED",
+    "MANUAL_REVIEW_REQUIRED",
+]
+OcrRemediationSummaryStatus = Literal[
+    "OK",
+    "ACTIONS_PLANNED",
+    "MANUAL_REVIEW_REQUIRED",
 ]
 
 
@@ -56,15 +93,45 @@ class CharBox(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
+class TextSourceEvidence(BaseModel):
+    source: str
+    raw_text: str
+    page_no: int
+    bbox: BBox
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
 class EvidenceBox(BaseModel):
+    char_boxes: list[CharBox] = Field(default_factory=list)
     page_no: int
     bbox: BBox
     method: str = "clause_fallback"
+    granularity: Literal["unknown", "source_text", "cell"] = "unknown"
     text: str = ""
     highlight_type: DiffType | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     evidence_quality: EvidenceQuality = "MEDIUM"
     text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class ClauseDisplayEvidence(BaseModel):
+    """Presentation geometry; excluded from change detection and counting."""
+    unit: Literal["clause"] = "clause"
+    original: list[EvidenceBox] = Field(default_factory=list)
+    compare: list[EvidenceBox] = Field(default_factory=list)
+
+
+class FieldDisplayEvidence(BaseModel):
+    """Complete field value geometry; raw text edits remain authoritative."""
+    unit: Literal["field"] = "field"
+    field_key: str
+    original: list[EvidenceBox] = Field(default_factory=list)
+    compare: list[EvidenceBox] = Field(default_factory=list)
+
+
+class SigningRegionOutlines(BaseModel):
+    original: list[EvidenceBox] = Field(default_factory=list)
+    compare: list[EvidenceBox] = Field(default_factory=list)
 
 
 class ParseWarningDetail(BaseModel):
@@ -110,6 +177,53 @@ class LayoutQualityReport(BaseModel):
     reading_order_conflict_count: int = 0
     page_quality: list[PageLayoutQualityReport] = Field(default_factory=list)
     warnings: list[ParseWarningDetail] = Field(default_factory=list)
+
+
+class PageOcrQualityProfile(BaseModel):
+    side: OcrQualitySide
+    page_no: int
+    status: OcrQualityStatus = "OK"
+    score: float = Field(default=1.0, ge=0.0, le=1.0)
+    reasons: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    affected_diff_ids: list[str] = Field(default_factory=list)
+
+
+class TaskOcrQualitySummary(BaseModel):
+    status: OcrQualityStatus = "OK"
+    requires_review: bool = False
+    page_count_by_status: dict[OcrQualityStatus, int] = Field(default_factory=dict)
+    risk_page_count: int = 0
+    affected_diff_count: int = 0
+    profiles: list[PageOcrQualityProfile] = Field(default_factory=list)
+
+
+class OcrRemediationAction(BaseModel):
+    action_id: str
+    action_type: OcrRemediationActionType
+    reason: str
+    status: OcrRemediationStatus = "PLANNED"
+    side: OcrQualitySide | None = None
+    page_no: int | None = None
+    diff_id: str | None = None
+    before_quality: dict[str, Any] = Field(default_factory=dict)
+    after_quality: dict[str, Any] = Field(default_factory=dict)
+    changed_evidence: bool = False
+    changed_diff_text: bool = False
+    review_flags_added: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class TaskOcrRemediationSummary(BaseModel):
+    status: OcrRemediationSummaryStatus = "OK"
+    requires_manual_review: bool = False
+    attempted_action_count: int = 0
+    successful_action_count: int = 0
+    unresolved_action_count: int = 0
+    risk_reduced_page_count: int = 0
+    risk_reduced_diff_count: int = 0
+    manual_review_required_count: int = 0
+    actions: list[OcrRemediationAction] = Field(default_factory=list)
 
 
 class PageProfile(BaseModel):
@@ -160,12 +274,21 @@ class TextBlock(BaseModel):
     reading_order: int | None = None
     block_role: str = ""
     flow_role: str = ""
+    semantic_role: str = ""
+    semantic_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    semantic_reasons: list[str] = Field(default_factory=list)
+    enter_clause_compare: bool | None = None
     layout_match_score: float | None = Field(default=None, ge=0.0, le=1.0)
     layout_match_status: LayoutMatchStatus = "not_applicable"
     layout_match_reason: str = ""
     char_boxes: list[CharBox] = Field(default_factory=list)
+    source_evidence: list[TextSourceEvidence] = Field(default_factory=list)
     raw_html: str = ""
     table_cell_bboxes: list[list[float]] = Field(default_factory=list)
+    table_cells: list[dict[str, Any]] = Field(default_factory=list)
+    table_model_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    structure_status: TableStructureStatus = "UNKNOWN"
+    table_validation: dict[str, Any] = Field(default_factory=dict)
 
 
 class Page(BaseModel):
@@ -173,6 +296,10 @@ class Page(BaseModel):
     width: float
     height: float
     blocks: list[TextBlock] = Field(default_factory=list)
+    table_presence_status: TableStructureStatus = "UNKNOWN"
+    semantic_role: str = "unknown"
+    semantic_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    semantic_reasons: list[str] = Field(default_factory=list)
 
 
 class Document(BaseModel):
@@ -196,6 +323,11 @@ class Clause(BaseModel):
     char_boxes: list[CharBox | None] = Field(default_factory=list)
     segmentation_reason: str = ""
     segmentation_confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    section_type: str = "main_contract"
+    section_path: list[str] = Field(default_factory=list)
+    clause_key: str = ""
+    order_index: int = 0
+    split_flags: list[str] = Field(default_factory=list)
 
 
 class TextRange(BaseModel):
@@ -209,11 +341,14 @@ class ClausePair(BaseModel):
     compare: Clause | None = None
     score: float = 0
     match_method: str = "unmatched"
-    score_details: dict[str, float] = Field(default_factory=dict)
+    score_details: dict[str, Any] = Field(default_factory=dict)
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    match_confidence: str = "NORMAL"
 
 
 class DiffItem(BaseModel):
+    field_display_evidence: FieldDisplayEvidence | None = None
+    clause_display_evidence: ClauseDisplayEvidence | None = None
     diff_id: str
     diff_type: DiffType
     original_clause_id: str | None = None
@@ -226,12 +361,19 @@ class DiffItem(BaseModel):
     compare_snippet: str = ""
     readable_change: str = ""
     source_type: DiffSourceType = "clause"
+    section_type: str = ""
+    section_path: list[str] = Field(default_factory=list)
     match_score: float | None = None
     match_method: str = ""
-    match_score_details: dict[str, float] = Field(default_factory=dict)
+    match_score_details: dict[str, Any] = Field(default_factory=dict)
     match_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    match_confidence: str | float | None = ""
+    structural_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     quality_status: DiffQualityStatus = "NORMAL"
+    content_recognition_status: ContentRecognitionStatus = "CONFIRMED"
+    content_recognition_reason: str = ""
+    content_candidates: list[dict[str, Any]] = Field(default_factory=list)
     text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     merged_sources: list[str] = Field(default_factory=list)
     review_status: ReviewStatus = "UNREVIEWED"
@@ -251,10 +393,22 @@ class AuditItemReview(BaseModel):
     reviewed_at: str = ""
 
 
+class ComparisonObservation(AuditItemReview):
+    change_resolution: Literal['CONFIRMED_CHANGE', 'IMPRESSION'] | None = None
+    source_diff: DiffItem | None = None
+    source_type: DiffSourceType | None = None
+    decision_evidence: dict[str, Any] = Field(default_factory=dict)
+    observation_id: str
+    reason: str
+    title: str = "表格对应关系待复核"
+    message: str = "表格单元格对应关系尚未完整建立，无法确认此区域是否存在内容变化。"
+    source_diff_ids: list[str] = Field(default_factory=list)
+    original_evidence: list[EvidenceBox] = Field(default_factory=list)
+    compare_evidence: list[EvidenceBox] = Field(default_factory=list)
+
+
 class CompareOptions(BaseModel):
     ignore_punctuation: bool = False
-    ignore_headers_footers: bool = False
-    ignore_stamps: bool = False
 
 
 class OcrRawResultSidePaths(BaseModel):
@@ -317,16 +471,29 @@ class CompareTask(BaseModel):
     schema_version: int = 1
     revision: int = 0
     status: TaskStatus = "PROCESSING"
+    terminal_reason: TaskTerminalReason = "NONE"
+    execution_id: str = ""
+    execution_no: int = Field(default=0, ge=0)
+    execution_status: TaskExecutionStatus = "QUEUED"
+    execution_queued_at: str = ""
+    execution_started_at: str = ""
+    execution_finished_at: str = ""
+    execution_error_code: str = ""
+    execution_last_error: str = ""
+    report_revision: int = Field(default=0, ge=0)
     stage: str = "已创建"
     progress_percent: int = Field(default=0, ge=0, le=100)
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    owner_sub: str = Field(default="", frozen=True)
+    owner_username: str = ""
+    owner_display_name: str = ""
+    owner_department_code: str = ""
+    owner_department_name: str = ""
     original_filename: str = ""
     compare_filename: str = ""
     original_pdf_path: str = ""
     compare_pdf_path: str = ""
-    original_highlight_pdf_path: str | None = None
-    compare_highlight_pdf_path: str | None = None
     report_pdf_path: str | None = None
     extractor_used: str = ""
     ocr_raw_result_path: str = ""
@@ -334,6 +501,8 @@ class CompareTask(BaseModel):
     parse_warnings: list[str] = Field(default_factory=list)
     parse_warning_details: list[ParseWarningDetail] = Field(default_factory=list)
     document_profiles: dict[str, DocumentProfile] = Field(default_factory=dict)
+    ocr_quality_summary: TaskOcrQualitySummary | None = None
+    ocr_remediation_summary: TaskOcrRemediationSummary | None = None
     debug_artifact_paths: dict[str, str] = Field(default_factory=dict)
     diff_count: int = 0
     reviewed_count: int = 0
@@ -342,7 +511,13 @@ class CompareTask(BaseModel):
     manual_review_count: int = 0
     ignored_count: int = 0
     audit_item_reviews: dict[str, AuditItemReview] = Field(default_factory=dict)
+    audit_item_reviews_normalized: bool = False
+    event_snapshot: dict[str, Any] | None = None
+    event_reviews: dict[str, AuditItemReview] = Field(default_factory=dict)
+    external_compare_options: dict[str, Any] = Field(default_factory=dict)
     compare_options: CompareOptions = Field(default_factory=CompareOptions)
+    signing_region_outlines: SigningRegionOutlines = Field(default_factory=SigningRegionOutlines)
+    comparison_observations: list[ComparisonObservation] = Field(default_factory=list)
     diffs: list[DiffItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)
@@ -353,11 +528,16 @@ class CompareTask(BaseModel):
         if not isinstance(data, dict):
             return data
         normalized = dict(data)
-        for key in [
-            "original_highlight_pdf_path",
-            "compare_highlight_pdf_path",
-            "report_pdf_path",
-        ]:
+        status = normalized.get("status", "PROCESSING")
+        if status != "FAILED":
+            normalized["terminal_reason"] = "NONE"
+        elif normalized.get("terminal_reason") in (None, "", "NONE"):
+            normalized["terminal_reason"] = (
+                "CANCELLED" if cls._has_legacy_cancellation_marker(normalized) else "EXECUTION_FAILED"
+            )
+        if normalized.get("report_revision") is None:
+            normalized["report_revision"] = 1 if status == "COMPLETED" else 0
+        for key in ["report_pdf_path"]:
             if normalized.get(key) == "":
                 normalized[key] = None
         if not normalized.get("ocr_raw_result_paths") and normalized.get("ocr_raw_result_path"):
@@ -365,3 +545,33 @@ class CompareTask(BaseModel):
                 normalized.get("ocr_raw_result_path")
             ).model_dump(mode="json")
         return normalized
+
+    @staticmethod
+    def _has_legacy_cancellation_marker(data: dict[str, Any]) -> bool:
+        messages = [str(data.get("stage") or ""), *[str(error) for error in data.get("errors") or []]]
+        normalized_messages = "\n".join(messages).lower()
+        return any(marker in normalized_messages for marker in ("取消", "cancelled", "canceled"))
+
+    def is_transition_allowed(
+        self,
+        target_status: TaskStatus,
+        *,
+        terminal_reason: TaskTerminalReason = "NONE",
+        validated_inputs_exist: bool = False,
+    ) -> bool:
+        if self.status == "PROCESSING":
+            if target_status not in {"COMPLETED", "FAILED"}:
+                return False
+            if target_status == "COMPLETED" and terminal_reason != "NONE":
+                return False
+            if target_status == "FAILED" and terminal_reason == "NONE":
+                return False
+            return True
+
+        if self.status != "FAILED" or target_status != "PROCESSING" or terminal_reason != "NONE":
+            return False
+        if self.terminal_reason == "EXECUTION_FAILED":
+            return True
+        if self.terminal_reason == "SUBMISSION_FAILED":
+            return validated_inputs_exist
+        return False

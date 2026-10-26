@@ -26,9 +26,19 @@ def extract(normalizer, document: Document) -> dict[str, CoverField]:
 
 def _extract_cover(normalizer, document: Document) -> CoverExtraction:
     blocks = _cover_blocks(document)
+    first_page_no = min((block.page_no for block in blocks), default=1)
     fields: dict[str, CoverField] = {}
+    preamble_fields: dict[int, dict[str, CoverField]] = {}
     consumed: set[str] = set()
+    # Address identity belongs to a party on this page, not to a document-wide
+    # bag of strings. Ambiguous/repeated labels remain unconsumed for review.
+    from .address_fields import extract_party_addresses
+    address_fields, address_ids = extract_party_addresses(blocks)
+    preamble_fields.update(address_fields)
+    consumed.update(address_ids)
     for index, block in enumerate(blocks):
+        if block.block_id in address_ids:
+            continue
         table_fields = _extract_cover_table_fields(block)
         if table_fields:
             for key, field in table_fields.items():
@@ -42,31 +52,59 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
         for line_index, line in enumerate(block_lines):
             parsed = parse_labeled_line(line)
             if parsed is None:
-                continue
+                from .date_ocr import date_precision
+                # A standalone cover date has no label; retain its month/day precision.
+                if block.page_no == first_page_no and date_precision(line):
+                    parsed = ("cover_date", line)
+                else:
+                    continue
             key, value = parsed
             evidences = [build_evidence(block, line)]
             vparts = value_parts_from_line(block, value) if value else []
-            if not value and key != "contract_no":
+            consumed_ids: set[str] = set()
+            if not value and not _is_contract_number_key(key):
                 value, extra_evidences, extra_ids, extra_parts = nearby_value(block, blocks)
                 evidences.extend(extra_evidences)
-                consumed.update(extra_ids)
+                consumed_ids.update(extra_ids)
                 vparts.extend(extra_parts)
-            if not value and key != "contract_no":
+            if not value and not _is_contract_number_key(key):
                 value, extra_evidences, extra_ids, extra_parts = next_value(block_lines, line_index, blocks, index)
                 evidences.extend(extra_evidences)
-                consumed.update(extra_ids)
+                consumed_ids.update(extra_ids)
                 vparts.extend(extra_parts)
-            if value:
-                set_field(fields, key, value, evidences, vparts)
+            if value and _valid_field_value(key, value):
+                if block.page_no > first_page_no and key in {"buyer", "seller"}:
+                    set_field(
+                        preamble_fields.setdefault(block.page_no, {}),
+                        key,
+                        value,
+                        evidences,
+                        vparts,
+                    )
+                else:
+                    set_field(fields, key, value, evidences, vparts)
+                consumed.update(consumed_ids)
                 consumed.add(block.block_id)
 
-    first_page_no = min((block.page_no for block in blocks), default=1)
+    # A standalone value already owned by the sign-date field is not an
+    # additional cover date. Require the same physical source, not date equality.
+    dated = fields.get("cover_date")
+    signed = fields.get("sign_date")
+    if dated and signed and any(
+        a.page_no == b.page_no
+        and b.bbox.x0 - 2 <= a.bbox.x0 <= a.bbox.x1 <= b.bbox.x1 + 2
+        and b.bbox.y0 - 2 <= a.bbox.y0 <= a.bbox.y1 <= b.bbox.y1 + 2
+        for a in dated.evidences for b in signed.evidences
+    ):
+        fields.pop("cover_date")
+
     title_blocks = [
         block
         for block in blocks
         if block.page_no == first_page_no and block.block_id not in consumed and is_title_candidate(normalizer, block)
     ]
-    if title_blocks:
+    if title_blocks and "project_title" not in fields:
+        title_blocks.sort(key=lambda block: (block.bbox.y0, block.bbox.x0))
         title_lines: list[str] = []
         evidences: list[EvidenceBox] = []
         for block in title_blocks:
@@ -86,19 +124,99 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
                 value=value,
                 evidences=evidences,
             )
-    return CoverExtraction(fields=fields, consumed_block_ids=consumed)
+    preamble_titles: dict[int, CoverField] = {}
+    later_title_blocks: dict[int, list[TextBlock]] = {}
+    for block in blocks:
+        if block.page_no == first_page_no or block.block_id in consumed:
+            continue
+        block_type = (block.block_type or "").lower()
+        if block_type not in {"doc_title", "title"}:
+            continue
+        later_title_blocks.setdefault(block.page_no, []).append(block)
+    for page_no, page_blocks in sorted(later_title_blocks.items()):
+        field = _preamble_title_field(page_no, page_blocks)
+        if field is None:
+            continue
+        preamble_titles[page_no] = field
+        consumed.update(block.block_id for block in page_blocks)
+    return CoverExtraction(
+        fields=fields,
+        consumed_block_ids=consumed,
+        preamble_titles=preamble_titles,
+        preamble_fields=preamble_fields,
+    )
+
+
+def _preamble_title_field(page_no: int, blocks: list[TextBlock]) -> CoverField | None:
+    ordered = sorted(blocks, key=lambda block: (block.bbox.y0, block.bbox.x0, block.block_id))
+    title_lines: list[str] = []
+    evidences: list[EvidenceBox] = []
+    value_parts: list[CoverValuePart] = []
+    cursor = 0
+    for block in ordered:
+        block_lines = [line for line in lines(block.text) if not parse_labeled_line(line)]
+        block_text = "\n".join(block_lines).strip()
+        if not block_text:
+            continue
+        if title_lines:
+            cursor += 1
+        title_lines.append(block_text)
+        evidences.append(build_evidence(block, block_text))
+        value_parts.append(
+            CoverValuePart(
+                block=block,
+                text=block_text,
+                start=cursor,
+                end=cursor + len(block_text),
+                block_start=find_text_index(block.text, block_text),
+            )
+        )
+        cursor += len(block_text)
+    value = "\n".join(title_lines).strip()
+    if not value:
+        return None
+    return CoverField(
+        key=f"preamble_title_{page_no}",
+        label=f"前置标题（第{page_no}页）",
+        value=value,
+        evidences=evidences,
+        value_parts=value_parts,
+    )
+
+
+def _valid_field_value(key: str, value: str) -> bool:
+    if key != "sign_date":
+        return True
+    from .date_ocr import date_precision
+    if date_precision(value):
+        return True
+    compact = re.sub(r"\s+", "", value or "")
+    if len(re.findall(r"\d{4}", compact)) != 1:
+        return False
+    return bool(
+        re.search(r"\d{4}年\d{1,2}月\d{1,2}日?", compact)
+        or re.search(r"\d{4}[./-]\d{1,2}[./-]\d{1,2}", compact)
+    )
+
+
+def _is_contract_number_key(key: str) -> bool:
+    return key in {"contract_no", "contract_no_buyer", "contract_no_seller"}
 
 
 def _cover_blocks(document: Document) -> list[TextBlock]:
     blocks: list[TextBlock] = []
-    skip_types = {"attachment_header", "seal_region", "edge_noise"}
+    skip_types = {"attachment_header", "seal_region", "seal", "stamp", "edge_noise", "watermark"}
     for page in document.pages:
         for block in page.blocks:
+            if block.block_role in {"revision_artifact", "page_footer"}:
+                continue
             if (block.block_type or "").lower() in skip_types:
                 continue
             text = clean_text(block.text)
             if not text:
                 continue
+            if re.sub(r"\s+", "", text) in {"目录", "目次", "CONTENTS", "Contents"}:
+                return blocks
             if is_body_start(text, block.block_type):
                 return blocks
             blocks.append(block)

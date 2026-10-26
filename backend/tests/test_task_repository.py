@@ -1,169 +1,78 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from app.config import settings
+import pytest
+
 from app.config import Settings
-from app.infrastructure.task_repository import LocalJsonTaskRepository, build_task_repository
+from app.infrastructure.task_repository import SQLiteTaskRepository
 from app.models import CompareTask, DiffItem
-from app.models_extraction import ExtractionTask
 
 
-def configure_task_storage(tmp_path: Path) -> LocalJsonTaskRepository:
-    settings.storage_dir = tmp_path / "storage"
-    settings.tasks_dir = settings.storage_dir / "tasks"
-    return LocalJsonTaskRepository(settings)
+def repository(tmp_path: Path) -> SQLiteTaskRepository:
+    return SQLiteTaskRepository(Settings(storage_dir=tmp_path / "storage"))
 
 
-def test_local_json_task_repository_separates_task_types(tmp_path: Path) -> None:
-    repository = configure_task_storage(tmp_path)
-
-    repository.save_compare_task(CompareTask(task_id="TCOMPARE", updated_at="2026-05-21T09:00:00+00:00"))
-    repository.save_extraction_task(ExtractionTask(task_id="TEXTRACT", updated_at="2026-05-21T10:00:00+00:00"))
-
-    assert [task.task_id for task in repository.list_compare_tasks()] == ["TCOMPARE"]
-    assert [task.task_id for task in repository.list_extraction_tasks()] == ["TEXTRACT"]
-
-
-def test_local_json_task_repository_uses_last_write(tmp_path: Path) -> None:
-    repository = configure_task_storage(tmp_path)
-
-    repository.save_compare_task(CompareTask(task_id="TUPDATE", stage="first"))
-    repository.save_compare_task(CompareTask(task_id="TUPDATE", stage="second"))
-
-    assert repository.load_compare_task("TUPDATE").stage == "second"
-
-
-def test_local_json_task_repository_partial_update_increments_revision(tmp_path: Path) -> None:
-    repository = configure_task_storage(tmp_path)
-    repository.save_compare_task(
-        CompareTask(task_id="TPARTIAL", stage="first", original_filename="original.pdf")
-    )
-    first = repository.load_compare_task("TPARTIAL")
-
-    updated = repository.update_compare_task(
-        "TPARTIAL",
-        lambda task: setattr(task, "stage", "second"),
+def test_sqlite_is_the_only_structured_task_authority(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    task = CompareTask(
+        task_id="T1",
+        owner_sub="owner",
+        original_filename="原合同.pdf",
+        compare_filename="新合同.pdf",
+        diffs=[DiffItem(diff_id="D1", diff_type="ADD", compare_text="新增")],
     )
 
-    assert updated.stage == "second"
-    assert updated.original_filename == "original.pdf"
-    assert updated.revision == first.revision + 1
+    repo.save_compare_task(task)
+    loaded = repo.load_compare_task("T1")
+
+    assert loaded.diffs[0].compare_text == "新增"
+    assert loaded.original_pdf_path.endswith("tasks/T1/input/original/原合同.pdf")
+    assert loaded.compare_pdf_path.endswith("tasks/T1/input/compare/新合同.pdf")
+    assert repo.settings.task_database_path.exists()
+    assert not (repo.settings.tasks_dir / "T1" / "task.json").exists()
+    assert not (repo.settings.storage_dir / "indexes").exists()
 
 
-def test_local_json_task_repository_skips_invalid_list_entries(tmp_path: Path) -> None:
-    repository = configure_task_storage(tmp_path)
-    repository.save_compare_task(CompareTask(task_id="TVALID"))
-    broken_dir = settings.tasks_dir / "TBROKEN"
-    broken_dir.mkdir(parents=True)
-    (broken_dir / "task.json").write_text("{", encoding="utf-8")
-
-    assert [task.task_id for task in repository.list_compare_tasks()] == ["TVALID"]
-
-
-def test_task_repository_factory_always_uses_local_file_backend(tmp_path: Path) -> None:
-    app_settings = Settings(storage_dir=tmp_path / "storage")
-
-    repository = build_task_repository(app_settings)
-
-    assert isinstance(repository, LocalJsonTaskRepository)
-
-
-def test_local_json_task_repository_contract_in_task_directory(tmp_path: Path) -> None:
-    repository = configure_task_storage(tmp_path)
-
-    repository.save_compare_task(CompareTask(task_id="TCOMPARE", stage="first"))
-    repository.save_compare_task(CompareTask(task_id="TCOMPARE", stage="second"))
-    repository.save_extraction_task(ExtractionTask(task_id="TEXTRACT"))
-    repository.update_compare_task("TCOMPARE", lambda task: task.diffs.append(DiffItem(diff_id="D001", diff_type="ADD")))
-
-    assert repository.task_json_path("TCOMPARE") == settings.tasks_dir / "TCOMPARE" / "task.json"
-    assert (settings.tasks_dir / "TCOMPARE" / "manifest.json").exists()
-    assert repository.load_compare_task("TCOMPARE").stage == "second"
-    assert repository.load_compare_task("TCOMPARE").diffs[0].diff_id == "D001"
-    assert [task.task_id for task in repository.list_compare_tasks()] == ["TCOMPARE"]
-    assert [task.task_id for task in repository.list_extraction_tasks()] == ["TEXTRACT"]
-
-
-def test_local_json_task_repository_writes_compare_task_v2_structured_paths(tmp_path: Path) -> None:
-    repository = configure_task_storage(tmp_path)
-    task_dir = repository.task_dir("TPATHS")
-    original_pdf = task_dir / "uploads" / "original_contract.pdf"
-    compare_pdf = task_dir / "uploads" / "compare_contract.pdf"
-    original_raw = task_dir / "ocr" / "original_contract_ppstructure_raw.json"
-    compare_hybrid_raw = task_dir / "ocr" / "compare_contract_ppstructure_ocr_hybrid_raw.json"
-    debug_path = task_dir / "debug" / "document_profiles.json"
-
-    repository.save_compare_task(
+def test_summary_query_does_not_need_task_json(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    repo.save_compare_task(
         CompareTask(
-            task_id="TPATHS",
-            original_pdf_path=str(original_pdf),
-            compare_pdf_path=str(compare_pdf),
-            original_highlight_pdf_path="",
-            compare_highlight_pdf_path="",
-            report_pdf_path="",
-            ocr_raw_result_path=f"{original_raw}\n{compare_hybrid_raw}",
-            debug_artifact_paths={"document_profiles": str(debug_path)},
-            diff_count=99,
-            diffs=[DiffItem(diff_id="D001", diff_type="ADD")],
+            task_id="T1",
+            owner_sub="owner",
+            original_filename="a.pdf",
+            compare_filename="b.pdf",
+            diffs=[DiffItem(diff_id="D1", diff_type="ADD")],
         )
     )
 
-    raw = json.loads(repository.task_json_path("TPATHS").read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 2
-    assert raw["diff_count"] == 1
-    assert raw["original_pdf_path"] == "uploads/original_contract.pdf"
-    assert raw["compare_pdf_path"] == "uploads/compare_contract.pdf"
-    assert raw["original_highlight_pdf_path"] is None
-    assert raw["compare_highlight_pdf_path"] is None
-    assert raw["report_pdf_path"] is None
-    assert raw["ocr_raw_result_path"] == ""
-    assert raw["ocr_raw_result_paths"]["original"]["ppstructure"] == "ocr/original_contract_ppstructure_raw.json"
-    assert raw["ocr_raw_result_paths"]["compare"]["hybrid"] == "ocr/compare_contract_ppstructure_ocr_hybrid_raw.json"
-    assert raw["debug_artifact_paths"]["document_profiles"] == "debug/document_profiles.json"
-
-    loaded = repository.load_compare_task("TPATHS")
-    assert loaded.original_pdf_path == str(original_pdf)
-    assert loaded.compare_pdf_path == str(compare_pdf)
-    assert loaded.original_highlight_pdf_path is None
-    assert loaded.report_pdf_path is None
-    assert loaded.ocr_raw_result_paths.original.ppstructure == str(original_raw)
-    assert loaded.ocr_raw_result_paths.compare.hybrid == str(compare_hybrid_raw)
-    assert loaded.debug_artifact_paths["document_profiles"] == str(debug_path)
+    assert repo.list_compare_record_summaries()[0]["diff_count"] == 1
 
 
-def test_local_json_task_repository_loads_legacy_compare_task_paths(tmp_path: Path) -> None:
-    repository = configure_task_storage(tmp_path)
-    task_dir = repository.task_dir("TLEGACY")
-    task_dir.mkdir(parents=True)
-    legacy_payload = {
-        "task_id": "TLEGACY",
-        "schema_version": 1,
-        "status": "COMPLETED",
-        "original_pdf_path": "uploads/original.pdf",
-        "compare_pdf_path": "uploads/compare.pdf",
-        "original_highlight_pdf_path": "",
-        "compare_highlight_pdf_path": "",
-        "report_pdf_path": "",
-        "ocr_raw_result_path": "\n".join(
-            [
-                "ocr/original_contract_ppocrv5_raw.json",
-                "ocr/compare_contract_ppstructure_raw.json",
-            ]
-        ),
-        "diffs": [],
-    }
-    repository.task_json_path("TLEGACY").write_text(json.dumps(legacy_payload), encoding="utf-8")
+def test_update_is_transactional_and_owner_is_immutable(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    repo.save_compare_task(CompareTask(task_id="T1", owner_sub="owner"))
+    revision = repo.load_compare_task("T1").revision
 
-    loaded = repository.load_compare_task("TLEGACY")
+    updated = repo.update_compare_task("T1", lambda task: setattr(task, "stage", "处理中"))
+    assert updated.revision == revision + 1
+    assert repo.load_compare_task("T1").stage == "处理中"
 
-    assert loaded.original_pdf_path == str(task_dir / "uploads" / "original.pdf")
-    assert loaded.compare_pdf_path == str(task_dir / "uploads" / "compare.pdf")
-    assert loaded.original_highlight_pdf_path is None
-    assert loaded.compare_highlight_pdf_path is None
-    assert loaded.report_pdf_path is None
-    assert loaded.ocr_raw_result_paths.original.ppocrv5 == str(task_dir / "ocr" / "original_contract_ppocrv5_raw.json")
-    assert loaded.ocr_raw_result_paths.compare.ppstructure == str(
-        task_dir / "ocr" / "compare_contract_ppstructure_raw.json"
-    )
+    with pytest.raises(ValueError, match="所有者"):
+        repo.update_compare_task("T1", lambda task: object.__setattr__(task, "owner_sub", "other"))
+
+
+def test_startup_marks_all_processing_tasks_failed_without_reading_legacy_files(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    repo.save_compare_task(CompareTask(task_id="RUNNING", status="PROCESSING"))
+    repo.save_compare_task(CompareTask(task_id="DONE", status="COMPLETED"))
+    legacy = repo.settings.tasks_dir / "legacy-extraction" / "task.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{"task_type":"extraction"}', encoding="utf-8")
+
+    assert repo.fail_interrupted_tasks() == 1
+    failed = repo.load_compare_task("RUNNING")
+    assert failed.status == "FAILED"
+    assert failed.execution_error_code == "SERVICE_RESTARTED"
+    assert repo.load_compare_task("DONE").status == "COMPLETED"
+    assert legacy.exists()

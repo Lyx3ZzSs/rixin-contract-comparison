@@ -17,6 +17,14 @@ from app.services.table_compare.constants import (
 )
 
 
+def table_metadata_labels(text: str) -> tuple[str, ...]:
+    """Named quotation fields, not free-form section titles or product prose."""
+    compact = re.sub(r"\s+", "", text)
+    if not re.match(r"^(?:项目名称|工程名称|报价单位)[:：]", compact):
+        return ()
+    return tuple(re.findall(r"(项目名称|工程名称|报价单位)[:：]", compact))
+
+
 _TABLE_OCR_CHAR_REPLACEMENTS: dict[str, str] = {
     "香": "否",
     "己": "已",
@@ -33,147 +41,6 @@ QUOTE_REMARK_MARKERS = (
     "质保期",
     "最终解释权",
 )
-CONTACT_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
-    "party": ("供方", "需方", "甲方", "乙方", "买方", "卖方"),
-    "unit_name": ("单位名称", "公司名称", "名称"),
-    "unit_address": ("单位地址", "地址", "通讯地址"),
-    "legal_representative": ("法人代表", "法定代表人", "授权委托人", "委托代理人"),
-    "phone": ("电话", "手机", "联系方式", "联系电话"),
-    "fax": ("传真",),
-    "bank": ("开户银行", "开户行"),
-    "account": ("账号", "帐号", "账户", "帐户", "银行账号", "银行帐号"),
-    "tax_no": ("税号", "纳税人识别号", "统一社会信用代码"),
-    "postcode": ("邮政编码", "邮编", "政编码"),
-}
-CONTACT_TABLE_EXCLUSION_MARKERS = ("序号", "数量", "单价", "总价", "产品名称", "标的物")
-CONTACT_CONTINUATION_MARKERS = ("支行", "分行", "营业部")
-
-
-def normalize_contact_text(text: str) -> str:
-    return normalize(text).replace("帳", "账")
-
-
-def contact_field_aliases() -> tuple[str, ...]:
-    aliases: list[str] = []
-    for values in CONTACT_FIELD_ALIASES.values():
-        aliases.extend(normalize_contact_text(value) for value in values)
-    return tuple(dict.fromkeys(alias for alias in aliases if alias))
-
-
-def contact_value_field_aliases() -> tuple[str, ...]:
-    aliases: list[str] = []
-    for key, values in CONTACT_FIELD_ALIASES.items():
-        if key == "party":
-            continue
-        aliases.extend(normalize_contact_text(value) for value in values)
-    return tuple(dict.fromkeys(alias for alias in aliases if alias))
-
-
-def contact_label_count(text: str) -> int:
-    compact = normalize_contact_text(text)
-    return sum(compact.count(alias) for alias in contact_value_field_aliases())
-
-
-def looks_like_contact_signature_text(text: str) -> bool:
-    compact = normalize_contact_text(text)
-    if not compact:
-        return False
-    if any(normalize(marker) in compact for marker in CONTACT_TABLE_EXCLUSION_MARKERS):
-        return False
-
-    value_label_count = sum(1 for alias in contact_value_field_aliases() if alias in compact)
-    party_count = sum(1 for alias in CONTACT_FIELD_ALIASES["party"] if normalize_contact_text(alias) in compact)
-    return value_label_count >= 4 or (value_label_count >= 3 and party_count >= 1)
-
-
-def contact_value_tokens(text: str) -> list[str]:
-    compact = normalize_contact_text(text)
-    if not compact:
-        return []
-
-    tokens: list[str] = []
-    for match in re.finditer(r"[0-9a-z][0-9a-z-]{4,}", compact):
-        token = match.group(0).strip("-")
-        if len(token) >= 5:
-            tokens.append(token)
-
-    label_spans = _contact_label_spans(compact)
-    for index, (_field, _alias, _start, end) in enumerate(label_spans):
-        next_start = label_spans[index + 1][2] if index + 1 < len(label_spans) else len(compact)
-        value = compact[end:next_start].strip(":;,.，。； ")
-        value = _trim_contact_value_noise(value)
-        if len(value) >= 4 and not is_noise(value) and _looks_like_contact_value_token(value):
-            tokens.append(value)
-
-    return list(dict.fromkeys(tokens))
-
-
-def is_contact_fragment_covered(norm: str, other_source: str) -> bool:
-    fragment = normalize_contact_text(norm).replace(":", "")
-    source = normalize_contact_text(other_source)
-    if not fragment:
-        return True
-    if fragment in source:
-        return True
-    if fragment in contact_label_fragments() or fragment in CONTACT_CONTINUATION_MARKERS:
-        return fragment in source
-    return False
-
-
-def contact_label_fragments() -> set[str]:
-    fragments: set[str] = set()
-    for alias in contact_field_aliases():
-        for size in range(1, len(alias) + 1):
-            fragments.add(alias[:size])
-        for size in range(1, min(len(alias), 3) + 1):
-            fragments.add(alias[-size:])
-    return fragments
-
-
-def _contact_label_spans(text: str) -> list[tuple[str, str, int, int]]:
-    spans: list[tuple[str, str, int, int]] = []
-    for field, aliases in CONTACT_FIELD_ALIASES.items():
-        if field == "party":
-            continue
-        for alias_text in aliases:
-            alias = normalize_contact_text(alias_text)
-            start = text.find(alias)
-            while start >= 0:
-                spans.append((field, alias, start, start + len(alias)))
-                start = text.find(alias, start + len(alias))
-    spans.sort(key=lambda item: (item[2], -(item[3] - item[2])))
-    result: list[tuple[str, str, int, int]] = []
-    last_end = -1
-    for span in spans:
-        if span[2] < last_end:
-            continue
-        result.append(span)
-        last_end = span[3]
-    return result
-
-
-def _trim_contact_value_noise(value: str) -> str:
-    aliases = contact_field_aliases()
-    changed = True
-    while changed and value:
-        changed = False
-        for alias in aliases:
-            if value.startswith(alias):
-                value = value[len(alias):]
-                changed = True
-            if value.endswith(alias):
-                value = value[:-len(alias)]
-                changed = True
-    return value.strip(":;,.，。； ")
-
-
-def _looks_like_contact_value_token(value: str) -> bool:
-    if re.search(r"[0-9a-z]", value):
-        return True
-    value_markers = ("银行", "支行", "分行", "营业部", "公司", "有限", "地址", "路", "街", "号", "室", "园区")
-    return any(marker in value for marker in value_markers)
-
-
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", text or "")
     for wrong, correct in _TABLE_OCR_CHAR_REPLACEMENTS.items():
@@ -363,6 +230,65 @@ def anchor_cell(table, row: int, col: int):
     if not cell or cell.row_index != row or cell.col_index != col:
         return None
     return cell
+
+
+def split_merged_cell_text(text: str) -> list[str]:
+    raw = unicodedata.normalize("NFKC", text or "").strip()
+    if not raw:
+        return []
+    newline_parts = [part.strip() for part in raw.splitlines() if part.strip()]
+    if len(newline_parts) > 1:
+        return newline_parts if _parts_have_compatible_lengths(newline_parts) else [raw]
+    space_parts = [part.strip() for part in re.split(r"\s+", raw) if part.strip()]
+    if len(space_parts) > 1 and all(len(part) <= 6 for part in space_parts):
+        return space_parts
+    return [raw]
+
+
+def cell_merge_similarity(left: str, right: str) -> float:
+    left_norm = normalize(left)
+    right_norm = normalize(right)
+    if not left_norm or not right_norm:
+        return 0.0
+    if left_norm == right_norm:
+        return 1.0
+    if is_subset_match(left, right):
+        return 0.95
+    left_tokens = set(_merge_tokens(left))
+    right_tokens = set(_merge_tokens(right))
+    shared = {token for token in left_tokens & right_tokens if len(token) >= 4}
+    if shared:
+        return 0.9
+    return 0.0
+
+
+def is_subset_match(left: str, right: str) -> bool:
+    left_tokens = set(_merge_tokens(left))
+    right_tokens = set(_merge_tokens(right))
+    if not left_tokens or not right_tokens:
+        return False
+    return left_tokens <= right_tokens or right_tokens <= left_tokens
+
+
+def _merge_tokens(text: str) -> list[str]:
+    raw = unicodedata.normalize("NFKC", text or "")
+    tokens = [
+        normalize(part)
+        for part in re.split(r"[|\n\r\t ]+", raw)
+        if normalize(part) and not is_noise(normalize(part))
+    ]
+    return list(dict.fromkeys(tokens))
+
+
+def _parts_have_compatible_lengths(parts: list[str]) -> bool:
+    lengths = [len(part) for part in parts if part]
+    if len(lengths) <= 1:
+        return False
+    shortest = min(lengths)
+    longest = max(lengths)
+    if shortest <= 0:
+        return False
+    return longest / shortest <= 3.0
 
 
 # ---------------------------------------------------------------------------

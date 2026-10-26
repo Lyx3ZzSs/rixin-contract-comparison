@@ -1,0 +1,30 @@
+KAILI_FOUR_PROJECTS 页码修复后 Golden 更新（2026-10-08）
+
+授权：用户明确要求更新任务 928b3727-d136-4a71-b767-2182e2d328d7 黄金集。
+
+本次更新
+1. manifest.source_run_id 与 oracle.review_source_task_id 更新为 928b3727-d136-4a71-b767-2182e2d328d7；保留此前来源历史。
+2. 原有14条断言逐项保持不变，新增 KAILI_FOUR_PROJECTS_P9_IDENTICAL_FOOTER_NO_CHANGE。
+3. 新负例要求这对固定PDF的第9页不产生 header_footer 差异：双方页脚均为印刷页码“共9页第9页”，原图及识别证据没有新增手写签注。不依赖标题、差异类型和审核状态，不能通过改名“视觉变化（待复核）”绕过。
+4. 合同断言14→15，全库263→264；同步装载器封存数量与README。全库仍为15份合同、30份PDF，哈希不变。
+5. 当前任务实际差异仍为17条；15是验收规则数，不是界面差异数。
+
+验证
+- 当前任务：13条正例、2条负例全部通过，0失败。
+- 另有4条未被正例覆盖的NEEDS_REVIEW候选：3条疑似骑缝章、1条乙方签署主体变化。保留警告，不将待复核输出自动认定为黄金真值。
+- 原任务 fa4b163e-7809-49d6-bf87-0adda99388ee 的第9页手写签注被新增负例正确拦截。
+- 把旧误报改为“第9页页脚视觉变化（待复核）”并降为待复核后，负例仍正确拦截。
+- 新任务输入PDF的SHA256与封存Golden一致；装载器验证全部30份PDF哈希和页数、264条规则数量。
+- 原14条断言及其他14份oracle保持不变。
+- Golden基础设施测试：15 passed。用户授权的基线变更检查通过。该检查以HEAD为基准，日志包含本次之前已有的RETURN_CONFIRMATION修改；本轮独立补丁保存在下方证据目录。
+- 本次只更新Golden，未重新执行全库生产计算；前一轮修复的全库结果见 footer-fix-20261008/verification-report.txt，不能把本合同15条通过解释为全库通过。
+
+证据
+output/analysis/golden-kaili-928b3727-20261008/validation-summary.json
+output/analysis/golden-kaili-928b3727-20261008/current-task-report.json
+output/analysis/golden-kaili-928b3727-20261008/old-task-negative-report.json
+output/analysis/golden-kaili-928b3727-20261008/neutral-label-injection-report.json
+output/analysis/golden-kaili-928b3727-20261008/baseline-update.patch
+原图分析与修复验证：output/analysis/footer-fix-20261008/
+
+生产代码、任务数据库与人工审核状态未修改，无需重启服务。

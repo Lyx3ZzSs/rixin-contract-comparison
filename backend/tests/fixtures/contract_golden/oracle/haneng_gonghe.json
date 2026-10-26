@@ -1,0 +1,208 @@
+{
+  "schema_version": 1,
+  "contract_key": "HANENG_GONGHE",
+  "expected_case_count": 12,
+  "assertions": [
+    {
+      "case_id": "HANENG_GONGHE_P1_HEADER_FOOTER_ADD_DD283FDA91",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "header_footer",
+      "source_type": "header_footer",
+      "diff_type": "ADD",
+      "title": "页眉",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "NEEDS_REVIEW",
+      "semantic_after": "20260626",
+      "review_note": "2026-09-08放大核对原PDF：新增手写编号的前缀不可可靠确认，两路OCR读为Cokila与G；保留可读日期数字20260626作为语义定位，内容必须待复核。"
+    },
+    {
+      "case_id": "HANENG_GONGHE_P1_SEAL_ADD_A1BFE0B465",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "疑似骑缝章",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "页边印迹",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 555.0,
+          "y0": 205.0,
+          "x1": 597.0,
+          "y1": 324.0
+        },
+        "min_iou": 0.35
+      },
+      "object_type": "EDGE_SEAM_SEAL",
+      "review_note": "2026-10-14原PDF视觉核验：第1/3/5页右侧为页边章印迹；章文和跨页身份未可靠确认，不以乙方归属作为真值。允许合并为一条跨页差异，保留各页定位。第1/3页的上下碎片不得作为额外公司圆章重复计数。原框与IoU阈值不变。",
+      "change_decision": "NEEDS_REVIEW"
+    },
+    {
+      "case_id": "HANENG_GONGHE_P3_SEAL_ADD_E82B677D32",
+      "assertion": "MUST_REVIEW",
+      "page": 3,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "疑似骑缝章",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "页边印迹",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 554.0,
+          "y0": 199.0,
+          "x1": 595.5,
+          "y1": 322.0
+        },
+        "min_iou": 0.35
+      },
+      "object_type": "EDGE_SEAM_SEAL",
+      "review_note": "2026-10-14原PDF视觉核验：第1/3/5页右侧为页边章印迹；章文和跨页身份未可靠确认，不以乙方归属作为真值。允许合并为一条跨页差异，保留各页定位。第1/3页的上下碎片不得作为额外公司圆章重复计数。原框与IoU阈值不变。",
+      "change_decision": "NEEDS_REVIEW"
+    },
+    {
+      "case_id": "HANENG_GONGHE_P5_SIGNATURE_ADD_A1EB09EADF",
+      "assertion": "MUST_REVIEW",
+      "page": 5,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "甲方 · 法人代表或授权委托人",
+      "party": "甲方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NORMAL",
+      "content_recognition_status": "NEEDS_REVIEW",
+      "change_decision": "CONFIRMED",
+      "semantic_after": "手写填写（姓名未可靠识别）",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 253.5,
+          "y0": 275.5,
+          "x1": 266.5,
+          "y1": 304.5
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 601.0
+      },
+      "review_note": "原件空白、扫描有手写填写，填写新增与姓名可读性分开：确认存在填写，但姓名未可靠识别。实际任务0e05d520的候选与说明均符合；保留原框、未可靠识别语义及呈现约束，禁止把单字确认为姓名。",
+      "presentation_contains": "新增手写填写；内容识别待确认"
+    },
+    {
+      "case_id": "HANENG_GONGHE_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "HANENG_GONGHE_P5_COMPANY_STAMP_SUFFIX_NOT_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 5,
+      "source_type": "signing_region",
+      "title": "甲方 · 签署主体变化",
+      "semantic_before": "汉能海南州光伏发电有限公司",
+      "semantic_after": "汉能海南州光伏发电有限公司",
+      "review_note": "原扫描主体一致，盖章格式后缀不构成公司改名。"
+    },
+    {
+      "case_id": "HANENG_GONGHE_P5_PARTIAL_NAME_NOT_CONFIRMED",
+      "assertion": "MUST_NOT_CONFIRM",
+      "page": 5,
+      "source_type": "signing_region",
+      "field_type": "legal_representative",
+      "semantic_after": "伟",
+      "review_note": "单个OCR字不能确认完整姓名；真实手写存在由原正例及定位约束保留。"
+    },
+    {
+      "case_id": "HANENG_GONGHE_P5_EDGE_SEAL_PRESENT",
+      "assertion": "MUST_REVIEW",
+      "page": 5,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "visual_object_type": "seal",
+      "object_type": "EDGE_SEAM_SEAL",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "页边印迹",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 552.5,
+          "y0": 202,
+          "x1": 595.5,
+          "y1": 310.5
+        },
+        "min_iou": 0.35
+      },
+      "review_note": "原稿无此页边章；扫描稿第5页右侧存在红色弧形章印迹。与第1/3页可归并，但必须保留本页完整定位；CONFIRMED仅指印迹存在，身份仍待复核。"
+    },
+    {
+      "case_id": "HANENG_GONGHE_P5_LEFT_STAMP_PRESENT",
+      "assertion": "MUST_REVIEW",
+      "page": 5,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 130,
+          "y0": 145,
+          "x1": 259,
+          "y1": 268
+        },
+        "min_iou": 0.35
+      },
+      "review_note": "原稿左侧甲方公司名称/地址区域无盖印，扫描稿存在独立红色印章。要求新增及位置，不能被右侧骑缝章归并吞掉。不以当前OTHER_STAMP类别或OCR乱码作为真值，不断言完整章文。"
+    },
+    {
+      "case_id": "HANENG_GONGHE_P1_NO_SPLIT_COMPANY_SEAL",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 1,
+      "source_type": "seal",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "原/扫描PDF核实本页只有右侧同一枚残缺页边章，无另一个独立公司圆章；不能把其上下碎片分类为公司圆章后额外报告。页边章存在由对应正例保留。"
+    },
+    {
+      "case_id": "HANENG_GONGHE_P3_NO_SPLIT_COMPANY_SEAL",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 3,
+      "source_type": "seal",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "原/扫描PDF核实本页只有右侧同一枚残缺页边章，无另一个独立公司圆章；不能把其上下碎片分类为公司圆章后额外报告。页边章存在由对应正例保留。"
+    },
+    {
+      "case_id": "HANENG_GONGHE_P5_STAMP_LABEL_NOT_CHANGED",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 5,
+      "source_type": "signing_region",
+      "title": "甲方 · 签章标签变化",
+      "forbidden_value_pattern": "盖章",
+      "review_note": "原稿（盖章）与扫描稿(盖章)均清楚存在且OCR已识别，授权委托人后的手写内容不能生成第二个甲方公司字段并夺走盖章标签。禁止以MODIFY/DELETE/ADD报告该标签变化。"
+    }
+  ],
+  "baseline_version": "contract-golden-v2.1",
+  "regression_coverage": {
+    "updated_at": "2026-10-14",
+    "authorization": "用户要求：更新当前页面a42a0744-fd10-40f5-8dce-2c45c82ba859比对任务黄金集",
+    "reason": "纳入已视觉核验的页边章碎片归并、独立印章和盖章标签误删保护；不接纳当前任务中已确认的误报。",
+    "visual_evidence": "output/analysis/seal-fragment-fix-20261014/verified-edge-{1,3,5}.png; output/analysis/seal-label-a42-20261014/{original,compare}.png",
+    "tests": "backend/tests/test_golden_v3_root_repairs.py",
+    "verified_fixed_run_id": "5e995ea8-d77f-4e5f-9d6c-a63859514bad"
+  }
+}

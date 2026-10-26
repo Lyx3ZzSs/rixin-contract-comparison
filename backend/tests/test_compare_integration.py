@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import fitz
@@ -8,12 +9,17 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from app.config import settings
-from app.infrastructure.task_repository import LocalJsonTaskRepository
-from app.models import BBox, Document, Page, TextBlock
+from app.errors import TaskTransitionConflict
+from app.infrastructure.artifact_store import ArtifactStore, LocalArtifactStore
+from app.infrastructure.task_repository import SQLiteTaskRepository
+from app.infrastructure.task_runner import CancellationToken, TaskExecutionContext
+from app.models import BBox, Clause, ClausePair, CompareTask, Document, Page, TextBlock
+from app.services.compare_debug import CompareDebugWriter
 from app.services.compare_service import CompareService
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
 from app.services.extractors.pymupdf import PyMuPDFExtractor
 from app.services.pipeline_stages import ExtractionStage
+from app.services.progress_bus import ProgressBus
 from app.services.report_generator import build_report_filename
 
 
@@ -29,19 +35,38 @@ def make_pdf(path: Path, lines: list[str]) -> None:
 
 def configure_storage(tmp_path: Path) -> None:
     settings.storage_dir = tmp_path / "storage"
-    settings.uploads_dir = settings.storage_dir / "uploads"
-    settings.tasks_dir = settings.storage_dir / "tasks"
-    settings.reports_dir = settings.storage_dir / "reports"
-    settings.ocr_dir = settings.storage_dir / "ocr"
-    settings.debug_dir = settings.storage_dir / "debug"
-    settings.document_extractor = "auto"
-    settings.compare_document_extractor = "ppstructure_ocr_hybrid"
-    settings.compare_require_structured_ocr = True
-    settings.align_structured_extraction = True
-    settings.ai_llm_base_url = ""
-    settings.ai_llm_api_key = ""
-    settings.ai_llm_model = ""
     settings.ensure_storage()
+
+
+def test_match_matrix_summary_counts_alignment_risks(tmp_path: Path) -> None:
+    configure_storage(tmp_path)
+    artifact_store: ArtifactStore = LocalArtifactStore(settings)
+    writer = CompareDebugWriter(artifact_store)
+    pairs = [
+        ClausePair(
+            original=Clause(clause_id="O001", text="付款1000元", normalized_text="付款1000元"),
+            compare=Clause(clause_id="N001", text="付款5000元", normalized_text="付款5000元"),
+            match_method="body",
+            match_confidence="LOW",
+            score_details={"alignment": {"risk_flags": ["CRITICAL_TOKEN_MISMATCH", "POSSIBLE_CLAUSE_MISALIGNMENT"]}},
+        ),
+        ClausePair(
+            original=Clause(clause_id="O002", text="交付", normalized_text="交付"),
+            compare=Clause(clause_id="N002", text="交付", normalized_text="交付"),
+            match_method="body",
+            match_confidence="NORMAL",
+            score_details={"alignment": {"risk_flags": []}},
+        ),
+    ]
+
+    path = Path(writer.write_match_matrix_summary("task-1", pairs))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["low_confidence_alignment_count"] == 1
+    assert payload["alignment_risk_flag_counts"] == {
+        "CRITICAL_TOKEN_MISMATCH": 1,
+        "POSSIBLE_CLAUSE_MISALIGNMENT": 1,
+    }
 
 
 def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
@@ -72,10 +97,9 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
     service = CompareService(extractor=LocalStructuredExtractor())
     task = service.compare(original, compare, task_id="TTEST000001")
 
-    assert task.status == "COMPLETED"
-    assert task.stage == "已完成"
-    assert task.progress_percent == 100
-    assert task.extractor_used == "ppstructure_ocr_hybrid"
+    assert task.status == "PROCESSING"
+    assert task.progress_percent < 100
+    assert task.extractor_used == "contract_extraction_v3"
     assert task.document_profiles["original"].recommended_strategy == "text"
     assert task.document_profiles["compare"].total_text_chars > 0
     assert Path(task.debug_artifact_paths["document_profiles"]).exists()
@@ -87,10 +111,9 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
         for diff in task.diffs
         for evidence in [*diff.original_evidence, *diff.compare_evidence]
     )
-    assert task.original_highlight_pdf_path is None
-    assert task.compare_highlight_pdf_path is None
     assert task.report_pdf_path is None
-    assert (settings.tasks_dir / "TTEST000001" / "task.json").exists()
+    assert settings.task_database_path.exists()
+    assert not (settings.tasks_dir / "TTEST000001" / "task.json").exists()
 
     task = service.ensure_report(task)
 
@@ -105,14 +128,17 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
 
 def test_compare_service_progress_callback_persists_monotonic_progress(tmp_path: Path) -> None:
     configure_storage(tmp_path)
-    repository = LocalJsonTaskRepository(settings)
-    repository.save_compare_task(CompareService(repository=repository)._load_or_create_task(
-        task_id="TPROGRESS_CALLBACK",
-        original_pdf=tmp_path / "original.pdf",
-        compare_pdf=tmp_path / "compare.pdf",
-        original_filename="original.pdf",
-        compare_filename="compare.pdf",
-    ))
+    repository = SQLiteTaskRepository(settings)
+    repository.save_compare_task(
+        CompareService(repository=repository)._load_or_create_task(
+            task_id="TPROGRESS_CALLBACK",
+            original_pdf=tmp_path / "original.pdf",
+            compare_pdf=tmp_path / "compare.pdf",
+            original_filename="original.pdf",
+            compare_filename="compare.pdf",
+            compare_options=None,
+        )
+    )
     service = CompareService(repository=repository)
     callback = service._make_progress_callback("TPROGRESS_CALLBACK")
 
@@ -130,13 +156,14 @@ def test_compare_service_progress_callback_persists_monotonic_progress(tmp_path:
 
 def test_compare_service_progress_callback_clamps_processing_progress_below_complete(tmp_path: Path) -> None:
     configure_storage(tmp_path)
-    repository = LocalJsonTaskRepository(settings)
+    repository = SQLiteTaskRepository(settings)
     task = CompareService(repository=repository)._load_or_create_task(
         task_id="TPROGRESS_CLAMP",
         original_pdf=tmp_path / "original.pdf",
         compare_pdf=tmp_path / "compare.pdf",
         original_filename="original.pdf",
         compare_filename="compare.pdf",
+        compare_options=None,
     )
     repository.save_compare_task(task)
 
@@ -145,88 +172,76 @@ def test_compare_service_progress_callback_clamps_processing_progress_below_comp
     assert repository.load_compare_task("TPROGRESS_CLAMP").progress_percent == 99
 
 
-def test_compare_service_aligns_pymupdf_side_to_structured_extraction(tmp_path: Path) -> None:
+def test_compare_service_does_not_reset_terminal_task_to_processing(tmp_path: Path) -> None:
     configure_storage(tmp_path)
-    structured_extractor = FakeStructuredExtractor()
-    stage = ExtractionStage(
-        structured_extractor=structured_extractor,
-    )
+    repository = SQLiteTaskRepository(settings)
+    task = CompareTask(task_id="TTERMINAL_ENTRY", status="COMPLETED", stage="已完成", progress_percent=100)
+    repository.save_compare_task(task)
+    before = repository.load_compare_task(task.task_id)
+    service = CompareService(repository=repository)
 
-    original_result = ExtractionResult(
-        document=make_document("original table", "table"),
-        extractor_used="auto_ppstructure_ocr_hybrid",
-        raw_result_path="/tmp/original_raw.json",
-    )
-    compare_result = ExtractionResult(
-        document=make_document("compare text", "text"),
-        extractor_used="pymupdf",
-    )
+    with pytest.raises(TaskTransitionConflict):
+        service._load_or_create_task(
+            task_id=task.task_id,
+            original_pdf=tmp_path / "original.pdf",
+            compare_pdf=tmp_path / "compare.pdf",
+            original_filename="original.pdf",
+            compare_filename="compare.pdf",
+            compare_options=None,
+        )
 
-    original_aligned, compare_aligned = stage._align_structured_extractions(
-        tmp_path / "original.pdf",
-        tmp_path / "compare.pdf",
-        "TALIGN000001",
-        original_result,
-        compare_result,
-    )
-
-    assert original_aligned is original_result
-    assert compare_aligned.extractor_used == "ppstructure_ocr_hybrid"
-    assert compare_aligned.document.pages[0].blocks[0].block_type == "table"
-    assert compare_aligned.raw_result_path == "/tmp/structured_raw.json"
-    assert structured_extractor.calls == [(tmp_path / "compare.pdf", "TALIGN000001")]
-    assert "compare 已从 PyMuPDF 切换为结构化 OCR 抽取" in compare_aligned.warnings[0]
+    assert repository.load_compare_task(task.task_id) == before
 
 
-def test_compare_service_keeps_pymupdf_when_structured_alignment_fails(tmp_path: Path) -> None:
+def test_compare_service_execution_progress_persists_to_sqlite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     configure_storage(tmp_path)
-    stage = ExtractionStage(
-        structured_extractor=FailingStructuredExtractor(),
+    repository = SQLiteTaskRepository(settings)
+    events: list[object] = []
+    monkeypatch.setattr(ProgressBus.get_instance(), "publish", events.append)
+    repository.save_compare_task(CompareTask(task_id="TSERVICE_PROGRESS"))
+    cancellation_event = __import__("threading").Event()
+    execution_context = TaskExecutionContext(
+        job_id="compare:TSERVICE_PROGRESS:1",
+        task_id="TSERVICE_PROGRESS",
+        worker_id="worker-1",
+        cancellation_token=CancellationToken(cancellation_event),
     )
 
-    original_result = ExtractionResult(
-        document=make_document("original table", "table"),
-        extractor_used="auto_ppstructure_ocr_hybrid",
-    )
-    compare_result = ExtractionResult(
-        document=make_document("compare text", "text"),
-        extractor_used="pymupdf",
+    CompareService(repository=repository)._make_progress_callback("TSERVICE_PROGRESS", execution_context)(
+        42,
+        "条款匹配中",
+        {"matched": 3},
     )
 
-    _, compare_aligned = stage._align_structured_extractions(
-        tmp_path / "original.pdf",
-        tmp_path / "compare.pdf",
-        "TALIGN000002",
-        original_result,
-        compare_result,
-    )
-
-    assert compare_aligned is compare_result
-    assert compare_aligned.extractor_used == "pymupdf"
-    assert "compare 尝试切换结构化 OCR 抽取失败，已保留 PyMuPDF 结果" in compare_aligned.warnings[0]
+    task = repository.load_compare_task("TSERVICE_PROGRESS")
+    assert (task.stage, task.progress_percent) == ("条款匹配中", 42)
+    assert events[-1].revision == task.revision
 
 
-def test_compare_service_marks_task_failed_when_structured_ocr_fails(tmp_path: Path) -> None:
+def test_compare_service_leaves_terminal_failure_to_execution_coordinator(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     original = tmp_path / "original.pdf"
     compare = tmp_path / "compare.pdf"
     make_pdf(original, ["Original"])
     make_pdf(compare, ["Compare"])
-    repository = LocalJsonTaskRepository(settings)
+    repository = SQLiteTaskRepository(settings)
     service = CompareService(extractor=FailingStructuredExtractor(), repository=repository)
 
     with pytest.raises(DocumentExtractionError, match="原版文件结构化 OCR 失败"):
         service.compare(original, compare, task_id="TSTRICT_FAIL")
 
     task = repository.load_compare_task("TSTRICT_FAIL")
-    assert task.status == "FAILED"
-    assert any("原版文件结构化 OCR 失败" in error for error in task.errors)
+    assert task.status == "PROCESSING"
+    assert task.errors == []
 
 
 def test_extraction_stage_rejects_ocr_only_result_in_strict_mode(tmp_path: Path) -> None:
-    stage = ExtractionStage(extractor=OCRonlyExtractor(), require_structured_ocr=True)
+    stage = ExtractionStage(extractor=OCRonlyExtractor())
 
-    with pytest.raises(DocumentExtractionError, match="非结构化结果 ppstructure_ocr_hybrid_ocr_only"):
+    with pytest.raises(DocumentExtractionError, match="非结构化结果 ocr_only"):
         stage._extract_side(tmp_path / "original.pdf", "TSTRICT_RESULT", "原版文件")
 
 
@@ -254,30 +269,15 @@ def make_document(text: str, block_type: str) -> Document:
     )
 
 
-class FakeStructuredExtractor:
-    name = "ppstructure_ocr_hybrid"
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[Path, str | None]] = []
-
-    def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
-        self.calls.append((Path(path), task_id))
-        return ExtractionResult(
-            document=make_document("structured table", "table"),
-            extractor_used="ppstructure_ocr_hybrid",
-            raw_result_path="/tmp/structured_raw.json",
-        )
-
-
 class FailingStructuredExtractor:
-    name = "ppstructure_ocr_hybrid"
+    name = "contract_extraction_v3"
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         raise DocumentExtractionError("remote OCR unavailable")
 
 
 class LocalStructuredExtractor:
-    name = "ppstructure_ocr_hybrid"
+    name = "contract_extraction_v3"
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         result = PyMuPDFExtractor().extract(path, task_id=task_id)
@@ -286,10 +286,10 @@ class LocalStructuredExtractor:
 
 
 class OCRonlyExtractor:
-    name = "ppstructure_ocr_hybrid"
+    name = "contract_extraction_v3"
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         return ExtractionResult(
             document=make_document("ocr only", "ocr_line"),
-            extractor_used="ppstructure_ocr_hybrid_ocr_only",
+            extractor_used="ocr_only",
         )

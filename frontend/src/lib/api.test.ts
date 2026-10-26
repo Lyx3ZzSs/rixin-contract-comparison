@@ -1,20 +1,63 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { compareContracts, getApiBaseUrl, toApiUrl } from "./api";
+const { authorizedFetch } = vi.hoisted(() => ({
+  authorizedFetch: vi.fn((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init)),
+}));
+
+vi.mock("./authFetch", () => ({
+  ApiError: class ApiError extends Error {
+    constructor(readonly status: number, message = `请求失败 (${status})`) { super(message); }
+  },
+  authorizedFetch,
+}));
+
+import { compareContracts, getApiBaseUrl, getCompareRecords, getTask, toApiUrl } from "./api";
+import type { AuditItem } from "../types";
+
+const auditStructuralContract: Pick<AuditItem, "structural_flags"> = { structural_flags: [] };
 
 describe("api client URLs", () => {
+  afterEach(() => {
+    authorizedFetch.mockClear();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps backend structural flags on the audit item contract", () => {
+    expect(auditStructuralContract.structural_flags).toEqual([]);
+  });
+
   it("uses the configured API base URL without duplicate slashes", () => {
+    vi.stubEnv("VITE_API_BASE_PATH", "");
+    vi.stubEnv("VITE_BASE_PATH", "");
     vi.stubEnv("VITE_API_BASE_URL", "http://localhost:9000/");
 
     expect(getApiBaseUrl()).toBe("http://localhost:9000");
     expect(toApiUrl("/api/compare/task-1/report")).toBe("http://localhost:9000/api/compare/task-1/report");
     expect(toApiUrl("api/compare")).toBe("http://localhost:9000/api/compare");
-
-    vi.unstubAllEnvs();
   });
 
   it("keeps absolute URLs unchanged", () => {
     expect(toApiUrl("https://example.test/file.pdf")).toBe("https://example.test/file.pdf");
+  });
+
+  it("uses the configured API base URL before the API base path for local development", () => {
+    vi.stubEnv("VITE_BASE_PATH", "/contract");
+    vi.stubEnv("VITE_API_BASE_PATH", "/contract/api");
+    vi.stubEnv("VITE_API_BASE_URL", "http://127.0.0.1:8000");
+
+    expect(getApiBaseUrl()).toBe("http://127.0.0.1:8000");
+    expect(toApiUrl("/api/compare/records")).toBe("http://127.0.0.1:8000/api/compare/records");
+    expect(toApiUrl("api/compare/task-1/report")).toBe("http://127.0.0.1:8000/api/compare/task-1/report");
+  });
+
+  it("defaults API calls to the app base path when no API override is configured", () => {
+    vi.stubEnv("VITE_BASE_PATH", "/contract");
+    vi.stubEnv("VITE_API_BASE_PATH", "");
+    vi.stubEnv("VITE_API_BASE_URL", "");
+
+    expect(getApiBaseUrl()).toBe("/contract/api");
+    expect(toApiUrl("/api/compare/records")).toBe("/contract/api/compare/records");
   });
 
   it("sends comparison files without exclusion options", async () => {
@@ -34,8 +77,59 @@ describe("api client URLs", () => {
     expect(body.has("ignore_punctuation")).toBe(false);
     expect(body.has("ignore_headers_footers")).toBe(false);
     expect(body.has("ignore_stamps")).toBe(false);
+    expect(body.has("signing_region_mode")).toBe(false);
+  });
 
-    vi.unstubAllGlobals();
+  it("loads comparison records with pagination and date filters", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            records: [],
+            total: 12,
+            page: 2,
+            page_size: 10,
+            total_pages: 2,
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const payload = await getCompareRecords({
+      page: 2,
+      pageSize: 10,
+      startDate: "2026-05-21",
+      endDate: "2026-05-22",
+    });
+
+    expect(authorizedFetch).toHaveBeenCalledWith(
+      toApiUrl("/api/compare/records?page=2&page_size=10&start_date=2026-05-21&end_date=2026-05-22"),
+      undefined,
+      { timeoutMs: 15_000 },
+    );
+    expect(payload.total).toBe(12);
+    expect(payload.total_pages).toBe(2);
+  });
+
+  it("forwards a caller signal while applying the read timeout", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ task_id: "task-1", status: "PROCESSING" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getTask("task-1", controller.signal);
+
+    expect(authorizedFetch).toHaveBeenCalledWith(
+      toApiUrl("/api/compare/task-1"),
+      { signal: controller.signal },
+      { timeoutMs: 15_000 },
+    );
+    const init = fetchMock.mock.calls[0][1];
+    expect(init?.signal).toBe(controller.signal);
+    controller.abort();
+    expect(init?.signal?.aborted).toBe(true);
   });
 
 });

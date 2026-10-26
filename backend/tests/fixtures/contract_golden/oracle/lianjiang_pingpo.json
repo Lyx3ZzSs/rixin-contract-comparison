@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "contract_key": "LIANJIANG_PINGPO",
+  "expected_case_count": 13,
+  "assertions": [
+    {
+      "case_id": "LIANJIANG_PINGPO_P13_SEAL_ADD_2DFE11E82A",
+      "assertion": "MUST_REVIEW",
+      "page": 13,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "甲方 · 公司圆章",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "NEEDS_REVIEW",
+      "semantic_after": "公司圆章",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 74.47510290823087,
+          "y0": 529.8056313810838,
+          "x1": 224.9248074409657,
+          "y1": 642.2643738912195
+        },
+        "min_iou": 0.35
+      },
+      "object_type": "COMPANY_ROUND_SEAL",
+      "review_note": "旧目标页/物理框对应 release D001，同页最大 IoU=0.75379；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 章存在与章文可读性分开；content应NEEDS_REVIEW，不能把缺字/正文污染章文标CONFIRMED。"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P27_SEAL_ADD_B46CA339B7",
+      "assertion": "MUST_REVIEW",
+      "page": 27,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "骑缝章",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "骑缝章",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 552.8173298918443,
+          "y0": 264.9678280284104,
+          "x1": 592.8041168641296,
+          "y1": 367.4553841526068
+        },
+        "min_iou": 0.35
+      },
+      "object_type": "EDGE_SEAM_SEAL",
+      "review_note": "旧目标页/物理框对应 release D002，同页最大 IoU=0.95546；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 多页骑缝章已聚合，必须用object_type=EDGE_SEAM_SEAL以启用matcher同一对象按不同页消费，保留每页物理框断言。"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P13_SIGNATURE_ADD_E6D40ECA17",
+      "assertion": "MUST_REVIEW",
+      "page": 13,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "甲方 · 签订日期",
+      "party": "甲方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "2026.7.28",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 138.95354770797437,
+          "y0": 583.785827785949,
+          "x1": 209.42998737281027,
+          "y1": 598.280510153922
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 598.2999877929688
+      }
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P27_SIGNATURE_ADD_12E3AB40F8",
+      "assertion": "MUST_REVIEW",
+      "page": 27,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "甲方 · 日期",
+      "party": "甲方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "2026.7.28",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 134.45557119430933,
+          "y0": 657.9201163875247,
+          "x1": 208.9309619301907,
+          "y1": 685.9167170848661
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 605.2999877929688
+      },
+      "review_note": "根据本侧原图人工放大核对，日期为2026.7.28。旧黄金2026合2和当前OCR2026合章均不是原文；日期实物存在与日期文字正确识读分别验收，不为当前OCR错误放宽规则。"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P2_CLAUSE_MODIFY_25A734845C",
+      "assertion": "MUST_EXIST",
+      "page": 2,
+      "region": "clause",
+      "source_type": "clause",
+      "diff_type": "MODIFY",
+      "title": "乙方应在入场后在委托服务期限内完成服务工作,具体入场时间以甲方通知",
+      "quality_status": "NORMAL",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CONFIRMED",
+      "semantic_before": "4.乙方应在入场后30天内完成服务工作,具体入场时间以甲方通知为准。如遇特殊情况导致现场工作无法按期完成,经甲方书面同意,乙方的服务期限进行相应",
+      "semantic_after": "4.乙方应在入场后在委托服务期限内完成服务工作,具体入场时间以甲方通知为准。如遇特殊情况导致现场工作无法按期完成,经甲方书面同意,乙方的服务期限"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P4_CLAUSE_MODIFY_2212A5F950",
+      "assertion": "MUST_EXIST",
+      "page": 4,
+      "region": "clause",
+      "source_type": "clause",
+      "diff_type": "MODIFY",
+      "title": "验收方式:现场验收。",
+      "quality_status": "NORMAL",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_before": "(2)验收方式:现场验收,出具运行维护报告。",
+      "semantic_after": "(2)验收方式:现场验收。"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P4_CLAUSE_MODIFY_70A333145C",
+      "assertion": "MUST_EXIST",
+      "page": 4,
+      "region": "clause",
+      "source_type": "clause",
+      "diff_type": "MODIFY",
+      "title": "服务工作完成后,经甲方验收合格且提供维护报告及签发验收合格确认单(附",
+      "quality_status": "NORMAL",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_before": "(3)服务工作完成后,经甲方验收合格签发验收合格确认单(附件1)。",
+      "semantic_after": "(3)服务工作完成后,经甲方验收合格且提供维护报告及签发验收合格确认单(附件1)。"
+    },
+    {
+      "case_id": "LIANJIANG_P13_PARTY_B_CROSS_COLUMN_DATE_FALSE_ADD",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 13,
+      "region": "signing",
+      "party": "乙方",
+      "field_type": "date",
+      "diff_type": "ADD",
+      "forbidden_value_pattern": "2267[.]28京"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P27_PARTY_A_ROUND_SEAL_LOCATION",
+      "assertion": "MUST_REVIEW",
+      "page": 27,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "party": "甲方",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "NEEDS_REVIEW",
+      "semantic_after": "公司圆章",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 142,
+          "y0": 594,
+          "x1": 257,
+          "y1": 705
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 605.2999877929688
+      },
+      "review_note": "扫描稿左下有完整北京航能绿电科技有限公司合同专用章，标准稿无章。必须保留完整圆章位置，不得被日期OCR的章字小框抹掉；与右侧页边章独立。"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_FORMULA_VARIABLES_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "forbidden_value_pattern": "准确率算法为",
+      "review_note": "第3/4页准确率及解释文字原图一致。禁止PMi/PPi的漏字、大小写误读及重复解释行跨段配对引发差异；不允许仅以待复核保留误报。"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P6_PAYMENT_SYMBOLS_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 6,
+      "source_type": "clause",
+      "forbidden_value_pattern": "进度款",
+      "review_note": "原图两侧进度款人民币符号及发票后/个工作日占位符一致；70%、49000元、30个工作日也一致。禁止Y/¥误识或漏斜杠引发待复核或确认差异。"
+    },
+    {
+      "case_id": "LIANJIANG_PINGPO_P27_DATE_SEAL_TEXT_NOT_BODY_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 27,
+      "source_type": "clause",
+      "forbidden_value_pattern": "2026(?:合章|合2)|变更及纠纷处理",
+      "review_note": "第27页变更及纠纷处理和附则正文一致，签署日期及章文不得再次报成正文变化。日期新增由独立签署区正例验收，不能以正文重复差异代替。"
+    }
+  ],
+  "baseline_version": "contract-golden-v2",
+  "regression_coverage": {
+    "updated_at": "2026-10-15",
+    "authorization": "用户要求更新任务fd85a8b0-eca9-4f18-ac57-c0b31defb6bd黄金集",
+    "source_run_id": "fd85a8b0-eca9-4f18-ac57-c0b31defb6bd",
+    "visual_evidence": "output/analysis/lianjiang-symbols-20261015/; output/analysis/lianjiang-p27-seal-20261015/; output/analysis/golden-lianjiang-20261015/p27-date.png",
+    "reason": "补充公式与付款符号误报负例、圆章位置正例和签署日期不得污染正文的负例，纠正历史日期乱码真值。"
+  }
+}

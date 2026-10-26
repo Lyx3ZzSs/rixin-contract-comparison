@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from dataclasses import dataclass
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -15,18 +14,30 @@ from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Flowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.config import settings
-from app.models import CompareTask, DiffItem, DiffType, TextRange
-from app.services.audit_summary import AuditItem, build_audit_items
+from app.models import CompareTask, DiffType, TextRange
+from app.services.audit_summary import AuditItem, build_task_audit_items
+from app.services.evidence_validity import is_located_evidence
 
-_SOURCE_TYPE_ORDER = {"clause": 0, "table": 1, "seal": 2, "header_footer": 3, "metadata": 4}
+_SOURCE_TYPE_ORDER = {
+    "clause": 0,
+    "page": 1,
+    "signing_region": 2,
+    "table": 3,
+    "seal": 4,
+    "header_footer": 5,
+    "metadata": 6,
+}
 _SOURCE_TYPE_LABELS = {
     "clause": "条款",
+    "page": "页面",
     "table": "表格",
     "metadata": "封面",
     "seal": "印章",
+    "graphic": "图形",
+    "signing_region": "签章区",
     "header_footer": "页眉页脚",
 }
 _CHINESE_NUMBERS = "一二三四五六七八九十"
@@ -46,16 +57,19 @@ def build_report_filename(task: CompareTask) -> str:
 
 
 def _visible_audit_items(task: CompareTask) -> list[AuditItem]:
-    visible_items: list[AuditItem] = []
-    for item in build_audit_items(task.diffs):
-        review = task.audit_item_reviews.get(item.item_id)
-        if review is None or review.review_status != "IGNORED":
-            visible_items.append(item)
-    return visible_items
+    from app.services.comparison_observations import is_unresolved_change
+    unresolved = {d.diff_id for d in task.diffs if is_unresolved_change(d)}
+    return [item for item in build_task_audit_items(task) if item.review_status != "IGNORED" and item.diff_id not in unresolved]
 
 
 class ReportGenerator:
-    def generate(self, task: CompareTask, output_path: str | Path) -> Path:
+    """Render one report to a caller-owned staging path.
+
+    Atomic publication, revision locking, and manifest updates belong to
+    ``ReportStore``; callers must not pass the final report path directly.
+    """
+
+    def generate(self, task: CompareTask, output_path: str | Path, *, event_view: bool = False) -> Path:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         font_name = self._register_font()
@@ -63,22 +77,29 @@ class ReportGenerator:
         styles = self._styles(font_name)
 
         report_title = build_report_title(task)
-        audit_items = _visible_audit_items(task)
+        if event_view:
+            from app.services.diff_events import event_audit_items
+            audit_items = event_audit_items(task)
+        else:
+            audit_items = _visible_audit_items(task)
         indexed_items = self._indexed_items(audit_items)
         story = [
             Paragraph(escape(report_title), styles["Title"]),
             Spacer(1, 0.45 * cm),
             self._metadata_table(task, styles),
             Spacer(1, 0.5 * cm),
-            Paragraph("审计统计与差异概览", styles["Heading2"]),
-            self._summary_table(audit_items, styles),
+            Paragraph("差异项统计与概览" if event_view else "审计统计与差异概览", styles["Heading2"]),
+            self._summary_table(audit_items, styles, event_view=event_view),
             Spacer(1, 0.35 * cm),
             Paragraph("差异类型与证据说明", styles["Heading2"]),
             self._legend_table(styles),
+            *([Paragraph("修改项左右对照：红色加粗下划线为原文变化片段，绿色为新版变化片段，其余文字为上下文。新增、删除项直接展示对应全文。跨页重复标题不增加差异项数。", styles["Small"])] if event_view else []),
             Spacer(1, 0.35 * cm),
             Paragraph("差异明细", styles["Heading2"]),
-            *self._diff_grouped_tables(indexed_items, styles),
+            *(self._event_flowables(indexed_items, styles) if event_view else self._diff_grouped_tables(indexed_items, styles)),
         ]
+
+        story.extend(self._comparison_observations(task, styles))
 
         doc = SimpleDocTemplate(
             str(output_path),
@@ -92,6 +113,30 @@ class ReportGenerator:
         return output_path
 
     # ── Font & Styles ──────────────────────────────────────────────
+
+    def _comparison_observations(self, task, styles):
+        from app.services.comparison_observations import observations_for_task
+        observations = observations_for_task(task)
+        if not observations:
+            return []
+        label = "表格待复核" if all(o.reason.startswith("TABLE_") for o in observations) else "区域待复核"
+        rows = [Spacer(1, 0.35 * cm), Paragraph(f"{label}（{len(observations)} 处，不计入差异数）", styles["Heading2"])]
+        statuses = {"UNREVIEWED": "未核验", "CONFIRMED": "已核验", "FALSE_POSITIVE": "无需关注", "NEEDS_REVIEW": "待复核", "IGNORED": "忽略"}
+        for observation in observations:
+            pages = []
+            for side, label in (("original", "标准"), ("compare", "比对")):
+                numbers = sorted({e.page_no for e in getattr(observation, f"{side}_evidence")})
+                pages.append(f"{label}：{'、'.join(map(str, numbers)) or '无'} 页")
+            text = f"{observation.title} · {' / '.join(pages)} · {statuses[observation.review_status]}。{observation.message}"
+            if observation.review_comment:
+                text += f" 核验备注：{observation.review_comment}"
+            rows.append(Paragraph(escape(text), styles["Small"]))
+        return rows
+
+    def _event_flowables(self, indexed_items, styles):
+        from app.services.report_comparison import comparison_cards
+
+        return comparison_cards(indexed_items, styles, A4[0] - 3 * cm, self._page_label)
 
     def _register_font(self) -> str:
         candidates = [settings.report_font_path] if settings.report_font_path else []
@@ -217,7 +262,10 @@ class ReportGenerator:
             [Paragraph("任务编号", styles["MetaLabel"]), Paragraph(escape(task.task_id), styles["Normal"])],
             [Paragraph("原合同", styles["MetaLabel"]), Paragraph(escape(task.original_filename), styles["Normal"])],
             [Paragraph("对比合同", styles["MetaLabel"]), Paragraph(escape(task.compare_filename), styles["Normal"])],
-            [Paragraph("生成时间", styles["MetaLabel"]), Paragraph(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), styles["Normal"])],
+            [
+                Paragraph("生成时间", styles["MetaLabel"]),
+                Paragraph(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), styles["Normal"]),
+            ],
         ]
         table = Table(rows, colWidths=[2.0 * cm, 15.0 * cm])
         table.setStyle(
@@ -236,13 +284,15 @@ class ReportGenerator:
         )
         return table
 
-    def _summary_table(self, audit_items: list[AuditItem], styles: dict[str, ParagraphStyle]) -> Table:
-        counts = Counter(item.diff_type for item in audit_items)
+    def _summary_table(self, audit_items: list[AuditItem], styles: dict[str, ParagraphStyle], *, event_view: bool = False) -> Table:
+        confirmed_items = [item for item in audit_items if item.quality_status != "NEEDS_REVIEW"]
+        counts = Counter(item.diff_type for item in confirmed_items)
         items = [
             ("全部差异", len(audit_items), "#111827"),
-            ("新增", counts["ADD"], "#15804F"),
-            ("删除", counts["DELETE"], "#C9362C"),
-            ("修改", counts["MODIFY"], "#A96300"),
+            ("确定新增", counts["ADD"], "#15804F"),
+            ("确定删除", counts["DELETE"], "#C9362C"),
+            ("确定修改", counts["MODIFY"], "#A96300"),
+            ("待复核", len(audit_items) - len(confirmed_items), "#7C3AED"),
         ]
         row = []
         for label, value, color in items:
@@ -251,7 +301,7 @@ class ReportGenerator:
                 Paragraph(f'<font color="{color}" size="16"><b>{value}</b></font>', styles["Normal"]),
             ]
             row.append(cell)
-        table = Table([row], colWidths=[4.05 * cm, 4.05 * cm, 4.05 * cm, 4.05 * cm])
+        table = Table([row], colWidths=[3.24 * cm] * 5)
         table.setStyle(
             TableStyle(
                 [
@@ -312,7 +362,7 @@ class ReportGenerator:
 
         groups: dict[str, list[tuple[int, AuditItem]]] = {}
         for entry in indexed_items:
-            source_type = entry[1].diff.source_type or "clause"
+            source_type = entry[1].source_type or "clause"
             groups.setdefault(source_type, []).append(entry)
 
         sorted_groups = sorted(groups.items(), key=lambda item: _SOURCE_TYPE_ORDER.get(item[0], 99))
@@ -324,17 +374,19 @@ class ReportGenerator:
             heading = Paragraph(f"{cn_num}、{label}差异（{len(items)}项）", styles["Heading3"])
             flowables.append(heading)
 
-            table = self._build_group_table(items, styles, source_type)
-            flowables.append(table)
+            for index, item in items:
+                flowables.append(self._build_item_summary_table(index, item, styles))
+                flowables.extend(self._audit_item_detail_flowables(item, styles))
+                flowables.append(Spacer(1, 0.22 * cm))
             flowables.append(Spacer(1, 0.3 * cm))
 
         return flowables
 
-    def _build_group_table(
+    def _build_item_summary_table(
         self,
-        items: list[tuple[int, AuditItem]],
+        index: int,
+        item: AuditItem,
         styles: dict[str, ParagraphStyle],
-        source_type: str,
     ) -> Table:
         col_widths = [0.8 * cm, 1.0 * cm, 1.8 * cm, 2.6 * cm, 4.8 * cm, 4.8 * cm]
         header = [
@@ -345,32 +397,38 @@ class ReportGenerator:
             Paragraph("原文内容", styles["IndexHead"]),
             Paragraph("修改后内容", styles["IndexHead"]),
         ]
-        rows: list[list[Flowable]] = [header]
-
-        for index, item in items:
-            diff = item.diff
-            type_label = self._diff_type_label(item.diff_type)
-            type_color = {"ADD": "#15804F", "DELETE": "#C9362C", "MODIFY": "#A96300"}.get(item.diff_type, "#4B5563")
-            page_label = self._page_label(item)
-            title_text = self._paragraph_label(diff)
-            original_text = self._side_text(item, "original")
-            compare_text = self._side_text(item, "compare")
-
-            orig_rich = self._highlighted_cell_text(
-                original_text, diff.original_change_ranges, item.diff_type, "original", 200,
-            )
-            comp_rich = self._highlighted_cell_text(
-                compare_text, diff.compare_change_ranges, item.diff_type, "compare", 200,
-            )
-
-            rows.append([
+        type_label = (
+            f"待复核·疑似{self._diff_type_label(item.diff_type)}"
+            if item.quality_status == "NEEDS_REVIEW"
+            else self._diff_type_label(item.diff_type)
+        )
+        type_color = {"ADD": "#15804F", "DELETE": "#C9362C", "MODIFY": "#A96300"}.get(item.diff_type, "#4B5563")
+        page_label = self._page_label(item)
+        orig_rich = self._highlighted_cell_text(
+            item.original_text,
+            item.original_change_ranges,
+            item.diff_type,
+            "original",
+            200,
+        )
+        comp_rich = self._highlighted_cell_text(
+            item.compare_text,
+            item.compare_change_ranges,
+            item.diff_type,
+            "compare",
+            200,
+        )
+        rows: list[list[Flowable]] = [
+            header,
+            [
                 Paragraph(f"{index:02d}", styles["IndexCell"]),
                 Paragraph(f'<font color="{type_color}"><b>{escape(type_label)}</b></font>', styles["IndexCell"]),
                 Paragraph(escape(page_label), styles["IndexCell"]),
-                Paragraph(escape(_clean_report_text(title_text, 40)), styles["IndexCell"]),
+                Paragraph(escape(_clean_report_text(item.title, 40)), styles["IndexCell"]),
                 Paragraph(orig_rich, styles["DiffText"]),
                 Paragraph(comp_rich, styles["DiffText"]),
-            ])
+            ],
+        ]
 
         table = Table(rows, colWidths=col_widths, repeatRows=1)
         style_commands = [
@@ -383,11 +441,128 @@ class ReportGenerator:
             ("TOPPADDING", (0, 0), (-1, -1), 4),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]
-        for row_index in range(1, len(rows)):
-            bg = "#FFFFFF" if row_index % 2 == 1 else "#F8FAFC"
-            style_commands.append(("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor(bg)))
+        style_commands.append(("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#FFFFFF")))
         table.setStyle(TableStyle(style_commands))
         return table
+
+    def _audit_item_detail_flowables(
+        self,
+        item: AuditItem,
+        styles: dict[str, ParagraphStyle],
+    ) -> list[Flowable]:
+        flowables: list[Flowable] = []
+        for label, value in self._audit_item_detail_fields(item):
+            text = f"{label}：{value}"
+            flowables.append(Paragraph(escape(text), styles["Small"]))
+        return flowables
+
+    def _audit_item_detail_fields(self, item: AuditItem) -> list[tuple[str, str]]:
+        source_label = _SOURCE_TYPE_LABELS.get(item.source_type, item.source_type or "未知")
+        section_path = " / ".join(item.section_path) if item.section_path else "未提供"
+        structural_flags = "、".join(item.structural_flags) if item.structural_flags else "无"
+        review_flags = "、".join(item.review_flags) if item.review_flags else "无"
+        content_candidates = " / ".join(
+            dict.fromkeys(
+                str(candidate.get("text") or candidate.get("value") or "").strip()
+                for candidate in item.content_candidates
+                if str(candidate.get("text") or candidate.get("value") or "").strip()
+            )
+        ) or "无"
+        text_confidence = self._format_optional_confidence(item.text_confidence)
+        match_confidence = item.match_confidence or "未提供"
+        ocr_statuses = "、".join(item.ocr_context.statuses) if item.ocr_context.statuses else "未受影响"
+        ocr_reasons = "、".join(item.ocr_context.reasons) if item.ocr_context.reasons else "无"
+        ocr_sides = "、".join(item.ocr_context.sides) if item.ocr_context.sides else "无"
+        ocr_pages = "、".join(str(page_no) for page_no in item.ocr_context.page_numbers) or "无"
+        remediation_ids = (
+            "、".join(item.remediation_context.action_ids) if item.remediation_context.action_ids else "无"
+        )
+        remediation_actions = (
+            "、".join(item.remediation_context.action_types) if item.remediation_context.action_types else "无"
+        )
+        remediation_statuses = (
+            "、".join(item.remediation_context.statuses) if item.remediation_context.statuses else "无"
+        )
+        remediation_changes = []
+        if item.remediation_context.changed_evidence:
+            remediation_changes.append("证据已变更")
+        if item.remediation_context.changed_diff_text:
+            remediation_changes.append("差异文本已变更")
+        if item.remediation_context.requires_manual_review:
+            remediation_changes.append("需要人工复核")
+        remediation_summary = "、".join(remediation_changes) if remediation_changes else "无"
+        review_comment = item.review_comment or "无"
+        reviewed_by = item.reviewed_by or "未提供"
+        reviewed_at = item.reviewed_at or "未提供"
+        evidence_location = self._evidence_location_text(item)
+        scope_labels = {"ITEM": "审计项", "DIFF": "差异", "NONE": "无"}
+
+        return [
+            ("审计项", item.item_id),
+            ("来源", f"{source_label} ({item.source_type or 'unknown'})"),
+            ("章节类型", item.section_type or "未提供"),
+            ("章节路径", section_path),
+            ("原文全文", item.original_text or "—"),
+            ("修改后全文", item.compare_text or "—"),
+            ("证据位置", evidence_location),
+            ("质量状态", item.quality_status),
+            ("变化判定", "待复核" if item.quality_status == "NEEDS_REVIEW" else "已确认"),
+            ("内容识别状态", item.content_recognition_status),
+            ("内容识别原因", item.content_recognition_reason or "无"),
+            ("内容识别候选", content_candidates),
+            ("结构标记", structural_flags),
+            ("审核标记", review_flags),
+            ("文本置信度", text_confidence),
+            ("匹配置信度", match_confidence),
+            ("OCR归属", scope_labels[item.ocr_context.scope]),
+            ("OCR受影响", "是" if item.ocr_context.affected else "否"),
+            ("OCR状态", ocr_statuses),
+            ("OCR原因", ocr_reasons),
+            ("OCR侧", ocr_sides),
+            ("OCR页码", ocr_pages),
+            ("修复归属", scope_labels[item.remediation_context.scope]),
+            ("修复动作ID", remediation_ids),
+            ("修复动作", remediation_actions),
+            ("修复状态", remediation_statuses),
+            ("修复结果", remediation_summary),
+            ("审核状态", item.review_status),
+            ("审核意见", review_comment),
+            ("审核人", reviewed_by),
+            ("审核时间", reviewed_at),
+        ]
+
+    def _evidence_location_text(self, item: AuditItem) -> str:
+        if item.evidence_state == "UNLOCATED":
+            return "未定位"
+        locations = [
+            *self._side_evidence_locations(item.original_evidence, "原文"),
+            *self._side_evidence_locations(item.compare_evidence, "新版"),
+        ]
+        return "；".join(locations) if locations else "未定位"
+
+    @staticmethod
+    def _side_evidence_locations(evidence_boxes, side_label: str) -> list[str]:
+        locations = []
+        for box in evidence_boxes:
+            if not is_located_evidence(box):
+                continue
+            bbox = box.bbox
+            coordinates = ", ".join(
+                ReportGenerator._format_number(value) for value in (bbox.x0, bbox.y0, bbox.x1, bbox.y1)
+            )
+            locations.append(
+                f"{side_label}第{box.page_no}页 bbox=({coordinates}), "
+                f"method={box.method}, confidence={box.confidence:.2f}, quality={box.evidence_quality}"
+            )
+        return locations
+
+    @staticmethod
+    def _format_number(value: float) -> str:
+        return f"{value:g}"
+
+    @staticmethod
+    def _format_optional_confidence(value: float | None) -> str:
+        return "未提供" if value is None else f"{value:.2f}"
 
     # ── Text Highlighting ──────────────────────────────────────────
 
@@ -405,24 +580,26 @@ class ReportGenerator:
         highlight_color = color_map.get(diff_type, "#A96300")
         if not change_ranges:
             return escape(_clean_report_text(text, limit))
+        text_limit = min(len(text), limit)
         sorted_ranges = sorted(change_ranges, key=lambda r: r.start)
         parts: list[str] = []
         pos = 0
         for cr in sorted_ranges:
+            if cr.start >= text_limit:
+                break
             start = max(pos, cr.start)
-            end = min(cr.end, len(text))
+            end = min(cr.end, text_limit)
             if start > pos:
                 parts.append(escape(text[pos:start]))
             if start < end:
                 parts.append(f'<font color="{highlight_color}">{escape(text[start:end])}</font>')
             pos = max(pos, end)
-        if pos < len(text):
-            parts.append(escape(text[pos:]))
+        if pos < text_limit:
+            parts.append(escape(text[pos:text_limit]))
+        if len(text) > limit:
+            parts.append("...")
         result = "".join(parts)
-        clean = " ".join(result.split())
-        if len(clean) > limit:
-            clean = f"{clean[:limit]}..."
-        return clean
+        return " ".join(result.split())
 
     # ── Labels & Helpers ───────────────────────────────────────────
 
@@ -446,37 +623,8 @@ class ReportGenerator:
     @staticmethod
     def _pages(item: AuditItem, side: str) -> str:
         evidence = item.original_evidence if side == "original" else item.compare_evidence
-        pages = sorted({box.page_no for box in evidence if box.page_no})
+        pages = sorted({box.page_no for box in evidence if is_located_evidence(box)})
         return "、".join(str(p) for p in pages)
-
-    def _side_text(self, item: AuditItem, side: str) -> str:
-        diff = item.diff
-        if item.diff_type == "ADD" and side == "original":
-            return ""
-        if item.diff_type == "DELETE" and side == "compare":
-            return ""
-
-        evidence = item.original_evidence if side == "original" else item.compare_evidence
-        evidence_text = " ".join(box.text.strip() for box in evidence if box.text.strip())
-        if evidence_text:
-            return evidence_text
-
-        snippet = diff.original_snippet if side == "original" else diff.compare_snippet
-        if diff.diff_type == "MODIFY" and not snippet:
-            side_text = diff.original_text if side == "original" else diff.compare_text
-            if side_text:
-                return side_text
-        if snippet:
-            return snippet
-        if side == "original":
-            return diff.original_text or ""
-        return diff.compare_text or ""
-
-    @staticmethod
-    def _paragraph_label(diff: DiffItem) -> str:
-        if diff.clause_no and diff.title:
-            return f"{diff.clause_no} {diff.title}"
-        return diff.title or diff.clause_no or diff.diff_id
 
     @staticmethod
     def _diff_type_label(diff_type: str) -> str:

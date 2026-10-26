@@ -3,15 +3,24 @@
 Compares seal blocks between two documents and produces diffs with
 ``source_type="seal"`` and region-level evidence boxes.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+import html
+import re
 
-from app.models import BBox, DiffItem, Document, EvidenceBox, TextBlock, TextRange
+from app.models import BBox, DiffItem, Document, EvidenceBox, Page, TextBlock, TextRange
+from app.services.red_seal_visual import RedSealVisualInspector
 from app.utils.id_utils import generate_diff_id
 
 
 SEAL_BLOCK_TYPES = {"seal", "stamp"}
+NO_TEXT_MARKER_RE = re.compile(r"以下无正文")
+SIGNING_TITLE_RE = re.compile(r"签署页|签字页|签章页")
+SIGNING_MARKER_RE = re.compile(
+    r"甲方|乙方|丙方|盖章|签章|法定代表|授权代表|负责人|签字|签名|签署|签订|时间[:：]|日期[:：]"
+)
 
 
 @dataclass(frozen=True)
@@ -25,6 +34,7 @@ def build_seal_diffs(
     original: Document,
     compare: Document,
     start_index: int = 1,
+    diagnostics: list[dict] | None = None,
 ) -> list[DiffItem]:
     """Compare seal blocks between two documents.
 
@@ -38,11 +48,19 @@ def build_seal_diffs(
         return []
 
     pairs = _match_seals(original_seals, compare_seals)
+    pairs = [pair for pair in pairs if not _is_visually_present_on_both_sides(pair[0], pair[1], original, compare)]
 
     diffs: list[DiffItem] = []
     next_index = start_index
     for orig, comp in pairs:
         if orig is not None and comp is not None:
+            from app.services.seal_visual_equivalence import corresponding_red_graphics
+            proof = corresponding_red_graphics(original, orig, compare, comp, verify_ink=True)
+            if diagnostics is not None:
+                diagnostics.append({**proof, 'original_page': orig.page_no, 'compare_page': comp.page_no,
+                                    'original_bbox': orig.bbox.model_dump(), 'compare_bbox': comp.bbox.model_dump()})
+            if proof.get('equivalent'):
+                continue
             diff = _build_modify(orig, comp, next_index)
             if diff is not None:
                 diffs.append(diff)
@@ -59,9 +77,12 @@ def build_seal_diffs(
 def _collect_seals(document: Document) -> list[SealEntry]:
     """Collect seal regions, merging OCR fragments that share one layout region."""
     grouped: dict[tuple[int, tuple[float, float, float, float] | str], list[TextBlock]] = {}
+    pages_by_no = {page.page_no: page for page in document.pages}
     for page in document.pages:
         for block in page.blocks:
             if (block.block_type or "").lower() not in SEAL_BLOCK_TYPES:
+                continue
+            if _is_no_text_marker_artifact_before_signing_page(page, pages_by_no):
                 continue
             key: tuple[int, tuple[float, float, float, float] | str]
             if block.layout_bbox is not None:
@@ -106,6 +127,37 @@ def _match_seals(
     return pairs
 
 
+def _is_visually_present_on_both_sides(
+    original_entry: SealEntry | None,
+    compare_entry: SealEntry | None,
+    original: Document,
+    compare: Document,
+) -> bool:
+    if (original_entry is None) == (compare_entry is None):
+        return False
+
+    source_entry = original_entry or compare_entry
+    assert source_entry is not None
+    source_document = original if original_entry is not None else compare
+    target_document = compare if original_entry is not None else original
+    source_page = next((page for page in source_document.pages if page.page_no == source_entry.page_no), None)
+    target_page = next((page for page in target_document.pages if page.page_no == source_entry.page_no), None)
+    if source_page is None or target_page is None:
+        return False
+
+    inspector = RedSealVisualInspector()
+    target_bbox = inspector.normalized_bbox(source_entry.bbox, source_page, target_page)
+    source_metrics = inspector.inspect(source_document, source_entry.page_no, source_entry.bbox, padding=2.0)
+    target_metrics = inspector.inspect(target_document, source_entry.page_no, target_bbox, padding=2.0)
+    if source_metrics.red_pixels < 40 or source_metrics.ratio < 0.02:
+        return False
+    return bool(
+        target_metrics.red_pixels >= 40
+        and target_metrics.ratio >= 0.02
+        and target_metrics.ratio >= source_metrics.ratio * 0.2
+    )
+
+
 def _seal_entry(blocks: list[TextBlock]) -> SealEntry:
     blocks = sorted(blocks, key=lambda block: (block.page_no, block.bbox.y0, block.bbox.x0, block.block_id))
     first = blocks[0]
@@ -130,16 +182,50 @@ def _union_bbox(bboxes: list[BBox]) -> BBox:
     )
 
 
+def _clean_seal_text(text: str) -> str:
+    """Extract rendered text; HTML attributes and image paths are not seal ink."""
+    decoded = html.unescape(text or "")
+    decoded = re.sub(r"<(script|style)\b[^>]*>.*?</\1\s*>", "", decoded,
+                     flags=re.IGNORECASE | re.DOTALL)
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]*>", "", decoded)).strip()
+
+
 def _merge_text(blocks: list[TextBlock]) -> str:
     parts: list[str] = []
     seen: set[str] = set()
     for block in blocks:
-        text = block.text.strip()
+        text = _clean_seal_text(block.text)
         if not text or text in seen:
             continue
         parts.append(text)
         seen.add(text)
     return " ".join(parts)
+
+
+def _is_no_text_marker_artifact_before_signing_page(page: Page, pages_by_no: dict[int, Page]) -> bool:
+    page_text = _page_non_seal_text(page)
+    if not NO_TEXT_MARKER_RE.search(page_text):
+        return False
+    next_page = pages_by_no.get(page.page_no + 1)
+    return next_page is not None and _looks_like_signing_page(next_page)
+
+
+def _looks_like_signing_page(page: Page) -> bool:
+    text = _page_non_seal_text(page)
+    if SIGNING_TITLE_RE.search(text):
+        return True
+    markers = set(SIGNING_MARKER_RE.findall(text))
+    has_party = any(marker in markers for marker in ("甲方", "乙方", "丙方"))
+    has_action = any(marker in markers for marker in ("盖章", "签章", "签字", "签名"))
+    return has_party and has_action and len(markers) >= 4
+
+
+def _page_non_seal_text(page: Page) -> str:
+    return "\n".join(
+        block.text.strip()
+        for block in page.blocks
+        if block.text.strip() and (block.block_type or "").lower() not in SEAL_BLOCK_TYPES
+    )
 
 
 def _build_add(entry: SealEntry, index: int) -> DiffItem:
@@ -177,6 +263,8 @@ def _build_modify(orig: SealEntry, comp: SealEntry, index: int) -> DiffItem | No
     comp_text = comp.text
     if orig_text == comp_text:
         return None
+    if _is_unreliable_seal_text_change(orig_text, comp_text):
+        return None
 
     return DiffItem(
         diff_id=generate_diff_id(index),
@@ -193,6 +281,28 @@ def _build_modify(orig: SealEntry, comp: SealEntry, index: int) -> DiffItem | No
         original_change_ranges=[TextRange(start=0, end=len(orig_text), highlight_type="MODIFY")] if orig_text else [],
         compare_change_ranges=[TextRange(start=0, end=len(comp_text), highlight_type="MODIFY")] if comp_text else [],
     )
+
+
+def _is_unreliable_seal_text_change(orig_text: str, comp_text: str) -> bool:
+    """Ignore OCR/HTML artifacts within a matched seal region."""
+    orig_norm = _normalize_seal_text(orig_text)
+    comp_norm = _normalize_seal_text(comp_text)
+    if not orig_norm and not comp_norm:
+        return True
+    if _contains_html_markup(orig_text) or _contains_html_markup(comp_text):
+        return True
+    if min(len(orig_norm), len(comp_norm)) <= 1 and max(len(orig_norm), len(comp_norm)) <= 2:
+        return True
+    return False
+
+
+def _normalize_seal_text(text: str) -> str:
+    text = re.sub(r"<[^>]+>", "", text)
+    return re.sub(r"\s+", "", text)
+
+
+def _contains_html_markup(text: str) -> bool:
+    return bool(re.search(r"</?[A-Za-z][^>]*>", text))
 
 
 def _region_evidence(entry: SealEntry, highlight_type: str) -> EvidenceBox:

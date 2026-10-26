@@ -6,18 +6,48 @@ import unicodedata
 from app.models import TextBlock
 from app.services.normalizer import TextNormalizer
 
-from .constants import LABEL_TO_KEY
+from .constants import LABEL_PREFIX_TO_KEY, LABEL_TO_KEY
 
 
 def parse_labeled_line(line: str) -> tuple[str, str] | None:
+    match = re.match(r"^\s*(?P<label>[^:：]{1,40})[:：]\s*(?P<value>.*)$", line)
+    if match:
+        key = _label_key(match.group("label"))
+        if key:
+            return key, match.group("value").strip()
+
     compact = re.sub(r"\s+", "", line)
-    for label, key in LABEL_TO_KEY.items():
-        if compact in {label, f"{label}:", f"{label}："}:
-            return key, ""
-        match = re.match(rf"^{re.escape(label)}[:：]\s*(.*)$", line)
-        if match:
-            return key, match.group(1).strip()
+    # OCR may omit the separator on a standalone company field. Require a
+    # complete company value so contractual prose cannot become metadata.
+    company = re.fullmatch(r"(买方|卖方|甲方|乙方)([^:：。；;\n]{2,80}(?:有限公司|股份公司|设计院|研究院))", compact)
+    if company and not re.search(r"应当|应向|不得|须向|负责|同意", company[2]):
+        return LABEL_TO_KEY[company[1]], company[2]
+    compact_label = compact.rstrip(":：")
+    key = _label_key(compact_label)
+    if key and compact in {compact.rstrip(":："), f"{compact.rstrip(':：')}:", f"{compact.rstrip(':：')}："}:
+        return key, ""
     return None
+
+
+def _label_key(label: str) -> str | None:
+    normalized = unicodedata.normalize("NFKC", label or "")
+    compact = re.sub(r"\s+", "", normalized).strip(":：")
+    for prefix, key in LABEL_PREFIX_TO_KEY.items():
+        if compact.startswith(prefix):
+            return key
+    if compact.startswith("合同编号"):
+        qualifier_text = "".join(re.findall(r"[（(]([^）)]{1,12})[）)]", compact))
+        if "甲方" in qualifier_text:
+            return "contract_no_buyer"
+        if "乙方" in qualifier_text:
+            return "contract_no_seller"
+    return LABEL_TO_KEY.get(_normalize_label(compact))
+
+
+def _normalize_label(label: str) -> str:
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", label or ""))
+    compact = re.sub(r"[（(][^）)]{1,12}[）)]", "", compact)
+    return compact.strip(":：")
 
 
 def is_title_candidate(normalizer: TextNormalizer, block: TextBlock) -> bool:
@@ -28,14 +58,17 @@ def is_title_candidate(normalizer: TextNormalizer, block: TextBlock) -> bool:
     if block_type in {
         "header",
         "footer",
+        "figure",
         "page_header",
         "page_footer",
+        "image",
         "number",
         "table",
         "seal",
         "seal_region",
         "attachment_header",
         "edge_noise",
+        "watermark",
     }:
         return False
     return any(is_title_line(line) for line in lines(text))
@@ -58,10 +91,18 @@ def is_noise_line(line: str) -> bool:
 
 
 def skip_extra_block(block: TextBlock) -> bool:
+    if "scanner_generated_overlay" in block.semantic_reasons:
+        return True
     block_type = (block.block_type or "").lower()
+    if block_type == "watermark":
+        return True
+    if block_type in {"header", "page_header"} and _is_unmatched_cover_extra(block):
+        return False
     return block_type in {
         "header",
         "footer",
+        "figure",
+        "image",
         "page_header",
         "page_footer",
         "number",
@@ -72,6 +113,14 @@ def skip_extra_block(block: TextBlock) -> bool:
         "attachment_header",
         "edge_noise",
     }
+
+
+def _is_unmatched_cover_extra(block: TextBlock) -> bool:
+    return (
+        not block.layout_block_id
+        and (block.source or "").lower().endswith("_unmatched")
+        and (block.layout_match_status or "") == "meaningful_unmatched"
+    )
 
 
 def skip_extra_line(line: str, block: TextBlock, page_width: float) -> bool:
@@ -92,7 +141,7 @@ def is_edge_noise(compact: str, block: TextBlock, page_width: float) -> bool:
 
 def normalize_value(normalizer: TextNormalizer, key: str, value: str) -> str:
     text = normalizer.normalize_for_match(value)
-    if key in {"contract_no", "sign_date"}:
+    if key in {"contract_no", "contract_no_buyer", "contract_no_seller", "sign_date"}:
         text = re.sub(r"\s+", "", text)
     return text
 

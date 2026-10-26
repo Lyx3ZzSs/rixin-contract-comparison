@@ -33,6 +33,18 @@ class EvidenceLocator:
                     diff.diff_type,
                     side="compare",
                 )
+        from app.services.preamble_field_ownership import reconcile_preamble_fields
+        diffs = reconcile_preamble_fields(diffs, original_by_id, compare_by_id)
+        for diff in diffs:
+            if not diff.match_score_details.get("preamble_fields_excluded"):
+                continue
+            for side, clauses in (("original", original_by_id), ("compare", compare_by_id)):
+                evidence = self._locate_clause_ranges(
+                    clauses.get(getattr(diff, f"{side}_clause_id")),
+                    self._side_ranges(getattr(diff, f"{side}_change_ranges"), side),
+                    getattr(diff, f"{side}_snippet"), [], diff.diff_type, side,
+                )
+                setattr(diff, f"{side}_evidence", evidence)
         self._resolve_side_conflicts(diffs, side="original")
         self._resolve_side_conflicts(diffs, side="compare")
         self.assign_evidence_confidence(diffs)
@@ -79,6 +91,10 @@ class EvidenceLocator:
                     text=text,
                     highlight_type=text_range.highlight_type,
                     text_confidence=self._segment_text_confidence(segment),
+                    char_boxes=[char.model_copy(deep=True) for char in segment
+                                if method == "char_exact" and char.page_no == page_no
+                                and bbox.x0 <= (char.bbox.x0+char.bbox.x1)/2 <= bbox.x1
+                                and bbox.y0 <= (char.bbox.y0+char.bbox.y1)/2 <= bbox.y1],
                 )
                 for page_no, bbox, text in self._merge_char_boxes(segment)
             )
@@ -179,9 +195,51 @@ class EvidenceLocator:
             for right_diff, right_index, right in items[left_pos + 1 :]:
                 if (right_diff, right_index) in discarded:
                     continue
+                # A seal's display caption is not OCR text occupying its box.
+                # Embedded text (e.g. a misread "章" in a date) cannot compete
+                # with the independently detected physical object's location.
+                if any(
+                    visual.source_type == "seal"
+                    and visual.match_score_details.get("object_type") in {
+                        "COMPANY_ROUND_SEAL", "PERSONAL_NAME_SEAL", "EDGE_SEAM_SEAL", "OTHER_STAMP"
+                    }
+                    and text.source_type in {"clause", "metadata", "table", "header_footer"}
+                    for visual, text in ((diffs[left_diff], diffs[right_diff]),
+                                         (diffs[right_diff], diffs[left_diff]))
+                ):
+                    continue
+                if (
+                    diffs[left_diff].source_type != diffs[right_diff].source_type
+                    and "signing_region" in {diffs[left_diff].source_type, diffs[right_diff].source_type}
+                ):
+                    continue
+                if {diffs[left_diff].source_type, diffs[right_diff].source_type} == {"metadata", "clause"}:
+                    if any(d.match_score_details.get("field_kind") in {"preamble_party", "preamble_address"}
+                           for d in (diffs[left_diff], diffs[right_diff])):
+                        # Fully owned fields have already been reconciled. A
+                        # partial overlap cannot erase an independent field's anchor.
+                        continue
+                    clause_diff, clause_evidence, metadata_evidence = (
+                        (diffs[left_diff], left, right) if diffs[left_diff].source_type == "clause"
+                        else (diffs[right_diff], right, left)
+                    )
+                    ranges = (clause_diff.original_change_ranges if side == "original"
+                              else clause_diff.compare_change_ranges)
+                    if (metadata_evidence.method == "cover_extra" and ranges
+                            and clause_evidence.method == "char_exact"):
+                        # These are independently retained business changes.
+                        # Removing a precise range box here leaves a visible
+                        # diff unlocated and destroys downstream ownership proof.
+                        continue
                 if not self._evidence_conflicts(left, right):
                     continue
-                winner = self._preferred_evidence(left, right, side)
+                winner = self._preferred_evidence(
+                    left,
+                    right,
+                    side,
+                    left_source=diffs[left_diff].source_type,
+                    right_source=diffs[right_diff].source_type,
+                )
                 if winner is left:
                     discarded.add((right_diff, right_index))
                 else:
@@ -197,6 +255,9 @@ class EvidenceLocator:
                 diff.compare_evidence = kept
 
     def _evidence_conflicts(self, left: EvidenceBox, right: EvidenceBox) -> bool:
+        semantic_region_methods = {"page_region", "signing_region"}
+        if (left.method or "").lower() in semantic_region_methods or (right.method or "").lower() in semantic_region_methods:
+            return False
         if left.page_no != right.page_no:
             return False
         coverage = self._smaller_coverage(left.bbox, right.bbox)
@@ -206,7 +267,24 @@ class EvidenceLocator:
         right_text = (right.text or "").strip()
         return not left_text or not right_text or left_text in right_text or right_text in left_text
 
-    def _preferred_evidence(self, left: EvidenceBox, right: EvidenceBox, side: str) -> EvidenceBox:
+    def _preferred_evidence(
+        self,
+        left: EvidenceBox,
+        right: EvidenceBox,
+        side: str,
+        *,
+        left_source: str = "",
+        right_source: str = "",
+    ) -> EvidenceBox:
+        left_is_header_footer = (left.method or "").lower() == "header_footer"
+        right_is_header_footer = (right.method or "").lower() == "header_footer"
+        if left_is_header_footer != right_is_header_footer:
+            return left if left_is_header_footer else right
+        if left_source != right_source and {left_source, right_source} == {"metadata", "clause"}:
+            if (left.method or "").lower() == "cover_extra" and left_source == "metadata":
+                return left
+            if (right.method or "").lower() == "cover_extra" and right_source == "metadata":
+                return right
         left_priority = self._highlight_priority(left.highlight_type, side)
         right_priority = self._highlight_priority(right.highlight_type, side)
         if left_priority != right_priority:
@@ -235,14 +313,6 @@ class EvidenceLocator:
     def _area(self, bbox: BBox) -> float:
         return max(0.0, bbox.x1 - bbox.x0) * max(0.0, bbox.y1 - bbox.y0)
 
-    def _union(self, left: BBox, right: BBox) -> BBox:
-        return BBox(
-            x0=min(left.x0, right.x0),
-            y0=min(left.y0, right.y0),
-            x1=max(left.x1, right.x1),
-            y1=max(left.y1, right.y1),
-        )
-
     def _union_rectified(self, left: BBox, right: BBox, reference_height: float) -> BBox:
         merged_x0 = min(left.x0, right.x0)
         merged_x1 = max(left.x1, right.x1)
@@ -259,7 +329,10 @@ class EvidenceLocator:
     def assign_evidence_confidence(self, diffs: list[DiffItem]) -> None:
         for diff in diffs:
             for evidence in [*diff.original_evidence, *diff.compare_evidence]:
-                confidence = self._confidence_for_method(evidence.method)
+                if (evidence.method or "").lower() in {"signing_region", "whole_page_visual_object", "footer_visual_registered"} and evidence.confidence is not None:
+                    confidence = evidence.confidence
+                else:
+                    confidence = self._confidence_for_method(evidence.method)
                 if evidence.method == "table_cell" and self._has_possible_ocr_fragment_flag(diff):
                     confidence = min(confidence, 0.55)
                 evidence.confidence = confidence
@@ -277,6 +350,8 @@ class EvidenceLocator:
             return 0.9
         if method == "seal_region":
             return 0.74
+        if method == "page_region":
+            return 0.9
         if method in {"estimated_char"}:
             return 0.74
         if method in {"exact_text", "cover_extra", "clause_fallback"}:

@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from app.models import BBox, DiffItem, EvidenceBox
+from app.services.signing_region.models import SigningCoverageEntry
+
+
+LEGACY_SOURCES = {"seal", "table", "metadata", "header_footer"}
+SIGNING_TEXT_MARKERS = (
+    "签",
+    "章",
+    "甲方",
+    "乙方",
+    "法定代表",
+    "授权代表",
+    "日期",
+    "联系人",
+    "单位地址",
+    "电话",
+    "传真",
+    "开户银行",
+    "账号",
+    "税号",
+    "邮政编码",
+)
+
+
+@dataclass
+class SigningCoverageResult:
+    entries: list[SigningCoverageEntry] = field(default_factory=list)
+    covered_diff_ids: set[str] = field(default_factory=set)
+    restored_seal_diff_ids: set[str] = field(default_factory=set)
+
+    def reconcile_seal_owners(self, retained_diffs: list[DiffItem]) -> None:
+        """A seal may be suppressed only while its canonical owner survives.
+
+        Visual fusion can choose the signing-region observation and consume
+        the legacy seal. In that case the earlier coverage decision is stale.
+        Preserve frozen text/table coverage; only seal ownership is revisited.
+        """
+        retained_ids = {diff.diff_id for diff in retained_diffs}
+        visible_owners = retained_ids - self.covered_diff_ids
+        owners: dict[str, set[str]] = {}
+        for entry in self.entries:
+            for owner_id, reason in entry.reasons.items():
+                if reason == "duplicate_seal_diff":
+                    owners.setdefault(entry.signing_region_diff_id, set()).add(owner_id)
+        for signing_id, owner_ids in owners.items():
+            if signing_id in retained_ids and not owner_ids.intersection(visible_owners):
+                self.covered_diff_ids.discard(signing_id)
+                self.restored_seal_diff_ids.add(signing_id)
+
+
+class SigningRegionCoverageBuilder:
+    def build(self, signing_region_diffs: list[DiffItem], legacy_diffs: list[DiffItem]) -> SigningCoverageResult:
+        result = SigningCoverageResult()
+        for signing_diff in signing_region_diffs:
+            covered: list[str] = []
+            reasons: dict[str, str] = {}
+            signing_evidence = [*signing_diff.original_evidence, *signing_diff.compare_evidence]
+            if "SIGNING_FIELD_CHANGE" in signing_diff.review_flags:
+                signing_evidence = [item for item in signing_evidence if item.method == "signing_region_element"]
+            for legacy in legacy_diffs:
+                if legacy.source_type not in LEGACY_SOURCES:
+                    continue
+                if legacy.source_type == "table" and not {
+                    "SIGNING_TABLE_CHANGE",
+                    "SIGNING_FIELD_CHANGE",
+                }.intersection(signing_diff.review_flags):
+                    continue
+                if legacy.source_type == "seal" and not {
+                    "SIGNING_SEAL_CHANGE",
+                    "SIGNING_VISUAL_CHANGE",
+                }.intersection(signing_diff.review_flags):
+                    continue
+                if not self._looks_signing_related(legacy):
+                    continue
+                legacy_evidence = [*legacy.original_evidence, *legacy.compare_evidence]
+                if self._any_overlap(signing_evidence, legacy_evidence):
+                    covered.append(legacy.diff_id)
+                    if legacy.source_type == "seal":
+                        # The page visual detector is the canonical owner of a
+                        # seal object.  Signing-region output only provides the
+                        # field context and must not emit the same object again.
+                        reasons[legacy.diff_id] = "duplicate_seal_diff"
+                        result.covered_diff_ids.add(signing_diff.diff_id)
+                    else:
+                        reasons[legacy.diff_id] = "overlaps_confirmed_signing_region"
+                        result.covered_diff_ids.add(legacy.diff_id)
+            if covered:
+                result.entries.append(
+                    SigningCoverageEntry(
+                        signing_region_diff_id=signing_diff.diff_id,
+                        covered_diff_ids=covered,
+                        reasons=reasons,
+                    )
+                )
+        return result
+
+    @staticmethod
+    def _looks_signing_related(diff: DiffItem) -> bool:
+        if diff.source_type == "seal":
+            return True
+        evidence_text = " ".join(
+            evidence.text for evidence in [*diff.original_evidence, *diff.compare_evidence] if evidence.text
+        )
+        text = (
+            f"{diff.title} {diff.original_text} {diff.compare_text} "
+            f"{diff.original_snippet} {diff.compare_snippet} {evidence_text} {' '.join(diff.review_flags)}"
+        )
+        return any(marker in text for marker in SIGNING_TEXT_MARKERS)
+
+    @staticmethod
+    def _any_overlap(left: list[EvidenceBox], right: list[EvidenceBox]) -> bool:
+        return any(
+            a.page_no == b.page_no
+            and max(
+                SigningRegionCoverageBuilder._overlap_ratio(a.bbox, b.bbox),
+                SigningRegionCoverageBuilder._overlap_ratio(b.bbox, a.bbox),
+            )
+            >= 0.2
+            for a in left
+            for b in right
+        )
+
+    @staticmethod
+    def _overlap_ratio(a: BBox, b: BBox) -> float:
+        x0 = max(a.x0, b.x0)
+        y0 = max(a.y0, b.y0)
+        x1 = min(a.x1, b.x1)
+        y1 = min(a.y1, b.y1)
+        inter = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+        base = max(1.0, (b.x1 - b.x0) * (b.y1 - b.y0))
+        return inter / base

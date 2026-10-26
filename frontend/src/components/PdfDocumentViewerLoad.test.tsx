@@ -1,6 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { PdfPreviewRuntime } from '../lib/pdfPreviewRuntime';
+const runtime = new PdfPreviewRuntime('load-test');
+
 import { PdfDocumentViewer } from "./PdfDocumentViewer";
 
 const { getDocument } = vi.hoisted(() => ({ getDocument: vi.fn() }));
@@ -16,9 +19,27 @@ vi.mock("pdfjs-dist/legacy/build/pdf.worker.mjs?url", () => ({
 
 function renderViewer() {
   return render(
-    <PdfDocumentViewer
+    <PdfDocumentViewer runtime={runtime}
       side="original"
       src="http://api.test/file.pdf"
+      accessToken="test-token"
+      title="原版"
+      diffs={[]}
+      zoom={1}
+      activeDiffId=""
+      syncEnabled={false}
+      onScrollRatio={vi.fn()}
+      onActivateDiff={vi.fn()}
+    />,
+  );
+}
+
+function renderViewerWithoutToken() {
+  return render(
+    <PdfDocumentViewer runtime={runtime}
+      side="original"
+      src="http://api.test/file.pdf"
+      accessToken=""
       title="原版"
       diffs={[]}
       zoom={1}
@@ -31,6 +52,49 @@ function renderViewer() {
 }
 
 describe("PdfDocumentViewer load errors", () => {
+  it("loads the PDF with the supplied Bearer token", () => {
+    getDocument.mockReturnValueOnce({ promise: new Promise(() => undefined), destroy: vi.fn() });
+    renderViewer();
+    expect(getDocument).toHaveBeenCalledWith({
+      url: "http://api.test/file.pdf",
+      cMapUrl: `${import.meta.env.BASE_URL}pdfjs/cmaps/`,
+      cMapPacked: true,
+      httpHeaders: { Authorization: "Bearer test-token" },
+    });
+  });
+
+  it("loads the PDF without authorization headers in disabled mode", () => {
+    getDocument.mockReturnValueOnce({ promise: new Promise(() => undefined), destroy: vi.fn() });
+    renderViewerWithoutToken();
+    expect(getDocument).toHaveBeenCalledWith({ url: "http://api.test/file.pdf",
+      cMapUrl: `${import.meta.env.BASE_URL}pdfjs/cmaps/`, cMapPacked: true });
+  });
+
+  it("does not reload the PDF when silent renewal replaces the access token", () => {
+    const destroy = vi.fn();
+    getDocument.mockReturnValue({ promise: new Promise(() => undefined), destroy });
+    const { rerender } = renderViewer();
+    const callsAfterInitialLoad = getDocument.mock.calls.length;
+
+    rerender(
+      <PdfDocumentViewer runtime={runtime}
+        side="original"
+        src="http://api.test/file.pdf"
+        accessToken="renewed-token"
+        title="原版"
+        diffs={[]}
+        zoom={1}
+        activeDiffId=""
+        syncEnabled={false}
+        onScrollRatio={vi.fn()}
+        onActivateDiff={vi.fn()}
+      />,
+    );
+
+    expect(getDocument).toHaveBeenCalledTimes(callsAfterInitialLoad);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["PasswordException", "PDF 已加密，请上传未加密版本。"],
     ["InvalidPDFException", "PDF 已损坏或格式无效。"],

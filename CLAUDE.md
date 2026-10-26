@@ -15,10 +15,8 @@ Contract comparison MVP (合同差异审查系统) — uploads two PDF contracts
 cd backend
 python -m pip install -r requirements.txt
 
-# Run dev server (with auto-reload)
-python -m uvicorn app.main:app --reload --port 8000
-# Or via entry point (for PyCharm run configs)
-python app/main.py
+# Run the only supported API entry point (also use this in PyCharm run configs)
+python scripts/run_api.py
 
 # Run all tests
 python -m pytest
@@ -53,7 +51,7 @@ cd ../frontend && npm test && npm run build
 
 The comparison runs as a synchronous pipeline orchestrated by `CompareService`:
 
-1. **Extract** — `extractors/` pluggable system (Strategy + Factory pattern). `GLMOCRExtractor` calls the GLM layout-parsing API; `PyMuPDFExtractor` is used internally as a test fallback (not wired into the factory for production). Returns `Document` with per-page `TextBlock`s and `BBox` coordinates.
+1. **Extract** — Production comparison uses `ContractExtractionV3`: native PDF glyphs, single-page PP-DocLayoutV3, selective PP-OCRv6, verified table regions, then `Document`/`Page`/`TextBlock` adapters.
 
 2. **Split** — `ClauseSplitter` uses regex to detect Chinese/numeric clause markers (第X条, 1.1, etc.), groups text into `Clause` objects with evidence boxes. `TextNormalizer` strips page numbers, contract IDs, and normalizes whitespace/punctuation for matching.
 
@@ -77,18 +75,18 @@ PDF → ExtractionResult → Document → Clause[] → ClausePair[] → DiffItem
 - `Clause` — split clause with normalized text and evidence boxes
 - `ClausePair` — matched pair with score and method
 - `DiffItem` — identified difference with evidence and AI analysis
-- `CompareTask` — full task state persisted through `TaskRepository` as local JSON or PostgreSQL payload
+- `CompareTask` — full task state persisted by `TaskRepository` in SQLite
 
 ### Storage
 
-Artifacts are stored locally under `storage/` (configurable via `STORAGE_DIR`), while task metadata is stored by `TaskRepository`:
-- `uploads/` — uploaded PDFs
-- `tasks/` — task JSON files when `TASK_REPOSITORY_BACKEND=local_json`
-- `highlighted/` — highlighted PDFs
-- `reports/` — generated PDF reports
-- `ocr/` — raw OCR results for debugging
+All runtime data lives under `storage/` (configurable only via `STORAGE_DIR`):
+- `tasks.sqlite3` — authoritative task and current-execution state
+- `tasks/<task_id>/input/` — uploaded PDFs, preserving safe original filenames
+- `tasks/<task_id>/report/` — the current on-demand PDF report revision
+- `tasks/<task_id>/diagnostics/` — temporary OCR and debug output retained only for failed/low-quality tasks
+- `tasks/<task_id>/staging/` — temporary upload and processing files
 
-PostgreSQL task metadata is enabled with `TASK_REPOSITORY_BACKEND=postgres` and `DATABASE_URL`, then migrated with `cd backend && alembic upgrade head`.
+The runtime supports one API process. It has no PostgreSQL, ORM, durable job queue, startup migration, or historical JSON fallback. Existing legacy task directories remain untouched but are not listed by the application.
 
 ### Frontend (`frontend/src/`)
 
@@ -114,8 +112,6 @@ Key env vars (set in `.env`):
 - `MAX_UPLOAD_SIZE_MB` — upload size limit (default 30)
 - `FRONTEND_CORS_ORIGINS` — comma-separated allowed origins
 - `STORAGE_DIR` — base storage directory (default `./storage`)
-- `TASK_REPOSITORY_BACKEND` — `local_json` by default, or `postgres`
-- `DATABASE_URL` — SQLAlchemy URL used by the PostgreSQL task repository
 
 ## Important Notes
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.models import BBox, Document, Page, TextBlock
+from app.services.diff_quality import DiffQualityProcessor
 from app.services.header_footer_compare import HeaderFooterComparator
 
 
@@ -14,6 +15,10 @@ def _block(
     x1: float = 500,
     block_type: str = "text",
     page_no: int = 1,
+    source: str = "",
+    layout_match_status: str = "not_applicable",
+    layout_match_score: float | None = None,
+    confidence: float | None = None,
 ) -> TextBlock:
     return TextBlock(
         block_id=block_id,
@@ -21,6 +26,10 @@ def _block(
         text=text,
         bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1),
         block_type=block_type,
+        source=source,
+        layout_match_status=layout_match_status,
+        layout_match_score=layout_match_score,
+        confidence=confidence,
     )
 
 
@@ -93,6 +102,34 @@ def test_header_footer_deduplicates_repeated_headers() -> None:
     assert diffs[0].diff_type == "MODIFY"
     assert [evidence.page_no for evidence in diffs[0].original_evidence] == [1, 2, 3, 4]
     assert [evidence.page_no for evidence in diffs[0].compare_evidence] == [1, 2, 3, 4]
+
+
+def test_header_footer_preserves_repeated_handwritten_overlay_as_document_difference() -> None:
+    compare_pages: list[list[TextBlock]] = []
+    for page_no in range(1, 6):
+        block = _block(
+            f"c{page_no}",
+            "黄科",
+            x0=420,
+            y0=784,
+            x1=500,
+            y1=826,
+            block_type="footer",
+            page_no=page_no,
+            source="ppocrv5+repeated_overlay_filter",
+        )
+        block.enter_clause_compare = False
+        block.flow_role = "noise"
+        compare_pages.append([block])
+
+    diffs = HeaderFooterComparator().build_diffs(
+        _document([[] for _ in range(5)]),
+        _document(compare_pages),
+    )
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "ADD"
+    assert len(diffs[0].compare_evidence) == 5
 
 
 def test_header_footer_fuzzy_matches_one_page_ocr_variant_to_repeated_header() -> None:
@@ -193,6 +230,357 @@ def test_header_footer_fuzzy_does_not_pair_short_noise_entries() -> None:
     assert fuzzy_diffs[0].original_text == "南京国电南自电动化有限公司"
     assert fuzzy_diffs[0].compare_text == "南京国电南自电网自动化有限公司"
     assert all(diff.diff_type != "MODIFY" for diff in diffs if diff.original_text == "R" or diff.compare_text == "司")
+
+
+def test_header_footer_ignores_repeated_short_cjk_edge_noise() -> None:
+    original = _document(
+        [
+            [_block("o1", "回回", x0=28, y0=12, x1=84, y1=35, block_type="header", page_no=1)],
+            [_block("o2", "回回", x0=28, y0=12, x1=84, y1=35, block_type="header", page_no=2)],
+            [_block("o3", "回回", x0=28, y0=12, x1=84, y1=35, block_type="header", page_no=3)],
+        ]
+    )
+    compare = _document([[], [], []])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_ignores_short_ascii_and_page_number_edge_noise() -> None:
+    original = _document(
+        [
+            [
+                _block("o-logo", "AC", x0=66, y0=78, x1=139, y1=112, block_type="header", page_no=1),
+                _block("o-page", "3", x0=462, y0=79, x1=488, y1=101, block_type="header", page_no=1),
+            ]
+        ]
+    )
+    compare = _document(
+        [
+            [
+                _block("c-noise", "j", x0=23, y0=9, x1=41, y1=29, block_type="header", page_no=1),
+                _block("c-page", "3", x0=462, y0=79, x1=488, y1=101, block_type="header", page_no=1),
+            ]
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_ignores_one_page_short_cjk_edge_noise() -> None:
+    original = _document([[_block("o1", "理", x0=26, y0=24, x1=87, y1=102, block_type="header")]])
+    compare = _document([[]])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_ignores_noise_unmatched_header_fragment() -> None:
+    original = _document([[]])
+    compare = _document(
+        [
+            [
+                _block(
+                    "c1",
+                    "e1",
+                    x0=544,
+                    y0=11,
+                    x1=559,
+                    y1=21,
+                    block_type="header",
+                    source="ppocrv5_noise_unmatched",
+                    layout_match_status="noise_unmatched",
+                    layout_match_score=0.0,
+                )
+            ]
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_accepts_lower_explicit_footer_despite_noise_status() -> None:
+    original = _document([[]])
+    compare = _document(
+        [
+            [
+                _block(
+                    "c1",
+                    "李四",
+                    x0=64,
+                    y0=764,
+                    x1=108,
+                    y1=772,
+                    block_type="footer",
+                    source="ppocrv5_noise_unmatched",
+                    layout_match_status="noise_unmatched",
+                    layout_match_score=0.0,
+                )
+            ]
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "ADD"
+    assert diffs[0].title == "页脚"
+    assert diffs[0].compare_text == "李四"
+    assert [evidence.page_no for evidence in diffs[0].compare_evidence] == [1]
+
+
+def test_header_footer_groups_repeated_lower_band_annotation_with_all_evidence() -> None:
+    original = _document([[], [], []])
+    compare = _document(
+        [
+            [
+                _block(
+                    f"c{page_no}",
+                    "经办人：李四",
+                    x0=440,
+                    y0=764,
+                    x1=532,
+                    y1=772,
+                    page_no=page_no,
+                )
+            ]
+            for page_no in range(1, 4)
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "ADD"
+    assert diffs[0].title == "页脚"
+    assert diffs[0].compare_text == "经办人：李四"
+    assert [evidence.page_no for evidence in diffs[0].compare_evidence] == [1, 2, 3]
+
+
+def test_header_footer_merges_single_page_ocr_variants_into_repeated_footer_annotation() -> None:
+    original = _document([[], [], [], [], [], [], [], []])
+    compare = _document(
+        [
+            [_block("c1", "黄科", x0=420, y0=780, x1=500, y1=822, block_type="footer", page_no=1)],
+            [_block("c2", "黄科", x0=420, y0=780, x1=500, y1=822, page_no=2)],
+            [_block("c3", "黄科", x0=420, y0=780, x1=500, y1=822, page_no=3)],
+            [_block("c4", "黄科", x0=420, y0=780, x1=500, y1=822, page_no=4)],
+            [_block("c5", "黄科", x0=420, y0=780, x1=500, y1=822, page_no=5)],
+            [_block("c6", "黄科土科", x0=352, y0=786, x1=480, y1=821, page_no=6)],
+            [_block("c7", "奇科", x0=400, y0=785, x1=468, y1=827, confidence=0.8, page_no=7)],
+            [_block("c8", "本科", x0=400, y0=785, x1=468, y1=827, confidence=0.99, page_no=8)],
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert len(diffs) == 1
+    assert diffs[0].diff_type == "ADD"
+    assert diffs[0].compare_text == "黄科"
+    assert [evidence.page_no for evidence in diffs[0].compare_evidence] == [1, 2, 3, 4, 5, 6, 7]
+    assert [evidence.text for evidence in diffs[0].compare_evidence[-2:]] == ["黄科土科", "奇科"]
+    assert diffs[0].compare_evidence[-2].bbox == BBox(x0=352, y0=786, x1=480, y1=821)
+    assert diffs[0].compare_evidence[-1].bbox == BBox(x0=400, y0=785, x1=468, y1=827)
+
+
+def test_header_footer_ignores_one_off_lower_body_text() -> None:
+    original = _document([[]])
+    compare = _document([[_block("c1", "本页备注", x0=440, y0=764, x1=532, y1=772)]])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_ignores_one_page_label_fragment_header() -> None:
+    original = _document([[]])
+    compare = _document([[_block("c1", "合同编号", x0=362, y0=53.5, x1=421, y1=61.5, block_type="header")]])
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_ignores_top_unmatched_single_digit_as_page_number() -> None:
+    original = _document([[]])
+    compare = _document(
+        [
+            [
+                _block(
+                    "c1",
+                    "3",
+                    x0=563,
+                    y0=42,
+                    x1=570,
+                    y1=48,
+                    block_type="header",
+                    source="ppocrv5_unmatched",
+                    layout_match_status="meaningful_unmatched",
+                    layout_match_score=0.0,
+                )
+            ]
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_ignores_cover_handwriting_digit_outside_footer_band() -> None:
+    compare = Document(
+        filename="compare.pdf",
+        path="compare.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=597,
+                height=818,
+                blocks=[
+                    _block(
+                        "c1",
+                        "3",
+                        x0=462.5,
+                        y0=79,
+                        x1=487.5,
+                        y1=100.5,
+                        block_type="header",
+                    )
+                ],
+            )
+        ],
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(_document([[]]), compare)
+
+    assert diffs == []
+
+
+def test_header_footer_keeps_structure_repaired_short_handwritten_annotation() -> None:
+    compare = Document(
+        filename="compare.pdf",
+        path="compare.pdf",
+        page_count=1,
+        pages=[
+            Page(
+                page_no=1,
+                width=597,
+                height=818,
+                blocks=[
+                    _block(
+                        "c1",
+                        "永",
+                        x0=462.5,
+                        y0=79,
+                        x1=487.5,
+                        y1=100.5,
+                        block_type="header",
+                        source="ppocrv5_layout_matched+ppstructure_short_annotation_repair",
+                        confidence=0.263,
+                    )
+                ],
+            )
+        ],
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(_document([[]]), compare)
+    result = DiffQualityProcessor().process(diffs)
+
+    assert len(result.diffs) == 1
+    assert result.diffs[0].compare_snippet == "永"
+    assert result.diffs[0].quality_status == "NEEDS_REVIEW"
+    assert "HANDWRITTEN_ANNOTATION_REVIEW" in result.diffs[0].review_flags
+
+
+def test_header_footer_keeps_handwritten_single_character_overlapping_full_header() -> None:
+    full_text = "南京国电南自电网自动化有限公司"
+    original = _document(
+        [
+            [
+                _block(
+                    "o-full",
+                    full_text,
+                    x0=361,
+                    y0=97.5,
+                    x1=526.5,
+                    y1=109.5,
+                    block_type="header",
+                    confidence=0.999,
+                )
+            ]
+        ]
+    )
+    compare = _document(
+        [
+            [
+                _block(
+                    "c-full",
+                    full_text,
+                    x0=361,
+                    y0=97.5,
+                    x1=526.5,
+                    y1=109.5,
+                    block_type="header",
+                    confidence=0.999,
+                ),
+                _block(
+                    "c-fragment",
+                    "司",
+                    x0=462.5,
+                    y0=79,
+                    x1=487.5,
+                    y1=100.5,
+                    block_type="header",
+                    source="ppocrv5_layout_matched+ppstructure_short_annotation_repair",
+                    confidence=0.263,
+                ),
+            ]
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+    result = DiffQualityProcessor().process(diffs, original_document=original, compare_document=compare)
+
+    assert len(result.diffs) == 1
+    assert result.diffs[0].compare_snippet == "司"
+    assert "HANDWRITTEN_ANNOTATION_REVIEW" in result.diffs[0].review_flags
+
+
+def test_header_footer_requires_cross_page_sequence_for_bare_page_number() -> None:
+    original = _document([[], []])
+    compare = _document(
+        [
+            [_block("c1", "1", y0=810, y1=826, page_no=1)],
+            [_block("c2", "7", y0=810, y1=826, page_no=2)],
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert diffs == []
+
+
+def test_header_footer_accepts_sequenced_bare_page_numbers_in_footer_band() -> None:
+    original = _document([[], []])
+    compare = _document(
+        [
+            [_block("c1", "1", y0=810, y1=826, page_no=1)],
+            [_block("c2", "2", y0=810, y1=826, page_no=2)],
+        ]
+    )
+
+    diffs = HeaderFooterComparator().build_diffs(original, compare)
+
+    assert len(diffs) == 1
+    assert diffs[0].title == "页脚页码"
+    assert diffs[0].diff_type == "ADD"
 
 
 def test_header_footer_fuzzy_requires_close_position_for_supplemental_match() -> None:

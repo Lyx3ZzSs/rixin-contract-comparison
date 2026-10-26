@@ -3,7 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { DiffItem } from "../types";
-import { getPageHighlights, highlightRect, PdfHighlightLayer } from "./PdfDocumentViewer";
+import {
+  getPageHighlights,
+  getScrollTargetEvidence,
+  highlightRect,
+  PdfHighlightLayer,
+} from "./PdfDocumentViewer";
 import { getCurrentPageFromScroll } from "./pdfPageScroll";
 
 const pages = [
@@ -105,7 +110,114 @@ const sealDiff: DiffItem = {
   original_evidence: [],
 };
 
+const signingRegionDiff: DiffItem = {
+  ...diff,
+  diff_id: "diff-signing",
+  diff_type: "MODIFY",
+  source_type: "signing_region",
+  compare_evidence: [
+    {
+      page_no: 1,
+      bbox: { x0: 220, y0: 620, x1: 360, y1: 700 },
+      method: "signing_region_element",
+      text: "授权代表签字",
+      highlight_type: "MODIFY",
+    },
+  ],
+  original_evidence: [],
+};
+
+const signingRegionOutline = {
+  page_no: 2,
+  bbox: { x0: 45, y0: 239, x1: 563, y1: 672 },
+  method: "signing_region_outline",
+  text: "签署栏识别区域",
+};
+
+const signingPartyDiff: DiffItem = {
+  ...signingRegionDiff,
+  diff_id: "diff-signing-party",
+  original_evidence: [
+    {
+      page_no: 53,
+      bbox: { x0: 71, y0: 86, x1: 287, y1: 137 },
+      method: "signing_region",
+      text: "甲方：国能长源随州发电有限公司随县分公司",
+      highlight_type: "MODIFY",
+    },
+    {
+      page_no: 53,
+      bbox: { x0: 50, y0: 78, x1: 542, y1: 537 },
+      method: "signing_region",
+      text: "签署区整区变化",
+    },
+  ],
+  compare_evidence: [],
+};
+
+const signingPartyAndVisualDiff: DiffItem = {
+  ...signingPartyDiff,
+  diff_id: "diff-signing-party-and-visual",
+  original_evidence: [
+    ...(signingPartyDiff.original_evidence ?? []).map((evidence) =>
+      evidence.highlight_type ? { ...evidence, method: "signing_region_element" } : evidence,
+    ),
+    {
+      page_no: 53,
+      bbox: { x0: 50, y0: 78, x1: 542, y1: 537 },
+      method: "signing_region_visual",
+      text: "签署区盖章、签字和日期变化",
+      highlight_type: "MODIFY",
+    },
+  ],
+};
+
 describe("PDF diff highlights", () => {
+  it("renders an independently recognized signing region when the page has no signing diff", () => {
+    const highlights = getPageHighlights([], "compare", 2, [signingRegionOutline]);
+
+    expect(highlights).toHaveLength(1);
+    expect(highlights[0]).toMatchObject({
+      markKind: "signing-region",
+      recognition: true,
+      evidence: signingRegionOutline,
+    });
+
+    const { container } = render(
+      <PdfHighlightLayer
+        activeDiffId=""
+        highlights={highlights}
+        pageSize={{ width: 597, height: 819 }}
+        zoom={1}
+        onActivateDiff={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('[data-recognition-outline="true"]')).toHaveClass(
+      "pdf-highlight-mark",
+      "signing-region",
+      "recognition",
+    );
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("does not duplicate an independent outline already represented by a signing-region diff", () => {
+    const matchingOutline = signingPartyAndVisualDiff.original_evidence?.find(
+      (evidence) => evidence.method === "signing_region_visual",
+    );
+    expect(matchingOutline).toBeDefined();
+
+    const highlights = getPageHighlights(
+      [signingPartyAndVisualDiff],
+      "original",
+      53,
+      [matchingOutline!],
+    );
+
+    expect(highlights.filter((highlight) => highlight.markKind === "signing-region")).toHaveLength(1);
+    expect(highlights.some((highlight) => highlight.recognition)).toBe(false);
+  });
+
   it("filters evidence by side and page", () => {
     const originalHighlights = getPageHighlights([diff], "original", 1);
     const comparePageOneHighlights = getPageHighlights([diff], "compare", 1);
@@ -118,6 +230,39 @@ describe("PDF diff highlights", () => {
     expect(comparePageTwoHighlights).toHaveLength(1);
     expect(comparePageTwoHighlights[0].type).toBe("ADD");
     expect(comparePageTwoHighlights[0].evidence.text).toBe("新增说明 补充");
+  });
+
+  it("renders smaller overlapping highlights last so precise boxes receive pointer events", () => {
+    const large: DiffItem = {
+      ...diff,
+      diff_id: "diff-large",
+      compare_evidence: [
+        {
+          page_no: 1,
+          bbox: { x0: 80, y0: 180, x1: 360, y1: 430 },
+          method: "signing_region",
+          text: "签署区",
+          highlight_type: "MODIFY",
+        },
+      ],
+    };
+    const precise: DiffItem = {
+      ...diff,
+      diff_id: "diff-precise",
+      compare_evidence: [
+        {
+          page_no: 1,
+          bbox: { x0: 180, y0: 380, x1: 330, y1: 410 },
+          method: "signing_region_element",
+          text: "2026年5月6日",
+          highlight_type: "MODIFY",
+        },
+      ],
+    };
+
+    const highlights = getPageHighlights([precise, large], "compare", 1);
+
+    expect(highlights.map((highlight) => highlight.diffId)).toEqual(["diff-large", "diff-precise"]);
   });
 
   it("scales highlight coordinates with zoom", () => {
@@ -234,4 +379,157 @@ describe("PDF diff highlights", () => {
       "active",
     );
   });
+
+  it.each(["signing_region", "signing_region_visual"])(
+    "renders %s evidence with the signing region mark kind",
+    (method) => {
+      const methodDiff: DiffItem = {
+        ...signingRegionDiff,
+        compare_evidence: signingRegionDiff.compare_evidence?.map((evidence) => ({ ...evidence, method })),
+      };
+      const highlight = getPageHighlights([methodDiff], "compare", 1)[0];
+
+      render(
+        <PdfHighlightLayer
+          activeDiffId="diff-signing"
+          highlights={[highlight]}
+          pageSize={{ width: 595, height: 842 }}
+          zoom={1}
+          onActivateDiff={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: "定位差异 diff-signing" })).toHaveClass(
+        "pdf-highlight-mark",
+        "modify",
+        "signing-region",
+        "active",
+      );
+    },
+  );
+
+  it("renders signing region element evidence as a typed diff highlight", () => {
+    const highlight = getPageHighlights([signingRegionDiff], "compare", 1)[0];
+
+    render(
+      <PdfHighlightLayer
+        activeDiffId="diff-signing"
+        highlights={[highlight]}
+        pageSize={{ width: 595, height: 842 }}
+        zoom={1}
+        onActivateDiff={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "定位差异 diff-signing" })).toHaveClass(
+      "pdf-highlight-mark",
+      "modify",
+      "text",
+      "active",
+    );
+  });
+
+  it("uses typed signing party evidence instead of the untyped whole-region context", () => {
+    const highlights = getPageHighlights([signingPartyDiff], "original", 53);
+
+    expect(highlights).toHaveLength(1);
+    expect(highlights[0].type).toBe("MODIFY");
+    expect(highlights[0].evidence.text).toBe("甲方：国能长源随州发电有限公司随县分公司");
+    expect(highlights[0].evidence.bbox).toEqual({ x0: 71, y0: 86, x1: 287, y1: 137 });
+  });
+
+  it("keeps the visual signing recognition outline with the precise field highlight", () => {
+    const highlights = getPageHighlights([signingPartyAndVisualDiff], "original", 53);
+
+    expect(highlights).toHaveLength(2);
+    expect(highlights.map((highlight) => highlight.evidence.method)).toEqual([
+      "signing_region_visual",
+      "signing_region_element",
+    ]);
+    expect(highlights[0].markKind).toBe("signing-region");
+    expect(highlights[1].markKind).toBe("text");
+    expect(highlights[1].evidence.bbox).toEqual({ x0: 71, y0: 86, x1: 287, y1: 137 });
+  });
+
+  it("locates a signing diff by its visual region instead of an inner field", () => {
+    const target = getScrollTargetEvidence(signingPartyAndVisualDiff, "original");
+
+    expect(target?.method).toBe("signing_region_visual");
+    expect(target?.bbox).toEqual({ x0: 50, y0: 78, x1: 542, y1: 537 });
+  });
+});
+
+it.each(['COMPANY_ROUND_SEAL', 'PERSONAL_NAME_SEAL', 'EDGE_SEAM_SEAL', 'OTHER_STAMP'])(
+  'renders %s as a seal regardless of recall route or review confidence', (objectType) => {
+    const recalled: DiffItem = { ...diff, source_type: 'signing_region',
+      match_score_details: { object_type: objectType },
+      compare_evidence: [{ page_no: 12, bbox: { x0: 10, y0: 20, x1: 100, y1: 110 },
+        method: 'whole_page_visual_object', confidence: 0.55 }] };
+    expect(getPageHighlights([recalled], 'compare', 12)[0].markKind).toBe('seal');
+    expect(getPageHighlights([{ ...recalled, source_type: 'seal' }], 'compare', 12)[0].markKind).toBe('seal');
+  },
+);
+
+it('does not merge two distinct adjacent seal objects into one highlight', () => {
+  const item: DiffItem = { ...diff, source_type: 'seal', compare_evidence: [
+    { page_no: 1, bbox: { x0: 10, y0: 20, x1: 100, y1: 110 }, method: 'whole_page_visual_object' },
+    { page_no: 1, bbox: { x0: 105, y0: 20, x1: 195, y1: 110 }, method: 'whole_page_visual_object' },
+  ] };
+  expect(getPageHighlights([item], 'compare', 1)).toHaveLength(2);
+});
+
+it('renders independent unverified footer ink as a review outline', () => {
+  const item: DiffItem = {
+    ...diff, diff_id: 'footer-visual', diff_type: 'ADD', source_type: 'header_footer',
+    content_recognition_reason: 'VISUAL_FOOTER_CONTENT_UNVERIFIED',
+    compare_evidence: [{ page_no: 1, bbox: { x0: 430, y0: 770, x1: 520, y1: 830 },
+      method: 'footer_visual_registered', highlight_type: 'ADD', confidence: .9 }],
+  };
+  expect(getPageHighlights([item], 'compare', 1)[0].markKind).toBe('observation');
+});
+
+it('does not render fused footer support as another primary difference', () => {
+  const evidence = { page_no: 1, bbox: { x0: 445, y0: 785, x1: 511, y1: 829 },
+    method: 'header_footer', highlight_type: 'ADD' as const, confidence: .9 };
+  const item: DiffItem = { ...diff, diff_type: 'ADD', source_type: 'header_footer',
+    compare_evidence: [evidence], match_score_details: {
+      footer_visual_evidence: [{ side: 'compare', evidence: { ...evidence, method: 'footer_visual_registered' } }],
+    } };
+  const marks = getPageHighlights([item], 'compare', 1);
+  expect(marks).toHaveLength(1);
+  expect(marks[0].evidence.method).toBe('header_footer');
+});
+
+it('keeps clause line highlights grouped without painting interline whitespace', () => {
+  const raw = { page_no: 3, bbox: { x0: 200, y0: 650, x1: 220, y1: 665 }, method: 'char_exact', highlight_type: 'DELETE' as const };
+  const full = { page_no: 3, bbox: { x0: 90, y0: 608, x1: 160, y1: 620 }, method: 'clause_rewrite_display', highlight_type: 'MODIFY' as const };
+  const lines = [full, {...full, bbox: {x0: 110, y0: 636, x1: 505, y1: 647}}, {...full, bbox: {x0: 90, y0: 664, x1: 300, y1: 675}}];
+  const diff = { diff_id: 'payment', diff_type: 'MODIFY', original_evidence: [raw], compare_evidence: [],
+    clause_display_evidence: { unit: 'clause', original: lines, compare: lines } } as DiffItem;
+  for (const side of ['original', 'compare'] as const) {
+    const highlights = getPageHighlights([diff], side, 3);
+    expect(highlights).toHaveLength(3);
+    expect(highlights.every(h => h.type === 'MODIFY' && h.diffId === 'payment')).toBe(true);
+    expect(highlights.some(h => h.evidence.bbox.y0 < 628 && h.evidence.bbox.y1 > 628)).toBe(false);
+    expect(highlights.map(h => h.evidence)).toEqual(expect.arrayContaining(lines));
+    expect(getScrollTargetEvidence(diff, side)).toEqual(full);
+    expect(getPageHighlights([diff], side, 4)).toHaveLength(0);
+  }
+  expect(diff.original_evidence).toEqual([raw]);
+  expect(getPageHighlights([{...diff, clause_display_evidence: null}], 'original', 3)[0].type).toBe('DELETE');
+});
+
+it('paints the whole location value as one MODIFY without changing raw word boxes', () => {
+  const word = {page_no: 1, bbox: {x0: 100, y0: 20, x1: 120, y1: 30}, method: 'cover_metadata', highlight_type: 'MODIFY' as const};
+  const value = {...word, bbox: {x0: 100, y0: 20, x1: 160, y1: 30}, text: '广东省广州市'};
+  const item = {...diff, diff_type: 'MODIFY' as const, original_evidence: [word, {...word,bbox: {x0: 130,y0:20,x1:150,y1:30}}],
+    field_display_evidence: {unit: 'field' as const,field_key: 'sign_place',original: [value],compare: [{...value,text: '浙江省金华市'}]}};
+  for (const side of ['original','compare'] as const) {
+    const marks=getPageHighlights([item],side,1);
+    expect(marks).toHaveLength(1);
+    expect(marks[0].type).toBe('MODIFY');
+    expect(marks[0].evidence.bbox).toEqual(value.bbox);
+    expect(getScrollTargetEvidence(item,side)?.bbox).toEqual(value.bbox);
+  }
+  expect(item.original_evidence).toHaveLength(2);
 });

@@ -1,40 +1,50 @@
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
-import pytest
-
 from app.config import Settings
-from app.infrastructure.artifact_store import LocalArtifactStore
-from app.utils.file_utils import FileValidationError
+from app.infrastructure.artifact_store import ArtifactStore
 
 
-def test_local_artifact_store_resolves_task_artifact_paths(tmp_path: Path) -> None:
-    app_settings = Settings(storage_dir=tmp_path / "storage")
-    store = LocalArtifactStore(app_settings)
+def test_fixed_layout_preserves_original_filenames(tmp_path: Path) -> None:
+    store = ArtifactStore(Settings(storage_dir=tmp_path / "storage"))
 
-    assert store.upload_path("T/001", "original", "a.pdf") == (
-        app_settings.tasks_dir / "T_001" / "uploads" / "original_a.pdf"
+    assert store.upload_path("T1", "original", "合同 初稿.pdf") == (
+        tmp_path / "storage" / "tasks" / "T1" / "input" / "original" / "合同 初稿.pdf"
     )
-    assert store.report_pdf_path("T001") == (
-        app_settings.tasks_dir / "T001" / "reports" / "contract_compare_report.pdf"
+    assert store.upload_path("T1", "compare", "合同 终稿.pdf") == (
+        tmp_path / "storage" / "tasks" / "T1" / "input" / "compare" / "合同 终稿.pdf"
     )
-    assert store.raw_json_path("T001", "合同 初稿.pdf", "ppocrv5_raw").name == "合同_初稿_ppocrv5_raw.json"
+    assert store.report_pdf_path("T1", 3).name == "report-r3.pdf"
 
 
-def test_local_artifact_store_guards_writes_outside_storage(tmp_path: Path) -> None:
-    store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+def test_publish_uses_atomic_move_and_does_not_create_manifest(tmp_path: Path) -> None:
+    store = ArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    source = store.staging_path("T1", "attempt", "original", "合同.pdf")
+    destination = store.upload_path("T1", "original", "合同.pdf")
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"pdf")
 
-    with pytest.raises(FileValidationError):
-        store.write_json(tmp_path / "outside.json", {"ok": True})
+    assert store.publish_staged(source, destination) == destination
+    assert destination.read_bytes() == b"pdf"
+    assert not source.exists()
+    assert not (store.task_root("T1") / "manifest.json").exists()
 
 
-def test_local_artifact_store_writes_json_inside_storage(tmp_path: Path) -> None:
-    store = LocalArtifactStore(Settings(storage_dir=tmp_path / "storage"))
-    path = store.debug_json_path("T001", "debug.json")
+def test_diagnostics_and_expired_staging_have_simple_cleanup(tmp_path: Path) -> None:
+    store = ArtifactStore(Settings(storage_dir=tmp_path / "storage"))
+    diagnostic = store.debug_json_path("T1", "quality.json")
+    store.write_json(diagnostic, {"ok": True})
+    stale = store.staging_path("T1", "stale", "original", "a.pdf")
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"x")
+    old = time.time() - 2 * 24 * 60 * 60
+    os.utime(stale.parent.parent, (old, old))
 
-    written = store.write_json(path, {"ok": True})
+    store.remove_diagnostics("T1")
+    store.remove_expired_staging("T1")
 
-    assert written == path
-    assert path.read_text(encoding="utf-8").strip().startswith("{")
-    assert (path.parents[1] / "manifest.json").exists()
+    assert not diagnostic.exists()
+    assert not stale.exists()

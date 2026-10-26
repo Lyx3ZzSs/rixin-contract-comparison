@@ -1,0 +1,29 @@
+SUIZHOU_CHANGYUAN 黄金集更新（2026-10-26）
+
+授权与来源
+用户明确要求“更新d2464761-6d53-45c6-a97d-27aa2a481c8c，黄金集”。来源更新为该已完成任务，旧来源bbdbdf77-c3d2-46e0-861e-b04c189b9b67加入历史。两份53页PDF的SHA256均与既有封存样本一致；不更换PDF。
+
+业务真值与变更
+修订第3页既有正例SUIZHOU_CHANGYUAN_P3_CLAUSE_MODIFY_F1D4901845：原图大写总价柒万捌仟元整→柒万叁仟元整，属于真实修改，仍要求MUST_REVIEW和原有识读状态。标准稿大写78000与数字73000不一致，不能按数字金额抹掉真实变化。清除旧语义真值中任的OCR错误，使用完整总价字段描述，并补充比较侧变化字的定位约束min_iou=0.35。
+新增2条MUST_NOT_EXIST：本组PDF第3页含不含税大写金额的条款，两侧变化字符范围均不得包含仟/任。两处金融单位原图均为仟；不含税大写金额相同。无论实际输出是确认还是待复核，均应拒绝该识读误报。
+其余87条旧规则完整保留，包括第33页尚未在本轮修订的既有规则；不将130项运行输出整体当作黄金真值。字段高亮范围另由test_financial_amount_highlights.py及test_financial_amount_ocr.py保护，本轮未修改语义匹配器。
+
+计数
+本合同88→90条，全库309→311条，仍15合同、30份不可变PDF。来源任务实际差异130项。黄金规则数包含负例，不等于页面差异数。
+
+验证
+当前任务快照：90条规则中73条通过、17条既有失败；本次新增/修订3条全部通过。旧第3页语义包含错误任导致的那一条失败被已核实真值修订消除；其余17条既有失败类别与更新前逐项一致。
+修复前同任务快照在NORMAL和NEEDS_REVIEW两种状态下，新增2条负例均准确报FALSE_POSITIVE_REGRESSION。
+移除真实总价修改触发FALSE_NEGATIVE_REGRESSION；将其定位框移到空白处触发BBOX_REGRESSION。
+30份封存PDF哈希及页数、311条规则计数通过装载校验。其余14份oracle、其余manifest合同条目及全部PDF元数据逐项保持不变。
+黄金基础设施测试15项通过，用户授权的基线变更检查通过；该检查相对HEAD还包含此前未提交的黄金更新，本次独立变更见baseline-update.patch。
+本轮复用已完成任务及上一轮实际扫描页核验、定向重算结果，未重新执行15份合同完整提取流水线；不宣称全库业务回放通过。
+
+证据与复现
+output/analysis/golden-suizhou-d2464761-20261026/：before备份、当前及修复前任务快照、规则更新脚本、当前评估、反向检查、validation-summary.json。
+output/analysis/financial-ocr-fix-20261026/：实际扫描页两上下文OCR核验、原始识读审计、API结果与PDF高亮渲染。
+backend/.venv/bin/python output/analysis/golden-suizhou-d2464761-20261026/validate.py
+GOLDEN_CONTRACT_DATA_ROOT=storage/golden-intake/contract-golden-v3 backend/.venv/bin/python backend/scripts/verify_golden_contract_data.py
+backend/.venv/bin/python -m pytest backend/tests/test_contract_golden_infrastructure.py -q
+
+本轮仅更新黄金来源、语义规则、计数及说明；未修改业务算法、数据库任务或人工审核状态，无需重启服务。

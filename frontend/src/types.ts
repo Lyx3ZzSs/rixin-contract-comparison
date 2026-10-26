@@ -1,8 +1,86 @@
 export type TaskStatus = "PROCESSING" | "COMPLETED" | "FAILED";
+export type TaskTerminalReason = "NONE" | "EXECUTION_FAILED" | "SUBMISSION_FAILED" | "CANCELLED";
 export type DiffType = "ADD" | "DELETE" | "MODIFY";
 export type EvidenceQuality = "LOW" | "MEDIUM" | "HIGH";
 export type DiffQualityStatus = "NORMAL" | "NEEDS_REVIEW";
+export type ContentRecognitionStatus = "CONFIRMED" | "NEEDS_REVIEW";
+export type OcrQualityStatus =
+  | "OK"
+  | "LOW_TEXT_CONFIDENCE"
+  | "LAYOUT_MISMATCH"
+  | "READING_ORDER_RISK"
+  | "TABLE_RISK"
+  | "SEAL_OR_SIGNATURE_RISK"
+  | "UNRELIABLE";
+export type OcrQualitySide = "original" | "compare";
 export type ReviewStatus = "UNREVIEWED" | "CONFIRMED" | "FALSE_POSITIVE" | "NEEDS_REVIEW" | "IGNORED";
+
+export interface PageOcrQualityProfile {
+  side: OcrQualitySide;
+  page_no: number;
+  status: OcrQualityStatus;
+  score: number;
+  reasons: string[];
+  metrics: Record<string, number | string | boolean>;
+  affected_diff_ids: string[];
+}
+
+export interface TaskOcrQualitySummary {
+  status: OcrQualityStatus;
+  requires_review: boolean;
+  page_count_by_status: Record<string, number>;
+  risk_page_count: number;
+  affected_diff_count: number;
+  profiles: PageOcrQualityProfile[];
+}
+
+export type OcrRemediationActionType =
+  | "NO_ACTION"
+  | "MARK_REVIEW"
+  | "RELOCATE_EVIDENCE"
+  | "REPAIR_TABLE"
+  | "RETRY_OCR_PAGE"
+  | "ESCALATE_MANUAL_REVIEW";
+
+export type OcrRemediationStatus =
+  | "PLANNED"
+  | "SKIPPED"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "MANUAL_REVIEW_REQUIRED";
+
+export type OcrRemediationSummaryStatus =
+  | "OK"
+  | "ACTIONS_PLANNED"
+  | "MANUAL_REVIEW_REQUIRED";
+
+export interface OcrRemediationAction {
+  action_id: string;
+  action_type: OcrRemediationActionType;
+  reason: string;
+  status: OcrRemediationStatus;
+  side?: OcrQualitySide | null;
+  page_no?: number | null;
+  diff_id?: string | null;
+  before_quality: Record<string, unknown>;
+  after_quality: Record<string, unknown>;
+  changed_evidence: boolean;
+  changed_diff_text: boolean;
+  review_flags_added: string[];
+  notes: string[];
+}
+
+export interface TaskOcrRemediationSummary {
+  status: OcrRemediationSummaryStatus;
+  requires_manual_review: boolean;
+  attempted_action_count: number;
+  successful_action_count: number;
+  unresolved_action_count: number;
+  risk_reduced_page_count: number;
+  risk_reduced_diff_count: number;
+  manual_review_required_count: number;
+  actions: OcrRemediationAction[];
+}
 
 export interface ParseWarningDetail {
   code: string;
@@ -46,24 +124,35 @@ export interface DocumentProfile {
 export interface CompareResponse {
   task_id: string;
   status: TaskStatus;
+  terminal_reason: TaskTerminalReason;
+  revision?: number;
+  report_revision: number;
+  retry_eligible?: boolean;
   stage: string;
   progress_percent: number;
   diff_count: number;
+  event_count?: number | null;
+  event_version?: string;
   reviewed_count?: number;
   confirmed_count?: number;
   false_positive_count?: number;
   manual_review_count?: number;
   ignored_count?: number;
   audit_item_reviews?: Record<string, AuditItemReview>;
+  audit_items?: AuditItem[];
   extractor_used?: string;
   parse_warnings?: string[];
   parse_warning_details?: ParseWarningDetail[];
   document_profiles?: Record<string, DocumentProfile>;
+  ocr_quality_summary?: TaskOcrQualitySummary | null;
+  ocr_remediation_summary?: TaskOcrRemediationSummary | null;
   debug_artifact_paths?: Record<string, string>;
+  signing_region_outlines?: SigningRegionOutlines;
   report_url: string;
   report_filename: string;
   original_pdf_url: string;
   compare_pdf_url: string;
+  preview_available?: boolean;
   original_highlight_pdf_url: string;
   compare_highlight_pdf_url: string;
   errors: string[];
@@ -79,6 +168,10 @@ export interface CompareTask extends CompareResponse {
 export interface CompareRecordSummary {
   task_id: string;
   status: TaskStatus;
+  terminal_reason: TaskTerminalReason;
+  revision?: number;
+  report_revision: number;
+  retry_eligible?: boolean;
   stage: string;
   progress_percent: number;
   created_at: string;
@@ -86,7 +179,32 @@ export interface CompareRecordSummary {
   original_filename: string;
   compare_filename: string;
   diff_count: number;
+  event_count?: number | null;
+  event_version?: string;
   report_url: string;
+}
+
+export interface CompareRecordListResponse {
+  records: CompareRecordSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface CompareRecordQuery {
+  page?: number;
+  pageSize?: number;
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface TaskExecutionResponse {
+  job_id: string;
+  task_id: string;
+  status: string;
+  execution_no: number;
+  attempt: number;
 }
 
 export interface BBox {
@@ -107,7 +225,14 @@ export interface EvidenceBox {
   text_confidence?: number | null;
 }
 
+export interface SigningRegionOutlines {
+  original: EvidenceBox[];
+  compare: EvidenceBox[];
+}
+
 export interface DiffItem {
+  field_display_evidence?: { unit: "field"; field_key: string; original: EvidenceBox[]; compare: EvidenceBox[] } | null;
+  clause_display_evidence?: { unit: "clause"; original: EvidenceBox[]; compare: EvidenceBox[] } | null;
   diff_id: string;
   diff_type: DiffType;
   clause_no: string;
@@ -118,12 +243,16 @@ export interface DiffItem {
   compare_snippet: string;
   readable_change: string;
   source_type?: string;
+  section_type?: string;
   match_score?: number | null;
   match_method?: string;
-  match_score_details?: Record<string, number>;
+  match_score_details?: Record<string, number | string>;
   match_candidates?: Record<string, unknown>[];
   review_flags?: string[];
   quality_status?: DiffQualityStatus;
+  content_recognition_status?: ContentRecognitionStatus;
+  content_recognition_reason?: string;
+  content_candidates?: Record<string, unknown>[];
   text_confidence?: number | null;
   merged_sources?: string[];
   review_status?: ReviewStatus;
@@ -134,26 +263,6 @@ export interface DiffItem {
   compare_evidence?: EvidenceBox[];
 }
 
-export type ExtractionFieldStatus = "found" | "not_found" | "error";
-
-export interface ExtractionFieldValue {
-  field_id: string;
-  field_name: string;
-  value: string;
-  confidence: number;
-  source_snippet: string;
-  status: ExtractionFieldStatus;
-  extraction_method?: "explicit" | "semantic" | null;
-}
-
-
-
-export interface DiffReviewPayload {
-  review_status: ReviewStatus;
-  review_comment?: string;
-  reviewed_by?: string;
-}
-
 export interface AuditItemReview {
   audit_item_id?: string;
   review_status: ReviewStatus;
@@ -162,23 +271,64 @@ export interface AuditItemReview {
   reviewed_at?: string;
 }
 
+export interface AuditItem {
+  audit_item_id: string;
+  diff_id: string;
+  diff_type: DiffType;
+  source_type: string;
+  section_type: string;
+  section_path: string[];
+  title: string;
+  summary: string;
+  original_text: string;
+  compare_text: string;
+  original_evidence: EvidenceBox[];
+  compare_evidence: EvidenceBox[];
+  evidence_state: "LOCATED" | "UNLOCATED";
+  quality_status: DiffQualityStatus;
+  change_decision?: "CONFIRMED" | "CANDIDATE" | "NEEDS_REVIEW";
+  content_recognition_status?: ContentRecognitionStatus;
+  content_recognition_reason?: string;
+  content_candidates?: Record<string, unknown>[];
+  structural_flags: string[];
+  review_flags: string[];
+  text_confidence?: number | null;
+  match_confidence: string | null;
+  ocr_context: {
+    scope?: "ITEM" | "DIFF" | "NONE";
+    affected: boolean;
+    statuses: OcrQualityStatus[];
+    reasons: string[];
+    sides: OcrQualitySide[];
+    page_numbers: number[];
+  };
+  remediation_context: {
+    scope?: "ITEM" | "DIFF" | "NONE";
+    action_ids: string[];
+    action_types: OcrRemediationActionType[];
+    statuses: OcrRemediationStatus[];
+    changed_evidence: boolean;
+    changed_diff_text: boolean;
+    requires_manual_review: boolean;
+  };
+  review_status: ReviewStatus;
+  review_comment: string;
+  reviewed_by: string;
+  reviewed_at: string;
+}
+
 export interface DiffReviewResponse {
   task_id: string;
   diff: DiffItem;
   review_stats: {
+    total_count: number;
     reviewed_count: number;
     confirmed_count: number;
     false_positive_count: number;
     manual_review_count: number;
     ignored_count: number;
+    review_unit: "audit_item";
   };
-}
-
-export interface AuditItemReviewResponse {
-  task_id: string;
-  audit_item_id: string;
-  audit_item_review: AuditItemReview;
-  review_stats: DiffReviewResponse["review_stats"];
 }
 
 export interface QualityDiffItem {
@@ -199,11 +349,20 @@ export interface CompareQualitySummary {
   task_id: string;
   status: TaskStatus;
   diff_count: number;
+  event_count?: number | null;
+  event_version?: string;
   review_stats: DiffReviewResponse["review_stats"];
   source_counts: Record<string, number>;
   needs_review_count?: number;
   review_flag_counts?: Record<string, number>;
   cross_source_merged_count?: number;
+  ocr_quality_summary?: TaskOcrQualitySummary | null;
+  ocr_remediation_summary?: TaskOcrRemediationSummary | null;
+  ocr_remediation_action_count?: number;
+  ocr_remediation_unresolved_count?: number;
+  manual_review_required_count?: number;
+  ocr_risk_page_count?: number;
+  ocr_affected_diff_count?: number;
   evidence_quality_counts: Record<EvidenceQuality, number>;
   document_profile_summary: Record<string, {
     filename: string;
@@ -218,4 +377,50 @@ export interface CompareQualitySummary {
   low_confidence_diffs: QualityDiffItem[];
   low_similarity_diffs: QualityDiffItem[];
   debug_artifacts: Record<string, string>;
+}
+
+export interface DiffEvent {
+  context?: { original_text: string; compare_text: string };
+  event_id: string;
+  raw_diff_ids: string[];
+  direction: DiffType;
+  grouping_reason: string;
+  diff: DiffItem;
+  children: DiffItem[];
+  audit_item_ids: string[];
+  review_conflict: boolean;
+}
+export interface PageAlignmentEntry {
+  status: string;
+  original_pages: number[];
+  compare_pages: number[];
+  alignment_score: number;
+}
+export interface ComparisonObservation extends AuditItemReview {
+  change_resolution?: 'CONFIRMED_CHANGE' | 'IMPRESSION' | null;
+  decision_evidence?: Record<string, unknown>;
+  source_type?: DiffItem["source_type"] | null;
+  observation_id: string;
+  title: string;
+  reason: string;
+  message: string;
+  original_evidence: EvidenceBox[];
+  compare_evidence: EvidenceBox[];
+}
+export type SealDecision = 'CONFIRMED_CHANGE' | 'IMPRESSION' | 'RESET';
+export interface DiffEventResponse {
+  comparison_observations?: ComparisonObservation[];
+  comparison_observation_count?: number;
+  graphic_observations?: { side: "original" | "compare"; page: number; bbox: number[]; counterpart_page?: number; counterpart_bbox?: number[]; decision: string; reason: string }[];
+  task_id: string;
+  revision: number;
+  version: string;
+  snapshot_persisted: boolean;
+  context_available: boolean;
+  merge_diff: boolean;
+  raw_diff_count: number;
+  event_count: number;
+  counts: { insert: number; delete: number; change: number; total: number };
+  page_alignment: PageAlignmentEntry[];
+  events: DiffEvent[];
 }

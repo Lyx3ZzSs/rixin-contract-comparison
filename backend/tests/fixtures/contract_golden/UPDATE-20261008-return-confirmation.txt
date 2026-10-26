@@ -1,0 +1,28 @@
+RETURN_CONFIRMATION Golden 更新记录（2026-10-08）
+
+授权：用户明确要求“更新这份对比任务的黄金级”。对应任务 f566b562-9a68-4187-a2f9-32678e26d020。
+这是标注及验收标准更新，不是将当前全部识别结果直接提升为真值，也未修改任务数据库中的人工审核状态。
+
+变更
+1. RETURN_CONFIRMATION 15→23条；全库15份合同、263条断言。baseline_version仍为contract-golden-v3，增加review_revision=2026-10-08-return-confirmation，并同步封存断言计数校验。
+2. 新增6条标题误报负例：原第11页一、；原第13页五、培训与文档交付；原第13页1.；原第13页六、；比第14页六、；技术支持章节假新增。
+3. 新增2条签署负例：不得输出“江苏东达全智信息系统有限公司”的甲方名称变更；不得将未变化的盖章提示纳入甲方差异高亮。允许公司名与盖章提示属于同一字段，不要求拆成两个差异。
+4. 修订原第7页标的物断言，保持case_id和复核要求，以Compare第7页真实新增“安装”的精确高亮范围验收。Original文字位于第6页末，为“还包含调试”；Compare为“还包含安装调试”。删除旧断言对错误条款标题和截断且相同的前后长文本的依赖。
+5. 其余14条该合同断言不变；其他14份合同oracle逐文件SHA256不变；30个PDF哈希及页数不变；未放宽任何既有bbox阈值。
+6. manifest中的该合同source_run_id更新至当前任务，保存上一source_run_id。版本化私有PDF目录继续使用storage/golden-intake/contract-golden-v3。
+
+证据
+本侧Compare第11页公司名经3倍和5倍局部OCR，均得到“甲方：江苏东大金智信息系统有限公司”，置信度分别0.967706与0.968906，支持原图目视判断。原件公司名也为东大金智。数据见output/analysis/golden-return-update-20261008/party-local-ocr.json。
+原图裁片：party-original.png、party-compare.png、installation-original.png、installation-compare.png。
+标题原图、诊断与修复验证沿用output/analysis/heading-delete-62ca3935-20261008/和output/analysis/heading-remediation-20261008/。
+
+验证
+Golden数据装载验证通过：15份合同、30个PDF哈希/页数通过、263条断言。
+Golden基础设施测试15项通过；新增测试验证未变化盖章文字可以保留在上下文而不得高亮，并验证安装必须属于实际变更范围。
+matcher仅新增可选highlight_expectation(side,pattern)，按真实change_ranges截取字符后匹配；既有断言无此字段时行为不变。新增负例不只是检查全文包含关键词，避免把合理上下文误作高亮失败。
+现任务23条：9正例通过、7负例通过、7失败。新增8条中6条已通过，2条失败准确对应D014甲方名称误识别与整段盖章高亮。
+原有5条失败仍保留：封面签订日期、两条封面额外文本、两条签章通道预期。没有为了当前算法通过而删除这些预期。
+旧版本固定输入回放的原有8种错误，全部被新负例检出；新任务仅剩2种，说明新增标注具有检错能力。
+Golden变更守卫通过。此次GOLDEN_BASELINE_CHANGE_APPROVED=1的依据是用户本轮明确授权，而非算法自行修改基准求通过。
+详细现任务报告：output/analysis/golden-return-update-20261008/current-task-report.json。
+本次没有修改生产比对逻辑、重跑任务或重启服务；没有宣称当前任务全部符合Golden。

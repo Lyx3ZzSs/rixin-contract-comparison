@@ -1,3 +1,4 @@
+from app.models import BBox
 from app.services.table_compare.html_parser import parse_html_tables
 
 
@@ -135,7 +136,6 @@ class TestStructuredTableHelpers:
 
 class TestCellBboxes:
     def test_cell_bboxes_assigned(self):
-        from app.models import BBox
         html = "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>"
         bboxes = [
             BBox(x0=0, y0=0, x1=50, y1=20),
@@ -155,7 +155,6 @@ class TestCellBboxes:
         assert t.get_cell(0, 0).bbox is None
 
     def test_cell_bboxes_with_colspan(self):
-        from app.models import BBox
         html = '<table><tr><td colspan="2">AB</td><td>C</td></tr></table>'
         bboxes = [
             BBox(x0=0, y0=0, x1=100, y1=20),
@@ -164,3 +163,91 @@ class TestCellBboxes:
         t = parse_html_tables(html, cell_bboxes=bboxes)[0]
         assert t.get_cell(0, 0).bbox == BBox(x0=0, y0=0, x1=100, y1=20)
         assert t.get_cell(0, 2).bbox == BBox(x0=100, y0=0, x1=150, y1=20)
+
+    def test_bbox_grid_corrects_minor_column_conflict(self):
+        html = "<table><tr><td>A</td><td>B</td></tr></table>"
+        bboxes = [
+            BBox(x0=50, y0=0, x1=90, y1=20),
+            BBox(x0=0, y0=0, x1=40, y1=20),
+        ]
+
+        t = parse_html_tables(html, cell_bboxes=bboxes)[0]
+
+        assert t.geometry_status == "minor_conflict"
+        assert t.get_cell(0, 0).text == "B"
+        assert t.get_cell(0, 1).text == "A"
+
+    def test_bbox_count_mismatch_marks_low_confidence(self):
+        html = "<table><tr><td>A</td><td>B</td></tr></table>"
+        t = parse_html_tables(
+            html,
+            cell_bboxes=[BBox(x0=0, y0=0, x1=40, y1=20)],
+        )[0]
+
+        assert t.geometry_status == "low_confidence"
+        assert "bbox_count_mismatch" in t.geometry_warnings
+        assert t.geometry_confidence < 1.0
+
+    def test_severe_bbox_row_conflict_is_marked(self):
+        html = (
+            "<table>"
+            "<tr><td>A</td><td>B</td></tr>"
+            "<tr><td>C</td><td>D</td></tr>"
+            "<tr><td>E</td><td>F</td></tr>"
+            "</table>"
+        )
+        bboxes = [
+            BBox(x0=0, y0=0, x1=40, y1=20),
+            BBox(x0=50, y0=0, x1=90, y1=20),
+            BBox(x0=0, y0=0, x1=40, y1=20),
+            BBox(x0=50, y0=0, x1=90, y1=20),
+            BBox(x0=0, y0=0, x1=40, y1=20),
+            BBox(x0=50, y0=0, x1=90, y1=20),
+        ]
+
+        t = parse_html_tables(html, cell_bboxes=bboxes)[0]
+
+        assert t.geometry_status == "severe_conflict"
+        assert "bbox_html_row_count_delta" in t.geometry_warnings
+
+    def test_right_fragment_overflow_is_marked(self):
+        html = "<table><tr><td>A</td><td>B</td><td>3</td><td>碎</td></tr></table>"
+        t = parse_html_tables(
+            html,
+            cell_bboxes=[
+                BBox(x0=0, y0=0, x1=40, y1=20),
+                BBox(x0=50, y0=0, x1=90, y1=20),
+            ],
+        )[0]
+
+        assert "right_fragment_overflow" in t.geometry_warnings
+
+    def test_multiple_tables_use_each_tables_own_bbox_count(self):
+        html = (
+            "<table><tr><td>A</td><td>B</td></tr></table>"
+            "<table><tr><td>C</td><td>D</td></tr></table>"
+        )
+        tables = parse_html_tables(
+            html,
+            cell_bboxes=[
+                BBox(x0=0, y0=0, x1=40, y1=20),
+                BBox(x0=50, y0=0, x1=90, y1=20),
+                BBox(x0=0, y0=40, x1=40, y1=60),
+                BBox(x0=50, y0=40, x1=90, y1=60),
+            ],
+        )
+
+        assert [table.geometry_status for table in tables] == ["consistent", "consistent"]
+        assert all("bbox_count_mismatch" not in table.geometry_warnings for table in tables)
+        assert [table.bbox_cell_count for table in tables] == [2, 2]
+
+    def test_invalid_span_attributes_fall_back_to_one(self):
+        html = (
+            '<table><tr><td colspan="">A</td><td rowspan="bad">B</td></tr>'
+            '<tr><td colspan="0">C</td><td rowspan="-2">D</td></tr></table>'
+        )
+
+        table = parse_html_tables(html)[0]
+
+        assert table.col_count == 2
+        assert [[cell.text for cell in row.cells] for row in table.rows] == [["A", "B"], ["C", "D"]]

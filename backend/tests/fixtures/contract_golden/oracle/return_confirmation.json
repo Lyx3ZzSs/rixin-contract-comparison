@@ -1,0 +1,420 @@
+{
+  "schema_version": 1,
+  "contract_key": "RETURN_CONFIRMATION",
+  "expected_case_count": 23,
+  "assertions": [
+    {
+      "case_id": "RETURN_CONFIRMATION_P1_HEADER_FOOTER_MODIFY_278788ADC9",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "header_footer",
+      "source_type": "header_footer",
+      "diff_type": "MODIFY",
+      "title": "页脚页码",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_before": "页码格式:共14页第N页(覆盖第1-14页)",
+      "semantic_after": "页码格式:共15页第N页(覆盖第1-15页)"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P1_METADATA_ADD_D5AACA05A3",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面字段：合同编号",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "XX-C-260520"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P1_DATE_MODIFY_2FBE901E3B",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "MODIFY",
+      "title": "封面字段：签订日期",
+      "field_type": "date",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_before": "2026年4月日",
+      "semantic_after": "2026年4月21日"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P1_METADATA_ADD_8E27E5E34C",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面额外文本",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "GNXMXN-22604A-00044"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P1_METADATA_ADD_4894DBD1E0",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "cover",
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "title": "封面额外文本",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "录"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P15_SEAL_ADD_901AA50156",
+      "assertion": "MUST_REVIEW",
+      "page": 15,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "title": "印章区域（第15页）",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "限公司",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 518.0,
+          "y0": 345.5,
+          "x1": 550.0,
+          "y1": 443.0
+        },
+        "min_iou": 0.35
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_SIGNATURE_ADD_EE35BF633F",
+      "assertion": "MUST_REVIEW",
+      "page": 11,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "乙方 · 日期",
+      "party": "乙方",
+      "field_type": "date",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "2026.",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 372.5,
+          "y0": 151.0,
+          "x1": 403.5,
+          "y1": 177.5
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_SIGNATURE_MODIFY_AF46BC6FA3",
+      "assertion": "MUST_REVIEW",
+      "page": 11,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "MODIFY",
+      "title": "乙方 · 法人代表或授权委托人",
+      "party": "乙方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "法人代表或授权委托人",
+      "semantic_after": "法人代表或",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 338.0,
+          "y0": 108.0,
+          "x1": 398.5,
+          "y1": 125.0
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P10_SIGNATURE_DELETE_FA0B07F45D",
+      "assertion": "MUST_REVIEW",
+      "page": 10,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "乙方 · (签字)",
+      "party": "乙方",
+      "field_type": "signature",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "(签字)",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 397.3664905922839,
+          "y0": 689.9180722633054,
+          "x1": 425.85691821965526,
+          "y1": 706.9160537538505
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_SIGNATURE_MODIFY_400CE57722",
+      "assertion": "MUST_REVIEW",
+      "page": 11,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "MODIFY",
+      "title": "甲方 · 法人代表或授权委托人",
+      "party": "甲方",
+      "field_type": "legal_representative",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "法人代表或授权委托人",
+      "semantic_after": "法人",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 94.5,
+          "y0": 106.5,
+          "x1": 122.5,
+          "y1": 126.0
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 597.0
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P10_SIGNATURE_DELETE_43FD0C3FC7",
+      "assertion": "MUST_REVIEW",
+      "page": 10,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "DELETE",
+      "title": "甲方 · (签字)",
+      "party": "甲方",
+      "field_type": "signature",
+      "visual_object_type": "signature",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_before": "(签字)",
+      "bbox_expectation": {
+        "side": "original",
+        "target_bbox": {
+          "x0": 180.93920703698967,
+          "y0": 689.9180722633054,
+          "x1": 209.42963466436098,
+          "y1": 706.9160537538505
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 595.2999877929688
+      }
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_SEAL_ADD_8151DB4059",
+      "assertion": "MUST_REVIEW",
+      "page": 11,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "甲方 · 其他印章",
+      "party": "甲方",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_after": "视觉印章",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 149.46866096866097,
+          "y0": 58.02508960573477,
+          "x1": 227.3019943019943,
+          "y1": 73.98207885304659
+        },
+        "min_iou": 0.35,
+        "party_column": "left",
+        "page_width": 597.0
+      },
+      "object_type": "OTHER_STAMP",
+      "review_note": "旧目标页/物理框对应 release D013，同页最大 IoU=0.95084；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 原件可见局部红色圆弧/印章残片，暂不硬判公司章或姓名章；OTHER_STAMP表示类型未定，允许保留人工复核。"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_SEAL_ADD_3F66D4048B",
+      "assertion": "MUST_REVIEW",
+      "page": 11,
+      "region": "signing",
+      "source_type": "signing_region",
+      "diff_type": "ADD",
+      "title": "乙方 · 其他印章",
+      "party": "乙方",
+      "visual_object_type": "seal",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "CANDIDATE",
+      "semantic_after": "视觉印章",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 420.22222222222223,
+          "y0": 59.35483870967742,
+          "x1": 506.7037037037037,
+          "y1": 78.63620071684588
+        },
+        "min_iou": 0.35,
+        "party_column": "right",
+        "page_width": 597.0
+      },
+      "object_type": "OTHER_STAMP",
+      "review_note": "旧目标页/物理框对应 release D014，同页最大 IoU=0.98104；保留原 bbox 与 min_iou=0.35。旧真值绑定OCR章文或旧通道标题，现应断言同一物理章的存在/类型，而非要求输出乱码或HTML。 原件可见局部红色圆弧/印章残片，暂不硬判公司章或姓名章；OTHER_STAMP表示类型未定，允许保留人工复核。"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P7_CLAUSE_MODIFY_E3560FB61E",
+      "assertion": "MUST_REVIEW",
+      "page": 7,
+      "region": "clause",
+      "source_type": "clause",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "semantic_after": "安装",
+      "highlight_expectation": {
+        "side": "compare",
+        "pattern": "^安装$"
+      },
+      "review_note": "原第6页还包含调试、技术服务，扫描第7页还包含安装调试、技术服务；保留真实新增安装，不能绑定旧的标题标的物或截断且相同的前后文本。兼容原始MODIFY与单边ADD事件投影。"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_SEAL_NO_HTML_MARKUP",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "seal",
+      "forbidden_value_pattern": "<(?:img|div)\\b",
+      "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_HEADING_ONE_NO_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "original",
+        "pattern": "一、"
+      },
+      "review_note": "原件第11页与扫描第12页均有一、系统开放性与可配置性要求，旧OCR漏编号。",
+      "page": 11
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P13_TRAINING_HEADING_NO_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "original",
+        "pattern": "五、培训与文档交付"
+      },
+      "review_note": "双方第13/14页均有该完整标题，禁止切分残余误删。",
+      "page": 13
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P13_DOCUMENT_NUMBER_NO_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "original",
+        "pattern": "(?:^|\\n)1\\.(?:\\n|$)"
+      },
+      "review_note": "1.技术文档交付编号必须归属其正文，不能因补匹配遗留为删除。",
+      "page": 13
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P13_ACCEPTANCE_NUMBER_NO_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "original",
+        "pattern": "六、"
+      },
+      "review_note": "六、验收标准在双方原图均存在。",
+      "page": 13
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P14_ACCEPTANCE_NUMBER_NO_ADD",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "compare",
+        "pattern": "六、"
+      },
+      "review_note": "同一验收标题编号不能因条款切分产生新增。",
+      "page": 14
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_TECH_SUPPORT_HEADING_NO_ADD",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "compare",
+        "pattern": "二、调试与技术支持责任界定"
+      },
+      "review_note": "双方都有此章节及正文，不能因错并入前条款误报新增。"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_PARTY_NAME_OCR_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 11,
+      "source_type": "signing_region",
+      "party": "甲方",
+      "forbidden_value_pattern": "江苏东达全智信息系统有限公司",
+      "review_note": "两份PDF甲方均为江苏东大金智信息系统有限公司；扫描原图红章干扰，3倍/5倍本侧局部OCR读数均为东大金智。即便降为NEEDS_REVIEW，仍不得作为主体变更输出。"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_STAMP_INSTRUCTION_NO_HIGHLIGHT",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 11,
+      "source_type": "signing_region",
+      "party": "甲方",
+      "highlight_expectation": {
+        "side": "compare",
+        "pattern": "盖章"
+      },
+      "review_note": "公司名称与盖章提示可以组成一个签署字段，但未变化的盖章提示不得被名称差异整体高亮；不是要求拆出两个差异。"
+    }
+  ],
+  "baseline_version": "contract-golden-v3",
+  "review_revision": "2026-10-08-return-confirmation-party-verified",
+  "review_source_task_id": "bc3bbb91-4d4c-4bd4-928a-9843540998c0",
+  "regression_coverage": {
+    "source_task_id": "bc3bbb91-4d4c-4bd4-928a-9843540998c0",
+    "reference_tasks": [
+      "62ca3935-7793-4b68-8da4-61ccc0600d94",
+      "f566b562-9a68-4187-a2f9-32678e26d020",
+      "8f4c4bc2-e475-4794-a681-ab3ce9618cf6"
+    ],
+    "evidence_root": "output/analysis/golden-return-bc3bbb91-20261008",
+    "approval": "用户明确请求更新任务 bc3bbb91-4d4c-4bd4-928a-9843540998c0 黄金集。",
+    "scope": "更新修复验证任务来源与证据；23条语义断言及阈值保持不变。公司名误报与盖章误高亮两项已通过，其余5项失败继续保留验收要求。",
+    "previous_evidence_root": "output/analysis/golden-return-update-20261008",
+    "fix_evidence_root": "output/analysis/signing-party-fix-20261008"
+  }
+}

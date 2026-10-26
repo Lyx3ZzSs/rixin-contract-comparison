@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
+from collections import Counter
+import re
 from difflib import SequenceMatcher
 
 from app.models import BBox, CharBox, DiffItem, DiffType, EvidenceBox, TextBlock
 from app.models_table import StructuredTable
+from app.services.field_observation import (
+    FieldObservation,
+    ObservationReason,
+    ObservationState,
+    decide_observation_transition,
+)
 from app.services.table_compare.types import (
     CellDiff,
     CellDiffGroup,
     CharSegment,
 )
 from app.services.table_compare import utils
+from app.services.table_compare.row_evidence import metadata_row_present, evidence_text_confidence
 from app.services.table_compare.matcher import TableMatcher
+from app.services.table_compare.repair_context import BusinessChangeProtector
 from app.services.table_compare.summary import SummaryComparator
 from app.utils.id_utils import generate_diff_id
 
@@ -25,6 +35,73 @@ class TableDiffBuilder:
     def __init__(self, matcher: TableMatcher, summary: SummaryComparator) -> None:
         self._matcher = matcher
         self._summary = summary
+        self._suppressed_diffs: list[dict[str, object]] = []
+        self._change_protector = BusinessChangeProtector()
+        self.source_blocks: dict[str, dict[str, TextBlock]] = {"original": {}, "compare": {}}
+        self.page_blocks: dict[str, list[TextBlock]] = {"original": [], "compare": []}
+        self.claimed_rows: set[int] = set()
+
+    def reset_diagnostics(self) -> None:
+        self._suppressed_diffs = []
+
+    def diagnostics_payload(self) -> dict[str, object]:
+        reason_counts = Counter(str(item["reason"]) for item in self._suppressed_diffs)
+        return {
+            "suppressed_diff_count": len(self._suppressed_diffs),
+            "suppressed_diff_counts_by_reason": dict(sorted(reason_counts.items())),
+            "suppressed_diffs": list(self._suppressed_diffs),
+        }
+
+    def _record_suppressed_diff(
+        self,
+        reason: str,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+        *,
+        col: int | None = None,
+        original_text: str = "",
+        compare_text: str = "",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        if len(self._suppressed_diffs) >= 500:
+            return
+        self._suppressed_diffs.append(
+            {
+            "reason": reason,
+            "original_source_block_id": original.source_block_id,
+            "compare_source_block_id": compare.source_block_id,
+            "original_row": orig_row,
+            "compare_row": comp_row,
+            "col": col,
+            "original_text": original_text,
+            "compare_text": compare_text,
+            "details": details or {},
+            }
+        )
+
+    def _is_protected_business_change(self, original_text: str, compare_text: str) -> bool:
+        labels = utils.table_metadata_labels(original_text)
+        if labels and labels == utils.table_metadata_labels(compare_text):
+            return utils.normalize_cell_for_compare(original_text) != utils.normalize_cell_for_compare(compare_text)
+        return self._change_protector.is_protected_change(original_text, compare_text)
+
+    def _row_has_protected_business_change(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+    ) -> bool:
+        if orig_row is None or comp_row is None:
+            return False
+        for col in range(max(original.col_count, compare.col_count)):
+            original_text = self._matcher._cell_text(original, orig_row, col)
+            compare_text = self._matcher._cell_text(compare, comp_row, col)
+            if self._is_protected_business_change(original_text, compare_text):
+                return True
+        return False
 
     def diff_cells(
         self,
@@ -35,8 +112,111 @@ class TableDiffBuilder:
     ) -> list[CellDiff]:
         max_cols = max(original.col_count, compare.col_count)
         diffs: list[CellDiff] = []
+        original_default, compare_default = original_block, compare_block
 
-        for orig_row, comp_row in self._matcher.align_rows(original, compare):
+        aligned_rows = self._matcher.align_rows(original, compare)
+        for align_index, (orig_row, comp_row) in enumerate(aligned_rows):
+            if ((orig_row is not None and id(original.rows[orig_row]) in self.claimed_rows)
+                    or (comp_row is not None and id(compare.rows[comp_row]) in self.claimed_rows)):
+                continue
+            original_block = self._source_block_for_row(original, orig_row, "original", original_default)
+            compare_block = self._source_block_for_row(compare, comp_row, "compare", compare_default)
+            if (orig_row is None) != (comp_row is None):
+                present, row = (original, orig_row) if orig_row is not None else (compare, comp_row)
+                other_side = "compare" if orig_row is not None else "original"
+                page_no = getattr(present.rows[row], "page_no", present.page_no)
+                alignment = self._matcher.page_alignment
+                pages = ([page_no] if alignment is None else
+                         list((alignment.counterparts_for_original if orig_row is not None else
+                               alignment.counterparts_for_compare)(page_no)))
+                cells = self._matcher._row_nonempty_cells(present, row)
+                if len(pages) == 1 and cells and all(
+                    metadata_row_present(cell.text, self.page_blocks[other_side], pages[0]) for cell in cells
+                ):
+                    self._record_suppressed_diff("metadata_row_present_in_source", original, compare, orig_row, comp_row)
+                    continue
+            if (orig_row is None) != (comp_row is None):
+                present_block = original_block if orig_row is not None else compare_block
+                other_side = "compare" if orig_row is not None else "original"
+                candidates = list(self.source_blocks.get(other_side, {}).values())
+                for candidate in candidates:
+                    if present_block is None or present_block.page_no != candidate.page_no:
+                        continue
+                    present, row = (original, orig_row) if orig_row is not None else (compare, comp_row)
+                    labels = {label for cell in self._matcher._row_nonempty_cells(present, row)
+                              for label in re.findall(r"[\u4e00-\u9fff]{2,12}", cell.text)}
+                    row_text = re.sub(r"\s+", "", self._matcher._row_text(present, row))
+                    labels.update(line.strip() for line in present_block.text.splitlines()
+                                  if re.fullmatch(r"[\u4e00-\u9fff]{2,12}", line.strip())
+                                  and line.strip() in row_text)
+                    verified = False
+                    for label in labels:
+                        left = self._source_row_columns(present_block, label, height_factor=.7)
+                        right = self._source_row_columns(candidate, label, height_factor=.7)
+                        equal_header = bool(left and right and "序号" in left and "序号" in right
+                                            and not re.search(r"\d", "".join(left+right))
+                                            and "".join(left) == "".join(right))
+                        if left and right and (left == right or equal_header) and len("".join(left)) >= 12:
+                            self._record_suppressed_diff("physical_row_identity", original, compare, orig_row, comp_row,
+                                details={"anchor":label,"columns":left,"counterpart_page":candidate.page_no})
+                            verified = True
+                            break
+                    if verified:
+                        break
+                else:
+                    verified = False
+                if verified:
+                    continue
+            aligned_source_pages = bool(original_block and compare_block and (
+                compare_block.page_no in self._matcher.page_alignment.counterparts_for_original(original_block.page_no)
+                if getattr(self._matcher, "page_alignment", None) is not None
+                else original_block.page_no == compare_block.page_no
+            ))
+            if aligned_source_pages and self._has_unusable_geometry(original, compare) and (orig_row is None) != (comp_row is None):
+                present, row = (original, orig_row) if orig_row is not None else (compare, comp_row)
+                labels = sorted(
+                    (cell.text.strip() for cell in self._matcher._row_nonempty_cells(present, row)
+                     if 4 <= len(cell.text.strip()) <= 24 and not re.search(r"\d", cell.text)), key=len,
+                )
+                for label in labels:
+                    left = self._source_row_columns(original_block, label)
+                    right = self._source_row_columns(compare_block, label)
+                    if left and left == right:
+                        self._record_suppressed_diff(
+                            "row_covered_by_aligned_source_geometry", original, compare, orig_row, comp_row,
+                            details={"anchor": label, "columns": left},
+                        )
+                        break
+                else:
+                    left = None
+                if left:
+                    continue
+            residual_side = self._one_sided_short_residual_row_side(
+                original,
+                compare,
+                aligned_rows,
+                align_index,
+            )
+            if residual_side == "compare":
+                self._record_suppressed_diff(
+                    "one_sided_short_compare_residual_row",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                    compare_text=self._matcher._row_text(compare, comp_row) if comp_row is not None else "",
+                )
+                continue
+            if residual_side == "original":
+                self._record_suppressed_diff(
+                    "one_sided_short_original_residual_row",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                    original_text=self._matcher._row_text(original, orig_row) if orig_row is not None else "",
+                )
+                continue
             layout_matches = self._layout_shift_matches(
                 original,
                 compare,
@@ -51,7 +231,29 @@ class TableDiffBuilder:
                     filter_orig_row = cell_diff.original_row if cell_diff.original_row is not None else orig_row
                     filter_comp_row = cell_diff.compare_row if cell_diff.compare_row is not None else comp_row
                     filter_col = cell_diff.original_col if cell_diff.original_col is not None else cell_diff.compare_col
-                    if filter_col is not None and self._summary.is_covered_duplicate_amount_cell(
+                    if filter_col is not None and self._sequence_cell_covered_by_plain_source(
+                        original,
+                        compare,
+                        filter_orig_row,
+                        filter_comp_row,
+                        filter_col,
+                        cell_diff.original_text,
+                        cell_diff.compare_text,
+                    ):
+                        self._record_suppressed_diff(
+                            "sequence_scalar_covered_by_plain_source",
+                            original,
+                            compare,
+                            filter_orig_row,
+                            filter_comp_row,
+                            col=filter_col,
+                            original_text=cell_diff.original_text,
+                            compare_text=cell_diff.compare_text,
+                        )
+                        continue
+                    if (
+                        filter_col is not None
+                        and self._summary.is_covered_duplicate_amount_cell(
                         original,
                         compare,
                         filter_orig_row,
@@ -61,7 +263,19 @@ class TableDiffBuilder:
                         utils.normalize_cell_for_compare(cell_diff.compare_text),
                         original_block,
                         compare_block,
+                        )
+                        and not self._is_protected_business_change(cell_diff.original_text, cell_diff.compare_text)
                     ):
+                        self._record_suppressed_diff(
+                            "duplicate_amount_covered_by_source",
+                            original,
+                            compare,
+                            filter_orig_row,
+                            filter_comp_row,
+                            col=filter_col,
+                            original_text=cell_diff.original_text,
+                            compare_text=cell_diff.compare_text,
+                        )
                         continue
                     if self._short_remark_cell_covered_by_missing_source(
                         original,
@@ -74,20 +288,59 @@ class TableDiffBuilder:
                         utils.normalize_cell_for_compare(cell_diff.compare_text),
                         original_block,
                         compare_block,
-                    ):
+                    ) and not self._is_protected_business_change(cell_diff.original_text, cell_diff.compare_text):
+                        self._record_suppressed_diff(
+                            "short_remark_covered_by_source",
+                            original,
+                            compare,
+                            filter_orig_row,
+                            filter_comp_row,
+                            col=filter_col,
+                            original_text=cell_diff.original_text,
+                            compare_text=cell_diff.compare_text,
+                        )
                         continue
-                    if self._contact_field_diff_covered_by_table_source(
+                    if self._row_covered_by_unusable_geometry_source(
                         original,
                         compare,
-                        cell_diff.original_text,
-                        cell_diff.compare_text,
-                        utils.normalize_cell_for_compare(cell_diff.original_text),
-                        utils.normalize_cell_for_compare(cell_diff.compare_text),
-                        original_block,
-                        compare_block,
+                        filter_orig_row,
+                        filter_comp_row,
                     ):
+                        self._record_suppressed_diff(
+                            "row_covered_by_unusable_geometry_source",
+                            original,
+                            compare,
+                            filter_orig_row,
+                            filter_comp_row,
+                            col=filter_col,
+                            original_text=cell_diff.original_text,
+                            compare_text=cell_diff.compare_text,
+                        )
                         continue
                     diffs.append(cell_diff)
+                continue
+            residual_side = self._matched_short_residual_row_side(original, compare, orig_row, comp_row)
+            if residual_side == "compare":
+                self._record_suppressed_diff(
+                    "matched_short_compare_residual_row",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                    compare_text=self._matcher._row_text(compare, comp_row) if comp_row is not None else "",
+                )
+                diffs.extend(self._one_sided_row_diffs(original, orig_row, "DELETE"))
+                continue
+            if residual_side == "original":
+                self._record_suppressed_diff(
+                    "matched_short_original_residual_row",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                    original_text=self._matcher._row_text(original, orig_row) if orig_row is not None else "",
+                )
+                diffs.extend(self._one_sided_row_diffs(compare, comp_row, "ADD"))
                 continue
             if self._summary.is_sparse_row_covered_by_source(
                 original,
@@ -96,14 +349,28 @@ class TableDiffBuilder:
                 comp_row,
                 original_block,
                 compare_block,
-            ):
+            ) and not self._row_has_protected_business_change(original, compare, orig_row, comp_row):
+                self._record_suppressed_diff(
+                    "sparse_row_covered_by_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
             if self._summary.matched_malformed_summary_row_covered_by_source(
                 original,
                 compare,
                 orig_row,
                 comp_row,
-            ):
+            ) and not self._row_has_protected_business_change(original, compare, orig_row, comp_row):
+                self._record_suppressed_diff(
+                    "matched_malformed_summary_covered_by_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
             if self._summary.matched_sparse_product_row_covered_by_source(
                 original,
@@ -112,9 +379,23 @@ class TableDiffBuilder:
                 comp_row,
                 original_block,
                 compare_block,
-            ):
+            ) and not self._row_has_protected_business_change(original, compare, orig_row, comp_row):
+                self._record_suppressed_diff(
+                    "matched_sparse_product_covered_by_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
             if self._summary.one_sided_summary_row_covered_by_source(original, compare, orig_row, comp_row):
+                self._record_suppressed_diff(
+                    "one_sided_summary_covered_by_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
             if self._summary.one_sided_summary_row_covered_by_malformed_source(
                 original,
@@ -122,6 +403,13 @@ class TableDiffBuilder:
                 orig_row,
                 comp_row,
             ):
+                self._record_suppressed_diff(
+                    "one_sided_summary_covered_by_malformed_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
             if self._summary.one_sided_product_row_covered_by_source(
                 original,
@@ -131,6 +419,41 @@ class TableDiffBuilder:
                 original_block,
                 compare_block,
             ):
+                self._record_suppressed_diff(
+                    "one_sided_product_covered_by_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
+                continue
+            if self._row_covered_by_merged_cell_source(
+                original,
+                compare,
+                orig_row,
+                comp_row,
+            ) and not self._row_has_protected_business_change(original, compare, orig_row, comp_row):
+                self._record_suppressed_diff(
+                    "row_covered_by_merged_cell_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
+                continue
+            if self._row_covered_by_unusable_geometry_source(
+                original,
+                compare,
+                orig_row,
+                comp_row,
+            ):
+                self._record_suppressed_diff(
+                    "row_covered_by_unusable_geometry_source",
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                )
                 continue
 
             for c in range(max_cols):
@@ -142,16 +465,112 @@ class TableDiffBuilder:
                 if orig_norm == comp_norm:
                     continue
                 if utils.is_noise(orig_norm) and utils.is_noise(comp_norm):
+                    self._record_suppressed_diff(
+                        "both_sides_noise",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
                 if (not orig_norm or not comp_norm) and (utils.is_noise(orig_norm) or utils.is_noise(comp_norm)):
+                    self._record_suppressed_diff(
+                        "one_sided_noise",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
+                    continue
+                if self._is_low_quality_isolated_fragment(original, compare, orig_norm, comp_norm):
+                    self._record_suppressed_diff(
+                        "low_quality_isolated_fragment",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
                 if not orig_norm and not comp_norm:
                     continue
 
-                if self._matcher.is_similar_ocr_noise(orig_norm, comp_norm, self.cell_similarity_threshold):
+                if self._sequence_cell_covered_by_plain_source(
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                    c,
+                    orig_text,
+                    comp_text,
+                ):
+                    self._record_suppressed_diff(
+                        "sequence_scalar_covered_by_plain_source",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
 
-                if self._matcher.is_short_text_fragment(original, compare, orig_row, comp_row, orig_norm, comp_norm):
+                if self._contact_cell_modify_covered_by_plain_source(
+                    original,
+                    compare,
+                    orig_row,
+                    comp_row,
+                    orig_text,
+                    comp_text,
+                ):
+                    self._record_suppressed_diff(
+                        "contact_cell_modify_covered_by_plain_source",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
+                    continue
+
+                if (not self._is_protected_business_change(orig_text, comp_text)
+                        and self._matcher.is_similar_ocr_noise(orig_norm, comp_norm, self.cell_similarity_threshold)):
+                    self._record_suppressed_diff(
+                        "similar_ocr_noise",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
+                    continue
+
+                if self._matcher.is_short_text_fragment(
+                    original, compare, orig_row, comp_row, orig_norm, comp_norm
+                ) and not self._is_protected_business_change(orig_text, comp_text):
+                    self._record_suppressed_diff(
+                        "short_text_fragment",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
 
                 if self._summary.is_covered_duplicate_amount_cell(
@@ -164,7 +583,42 @@ class TableDiffBuilder:
                     comp_norm,
                     original_block,
                     compare_block,
+                ) and not self._is_protected_business_change(orig_text, comp_text):
+                    self._record_suppressed_diff(
+                        "duplicate_amount_covered_by_source",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
+                    continue
+
+                if (
+                    orig_norm
+                    and comp_norm
+                    and not self._is_protected_business_change(orig_text, comp_text)
+                    and self._cell_modify_covered_by_plain_source(
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        orig_text,
+                        comp_text,
+                    )
                 ):
+                    self._record_suppressed_diff(
+                        "cell_modify_covered_by_plain_source",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
 
                 if self._short_remark_cell_covered_by_missing_source(
@@ -178,12 +632,24 @@ class TableDiffBuilder:
                     comp_norm,
                     original_block,
                     compare_block,
-                ):
+                ) and not self._is_protected_business_change(orig_text, comp_text):
+                    self._record_suppressed_diff(
+                        "short_remark_covered_by_source",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
 
-                if self._contact_field_diff_covered_by_table_source(
+                if self._one_sided_cell_covered_by_conflicted_source(
                     original,
                     compare,
+                    orig_row,
+                    comp_row,
                     orig_text,
                     comp_text,
                     orig_norm,
@@ -191,6 +657,16 @@ class TableDiffBuilder:
                     original_block,
                     compare_block,
                 ):
+                    self._record_suppressed_diff(
+                        "one_sided_cell_covered_by_conflicted_source",
+                        original,
+                        compare,
+                        orig_row,
+                        comp_row,
+                        col=c,
+                        original_text=orig_text,
+                        compare_text=comp_text,
+                    )
                     continue
 
                 if not orig_norm:
@@ -205,7 +681,8 @@ class TableDiffBuilder:
                     char_segments = self._compute_char_segments(orig_text, comp_text)
 
                 display_row = orig_row if orig_row is not None else comp_row
-                diffs.append(CellDiff(
+                diffs.append(
+                    CellDiff(
                     row=display_row or 0,
                     col=c,
                     original_text=orig_text,
@@ -214,11 +691,266 @@ class TableDiffBuilder:
                     char_segments=char_segments,
                     original_row=orig_row,
                     compare_row=comp_row,
-                ))
+                        original_col=c if orig_row is not None else None,
+                        compare_col=c if comp_row is not None else None,
+                    )
+                )
 
         return diffs
 
-    def group_cell_diffs(self, cell_diffs: list[CellDiff], orig_table: StructuredTable, comp_table: StructuredTable) -> list[CellDiffGroup]:
+    @staticmethod
+    def _sequence_cell_covered_by_plain_source(
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+        col: int,
+        original_text: str,
+        compare_text: str,
+    ) -> bool:
+        if col != 0 or orig_row is None or comp_row is None:
+            return False
+        if not BusinessChangeProtector.same_business_scalar(original_text, compare_text):
+            return False
+        value = next(
+            (text.strip() for text in (original_text, compare_text) if re.fullmatch(r"\d{1,2}", text.strip())),
+            "",
+        )
+        if not value:
+            return False
+        pattern = rf"(?<!\d){re.escape(value)}(?!\d)"
+        anchors = []
+        for anchor_col in range(1, min(original.col_count, compare.col_count)):
+            original_cell = original.get_cell(orig_row, anchor_col)
+            compare_cell = compare.get_cell(comp_row, anchor_col)
+            original_anchor = utils.normalize(original_cell.text if original_cell else "")
+            compare_anchor = utils.normalize(compare_cell.text if compare_cell else "")
+            if (
+                original_anchor == compare_anchor
+                and len(original_anchor) >= 3
+                and not utils.is_number_like(original_anchor)
+            ):
+                anchors.append(original_anchor)
+        if not anchors:
+            return False
+        anchor = max(anchors, key=len)
+
+        def source_supports(table: StructuredTable, row: int) -> bool:
+            source = utils.normalize(TableMatcher.row_plain_source_text(table, row))
+            return any(
+                re.search(pattern, source[max(0, match.start() - 20):match.end() + 20])
+                for match in re.finditer(re.escape(anchor), source)
+            )
+
+        return source_supports(original, orig_row) and source_supports(compare, comp_row)
+
+    def _matched_short_residual_row_side(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+    ) -> str:
+        if orig_row is None or comp_row is None:
+            return ""
+        if self._is_contact_or_signature_detail_row(original, orig_row) and self._is_short_table_residual_row(
+            compare, comp_row
+        ):
+            return "compare"
+        if self._is_contact_or_signature_detail_row(compare, comp_row) and self._is_short_table_residual_row(
+            original, orig_row
+        ):
+            return "original"
+        return ""
+
+    def _one_sided_short_residual_row_side(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        aligned_rows: list[tuple[int | None, int | None]],
+        align_index: int,
+    ) -> str:
+        orig_row, comp_row = aligned_rows[align_index]
+        if orig_row is None and comp_row is not None and self._is_short_table_residual_row(compare, comp_row):
+            if self._has_neighbor_contact_or_signature_row(
+                original, compare, aligned_rows, align_index, side="original"
+            ):
+                return "compare"
+        if comp_row is None and orig_row is not None and self._is_short_table_residual_row(original, orig_row):
+            if self._has_neighbor_contact_or_signature_row(
+                original, compare, aligned_rows, align_index, side="compare"
+            ):
+                return "original"
+        return ""
+
+    def _has_neighbor_contact_or_signature_row(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        aligned_rows: list[tuple[int | None, int | None]],
+        align_index: int,
+        *,
+        side: str,
+    ) -> bool:
+        start = max(0, align_index - 6)
+        end = min(len(aligned_rows), align_index + 7)
+        for neighbor_index in range(start, end):
+            if neighbor_index == align_index:
+                continue
+            orig_row, comp_row = aligned_rows[neighbor_index]
+            if side == "original" and orig_row is not None and comp_row is None:
+                if self._is_contact_or_signature_detail_row(original, orig_row):
+                    return True
+            if side == "compare" and comp_row is not None and orig_row is None:
+                if self._is_contact_or_signature_detail_row(compare, comp_row):
+                    return True
+        return False
+
+    def _is_contact_or_signature_detail_row(self, table: StructuredTable, row: int) -> bool:
+        row_text = " ".join(
+            text for col in range(table.col_count) if (text := self._matcher._cell_text(table, row, col).strip())
+        )
+        normalized = utils.normalize(row_text)
+        if len(normalized) < 24:
+            return False
+        contact_labels = (
+            "单位名称",
+            "单位地址",
+            "法人代表",
+            "授权委托人",
+            "委托代理人",
+            "开户银行",
+            "邮政编码",
+        )
+        return any(label in row_text for label in contact_labels)
+
+    def _is_short_table_residual_row(self, table: StructuredTable, row: int) -> bool:
+        cells = [text for col in range(table.col_count) if (text := self._matcher._cell_text(table, row, col).strip())]
+        if len(cells) != 1:
+            return False
+        normalized = utils.normalize(cells[0])
+        if not normalized or len(normalized) > 2:
+            return False
+        if re.search(r"[0-9A-Za-z%￥¥元年月日]", normalized):
+            return False
+        residual_labels = (
+            "单位",
+            "地址",
+            "法人",
+            "电话",
+            "传真",
+            "开户",
+            "账号",
+            "税号",
+            "编码",
+        )
+        return not any(label in cells[0] for label in residual_labels)
+
+    def _one_sided_row_diffs(self, table: StructuredTable, row: int | None, diff_type: str) -> list[CellDiff]:
+        if row is None:
+            return []
+        diffs: list[CellDiff] = []
+        for col in range(table.col_count):
+            text = self._matcher._cell_text(table, row, col)
+            normalized = utils.normalize_cell_for_compare(text)
+            if not normalized or utils.is_noise(normalized):
+                continue
+            if diff_type == "DELETE":
+                diffs.append(
+                    CellDiff(
+                    row=row,
+                    col=col,
+                    original_text=text,
+                    compare_text="",
+                    diff_type="DELETE",
+                    original_row=row,
+                    compare_row=None,
+                    original_col=col,
+                    compare_col=None,
+                    )
+                )
+            else:
+                diffs.append(
+                    CellDiff(
+                    row=row,
+                    col=col,
+                    original_text="",
+                    compare_text=text,
+                    diff_type="ADD",
+                    original_row=None,
+                    compare_row=row,
+                    original_col=None,
+                    compare_col=col,
+                    )
+                )
+        return diffs
+
+    def _cell_modify_covered_by_plain_source(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+        original_text: str,
+        compare_text: str,
+    ) -> bool:
+        if orig_row is None or comp_row is None:
+            return False
+        original_norm = utils.normalize(original_text)
+        compare_norm = utils.normalize(compare_text)
+        if not original_norm or not compare_norm or original_norm == compare_norm:
+            return False
+        if max(len(original_norm), len(compare_norm)) < 20:
+            return False
+
+        original_source = utils.normalize(TableMatcher.row_plain_source_text(original, orig_row))
+        compare_source = utils.normalize(TableMatcher.row_plain_source_text(compare, comp_row))
+        if not original_source or not compare_source:
+            return False
+
+        if len(compare_norm) >= len(original_norm):
+            complete_text = compare_text
+            malformed_text = original_text
+            malformed_source = original_source
+        else:
+            complete_text = original_text
+            malformed_text = compare_text
+            malformed_source = compare_source
+
+        complete_tokens = self._coverage_tokens(complete_text)
+        malformed_tokens = self._coverage_tokens(malformed_text)
+        if len(complete_tokens) < 2:
+            return False
+        return (
+            self._all_coverage_tokens_covered(complete_tokens, original_source)
+            and self._all_coverage_tokens_covered(complete_tokens, compare_source)
+            and not self._all_coverage_tokens_covered(malformed_tokens, malformed_source)
+        )
+
+    @staticmethod
+    def _contact_cell_modify_covered_by_plain_source(
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+        original_text: str,
+        compare_text: str,
+    ) -> bool:
+        if orig_row is None or comp_row is None:
+            return False
+        if not any(marker in utils.normalize(f"{original_text} {compare_text}") for marker in ("电话", "传真", "手机")):
+            return False
+
+        phone_pattern = re.compile(r"(?<!\d)(?:1\d{10}|0\d{2,3}[-－—]\d{7,8})(?!\d)")
+        original_source = TableMatcher.row_plain_source_text(original, orig_row)
+        compare_source = TableMatcher.row_plain_source_text(compare, comp_row)
+        original_phones = set(phone_pattern.findall(original_source))
+        compare_phones = set(phone_pattern.findall(compare_source))
+        return bool(original_phones) and original_phones == compare_phones
+
+    def group_cell_diffs(
+        self, cell_diffs: list[CellDiff], orig_table: StructuredTable, comp_table: StructuredTable
+    ) -> list[CellDiffGroup]:
         if not cell_diffs:
             return []
         by_row: dict[int, list[CellDiff]] = {}
@@ -226,7 +958,21 @@ class TableDiffBuilder:
             by_row.setdefault(cd.row, []).append(cd)
         return [CellDiffGroup(row=row, diffs=diffs) for row, diffs in sorted(by_row.items())]
 
-    def make_diff(self, group: CellDiffGroup, index: int, orig_block: tuple[TextBlock, str] | None, comp_block: tuple[TextBlock, str] | None, orig_table: StructuredTable | None = None, comp_table: StructuredTable | None = None) -> DiffItem:
+    def make_diff(
+        self,
+        group: CellDiffGroup,
+        index: int,
+        orig_block: tuple[TextBlock, str] | None,
+        comp_block: tuple[TextBlock, str] | None,
+        orig_table: StructuredTable | None = None,
+        comp_table: StructuredTable | None = None,
+    ) -> DiffItem:
+        if orig_table is not None and group.diffs:
+            block = self._source_block_for_row(orig_table, group.diffs[0].original_row, "original", orig_block[0] if orig_block else None)
+            orig_block = (block, block.text) if block else None
+        if comp_table is not None and group.diffs:
+            block = self._source_block_for_row(comp_table, group.diffs[0].compare_row, "compare", comp_block[0] if comp_block else None)
+            comp_block = (block, block.text) if block else None
         descriptions = []
         for cd in group.diffs:
             if cd.diff_type == "MODIFY":
@@ -252,6 +998,22 @@ class TableDiffBuilder:
             comp_block[0] if comp_block else None,
             "compare",
         )
+
+        # A deletion inside a continued field still has a counterpart location.
+        # Keep that context separate from changed-text highlighting.
+        for cd in group.diffs:
+            left = utils.anchor_cell(orig_table, cd.original_row, cd.original_col) if (
+                orig_table and cd.original_row is not None and cd.original_col is not None) else None
+            right = utils.anchor_cell(comp_table, cd.compare_row, cd.compare_col) if (
+                comp_table and cd.compare_row is not None and cd.compare_col is not None) else None
+            if not left or not right or max(len(getattr(left, 'source_fragments', [])),
+                                            len(getattr(right, 'source_fragments', []))) < 2:
+                continue
+            for cell, evidence in ((left, orig_evidences), (right, comp_evidences)):
+                if not evidence:
+                    evidence.extend(EvidenceBox(page_no=f.page_no, bbox=f.bbox, text=f.text,
+                                                method='table_counterpart_anchor', granularity='cell')
+                                    for f in cell.source_fragments if f.bbox is not None)
 
         needs_orig_evidence = self._side_needs_evidence(group, "original")
         needs_comp_evidence = self._side_needs_evidence(group, "compare")
@@ -291,23 +1053,318 @@ class TableDiffBuilder:
         if needs_comp_evidence and not comp_evidences:
             review_flags.append("LOW_CONFIDENCE_COMPARE_TABLE_EVIDENCE")
 
+        observation_details = self._group_observation_details(group, orig_table, comp_table)
+        if self._group_source_order_conflict(group, orig_table, comp_table, orig_block, comp_block):
+            observation_details.update(change_decision="NEEDS_REVIEW", decision_reason="CELL_TEXT_SOURCE_ORDER_CONFLICT")
+            review_flags.append("CELL_TEXT_SOURCE_ORDER_CONFLICT")
+        observation_details["table_shapes"] = {side: {"row_count": len(table.rows), "col_count": table.col_count}
+                                              for side, table in (("original", orig_table), ("compare", comp_table)) if table}
+        observation_details["table_change_scope"] = "cell"
+        for side, table, opposite in (("compare", comp_table, "original"), ("original", orig_table, "compare")):
+            if table is None or not group.diffs:
+                continue
+            cells = observation_details["cell_observations"]
+            rows = {c.get(f"{side}_row") for c in cells}
+            coverage = {column for c in cells if c.get(f"{side}_cell")
+                        for column in range(c[f"{side}_cell"]["col"], c[f"{side}_cell"]["col"] + c[f"{side}_cell"]["colspan"])}
+            if (len(rows) == 1 and None not in rows
+                    and all(c.get(f"{opposite}_row") is None for c in cells)
+                    and coverage == set(range(table.col_count))):
+                observation_details["table_change_scope"] = "row"
+        if observation_details["change_decision"] == "NEEDS_REVIEW":
+            if observation_details["decision_reason"] == "CELL_TEXT_SOURCE_ORDER_CONFLICT":
+                readable = f"{readable}；格内文字与原始文字顺序不一致，需复核"
+            else:
+                review_flags.append("OBSERVATION_UNOBSERVED")
+                readable = f"{readable}；一侧未观察，无法确认增删"
+
         caption = self._resolve_caption(orig_table, comp_table)
         caption_prefix = f"「{caption}」" if caption else ""
 
+        field_title = utils.table_type_label(table_type)
+        # The table category is not the identity of a changed signing row.
+        party_labels = [re.match(r"\s*(甲方|乙方|丙方)\s*[:：]", text)
+                        for text in [*orig_texts, *comp_texts] if text.strip()]
+        if party_labels and all(party_labels) and len({m[1] for m in party_labels}) == 1:
+            field_title = f"{party_labels[0][1]}单位名称"
+        columns = {cd.compare_col if cd.compare_col is not None else cd.original_col for cd in group.diffs}
+        if len(columns) == 1:
+            column = next(iter(columns))
+            labels = []
+            for table in (orig_table, comp_table):
+                if table is None or column is None:
+                    continue
+                for row in table.rows[:3]:
+                    cell = next((c for c in row.cells if c.col_index == column), None)
+                    label = re.sub(r"\s+", "", cell.text) if cell else ""
+                    if re.fullmatch(r"(?:不含税总价|含税总价|单价|总价|税率|税额|数量|单位)(?:[（(](?:元|万元|%)[）)])?", label):
+                        labels.append(label)
+            if labels and len(set(labels)) == 1:
+                field_title = labels[0]
+                observation_details["column_label"] = field_title
+                observation_details["column_index"] = column
+
         diff_type = self._group_diff_type(group)
+        confidences = [score for side, evidences in (("original", orig_evidences), ("compare", comp_evidences))
+                       if (score := evidence_text_confidence(evidences, self.page_blocks[side])) is not None]
+        text_confidence = min(confidences) if confidences else None
+        low_text_confidence = text_confidence is not None and text_confidence < 0.85
+        if low_text_confidence:
+            review_flags.append("TABLE_CELL_LOW_OCR_CONFIDENCE")
+            if observation_details["change_decision"] != "NEEDS_REVIEW":
+                observation_details.update(change_decision="NEEDS_REVIEW", decision_reason="TABLE_CELL_LOW_OCR_CONFIDENCE")
         return DiffItem(
             diff_id=generate_diff_id(index),
             diff_type=diff_type,
-            title=f"表格字段{caption_prefix}：{utils.table_type_label(table_type)}",
+            title=f"表格字段{caption_prefix}：{field_title}",
             original_text=" | ".join(orig_texts),
             compare_text=" | ".join(comp_texts),
             original_snippet=" | ".join(orig_texts)[:300],
             compare_snippet=" | ".join(comp_texts)[:300],
             readable_change=readable,
             source_type="table",
+            text_confidence=text_confidence,
+            content_recognition_status="NEEDS_REVIEW" if low_text_confidence else "CONFIRMED",
+            content_recognition_reason="TABLE_CELL_LOW_OCR_CONFIDENCE" if low_text_confidence else "",
             review_flags=review_flags,
+            quality_status=("NEEDS_REVIEW" if observation_details["change_decision"] == "NEEDS_REVIEW" else "NORMAL"),
+            match_score_details=observation_details,
             original_evidence=orig_evidences,
             compare_evidence=comp_evidences,
+        )
+
+    def _group_source_order_conflict(self, group, original, compare, original_block, compare_block) -> bool:
+        # New model text can expose a legacy HTML reading-order mistake. Do
+        # not rewrite either source or confirm a change contradicted by its
+        # canonical text. Character permutations alone are never sufficient.
+        original_block = original_block[0] if isinstance(original_block, tuple) else original_block
+        compare_block = compare_block[0] if isinstance(compare_block, tuple) else compare_block
+        if not any(block is not None and block.table_cells
+                   and block.table_validation.get("topology_source") in {"UNet+TableRecover", "SLANet_plus"}
+                   for block in (original_block, compare_block)):
+            return False
+        for diff in group.diffs:
+            left = utils.normalize_cell_for_compare(diff.original_text)
+            right = utils.normalize_cell_for_compare(diff.compare_text)
+            if not left or left == right or len(left) > 80 or Counter(left) != Counter(right):
+                continue
+            for side, table, fallback, value, counterpart in (
+                ("original", original, original_block, left, right),
+                ("compare", compare, compare_block, right, left),
+            ):
+                if table is None or fallback is None:
+                    continue
+                available = list(self.source_blocks[side].values())
+                if fallback.block_id not in self.source_blocks[side]:
+                    available.append(fallback)
+                blocks = self.find_blocks([(b, b.text) for b in available], table)
+                spans = [utils.normalize_cell_for_compare(b.text) for b, _ in blocks]
+                if counterpart in spans and not any(value in span for span in spans):
+                    return True
+        return False
+
+    @classmethod
+    def _group_observation_details(
+        cls,
+        group: CellDiffGroup,
+        original: StructuredTable | None,
+        compare: StructuredTable | None,
+    ) -> dict[str, object]:
+        cell_observations: list[dict[str, object]] = []
+        original_observations: list[FieldObservation] = []
+        compare_observations: list[FieldObservation] = []
+        for cell_diff in group.diffs:
+            original_observation = cls._cell_observation(
+                original,
+                cell_diff.original_row,
+                cell_diff.original_col,
+                cell_diff.original_text,
+            )
+            compare_observation = cls._cell_observation(
+                compare,
+                cell_diff.compare_row,
+                cell_diff.compare_col,
+                cell_diff.compare_text,
+            )
+            original_observations.append(original_observation)
+            compare_observations.append(compare_observation)
+            cell_observations.append(
+                {
+                    "row": cell_diff.row,
+                    "col": cell_diff.col,
+                    "diff_type": cell_diff.diff_type,
+                    "original_cell": cls._cell_payload(original, cell_diff.original_row, cell_diff.original_col, cell_diff.original_text),
+                    "compare_cell": cls._cell_payload(compare, cell_diff.compare_row, cell_diff.compare_col, cell_diff.compare_text),
+                    "original_row": cell_diff.original_row,
+                    "original_col": cell_diff.original_col,
+                    "compare_row": cell_diff.compare_row,
+                    "compare_col": cell_diff.compare_col,
+                    **original_observation.as_details("original"),
+                    **compare_observation.as_details("compare"),
+                }
+            )
+
+        original_observation = cls._aggregate_observations(original_observations)
+        compare_observation = cls._aggregate_observations(compare_observations)
+        transition = decide_observation_transition(
+            original_observation,
+            compare_observation,
+            values_equal=False,
+        )
+        return {
+            "change_decision": transition.change_decision,
+            "decision_reason": transition.reason,
+            **original_observation.as_details("original"),
+            **compare_observation.as_details("compare"),
+            "cell_observations": cell_observations,
+        }
+
+    @staticmethod
+    def _cell_payload(table, row, col, text):
+        if table is None or row is None or col is None:
+            return None
+        cell = table.get_cell(row, col)
+        if cell is None:
+            return None
+        return {"row": cell.row_index, "col": cell.col_index, "rowspan": cell.rowspan, "colspan": cell.colspan,
+                "page_no": getattr(cell, "page_no", table.page_no), "text": text,
+                "bbox": cell.bbox.model_dump() if cell.bbox else None,
+                "source_fragments": [
+                    {"text": f.text, "page_no": f.page_no, "bbox": f.bbox.model_dump() if f.bbox else None,
+                     "source_block_id": f.source_block_id}
+                    for f in getattr(cell, "source_fragments", [])
+                ],
+                "table_id": getattr(cell, "source_block_id", table.source_block_id)}
+
+    @classmethod
+    def _cell_observation(
+        cls,
+        table: StructuredTable | None,
+        row: int | None,
+        col: int | None,
+        text: str,
+    ) -> FieldObservation:
+        if table is None or row is None or col is None:
+            return FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.FIELD_ELEMENT_MISSING.value,
+            )
+        cell = table.get_cell(row, col)
+        if cell is None:
+            if cls._inferred_blank_cell_roi_is_observable(table, row, col):
+                return FieldObservation(
+                    ObservationState.OBSERVED_BLANK,
+                    ObservationReason.INFERRED_CLEAR_CELL_ROI.value,
+                )
+            return FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.FIELD_ELEMENT_MISSING.value,
+            )
+        if cell.observation_reason:
+            return FieldObservation(ObservationState.UNOBSERVED, cell.observation_reason)
+        normalized = utils.normalize_cell_for_compare(text)
+        if normalized:
+            return FieldObservation(
+                ObservationState.OBSERVED_VALUE,
+                ObservationReason.LOCALIZED_VALUE_EVIDENCE.value,
+            )
+        if utils.normalize_cell_for_compare(cell.text):
+            return FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.CROSS_COLUMN_EVIDENCE_REJECTED.value,
+            )
+        if cell.bbox is None:
+            return FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.FIELD_ROI_NOT_FOUND.value,
+            )
+        local_bbox_coverage = cls._table_bbox_coverage(table)
+        bbox = cell.bbox
+        bbox_heights = sorted(
+            candidate.bbox.y1 - candidate.bbox.y0
+            for table_row in table.rows
+            for candidate in table_row.cells
+            if candidate.bbox is not None and candidate.bbox.y1 > candidate.bbox.y0
+        )
+        reference_height = bbox_heights[len(bbox_heights) // 4] if bbox_heights else 18.0
+        local_roi_is_valid = (
+            bbox.x1 > bbox.x0 and bbox.y1 > bbox.y0 and bbox.y1 - bbox.y0 <= max(120.0, reference_height * 7.0)
+        )
+        if (table.geometry_status in {"failed", "unusable", "severe_conflict"} or table.geometry_confidence < 0.5) and (
+            not local_roi_is_valid or local_bbox_coverage < 0.8
+        ):
+            return FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.LOW_VISUAL_COVERAGE.value,
+            )
+        return FieldObservation(
+            ObservationState.OBSERVED_BLANK,
+            ObservationReason.CLEAR_LOCALIZED_CELL_ROI.value,
+        )
+
+    @staticmethod
+    def _table_bbox_coverage(table: StructuredTable) -> float:
+        logical_cell_count = max(len(table.rows) * table.col_count, 1)
+        bbox_logical_cells = sum(
+            max(1, int(getattr(candidate, "colspan", 1) or 1))
+            for table_row in table.rows
+            for candidate in table_row.cells
+            if candidate.bbox is not None
+        )
+        return bbox_logical_cells / logical_cell_count
+
+    @classmethod
+    def _inferred_blank_cell_roi_is_observable(
+        cls,
+        table: StructuredTable,
+        row: int,
+        col: int,
+    ) -> bool:
+        if not 0 <= col < table.col_count or cls._table_bbox_coverage(table) < 0.8:
+            return False
+        target_row = next((candidate for candidate in table.rows if candidate.row_index == row), None)
+        if target_row is None:
+            return False
+        row_boxes = [candidate.bbox for candidate in target_row.cells if candidate.bbox is not None]
+        column_boxes = [
+            candidate.bbox
+            for table_row in table.rows
+            for candidate in table_row.cells
+            if candidate.col_index == col
+            and max(1, int(getattr(candidate, "colspan", 1) or 1)) == 1
+            and candidate.bbox is not None
+        ]
+        if len(row_boxes) < 2 or len(column_boxes) < 2:
+            return False
+        row_y0 = min(box.y0 for box in row_boxes)
+        row_y1 = max(box.y1 for box in row_boxes)
+        column_x0s = sorted(box.x0 for box in column_boxes)
+        column_x1s = sorted(box.x1 for box in column_boxes)
+        column_x0 = column_x0s[len(column_x0s) // 2]
+        column_x1 = column_x1s[len(column_x1s) // 2]
+        return row_y1 > row_y0 and column_x1 > column_x0
+
+    @staticmethod
+    def _aggregate_observations(observations: list[FieldObservation]) -> FieldObservation:
+        if not observations:
+            return FieldObservation(
+                ObservationState.UNOBSERVED,
+                ObservationReason.FIELD_ELEMENT_MISSING.value,
+            )
+        unobserved = next(
+            (item for item in observations if item.state == ObservationState.UNOBSERVED),
+            None,
+        )
+        if unobserved is not None:
+            return unobserved
+        if any(item.state == ObservationState.OBSERVED_VALUE for item in observations):
+            return FieldObservation(
+                ObservationState.OBSERVED_VALUE,
+                ObservationReason.LOCALIZED_VALUE_EVIDENCE.value,
+            )
+        return FieldObservation(
+            ObservationState.OBSERVED_BLANK,
+            ObservationReason.CLEAR_LOCALIZED_CELL_ROI.value,
         )
 
     def _group_diff_type(self, group: CellDiffGroup) -> DiffType:
@@ -355,10 +1412,75 @@ class TableDiffBuilder:
         source_norm = utils.normalize(source_text)
         return bool(source_norm and present_norm in source_norm)
 
-    def _contact_field_diff_covered_by_table_source(
+    def _row_covered_by_merged_cell_source(
         self,
         original: StructuredTable,
         compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+    ) -> bool:
+        if orig_row is not None and comp_row is not None:
+            return self._matched_row_covered_by_merged_cell(original, compare, orig_row, comp_row)
+        if orig_row is not None:
+            return self._one_sided_row_covered_by_merged_cell(original, compare, orig_row)
+        if comp_row is not None:
+            return self._one_sided_row_covered_by_merged_cell(compare, original, comp_row)
+        return False
+
+    def _row_covered_by_unusable_geometry_source(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
+    ) -> bool:
+        if not self._has_unusable_geometry(original, compare):
+            return False
+        if orig_row is not None and comp_row is not None:
+            if self._matched_row_covered_by_unusable_geometry_window(original, compare, orig_row, comp_row):
+                return True
+            if self._matched_row_covered_by_unusable_geometry_global(original, compare, orig_row, comp_row):
+                return True
+            return self._low_similarity_row_pair_covered_elsewhere(original, compare, orig_row, comp_row)
+        if orig_row is not None:
+            return self._one_sided_row_covered_by_unusable_geometry_window(original, compare, orig_row)
+        if comp_row is not None:
+            return self._one_sided_row_covered_by_unusable_geometry_window(compare, original, comp_row)
+        return False
+
+    @staticmethod
+    def _has_unusable_geometry(*tables: StructuredTable) -> bool:
+        return any(
+            getattr(table, "geometry_status", "") in {"geometry_unusable", "severe_conflict"} for table in tables
+        )
+
+    @staticmethod
+    def _has_low_quality_geometry(*tables: StructuredTable) -> bool:
+        return any(
+            getattr(table, "geometry_status", "") in {"low_confidence", "geometry_unusable", "severe_conflict"}
+            for table in tables
+        )
+
+    def _is_low_quality_isolated_fragment(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_norm: str,
+        comp_norm: str,
+    ) -> bool:
+        if not self._has_low_quality_geometry(original, compare):
+            return False
+        if bool(orig_norm) == bool(comp_norm):
+            return False
+        present = comp_norm or orig_norm
+        return 0 < len(present) <= 1 and not self._is_protected_business_change(orig_norm, comp_norm)
+
+    def _one_sided_cell_covered_by_conflicted_source(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int | None,
+        comp_row: int | None,
         orig_text: str,
         comp_text: str,
         orig_norm: str,
@@ -366,67 +1488,303 @@ class TableDiffBuilder:
         original_block: TextBlock | None,
         compare_block: TextBlock | None,
     ) -> bool:
-        if not self._is_noisy_contact_table_pair(original, compare):
+        if not self._has_unusable_geometry(original, compare):
             return False
-        if not orig_norm and not comp_norm:
-            return False
-
-        original_source = self._contact_table_source_norm(original, original_block)
-        compare_source = self._contact_table_source_norm(compare, compare_block)
-        if not original_source or not compare_source:
+        if bool(orig_norm) == bool(comp_norm):
             return False
 
-        orig_tokens = utils.contact_value_tokens(orig_text)
-        comp_tokens = utils.contact_value_tokens(comp_text)
-        if orig_tokens and not all(token in compare_source for token in orig_tokens):
-            return False
-        if comp_tokens and not all(token in original_source for token in comp_tokens):
-            return False
+        if orig_norm:
+            present_table = original
+            present_row = orig_row
+            present_text = orig_text
+            missing_table = compare
+            missing_row = comp_row
+            missing_block = compare_block
+        else:
+            present_table = compare
+            present_row = comp_row
+            present_text = comp_text
+            missing_table = original
+            missing_row = orig_row
+            missing_block = original_block
 
-        orig_covered = (
-            bool(orig_tokens)
-            or not orig_norm
-            or utils.is_contact_fragment_covered(orig_norm, compare_source)
+        if present_row is None or missing_row is None:
+            return False
+        source_text = self._source_text_for_cell_cover(missing_table, missing_row, missing_block)
+        source_norm = utils.normalize(source_text)
+        value_norm = utils.normalize(present_text)
+        if not source_norm or not value_norm:
+            return False
+        if not self._source_covers_value(value_norm, present_text, source_norm):
+            return False
+        return self._source_has_nearby_row_anchor(
+            source_norm, value_norm, present_table, present_row, missing_table, missing_row
         )
-        comp_covered = (
-            bool(comp_tokens)
-            or not comp_norm
-            or utils.is_contact_fragment_covered(comp_norm, original_source)
-        )
-        has_contact_signal = bool(orig_tokens) or bool(comp_tokens) or bool(orig_norm) or bool(comp_norm)
-        return orig_covered and comp_covered and has_contact_signal
 
-    def _is_noisy_contact_table_pair(self, original: StructuredTable, compare: StructuredTable) -> bool:
-        if not self._is_contact_signature_table(original) or not self._is_contact_signature_table(compare):
+    def _source_covers_value(self, value_norm: str, value_text: str, source_norm: str) -> bool:
+        if value_norm in source_norm:
+            return True
+        tokens = self._coverage_tokens(value_text)
+        return bool(tokens and self._all_coverage_tokens_covered(tokens, source_norm))
+
+    def _source_has_nearby_row_anchor(
+        self,
+        source_norm: str,
+        value_norm: str,
+        present_table: StructuredTable,
+        present_row: int,
+        missing_table: StructuredTable,
+        missing_row: int,
+    ) -> bool:
+        value_positions = self._token_positions(source_norm, value_norm)
+        if not value_positions:
             return False
-        return self._has_merged_contact_rows(original) or self._has_merged_contact_rows(compare)
-
-    @staticmethod
-    def _is_contact_signature_table(table: StructuredTable) -> bool:
-        return utils.looks_like_contact_signature_text(table.all_cell_text())
-
-    @staticmethod
-    def _has_merged_contact_rows(table: StructuredTable) -> bool:
-        for row in table.rows:
-            for cell in row.cells:
-                text = utils.normalize(cell.text)
-                if not text:
-                    continue
-                label_count = utils.contact_label_count(text)
-                if cell.colspan >= max(table.col_count, 2) and label_count >= 1:
-                    return True
-                if label_count >= 2:
-                    return True
+        anchors = self._row_anchor_tokens(present_table, present_row, value_norm)
+        anchors.extend(
+            token for token in self._row_anchor_tokens(missing_table, missing_row, value_norm) if token not in anchors
+        )
+        if not anchors:
+            return False
+        for anchor in anchors:
+            anchor_positions = self._token_positions(source_norm, anchor)
+            if any(
+                abs(anchor_pos - value_pos) <= 140 for anchor_pos in anchor_positions for value_pos in value_positions
+            ):
+                return True
         return False
 
+    def _row_anchor_tokens(self, table: StructuredTable, row: int, value_norm: str) -> list[str]:
+        anchors: list[str] = []
+        for cell in self._matcher._row_nonempty_cells(table, row):
+            cell_norm = utils.normalize(cell.text)
+            if not cell_norm or cell_norm == value_norm or value_norm in cell_norm:
+                continue
+            for token in self._coverage_tokens(cell.text):
+                if token != value_norm and token not in anchors:
+                    anchors.append(token)
+        return anchors
+
     @staticmethod
-    def _contact_table_source_norm(table: StructuredTable, block: TextBlock | None) -> str:
-        parts = [table.all_cell_text()]
-        if block is not None:
-            parts.append(block.text or "")
-            if block.raw_html:
-                parts.append(utils.strip_html(block.raw_html))
-        return utils.normalize_contact_text(" ".join(part for part in parts if part))
+    def _token_positions(source_norm: str, token: str) -> list[int]:
+        if not source_norm or not token:
+            return []
+        folded_token = utils.punctuation_fold(token)
+        folded_source = utils.punctuation_fold(source_norm)
+        positions = [match.start() for match in re.finditer(re.escape(token), source_norm)]
+        if folded_token and folded_token != token:
+            positions.extend(match.start() for match in re.finditer(re.escape(folded_token), folded_source))
+        return positions
+
+    def _matched_row_covered_by_unusable_geometry_window(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int,
+        comp_row: int,
+    ) -> bool:
+        original_tokens = self._row_coverage_tokens(original, orig_row)
+        compare_tokens = self._row_coverage_tokens(compare, comp_row)
+        compare_window = self._row_window_norm(compare, comp_row, radius=2)
+        original_window = self._row_window_norm(original, orig_row, radius=2)
+        if original_tokens and not compare_tokens:
+            return self._all_coverage_tokens_covered(original_tokens, compare_window)
+        if compare_tokens and not original_tokens:
+            return self._all_coverage_tokens_covered(compare_tokens, original_window)
+        if not original_tokens or not compare_tokens:
+            return False
+        return self._all_coverage_tokens_covered(original_tokens, compare_window) and self._all_coverage_tokens_covered(
+            compare_tokens, original_window
+        )
+
+    def _matched_row_covered_by_unusable_geometry_global(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int,
+        comp_row: int,
+    ) -> bool:
+        original_tokens = self._row_coverage_tokens(original, orig_row)
+        compare_tokens = self._row_coverage_tokens(compare, comp_row)
+        if not original_tokens or not compare_tokens:
+            return False
+        original_table_text = utils.normalize(original.all_cell_text())
+        compare_table_text = utils.normalize(compare.all_cell_text())
+        return self._all_coverage_tokens_covered(
+            original_tokens, compare_table_text
+        ) and self._all_coverage_tokens_covered(compare_tokens, original_table_text)
+
+    def _one_sided_row_covered_by_unusable_geometry_window(
+        self,
+        present_table: StructuredTable,
+        other_table: StructuredTable,
+        present_row: int,
+    ) -> bool:
+        present_tokens = self._row_coverage_tokens(present_table, present_row)
+        if not present_tokens:
+            return False
+        other_window = self._row_window_norm(other_table, present_row, radius=4)
+        return self._all_coverage_tokens_covered(present_tokens, other_window)
+
+    def _low_similarity_row_pair_covered_elsewhere(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int,
+        comp_row: int,
+    ) -> bool:
+        if self._matcher._row_similarity(original, orig_row, compare, comp_row) >= 0.45:
+            return False
+        original_tokens = self._row_coverage_tokens(original, orig_row)
+        compare_tokens = self._row_coverage_tokens(compare, comp_row)
+        if not original_tokens or not compare_tokens:
+            return False
+        original_table_text = utils.normalize(original.all_cell_text())
+        compare_table_text = utils.normalize(compare.all_cell_text())
+        return self._all_coverage_tokens_covered(
+            original_tokens, compare_table_text
+        ) and self._all_coverage_tokens_covered(compare_tokens, original_table_text)
+
+    def _matched_row_covered_by_merged_cell(
+        self,
+        original: StructuredTable,
+        compare: StructuredTable,
+        orig_row: int,
+        comp_row: int,
+    ) -> bool:
+        if not self._row_window_has_spanning_cell(
+            original, orig_row, radius=1
+        ) and not self._row_window_has_spanning_cell(compare, comp_row, radius=1):
+            return False
+
+        original_tokens = self._row_coverage_tokens(original, orig_row)
+        compare_tokens = self._row_coverage_tokens(compare, comp_row)
+        if not original_tokens or not compare_tokens:
+            return False
+
+        original_text = utils.normalize(" ".join(original_tokens))
+        compare_text = utils.normalize(" ".join(compare_tokens))
+        if original_text == compare_text or original_text in compare_text or compare_text in original_text:
+            return True
+
+        compare_window = self._row_window_norm(compare, comp_row, radius=1)
+        if self._all_coverage_tokens_covered(original_tokens, compare_window):
+            return True
+
+        original_window = self._row_window_norm(original, orig_row, radius=1)
+        return self._all_coverage_tokens_covered(compare_tokens, original_window)
+
+    def _one_sided_row_covered_by_merged_cell(
+        self,
+        present_table: StructuredTable,
+        other_table: StructuredTable,
+        present_row: int,
+    ) -> bool:
+        if not self._row_window_has_spanning_cell(other_table, present_row, radius=4):
+            return False
+
+        present_tokens = self._row_coverage_tokens(present_table, present_row)
+        if not present_tokens:
+            return False
+
+        other_window = self._row_window_norm(other_table, present_row, radius=4)
+        return self._all_coverage_tokens_covered(present_tokens, other_window)
+
+    def _row_window_has_spanning_cell(self, table: StructuredTable, row: int, radius: int) -> bool:
+        return any(self._row_has_spanning_cell(table, candidate) for candidate in self._nearby_rows(table, row, radius))
+
+    def _row_has_spanning_cell(self, table: StructuredTable, row: int) -> bool:
+        if row < 0 or row >= len(table.rows) or table.col_count < 2:
+            return False
+        return any(cell.colspan >= max(2, table.col_count) for cell in table.rows[row].cells)
+
+    @staticmethod
+    def _source_row_columns(block: TextBlock | None, label: str, *, height_factor: float = 1.6) -> tuple[str, ...] | None:
+        """Read a narrow source row around a unique label, keeping column order.
+
+        Only used to recover a missing grid row. No fuzzy substitution or
+        whole-table token coverage can establish equivalence here.
+        """
+        if block is None or not block.char_boxes or block.text.count(label) != 1:
+            return None
+        start = block.text.index(label)
+        anchor = [box for box in block.char_boxes if start <= box.text_index < start + len(label)]
+        if len(anchor) < len(label):
+            return None
+        height = sum(box.bbox.y1 - box.bbox.y0 for box in anchor) / len(anchor)
+        center = sum((box.bbox.y0 + box.bbox.y1) / 2 for box in anchor) / len(anchor)
+        if height <= 0:
+            return None
+        boxes = [box for box in block.char_boxes if box.char.strip()
+                 and abs((box.bbox.y0 + box.bbox.y1) / 2 - center) <= height * height_factor]
+        columns: list[list[CharBox]] = []
+        right = float("-inf")
+        for box in sorted(boxes, key=lambda item: item.bbox.x0):
+            if not columns or box.bbox.x0 > right + height * 0.6:
+                columns.append([])
+            columns[-1].append(box)
+            right = max(right, box.bbox.x1)
+        texts = []
+        for column in columns:
+            lines: list[list[CharBox]] = []
+            for box in sorted(column, key=lambda item: item.bbox.y0):
+                if not lines or box.bbox.y0 - lines[-1][0].bbox.y0 > height * 0.5:
+                    lines.append([])
+                lines[-1].append(box)
+            text = "".join(box.char for line in lines for box in sorted(line, key=lambda item: item.bbox.x0))
+            texts.append(re.sub(r"\s+", "", text))
+        return tuple(texts) if len(texts) >= 3 else None
+
+    def _row_coverage_tokens(self, table: StructuredTable, row: int | None) -> list[str]:
+        if row is None or row < 0 or row >= len(table.rows):
+            return []
+        tokens: list[str] = []
+        for cell in self._matcher._row_nonempty_cells(table, row):
+            tokens.extend(self._coverage_tokens(cell.text))
+        return list(dict.fromkeys(tokens))
+
+    def _row_window_norm(self, table: StructuredTable, row: int, radius: int) -> str:
+        parts: list[str] = []
+        for candidate in self._nearby_rows(table, row, radius):
+            for cell in self._matcher._row_nonempty_cells(table, candidate):
+                parts.append(cell.text)
+        return utils.normalize(" ".join(parts))
+
+    @staticmethod
+    def _nearby_rows(table: StructuredTable, row: int, radius: int) -> list[int]:
+        start = max(0, row - radius)
+        end = min(len(table.rows), row + radius + 1)
+        return list(range(start, end))
+
+    def _all_coverage_tokens_covered(self, tokens: list[str], source: str) -> bool:
+        if not source:
+            return False
+        for token in tokens:
+            if not self._coverage_token_covered(token, source):
+                return False
+        return bool(tokens)
+
+    def _coverage_token_covered(self, token: str, source: str) -> bool:
+        if not token or not source:
+            return False
+        if token in source:
+            return True
+        folded_token = utils.punctuation_fold(token)
+        folded_source = utils.punctuation_fold(source)
+        if folded_token and folded_token in folded_source:
+            return True
+        return len(token) >= 4 and utils.is_loose_subsequence_present(token, source)
+
+    @staticmethod
+    def _coverage_tokens(text: str) -> list[str]:
+        compact = utils.normalize(text)
+        if not compact:
+            return []
+
+        value_text = re.sub(r"[\u4e00-\u9fffA-Za-z]{1,10}:", " ", compact)
+        tokens: list[str] = []
+        tokens.extend(match.group(0) for match in re.finditer(r"[A-Za-z]*\d[A-Za-z0-9._/\-]*", value_text))
+        tokens.extend(match.group(0) for match in re.finditer(r"[\u4e00-\u9fff]{2,}", value_text))
+        return [token for token in dict.fromkeys(tokens) if len(token) >= 2]
 
     @staticmethod
     def _is_short_remark_label_for_source_cover(text: str, norm: str) -> bool:
@@ -460,7 +1818,9 @@ class TableDiffBuilder:
             raw = norm.split(":", 1)[1].rstrip("0").rstrip(".")
             if not raw:
                 return False
-            return any(raw and raw in utils.normalize(cell.text) for cell in self._matcher._row_nonempty_cells(table, row))
+            return any(
+                raw and raw in utils.normalize(cell.text) for cell in self._matcher._row_nonempty_cells(table, row)
+            )
         if utils.is_number_like(norm):
             return False
         return any(
@@ -474,7 +1834,7 @@ class TableDiffBuilder:
         row: int,
         block: TextBlock | None,
     ) -> str:
-        parts = [TableMatcher.row_plain_source_text(table, row)]
+        parts = [TableMatcher.row_plain_source_text(table, row), getattr(table, "source_text", "") or ""]
         if block is not None:
             parts.append(block.text or "")
             if block.raw_html:
@@ -512,6 +1872,21 @@ class TableDiffBuilder:
         found = self.find_blocks(blocks, table)
         return found[0] if found else None
 
+    def _source_block_for_row(
+        self, table, row: int | None, side: str, fallback: TextBlock | None,
+    ) -> TextBlock | None:
+        if row is None:
+            return fallback
+        source_row = next((item for item in table.rows if item.row_index == row), None)
+        if source_row is None:
+            return fallback
+        block_id = getattr(source_row, "source_block_id", "") or table.source_block_id
+        found = self.source_blocks[side].get(block_id)
+        if found is not None:
+            return found
+        page_no = getattr(source_row, "page_no", table.page_no)
+        return fallback if fallback is not None and fallback.page_no == page_no else None
+
     def find_blocks(self, blocks: list[tuple[TextBlock, str]], table: StructuredTable) -> list[tuple[TextBlock, str]]:
         source_block_ids = self._table_source_block_ids(table)
         found: list[tuple[TextBlock, str]] = []
@@ -521,13 +1896,27 @@ class TableDiffBuilder:
                 found.append((block, text))
                 seen.add(block.block_id)
         if found:
+            anchors = [item[0] for item in found]
+            for block, text in blocks:
+                if block.block_id in seen:
+                    continue
+                if any(block.page_no == anchor.page_no and (
+                    (anchor.layout_block_id and block.layout_block_id == anchor.layout_block_id)
+                    or (anchor.layout_bbox is not None and block.layout_bbox == anchor.layout_bbox)
+                ) for anchor in anchors):
+                    found.append((block, text))
+                    seen.add(block.block_id)
             return found
         for block, text in blocks:
             if block.page_no == table.page_no:
                 table_text = table.all_cell_text()
                 block_clean = utils.normalize(utils.strip_html(text))
                 table_clean = utils.normalize(table_text)
-                if table_clean and block_clean and SequenceMatcher(None, block_clean[:200], table_clean[:200]).ratio() > 0.5:
+                if (
+                    table_clean
+                    and block_clean
+                    and SequenceMatcher(None, block_clean[:200], table_clean[:200]).ratio() > 0.5
+                ):
                     if block.block_id not in seen:
                         found.append((block, text))
                         seen.add(block.block_id)
@@ -602,7 +1991,9 @@ class TableDiffBuilder:
                 if score > 0:
                     candidates.append((score, orig_cell["col"], comp_cell["col"]))
 
-        candidates.sort(reverse=True)
+        # Repeated scalars (e.g. serial number 1 and quantity 1) must not
+        # displace an equally strong match in their own column.
+        candidates.sort(key=lambda item: (item[0], item[1] == item[2], -abs(item[1]-item[2])), reverse=True)
         orig_to_comp: dict[int, int] = {}
         comp_to_orig: dict[int, int] = {}
         for _score, orig_col, comp_col in candidates:
@@ -611,7 +2002,9 @@ class TableDiffBuilder:
             orig_to_comp[orig_col] = comp_col
             comp_to_orig[comp_col] = orig_col
 
-        if not self._is_possible_ocr_shift_row(original, compare, orig_row, comp_row, original_cells, compare_cells, orig_to_comp):
+        if not self._is_possible_ocr_shift_row(
+            original, compare, orig_row, comp_row, original_cells, compare_cells, orig_to_comp
+        ):
             return None
         return {"orig_to_comp": orig_to_comp, "comp_to_orig": comp_to_orig}
 
@@ -627,8 +2020,12 @@ class TableDiffBuilder:
             return []
         matched_orig = set(layout_matches["orig_to_comp"])
         matched_comp = set(layout_matches["comp_to_orig"])
-        original_unmatched = [cell for cell in self._matcher.row_match_cells(original, orig_row) if int(cell["col"]) not in matched_orig]
-        compare_unmatched = [cell for cell in self._matcher.row_match_cells(compare, comp_row) if int(cell["col"]) not in matched_comp]
+        original_unmatched = [
+            cell for cell in self._matcher.row_match_cells(original, orig_row) if int(cell["col"]) not in matched_orig
+        ]
+        compare_unmatched = [
+            cell for cell in self._matcher.row_match_cells(compare, comp_row) if int(cell["col"]) not in matched_comp
+        ]
 
         diffs: list[CellDiff] = []
         pair_count = min(len(original_unmatched), len(compare_unmatched))
@@ -641,7 +2038,8 @@ class TableDiffBuilder:
             comp_norm = str(comp_cell["norm"])
             if orig_norm == comp_norm or self._matcher.is_similar_ocr_noise(orig_norm, comp_norm):
                 continue
-            diffs.append(CellDiff(
+            diffs.append(
+                CellDiff(
                 row=orig_row,
                 col=int(orig_cell["col"]),
                 original_text=orig_text,
@@ -652,32 +2050,41 @@ class TableDiffBuilder:
                 compare_row=comp_row,
                 original_col=int(orig_cell["col"]),
                 compare_col=int(comp_cell["col"]),
-            ))
+                )
+            )
 
         for orig_cell in original_unmatched[pair_count:]:
-            diffs.append(CellDiff(
+            column = int(orig_cell["col"])
+            compare_has_counterpart = compare.get_cell(comp_row, column) is not None
+            diffs.append(
+                CellDiff(
                 row=orig_row,
-                col=int(orig_cell["col"]),
+                    col=column,
                 original_text=str(orig_cell["text"]),
                 compare_text="",
                 diff_type="DELETE",
                 original_row=orig_row,
-                compare_row=None,
-                original_col=int(orig_cell["col"]),
-                compare_col=None,
-            ))
+                    compare_row=comp_row if compare_has_counterpart else None,
+                    original_col=column,
+                    compare_col=column if compare_has_counterpart else None,
+                )
+            )
         for comp_cell in compare_unmatched[pair_count:]:
-            diffs.append(CellDiff(
+            column = int(comp_cell["col"])
+            original_has_counterpart = original.get_cell(orig_row, column) is not None
+            diffs.append(
+                CellDiff(
                 row=comp_row,
-                col=int(comp_cell["col"]),
+                    col=column,
                 original_text="",
                 compare_text=str(comp_cell["text"]),
                 diff_type="ADD",
-                original_row=None,
+                    original_row=orig_row if original_has_counterpart else None,
                 compare_row=comp_row,
-                original_col=None,
-                compare_col=int(comp_cell["col"]),
-            ))
+                    original_col=column if original_has_counterpart else None,
+                    compare_col=column,
+                )
+            )
         return diffs
 
     def _is_possible_ocr_shift_row(
@@ -703,7 +2110,9 @@ class TableDiffBuilder:
 
         preliminary_diffs = 0
         for col in range(max(original.col_count, compare.col_count)):
-            if utils.normalize_cell_for_compare(self._matcher._cell_text(original, orig_row, col)) != utils.normalize_cell_for_compare(self._matcher._cell_text(compare, comp_row, col)):
+            if utils.normalize_cell_for_compare(
+                self._matcher._cell_text(original, orig_row, col)
+            ) != utils.normalize_cell_for_compare(self._matcher._cell_text(compare, comp_row, col)):
                 preliminary_diffs += 1
         if preliminary_diffs < 2:
             return False
@@ -727,7 +2136,7 @@ class TableDiffBuilder:
             for evidence in self._evidence_from_block(block_and_text, highlight_type):
                 bbox = evidence.bbox
                 key = (
-                    block_and_text[0].block_id,
+                    highlight_type,
                     evidence.page_no,
                     bbox.x0,
                     bbox.y0,
@@ -737,10 +2146,17 @@ class TableDiffBuilder:
                 if key in seen:
                     continue
                 seen.add(key)
+                evidence.method = "table_region"
                 evidences.append(evidence)
         return evidences
 
-    def _evidence_from_block(self, block_and_text: tuple[TextBlock, str] | None, highlight_type: str, bbox_override: BBox | None = None, max_height: float | None = None) -> list[EvidenceBox]:
+    def _evidence_from_block(
+        self,
+        block_and_text: tuple[TextBlock, str] | None,
+        highlight_type: str,
+        bbox_override: BBox | None = None,
+        max_height: float | None = None,
+    ) -> list[EvidenceBox]:
         if block_and_text is None:
             return []
         block, _ = block_and_text
@@ -748,13 +2164,15 @@ class TableDiffBuilder:
         if max_height and not bbox_override and (bbox.y1 - bbox.y0) > max_height:
             mid_y = (bbox.y0 + bbox.y1) / 2
             bbox = BBox(x0=bbox.x0, y0=mid_y - max_height / 2, x1=bbox.x1, y1=mid_y + max_height / 2)
-        return [EvidenceBox(
+        return [
+            EvidenceBox(
             page_no=block.page_no,
             bbox=bbox,
             method="table_cell",
             text=(block.text or "")[:300],
             highlight_type=highlight_type,
-        )]
+            )
+        ]
 
     def _row_evidence_bbox(self, table: StructuredTable, group: CellDiffGroup, side: str) -> BBox | None:
         bboxes: list[BBox] = []
@@ -936,6 +2354,7 @@ class TableDiffBuilder:
         if table is None:
             return []
         evidences: list[EvidenceBox] = []
+        default_block = block
         for cd in group.diffs:
             row = self._diff_row(cd, side)
             if row is None:
@@ -944,8 +2363,27 @@ class TableDiffBuilder:
             if col is None:
                 continue
             cell = utils.anchor_cell(table, row, col)
+            fragments = getattr(cell, "source_fragments", [])
+            if len(fragments) > 1:
+                ranges = list(self._side_char_ranges(cd, side)) if cd.char_segments else [
+                    (0, len(cell.text), "DELETE" if side == "original" else "ADD")]
+                offset = 0
+                for fragment in fragments:
+                    for start, end, highlight_type in ranges:
+                        lo, hi = max(start, offset), min(end, offset + len(fragment.text))
+                        if lo < hi and fragment.bbox is not None:
+                            evidences.append(EvidenceBox(
+                                page_no=fragment.page_no, bbox=fragment.bbox,
+                                method="table_cell_fragment", granularity="cell",
+                                text=fragment.text[lo-offset:hi-offset], highlight_type=highlight_type,
+                            ))
+                    offset += len(fragment.text)
+                continue
             if not cell or not cell.bbox:
                 continue
+            block = self.source_blocks[side].get(getattr(cell, "source_block_id", ""))
+            if block is None:
+                block = self._source_block_for_row(table, row, side, default_block)
 
             if side == "original":
                 if cd.diff_type == "ADD":
@@ -959,34 +2397,87 @@ class TableDiffBuilder:
                 if not text:
                     continue
                 estimated_bbox = self._usable_cell_bbox(table, row, cell, text)
-                bbox = self._block_char_bbox_for_fragment(block, cell.bbox, text, estimated_bbox) or estimated_bbox
+                source_bbox = self._table_fragment_bbox(side, block, cell.bbox, text, estimated_bbox)
+                bbox = source_bbox or estimated_bbox
                 if not bbox:
                     continue
                 highlight_type = "DELETE" if side == "original" else "ADD"
-                evidences.append(EvidenceBox(
+                evidences.append(
+                    EvidenceBox(
                     page_no=getattr(cell, "page_no", block.page_no if block else 1),
                     bbox=bbox,
                     method="table_cell",
+                    granularity="source_text" if source_bbox is not None else "cell",
                     text=text,
                     highlight_type=highlight_type,
-                ))
+                    )
+                )
                 continue
             for start, end, highlight_type in self._side_char_ranges(cd, side):
                 evidence_text = text[start:end]
                 if not evidence_text and text:
                     evidence_text = text[max(0, start - 1):min(len(text), start + 1)]
-                estimated_bbox = self._cell_char_bbox_for_text(table, row, cell, text, start, end)
-                bbox = self._block_char_bbox_for_fragment(block, cell.bbox, evidence_text, estimated_bbox) or estimated_bbox
+                estimated_bbox = (cell.bbox if block is not None and block.table_cells
+                                  else self._cell_char_bbox_for_text(table, row, cell, text, start, end))
+                source_bbox = (
+                    self._table_fragment_bbox(side, block, cell.bbox, evidence_text, estimated_bbox)
+                    or (None if block is not None and block.table_cells else
+                        self._block_char_bbox_for_range(block, cell.bbox, text, start, end, estimated_bbox))
+                )
+                bbox = source_bbox or estimated_bbox
                 if not bbox:
                     continue
-                evidences.append(EvidenceBox(
+                evidences.append(
+                    EvidenceBox(
                     page_no=getattr(cell, "page_no", block.page_no if block else 1),
                     bbox=bbox,
                     method="table_cell",
+                    granularity="source_text" if source_bbox is not None else "cell",
                     text=evidence_text,
                     highlight_type=highlight_type,
-                ))
+                    )
+                )
         return evidences
+
+    def _table_fragment_bbox(self, side, anchor, cell_bbox, fragment, estimated_bbox):
+        """Search actual source spans in the cell's page/region; never mix indexes.
+
+        Repeated amounts outside the cell do not compete. Multiple distinct
+        matching locations inside it remain uncertain, so keep coarse evidence.
+        """
+        if anchor is None or cell_bbox is None or not utils.normalize(fragment):
+            return None
+        blocks = {anchor.block_id: anchor}
+        blocks.update(self.source_blocks.get(side, {}))
+        allowed_ids = set()
+        for metadata in anchor.table_cells:
+            values = metadata.get("bbox", [])
+            if len(values) == 4 and max(abs(a-b) for a,b in zip(values,
+                    [cell_bbox.x0,cell_bbox.y0,cell_bbox.x1,cell_bbox.y1])) < .1:
+                allowed_ids.update(ref.get("block_id") for ref in metadata.get("token_refs", []) if ref.get("block_id"))
+        candidates = {}
+        for block in blocks.values():
+            if block.page_no != anchor.page_no:
+                continue
+            if allowed_ids and block.block_id not in allowed_ids:
+                continue
+            if block.block_id != anchor.block_id and not allowed_ids and not (
+                (anchor.layout_block_id and block.layout_block_id == anchor.layout_block_id)
+                or (anchor.layout_bbox is not None and block.layout_bbox == anchor.layout_bbox)
+            ):
+                continue
+            for start, end in self._fragment_spans(block.text, fragment):
+                chars = self._char_boxes_for_span(block.char_boxes, start, end)
+                bbox = self._merge_char_box_bboxes(chars)
+                if bbox is None or not chars:
+                    continue
+                cx, cy = (bbox.x0+bbox.x1)/2, (bbox.y0+bbox.y1)/2
+                if not (cell_bbox.x0 <= cx <= cell_bbox.x1 and cell_bbox.y0 <= cy <= cell_bbox.y1):
+                    continue
+                if not self._accept_block_char_bbox(bbox, chars, fragment, estimated_bbox):
+                    continue
+                candidates[tuple(round(v,4) for v in (bbox.x0,bbox.y0,bbox.x1,bbox.y1))] = bbox
+        return next(iter(candidates.values())) if len(candidates) == 1 else None
 
     def _block_char_bbox_for_fragment(
         self,
@@ -1022,6 +2513,127 @@ class TableDiffBuilder:
         if not self._accept_block_char_bbox(bbox, boxes, fragment, estimated_bbox):
             return None
         return bbox
+
+    def _block_char_bbox_for_range(
+        self,
+        block: TextBlock | None,
+        cell_bbox: BBox | None,
+        text: str,
+        start: int,
+        end: int,
+        estimated_bbox: BBox | None,
+    ) -> BBox | None:
+        if block is None or not block.char_boxes or not block.text:
+            return None
+        normalized_text, text_index_map = self._normalized_index_map(text)
+        if not normalized_text or not text_index_map:
+            return None
+        start = max(0, min(start, len(text)))
+        end = max(start, min(end, len(text)))
+        norm_start = sum(1 for index in text_index_map if index < start)
+        norm_end = sum(1 for index in text_index_map if index < end)
+        if norm_end <= norm_start:
+            return None
+
+        prefix = normalized_text[max(0, norm_start - 24):norm_start]
+        suffix = normalized_text[norm_end:norm_end + 24]
+        if not prefix and not suffix:
+            return None
+        block_text, block_index_map = self._normalized_index_map(block.text)
+        if not block_text or not block_index_map:
+            return None
+
+        candidates: list[tuple[BBox, list[CharBox]]] = []
+        search_from = 0
+        candidate_limit = 20
+        while True:
+            prefix_pos = block_text.find(prefix, search_from) if prefix else search_from
+            if prefix_pos < 0:
+                break
+            range_start = prefix_pos + len(prefix)
+            suffix_pos = (
+                block_text.find(suffix, range_start)
+                if suffix
+                else min(len(block_text), range_start + (norm_end - norm_start))
+            )
+            if suffix_pos < 0:
+                if not prefix:
+                    break
+                search_from = prefix_pos + 1
+                continue
+            range_end = max(range_start, suffix_pos)
+            bbox = self._bbox_between_normalized_positions(
+                block.char_boxes,
+                block_index_map,
+                range_start,
+                range_end,
+                suffix_pos if suffix else None,
+            )
+            if bbox is not None and (cell_bbox is None or self._bbox_overlap_area(bbox, cell_bbox) > 0):
+                boxes = self._char_boxes_for_normalized_range(block.char_boxes, block_index_map, range_start, range_end)
+                candidates.append((bbox, boxes))
+                if len(candidates) >= candidate_limit:
+                    break
+            search_from = prefix_pos + 1
+            if not prefix:
+                break
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: self._char_bbox_score(item[0], cell_bbox), reverse=True)
+        bbox, boxes = candidates[0]
+        if boxes and not self._accept_block_char_bbox(bbox, boxes, text[start:end], estimated_bbox):
+            return None
+        return bbox
+
+    def _bbox_between_normalized_positions(
+        self,
+        char_boxes: list[CharBox],
+        index_map: list[int],
+        start: int,
+        end: int,
+        suffix_start: int | None,
+    ) -> BBox | None:
+        boxes = self._char_boxes_for_normalized_range(char_boxes, index_map, start, end)
+        if boxes:
+            bbox = self._merge_char_box_bboxes(boxes)
+            if bbox is None:
+                return None
+            suffix_boxes = (
+                self._char_boxes_for_normalized_range(char_boxes, index_map, suffix_start, suffix_start + 1)
+                if suffix_start is not None and suffix_start < len(index_map)
+                else []
+            )
+            if suffix_boxes and suffix_boxes[0].page_no == boxes[-1].page_no:
+                suffix_bbox = suffix_boxes[0].bbox
+                if abs(suffix_bbox.y0 - bbox.y0) <= max(6.0, (bbox.y1 - bbox.y0) * 0.6):
+                    bbox = BBox(x0=bbox.x0, y0=bbox.y0, x1=max(bbox.x1, suffix_bbox.x0), y1=bbox.y1)
+            return bbox
+
+        if start <= 0 or suffix_start is None or suffix_start >= len(index_map):
+            return None
+        left_boxes = self._char_boxes_for_normalized_range(char_boxes, index_map, start - 1, start)
+        right_boxes = self._char_boxes_for_normalized_range(char_boxes, index_map, suffix_start, suffix_start + 1)
+        if not left_boxes or not right_boxes or left_boxes[-1].page_no != right_boxes[0].page_no:
+            return None
+        left = left_boxes[-1].bbox
+        right = right_boxes[0].bbox
+        if right.x0 <= left.x1:
+            return None
+        return BBox(x0=left.x1, y0=min(left.y0, right.y0), x1=right.x0, y1=max(left.y1, right.y1))
+
+    @staticmethod
+    def _char_boxes_for_normalized_range(
+        char_boxes: list[CharBox],
+        index_map: list[int],
+        start: int,
+        end: int,
+    ) -> list[CharBox]:
+        if start >= end:
+            return []
+        source_start = index_map[start]
+        source_end = index_map[end - 1] + 1
+        return TableDiffBuilder._char_boxes_for_span(char_boxes, source_start, source_end)
 
     def _fragment_spans(self, text: str, fragment: str) -> list[tuple[int, int]]:
         spans: list[tuple[int, int]] = []

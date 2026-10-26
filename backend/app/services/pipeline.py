@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from app.errors import PipelineContractError
+from app.infrastructure.task_runner import TaskExecutionContext
 from app.infrastructure.task_repository import TaskRepository, default_task_repository
 from app.models import (
     Clause,
@@ -61,6 +62,7 @@ class PipelineContext:
     task: CompareTask
     original_pdf: Path
     compare_pdf: Path
+    execution_context: TaskExecutionContext | None = None
 
     original_extraction: ExtractionResult | None = None
     compare_extraction: ExtractionResult | None = None
@@ -73,8 +75,23 @@ class PipelineContext:
     pairs: list[ClausePair] = field(default_factory=list)
     clause_diffs: list[DiffItem] = field(default_factory=list)
     seal_diffs: list[DiffItem] = field(default_factory=list)
+    seal_equivalence: list[dict] = field(default_factory=list)
+    signing_pages_original: list[Any] = field(default_factory=list)
+    signing_pages_compare: list[Any] = field(default_factory=list)
+    signing_blocks_original: list[Any] = field(default_factory=list)
+    signing_blocks_compare: list[Any] = field(default_factory=list)
+    clause_document_original: Any | None = None
+    clause_document_compare: Any | None = None
+    signing_regions_original: list[Any] = field(default_factory=list)
+    signing_regions_compare: list[Any] = field(default_factory=list)
+    signing_region_diffs: list[DiffItem] = field(default_factory=list)
+    signing_region_covered_diff_ids: set[str] = field(default_factory=set)
+    signing_region_debug: dict[str, Any] = field(default_factory=dict)
+    page_alignment: Any | None = None
+    region_comparison: Any | None = None
     diffs: list[DiffItem] = field(default_factory=list)
     progress_callback: Callable[[int, str, dict[str, Any] | None], None] | None = None
+    page_render_cache: Any | None = None
 
     def set_extractions(self, original: ExtractionResult, compare: ExtractionResult) -> ExtractionPair:
         self.original_extraction = original
@@ -168,12 +185,16 @@ def _update_progress(ctx: PipelineContext, stage: str, progress: int, repository
         ctx.task.updated_at = persisted.updated_at
         ctx.task.revision = persisted.revision
 
-    ProgressBus.get_instance().publish(ProgressEvent(
-        task_id=ctx.task.task_id,
-        stage=ctx.task.stage,
-        progress_percent=ctx.task.progress_percent,
-        status="PROCESSING",
-    ))
+    _raise_if_cancelled(ctx)
+    ProgressBus.get_instance().publish(
+        ProgressEvent(
+            task_id=ctx.task.task_id,
+            stage=ctx.task.stage,
+            progress_percent=ctx.task.progress_percent,
+            status="PROCESSING",
+            revision=ctx.task.revision,
+        )
+    )
 
 
 class ComparePipeline:
@@ -188,6 +209,17 @@ class ComparePipeline:
         self.repository = repository
 
     def run(self, ctx: PipelineContext) -> CompareTask:
+        from app.config import settings
+        from app.services.page_render_cache import PageRenderCache
+
+        ctx.page_render_cache = PageRenderCache(settings.compare_page_render_cache_mb * 1024**2)
+        try:
+            return self._run(ctx)
+        finally:
+            ctx.task.metrics.setdefault("performance", {})["page_render"] = ctx.page_render_cache.metrics.snapshot()
+            ctx.page_render_cache.clear()
+
+    def _run(self, ctx: PipelineContext) -> CompareTask:
         pipeline_t0 = time.perf_counter()
         metrics = PipelineMetrics(
             task_id=ctx.task.task_id,
@@ -195,13 +227,16 @@ class ComparePipeline:
         )
         peak_memory = 0.0
         for stage in self.stages:
+            _raise_if_cancelled(ctx)
             _update_progress(ctx, stage.name, stage.start_progress, self.repository)
+            _raise_if_cancelled(ctx)
             stage_t0 = time.perf_counter()
             mem_start = get_process_memory_mb()
             peak_memory = max(peak_memory, mem_start)
             sm = StageMetrics(name=stage.name, memory_mb_start=mem_start)
             try:
                 stage.execute(ctx)
+                _raise_if_cancelled(ctx)
             except Exception as exc:
                 sm.error = str(exc)
                 sm.duration_seconds = time.perf_counter() - stage_t0
@@ -211,7 +246,8 @@ class ComparePipeline:
                 metrics.finished_at = datetime.now(UTC).isoformat()
                 metrics.total_duration_seconds = time.perf_counter() - pipeline_t0
                 metrics.peak_memory_mb = peak_memory
-                ctx.task.metrics = dataclasses.asdict(metrics)
+                ctx.task.metrics = {**ctx.task.metrics, **dataclasses.asdict(metrics)}
+                _raise_if_cancelled(ctx)
                 raise
             sm.duration_seconds = time.perf_counter() - stage_t0
             sm.memory_mb_end = get_process_memory_mb()
@@ -221,26 +257,21 @@ class ComparePipeline:
         metrics.finished_at = datetime.now(UTC).isoformat()
         metrics.total_duration_seconds = time.perf_counter() - pipeline_t0
         metrics.peak_memory_mb = peak_memory
-        ctx.task.metrics = dataclasses.asdict(metrics)
+        ctx.task.metrics = {**ctx.task.metrics, **dataclasses.asdict(metrics)}
 
-        ctx.task.status = "COMPLETED"
-        ctx.task.stage = "已完成"
-        ctx.task.progress_percent = 100
-        ctx.task.updated_at = datetime.now(UTC).isoformat()
-        ProgressBus.get_instance().publish(ProgressEvent(
-            task_id=ctx.task.task_id,
-            stage="已完成",
-            progress_percent=100,
-            status="COMPLETED",
-        ))
+        _raise_if_cancelled(ctx)
         try:
-            ctx.task = self.repository.update_compare_task(
-                ctx.task.task_id,
-                lambda persisted: _copy_processing_result(persisted, ctx.task),
-            )
+            persisted = self.repository.load_compare_task(ctx.task.task_id)
         except FileNotFoundError:
-            self.repository.save_compare_task(ctx.task)
+            pass
+        else:
+            ctx.task.diffs = _merge_review_state(persisted.diffs, ctx.task.diffs)
         return ctx.task
+
+
+def _raise_if_cancelled(ctx: PipelineContext) -> None:
+    if ctx.execution_context is not None:
+        ctx.execution_context.cancellation_token.raise_if_cancelled()
 
 
 def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
@@ -251,20 +282,22 @@ def _copy_processing_result(target: CompareTask, source: CompareTask) -> None:
     target.compare_filename = source.compare_filename
     target.original_pdf_path = source.original_pdf_path
     target.compare_pdf_path = source.compare_pdf_path
-    target.original_highlight_pdf_path = source.original_highlight_pdf_path
-    target.compare_highlight_pdf_path = source.compare_highlight_pdf_path
     target.extractor_used = source.extractor_used
     target.ocr_raw_result_path = source.ocr_raw_result_path
     target.ocr_raw_result_paths = source.ocr_raw_result_paths
     target.parse_warnings = source.parse_warnings
     target.parse_warning_details = source.parse_warning_details
     target.document_profiles = source.document_profiles
+    target.ocr_quality_summary = source.ocr_quality_summary
+    target.ocr_remediation_summary = source.ocr_remediation_summary
     target.debug_artifact_paths = source.debug_artifact_paths
+    target.signing_region_outlines = source.signing_region_outlines
     target.diff_count = source.diff_count
     target.audit_item_reviews = source.audit_item_reviews
     target.diffs = _merge_review_state(target.diffs, source.diffs)
     target.errors = source.errors
     target.metrics = source.metrics
+    target.event_snapshot = source.event_snapshot
 
 
 def _merge_review_state(existing: list[DiffItem], incoming: list[DiffItem]) -> list[DiffItem]:
@@ -301,11 +334,17 @@ def _default_stages() -> list[PipelineStage]:
     from app.services.pipeline_stages import (
         ClauseDiffStage,
         DocumentPreparationStage,
+        DocumentUnderstandingStage,
         DiffQualityStage,
         EvidenceStage,
         ExtractionStage,
         MatchStage,
+        ModelRoutingStage,
+        OcrQualityStage,
+        OcrRemediationStage,
+        PageAlignmentStage,
         PreClauseDiffStage,
+        SigningRegionStage,
         SplitStage,
         SummaryStage,
         VisualizationStage,
@@ -313,12 +352,18 @@ def _default_stages() -> list[PipelineStage]:
 
     return [
         ExtractionStage(),
+        DocumentUnderstandingStage(),
         DocumentPreparationStage(),
+        PageAlignmentStage(),
         PreClauseDiffStage(),
+        SigningRegionStage(),
         SplitStage(),
         MatchStage(),
         ClauseDiffStage(),
         EvidenceStage(),
+        OcrQualityStage(),
+        OcrRemediationStage(),
+        ModelRoutingStage(),
         DiffQualityStage(),
         VisualizationStage(),
         SummaryStage(),

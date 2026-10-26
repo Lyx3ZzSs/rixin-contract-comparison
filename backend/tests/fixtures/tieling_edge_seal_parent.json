@@ -1,0 +1,168 @@
+{
+  "page": {
+    "page_no": 2,
+    "width": 598.0,
+    "height": 819.0,
+    "blocks": [
+      {
+        "block_id": "1c7ecdb167b1-p2:ocr:0:line:31",
+        "page_no": 2,
+        "text": "电力科友",
+        "bbox": {
+          "x0": 543.5,
+          "y0": 317.5,
+          "x1": 598.0,
+          "y1": 371.0,
+          "normalized": null
+        },
+        "block_type": "seal",
+        "layout_block_id": "1c7ecdb167b1-p2:v3:15",
+        "layout_bbox": {
+          "x0": 550.0,
+          "y0": 325.5,
+          "x1": 597.5,
+          "y1": 444.5,
+          "normalized": null
+        }
+      },
+      {
+        "block_id": "1c7ecdb167b1-p2:ocr:0:line:35",
+        "page_no": 2,
+        "text": "司专用章",
+        "bbox": {
+          "x0": 546.0,
+          "y0": 396.0,
+          "x1": 598.0,
+          "y1": 426.0,
+          "normalized": null
+        },
+        "block_type": "seal",
+        "layout_block_id": "1c7ecdb167b1-p2:v3:15",
+        "layout_bbox": {
+          "x0": 550.0,
+          "y0": 325.5,
+          "x1": 597.5,
+          "y1": 444.5,
+          "normalized": null
+        }
+      },
+      {
+        "block_id": "1c7ecdb167b1-p2:ocr:0:line:38",
+        "page_no": 2,
+        "text": "103033906",
+        "bbox": {
+          "x0": 549.0,
+          "y0": 420.5,
+          "x1": 598.0,
+          "y1": 443.5,
+          "normalized": null
+        },
+        "block_type": "seal",
+        "layout_block_id": "1c7ecdb167b1-p2:v3:15",
+        "layout_bbox": {
+          "x0": 550.0,
+          "y0": 325.5,
+          "x1": 597.5,
+          "y1": 444.5,
+          "normalized": null
+        }
+      }
+    ],
+    "table_presence_status": "UNKNOWN",
+    "semantic_role": "unknown",
+    "semantic_confidence": 0.0,
+    "semantic_reasons": []
+  },
+  "objects": [
+    {
+      "object_id": "VIS-2-R1",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "page_no": 2,
+      "bbox": {
+        "x0": 552.6666666666666,
+        "y0": 327.20016273393003,
+        "x1": 598.0,
+        "y1": 371.18226200162735,
+        "normalized": null
+      },
+      "visual_detection_confidence": 0.78,
+      "text": "",
+      "text_recognition_confidence": 0.0,
+      "party_role": "unknown",
+      "party_attribution_reason": "PARTY_ANCHOR_NOT_OBSERVED",
+      "party_attribution_confidence": 0.0,
+      "supporting_pages": [
+        2
+      ],
+      "fragment_bboxes": [],
+      "raw_ref": {
+        "reason": "PAGE_EDGE_ROUND_SEAL",
+        "red_pixel_count": 2485,
+        "scan_right": null,
+        "page_width": 598.0,
+        "page_height": 819.0,
+        "document_page_count": 3
+      }
+    },
+    {
+      "object_id": "VIS-2-R2",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "page_no": 2,
+      "bbox": {
+        "x0": 554.0,
+        "y0": 360.51993490642803,
+        "x1": 586.0,
+        "y1": 397.83807973962575,
+        "normalized": null
+      },
+      "visual_detection_confidence": 0.78,
+      "text": "",
+      "text_recognition_confidence": 0.0,
+      "party_role": "unknown",
+      "party_attribution_reason": "PARTY_ANCHOR_NOT_OBSERVED",
+      "party_attribution_confidence": 0.0,
+      "supporting_pages": [
+        2
+      ],
+      "fragment_bboxes": [],
+      "raw_ref": {
+        "reason": "PAGE_EDGE_ROUND_SEAL",
+        "red_pixel_count": 1242,
+        "scan_right": null,
+        "page_width": 598.0,
+        "page_height": 819.0,
+        "document_page_count": 3
+      }
+    },
+    {
+      "object_id": "VIS-2-R3",
+      "object_type": "COMPANY_ROUND_SEAL",
+      "page_no": 2,
+      "bbox": {
+        "x0": 550.6666666666666,
+        "y0": 399.8372660699756,
+        "x1": 598.0,
+        "y1": 443.1529698942229,
+        "normalized": null
+      },
+      "visual_detection_confidence": 0.78,
+      "text": "",
+      "text_recognition_confidence": 0.0,
+      "party_role": "unknown",
+      "party_attribution_reason": "PARTY_ANCHOR_NOT_OBSERVED",
+      "party_attribution_confidence": 0.0,
+      "supporting_pages": [
+        2
+      ],
+      "fragment_bboxes": [],
+      "raw_ref": {
+        "reason": "PAGE_EDGE_ROUND_SEAL",
+        "red_pixel_count": 3122,
+        "scan_right": null,
+        "page_width": 598.0,
+        "page_height": 819.0,
+        "document_page_count": 3
+      }
+    }
+  ]
+}

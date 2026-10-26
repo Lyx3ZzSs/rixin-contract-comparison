@@ -1,22 +1,24 @@
 from __future__ import annotations
 
-import json
 import logging
+import queue
 import threading
 import uuid
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from typing import Any, Literal, Protocol
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from app.config import Settings, settings
-from app.errors import ConflictError, NotFoundError
+from app.errors import ConflictError, TaskCancelled
+from app.infrastructure.task_repository import SQLiteTaskRepository, default_task_repository
+from app.models import CompareTask
+from app.services.progress_bus import ProgressBus, ProgressEvent
 
 logger = logging.getLogger(__name__)
 
-TaskJobType = Literal["compare", "extraction"]
+TaskJobType = Literal["compare"]
 TaskJobStatus = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED"]
 TERMINAL_JOB_STATUSES: set[TaskJobStatus] = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
@@ -24,331 +26,63 @@ TERMINAL_JOB_STATUSES: set[TaskJobStatus] = {"SUCCEEDED", "FAILED", "CANCELLED"}
 class TaskJob(BaseModel):
     job_id: str
     task_id: str
-    task_type: TaskJobType
+    task_type: TaskJobType = "compare"
     status: TaskJobStatus = "QUEUED"
-    payload: dict[str, Any] = Field(default_factory=dict)
+    execution_no: int = 1
+    payload: dict[str, Any] = Field(default_factory=dict, exclude=True, repr=False)
     attempt: int = 0
     max_attempts: int = 1
     queued_at: str = Field(default_factory=lambda: _utc_now())
     started_at: str = ""
     finished_at: str = ""
     updated_at: str = Field(default_factory=lambda: _utc_now())
-    next_run_at: str = ""
-    lease_owner: str = ""
-    lease_expires_at: str = ""
+    error_code: str = ""
     last_error: str = ""
 
 
-class TaskRunnerStats(BaseModel):
-    queued: int = 0
-    running: int = 0
-    succeeded: int = 0
-    failed: int = 0
-    cancel_requested: int = 0
-    cancelled: int = 0
+class CancellationToken:
+    def __init__(self, event: threading.Event) -> None:
+        self._event = event
+
+    def raise_if_cancelled(self) -> None:
+        if self._event.is_set():
+            raise TaskCancelled("任务已取消。")
 
 
-TaskHandler = Callable[[Mapping[str, Any]], None]
+class TaskExecutionContext:
+    def __init__(self, *, job_id: str, task_id: str, worker_id: str, cancellation_token: CancellationToken) -> None:
+        self.job_id = job_id
+        self.task_id = task_id
+        self.worker_id = worker_id
+        self.cancellation_token = cancellation_token
 
 
-class TaskJobRepository(Protocol):
-    def enqueue(self, job: TaskJob) -> TaskJob:
-        raise NotImplementedError
-
-    def load(self, job_id: str) -> TaskJob:
-        raise NotImplementedError
-
-    def list_jobs(self) -> list[TaskJob]:
-        raise NotImplementedError
-
-    def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        raise NotImplementedError
-
-    def extend_lease(self, job_id: str, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        raise NotImplementedError
-
-    def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
-        raise NotImplementedError
-
-    def mark_failed(self, job_id: str, *, worker_id: str, error: str, retry_delay_seconds: float) -> TaskJob:
-        raise NotImplementedError
-
-    def request_cancel(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
-        raise NotImplementedError
-
-
-class LocalJsonTaskJobRepository:
-    """Durable local task queue metadata stored beside each task."""
-
-    def __init__(self, app_settings: Settings = settings) -> None:
-        self.settings = app_settings
-        self._lock = threading.RLock()
-
-    def enqueue(self, job: TaskJob) -> TaskJob:
-        with self._lock:
-            try:
-                existing = self.load(job.job_id)
-            except FileNotFoundError:
-                existing = None
-            if existing and existing.status not in TERMINAL_JOB_STATUSES:
-                return existing
-            job.status = "QUEUED"
-            job.queued_at = _utc_now()
-            job.updated_at = job.queued_at
-            self._write_job(job)
-            return job
-
-    def load(self, job_id: str) -> TaskJob:
-        path = self.job_path(job_id)
-        if not path.exists():
-            raise FileNotFoundError(f"任务执行记录不存在: {job_id}")
-        with self._lock:
-            return TaskJob(**json.loads(path.read_text(encoding="utf-8")))
-
-    def list_jobs(self) -> list[TaskJob]:
-        tasks_dir = self.settings.tasks_dir
-        if not tasks_dir.exists():
-            return []
-        jobs: list[TaskJob] = []
-        with self._lock:
-            for path in tasks_dir.glob("*/job.json"):
-                try:
-                    jobs.append(TaskJob(**json.loads(path.read_text(encoding="utf-8"))))
-                except (OSError, ValueError, TypeError):
-                    continue
-        return sorted(jobs, key=lambda job: (job.next_run_at or job.queued_at, job.queued_at))
-
-    def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        with self._lock:
-            now = _utc_now()
-            for job in self.list_jobs():
-                if not self._is_claimable(job, now):
-                    continue
-                job.status = "RUNNING"
-                job.attempt += 1
-                job.started_at = now
-                job.updated_at = now
-                job.lease_owner = worker_id
-                job.lease_expires_at = _plus_seconds(lease_seconds)
-                job.last_error = ""
-                self._write_job(job)
-                return job
-        return None
-
-    def extend_lease(self, job_id: str, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        with self._lock:
-            try:
-                job = self.load(job_id)
-            except FileNotFoundError:
-                return None
-            if job.status != "RUNNING" or job.lease_owner != worker_id:
-                return None
-            job.lease_expires_at = _plus_seconds(lease_seconds)
-            job.updated_at = _utc_now()
-            self._write_job(job)
-            return job
-
-    def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
-        def mutate(job: TaskJob) -> None:
-            if job.lease_owner != worker_id and job.status == "RUNNING":
-                raise RuntimeError(f"执行记录 {job_id} 不属于当前 worker。")
-            job.status = "SUCCEEDED"
-            job.finished_at = _utc_now()
-            job.updated_at = job.finished_at
-            job.lease_owner = ""
-            job.lease_expires_at = ""
-
-        return self._update_job(job_id, mutate)
-
-    def mark_failed(self, job_id: str, *, worker_id: str, error: str, retry_delay_seconds: float) -> TaskJob:
-        def mutate(job: TaskJob) -> None:
-            if job.lease_owner != worker_id and job.status == "RUNNING":
-                raise RuntimeError(f"执行记录 {job_id} 不属于当前 worker。")
-            job.last_error = error
-            job.updated_at = _utc_now()
-            job.lease_owner = ""
-            job.lease_expires_at = ""
-            if job.attempt < job.max_attempts:
-                job.status = "QUEUED"
-                job.next_run_at = _plus_seconds(retry_delay_seconds)
-                return
-            job.status = "FAILED"
-            job.finished_at = job.updated_at
-
-        return self._update_job(job_id, mutate)
-
-    def request_cancel(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
-        updated: list[TaskJob] = []
-        with self._lock:
-            for job in self.list_jobs():
-                if job.task_id != task_id or (task_type and job.task_type != task_type):
-                    continue
-                if job.status in TERMINAL_JOB_STATUSES:
-                    updated.append(job)
-                    continue
-                if job.status == "QUEUED":
-                    job.status = "CANCELLED"
-                    job.finished_at = _utc_now()
-                    job.lease_owner = ""
-                    job.lease_expires_at = ""
-                else:
-                    job.status = "CANCEL_REQUESTED"
-                job.updated_at = _utc_now()
-                self._write_job(job)
-                updated.append(job)
-        return updated
-
-    @property
-    def job_dir(self) -> Path:
-        return self.settings.tasks_dir
-
-    def job_path(self, job_id: str) -> Path:
-        task_id = job_id.split(":", 1)[1] if ":" in job_id else job_id
-        return self._task_dir(task_id) / "job.json"
-
-    def _is_claimable(self, job: TaskJob, now: str) -> bool:
-        if job.status == "QUEUED":
-            return not job.next_run_at or job.next_run_at <= now
-        if job.status == "RUNNING":
-            return bool(job.lease_expires_at and job.lease_expires_at <= now)
-        return False
-
-    def _update_job(self, job_id: str, mutate: Callable[[TaskJob], None]) -> TaskJob:
-        with self._lock:
-            job = self.load(job_id)
-            mutate(job)
-            self._write_job(job)
-            return job
-
-    def _write_job(self, job: TaskJob) -> None:
-        path = self.job_path(job.job_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-        temp_path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
-        temp_path.replace(path)
-        self._write_manifest(job)
-
-    def _task_dir(self, task_id: str) -> Path:
-        safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in task_id)
-        return self.settings.tasks_dir / (safe_name or "task")
-
-    def _write_manifest(self, job: TaskJob) -> None:
-        task_dir = self._task_dir(job.task_id)
-        manifest_path = task_dir / "manifest.json"
-        now = _utc_now()
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError):
-                manifest = {}
-        else:
-            manifest = {}
-        artifacts = {
-            str(item.get("path")): item
-            for item in manifest.get("artifacts", [])
-            if isinstance(item, dict) and item.get("path")
-        }
-        artifacts["job.json"] = {
-            "path": "job.json",
-            "area": "metadata",
-            "kind": "json",
-            "updated_at": now,
-        }
-        manifest.update(
-            {
-                "task_id": task_dir.name,
-                "job_status": job.status,
-                "updated_at": now,
-                "artifacts": sorted(artifacts.values(), key=lambda item: str(item["path"])),
-            }
-        )
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-class LazyDefaultTaskJobRepository:
-    """Defers task job repository initialization until runtime."""
-
-    def __init__(self, app_settings: Settings = settings) -> None:
-        self.settings = app_settings
-        self._lock = threading.RLock()
-        self._repository: TaskJobRepository | None = None
-
-    def resolve(self) -> TaskJobRepository:
-        with self._lock:
-            if self._repository is None:
-                self._repository = build_task_job_repository(self.settings)
-            return self._repository
-
-    def enqueue(self, job: TaskJob) -> TaskJob:
-        return self.resolve().enqueue(job)
-
-    def load(self, job_id: str) -> TaskJob:
-        return self.resolve().load(job_id)
-
-    def list_jobs(self) -> list[TaskJob]:
-        return self.resolve().list_jobs()
-
-    def claim_next(self, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        return self.resolve().claim_next(worker_id=worker_id, lease_seconds=lease_seconds)
-
-    def extend_lease(self, job_id: str, *, worker_id: str, lease_seconds: int) -> TaskJob | None:
-        return self.resolve().extend_lease(job_id, worker_id=worker_id, lease_seconds=lease_seconds)
-
-    def mark_succeeded(self, job_id: str, *, worker_id: str) -> TaskJob:
-        return self.resolve().mark_succeeded(job_id, worker_id=worker_id)
-
-    def mark_failed(self, job_id: str, *, worker_id: str, error: str, retry_delay_seconds: float) -> TaskJob:
-        return self.resolve().mark_failed(
-            job_id,
-            worker_id=worker_id,
-            error=error,
-            retry_delay_seconds=retry_delay_seconds,
-        )
-
-    def request_cancel(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
-        return self.resolve().request_cancel(task_id, task_type=task_type)
-
-
-def build_task_job_repository(app_settings: Settings = settings) -> TaskJobRepository:
-    return LocalJsonTaskJobRepository(app_settings)
+TaskHandler = Callable[[TaskExecutionContext, Mapping[str, Any]], CompareTask | None]
+TaskEnqueueMutation = Callable[[CompareTask, TaskJob], None]
 
 
 class QueuedTaskRunner:
-    """Local durable queue runner with bounded worker threads."""
+    """A process-local queue; SQLite stores only the current execution projection."""
 
     def __init__(
         self,
         *,
-        job_repository: TaskJobRepository | None = None,
+        repository: SQLiteTaskRepository = default_task_repository,
         app_settings: Settings = settings,
         max_workers: int | None = None,
-        max_attempts: int | None = None,
-        lease_seconds: int | None = None,
-        retry_delay_seconds: float | None = None,
-        poll_interval_seconds: float | None = None,
         autostart: bool = True,
+        **_: Any,
     ) -> None:
         self.settings = app_settings
-        self.job_repository = job_repository or LazyDefaultTaskJobRepository(app_settings)
+        self.repository = repository
         self.max_workers = max_workers or app_settings.task_runner_max_workers
-        self.max_attempts = max_attempts or app_settings.task_runner_max_attempts
-        self.lease_seconds = lease_seconds or app_settings.task_runner_lease_seconds
-        self.retry_delay_seconds = (
-            retry_delay_seconds
-            if retry_delay_seconds is not None
-            else app_settings.task_runner_retry_delay_seconds
-        )
-        self.poll_interval_seconds = (
-            poll_interval_seconds
-            if poll_interval_seconds is not None
-            else app_settings.task_runner_poll_interval_seconds
-        )
         self.autostart = autostart
         self._handlers: dict[TaskJobType, TaskHandler] = {}
+        self._queue: queue.Queue[TaskJob] = queue.Queue()
+        self._cancel_events: dict[str, threading.Event] = {}
         self._threads: list[threading.Thread] = []
         self._stop_event = threading.Event()
-        self._state_lock = threading.RLock()
-        self._wake_event = threading.Event()
+        self._lock = threading.RLock()
 
     def register_handler(self, task_type: TaskJobType, handler: TaskHandler) -> None:
         self._handlers[task_type] = handler
@@ -359,97 +93,99 @@ class QueuedTaskRunner:
         task_type: TaskJobType,
         task_id: str,
         payload: Mapping[str, Any],
-        max_attempts: int | None = None,
+        task_mutation: TaskEnqueueMutation | None = None,
+        reject_existing: bool = False,
+        **_: Any,
     ) -> TaskJob:
         if task_type not in self._handlers:
             raise RuntimeError(f"未注册任务执行器: {task_type}")
+        task = self.repository.load_compare_task(task_id)
+        if reject_existing and task.status == "PROCESSING" and task.execution_no > 0:
+            raise ConflictError("任务已有活动执行，不能重复提交。")
+        execution_no = task.execution_no + 1
+        now = _utc_now()
         job = TaskJob(
-            job_id=f"{task_type}:{task_id}",
+            job_id=f"{task_type}:{task_id}:{execution_no}",
             task_id=task_id,
             task_type=task_type,
+            execution_no=execution_no,
             payload=dict(payload),
-            max_attempts=max_attempts or self.max_attempts,
+            queued_at=now,
+            updated_at=now,
         )
-        queued = self.job_repository.enqueue(job)
+
+        def queued(current: CompareTask) -> None:
+            if task_mutation is not None:
+                task_mutation(current, job)
+            current.status = "PROCESSING"
+            current.terminal_reason = "NONE"
+            current.stage = "排队中"
+            current.progress_percent = 3
+            current.execution_id = job.job_id
+            current.execution_no = execution_no
+            current.execution_status = "QUEUED"
+            current.execution_queued_at = now
+            current.execution_started_at = ""
+            current.execution_finished_at = ""
+            current.execution_error_code = ""
+            current.execution_last_error = ""
+            current.errors = []
+
+        self.repository.update_compare_task(task_id, queued)
+        with self._lock:
+            self._cancel_events[job.job_id] = threading.Event()
+            self._queue.put(job)
         if self.autostart:
             self.start()
-        self._wake_event.set()
-        return queued
+        return job
 
-    def cancel(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
-        jobs = self.job_repository.request_cancel(task_id, task_type=task_type)
-        self._wake_event.set()
-        return jobs
+    def load_active_job(self, task_id: str, *, task_type: TaskJobType = "compare") -> TaskJob:
+        del task_type
+        return self._job_from_task(self.repository.load_compare_task(task_id))
+
+    def cancel_active_task(self, task_id: str, *, task_type: TaskJobType = "compare") -> TaskJob:
+        del task_type
+        task = self.repository.load_compare_task(task_id)
+        if task.status != "PROCESSING":
+            return self._job_from_task(task)
+        with self._lock:
+            event = self._cancel_events.get(task.execution_id)
+            if event is not None:
+                event.set()
+
+        def cancelling(current: CompareTask) -> None:
+            current.execution_status = "CANCEL_REQUESTED"
+            current.stage = "取消中"
+
+        updated = self.repository.update_compare_task(task_id, cancelling)
+        return self._job_from_task(updated)
 
     def jobs_for_task(self, task_id: str, *, task_type: TaskJobType | None = None) -> list[TaskJob]:
-        jobs = [
-            job
-            for job in self.job_repository.list_jobs()
-            if job.task_id == task_id and (task_type is None or job.task_type == task_type)
-        ]
-        return sorted(jobs, key=lambda job: job.updated_at or job.queued_at, reverse=True)
+        del task_type
+        try:
+            return [self._job_from_task(self.repository.load_compare_task(task_id))]
+        except FileNotFoundError:
+            return []
 
-    def latest_job(self, task_id: str, *, task_type: TaskJobType | None = None) -> TaskJob:
-        jobs = self.jobs_for_task(task_id, task_type=task_type)
-        if not jobs:
-            raise NotFoundError(f"任务执行记录不存在: {task_id}")
-        return jobs[0]
-
-    def retry(self, task_id: str, *, task_type: TaskJobType) -> TaskJob:
-        job = self.latest_job(task_id, task_type=task_type)
-        if job.status != "FAILED":
-            raise ConflictError("只有执行失败的任务可以重试。")
-        retried = job.model_copy(
-            update={
-                "status": "QUEUED",
-                "attempt": 0,
-                "queued_at": _utc_now(),
-                "started_at": "",
-                "finished_at": "",
-                "updated_at": _utc_now(),
-                "next_run_at": "",
-                "lease_owner": "",
-                "lease_expires_at": "",
-                "last_error": "",
-            }
-        )
-        queued = self.job_repository.enqueue(retried)
-        if self.autostart:
-            self.start()
-        self._wake_event.set()
-        return queued
-
-    def stats(self) -> TaskRunnerStats:
-        stats = TaskRunnerStats()
-        for job in self.job_repository.list_jobs():
-            if job.status == "QUEUED":
-                stats.queued += 1
-            elif job.status == "RUNNING":
-                stats.running += 1
-            elif job.status == "SUCCEEDED":
-                stats.succeeded += 1
-            elif job.status == "FAILED":
-                stats.failed += 1
-            elif job.status == "CANCEL_REQUESTED":
-                stats.cancel_requested += 1
-            elif job.status == "CANCELLED":
-                stats.cancelled += 1
-        return stats
+    def stats(self) -> dict[str, int]:
+        counts = {
+            status.lower(): 0
+            for status in ("QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED")
+        }
+        for task in self.repository.list_compare_tasks():
+            counts[task.execution_status.lower()] += 1
+        return counts
 
     def start(self) -> None:
-        with self._state_lock:
-            resolve = getattr(self.job_repository, "resolve", None)
-            if callable(resolve):
-                resolve()
+        with self._lock:
             self._threads = [thread for thread in self._threads if thread.is_alive()]
             if self._threads:
                 return
             self._stop_event.clear()
             for index in range(self.max_workers):
-                worker_id = f"{uuid.uuid4().hex[:12]}-{index}"
                 thread = threading.Thread(
                     target=self._worker_loop,
-                    args=(worker_id,),
+                    args=(f"worker-{index}-{uuid.uuid4().hex[:8]}",),
                     name=f"task-runner-{index}",
                     daemon=True,
                 )
@@ -458,72 +194,173 @@ class QueuedTaskRunner:
 
     def stop(self, *, wait: bool = True) -> None:
         self._stop_event.set()
-        self._wake_event.set()
-        if not wait:
-            return
-        for thread in list(self._threads):
-            thread.join()
-        with self._state_lock:
-            self._threads.clear()
+        if wait:
+            for thread in list(self._threads):
+                thread.join(timeout=5)
+        with self._lock:
+            self._threads = [thread for thread in self._threads if thread.is_alive()]
 
     def _worker_loop(self, worker_id: str) -> None:
         while not self._stop_event.is_set():
-            job = self.job_repository.claim_next(worker_id=worker_id, lease_seconds=self.lease_seconds)
-            if job is None:
-                self._wake_event.wait(self.poll_interval_seconds)
-                self._wake_event.clear()
+            try:
+                job = self._queue.get(timeout=0.1)
+            except queue.Empty:
                 continue
-            self._run_job(job, worker_id)
+            try:
+                self._run_job(job, worker_id)
+            finally:
+                self._queue.task_done()
 
     def _run_job(self, job: TaskJob, worker_id: str) -> None:
-        handler = self._handlers.get(job.task_type)
-        if handler is None:
-            self.job_repository.mark_failed(
-                job.job_id,
-                worker_id=worker_id,
-                error=f"未注册任务执行器: {job.task_type}",
-                retry_delay_seconds=self.retry_delay_seconds,
-            )
+        event = self._cancel_events.setdefault(job.job_id, threading.Event())
+        if event.is_set():
+            self._finish_cancelled(job)
             return
+        started_at = _utc_now()
 
-        heartbeat_stop = threading.Event()
-        heartbeat = threading.Thread(
-            target=self._heartbeat_loop,
-            args=(job.job_id, worker_id, heartbeat_stop),
-            name=f"task-runner-heartbeat-{job.task_id}",
-            daemon=True,
-        )
-        heartbeat.start()
+        def running(task: CompareTask) -> None:
+            if task.execution_id != job.job_id or task.execution_status == "CANCEL_REQUESTED":
+                raise TaskCancelled("任务已取消。")
+            task.execution_status = "RUNNING"
+            task.execution_started_at = started_at
+            task.stage = "文档解析中"
+            task.progress_percent = max(task.progress_percent, 5)
+
         try:
-            logger.info("Task job started: job_id=%s task_type=%s attempt=%s", job.job_id, job.task_type, job.attempt)
-            handler(job.payload)
-        except Exception as exc:
-            logger.exception("Task job failed: job_id=%s", job.job_id)
-            self.job_repository.mark_failed(
-                job.job_id,
+            self.repository.update_compare_task(job.task_id, running)
+            context = TaskExecutionContext(
+                job_id=job.job_id,
+                task_id=job.task_id,
                 worker_id=worker_id,
-                error=str(exc),
-                retry_delay_seconds=self.retry_delay_seconds,
+                cancellation_token=CancellationToken(event),
             )
-        else:
-            self.job_repository.mark_succeeded(job.job_id, worker_id=worker_id)
-            logger.info("Task job succeeded: job_id=%s", job.job_id)
+            result = self._handlers[job.task_type](context, job.payload)
+            context.cancellation_token.raise_if_cancelled()
+            self._finish_succeeded(job, result)
+        except TaskCancelled:
+            self._finish_cancelled(job)
+        except Exception as exc:
+            logger.exception("Background compare task failed: task_id=%s", job.task_id)
+            self._finish_failed(job, exc)
         finally:
-            heartbeat_stop.set()
-            heartbeat.join(timeout=1)
+            with self._lock:
+                self._cancel_events.pop(job.job_id, None)
 
-    def _heartbeat_loop(self, job_id: str, worker_id: str, stop_event: threading.Event) -> None:
-        interval = max(1.0, self.lease_seconds / 3)
-        while not stop_event.wait(interval):
-            self.job_repository.extend_lease(job_id, worker_id=worker_id, lease_seconds=self.lease_seconds)
+    def _finish_succeeded(self, job: TaskJob, result: CompareTask | None) -> None:
+        finished_at = _utc_now()
+
+        def succeeded(task: CompareTask) -> None:
+            if result is not None:
+                excluded = {
+                    "task_id",
+                    "revision",
+                    "created_at",
+                    "updated_at",
+                    "owner_sub",
+                    "execution_id",
+                    "execution_no",
+                    "execution_status",
+                    "execution_queued_at",
+                    "execution_started_at",
+                    "execution_finished_at",
+                    "execution_error_code",
+                    "execution_last_error",
+                    "status",
+                    "terminal_reason",
+                }
+                for field_name in result.__class__.model_fields:
+                    if field_name not in excluded:
+                        setattr(task, field_name, getattr(result, field_name))
+            task.status = "COMPLETED"
+            task.terminal_reason = "NONE"
+            task.stage = "已完成"
+            task.progress_percent = 100
+            task.report_revision = max(1, task.report_revision)
+            task.execution_status = "SUCCEEDED"
+            task.execution_finished_at = finished_at
+
+        task = self.repository.update_compare_task(job.task_id, succeeded)
+        ProgressBus.get_instance().publish(
+            ProgressEvent(
+                task_id=task.task_id,
+                stage=task.stage,
+                progress_percent=100,
+                status="COMPLETED",
+                revision=task.revision,
+            )
+        )
+
+    def _finish_failed(self, job: TaskJob, exc: Exception) -> None:
+        message = str(exc) or type(exc).__name__
+        finished_at = _utc_now()
+
+        def failed(task: CompareTask) -> None:
+            task.status = "FAILED"
+            task.terminal_reason = "EXECUTION_FAILED"
+            task.stage = "处理失败"
+            task.progress_percent = 100
+            task.execution_status = "FAILED"
+            task.execution_finished_at = finished_at
+            task.execution_error_code = type(exc).__name__
+            task.execution_last_error = message
+            if message not in task.errors:
+                task.errors.append(message)
+
+        task = self.repository.update_compare_task(job.task_id, failed)
+        ProgressBus.get_instance().publish(
+            ProgressEvent(
+                task_id=task.task_id,
+                stage=task.stage,
+                progress_percent=100,
+                status="FAILED",
+                revision=task.revision,
+            )
+        )
+
+    def _finish_cancelled(self, job: TaskJob) -> None:
+        finished_at = _utc_now()
+
+        def cancelled(task: CompareTask) -> None:
+            task.status = "FAILED"
+            task.terminal_reason = "CANCELLED"
+            task.stage = "已取消"
+            task.progress_percent = 100
+            task.execution_status = "CANCELLED"
+            task.execution_finished_at = finished_at
+            task.execution_error_code = "CANCELLED"
+            task.execution_last_error = "任务已取消。"
+
+        task = self.repository.update_compare_task(job.task_id, cancelled)
+        ProgressBus.get_instance().publish(
+            ProgressEvent(
+                task_id=task.task_id,
+                stage=task.stage,
+                progress_percent=100,
+                status="FAILED",
+                revision=task.revision,
+            )
+        )
+
+    @staticmethod
+    def _job_from_task(task: CompareTask) -> TaskJob:
+        return TaskJob(
+            job_id=task.execution_id or f"compare:{task.task_id}:{max(1, task.execution_no)}",
+            task_id=task.task_id,
+            status=task.execution_status,
+            execution_no=max(1, task.execution_no),
+            attempt=1 if task.execution_started_at else 0,
+            max_attempts=1,
+            queued_at=task.execution_queued_at or task.created_at,
+            started_at=task.execution_started_at,
+            finished_at=task.execution_finished_at,
+            updated_at=task.updated_at,
+            error_code=task.execution_error_code,
+            last_error=task.execution_last_error,
+        )
 
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _plus_seconds(seconds: float) -> str:
-    return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
 
 
 default_task_runner = QueuedTaskRunner()

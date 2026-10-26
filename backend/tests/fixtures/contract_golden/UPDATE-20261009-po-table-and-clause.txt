@@ -1,0 +1,33 @@
+PO202604090100 表格与正文归属修复后 Golden 更新（2026-10-09）
+
+授权与来源
+用户在修复及真实服务验证后明确要求“更新该份对比任务的黄金集”。本次来源为修复后任务10052fcf-a151-41bd-aca9-e6b928400ff7，保留先前来源历史；40c08765-fba3-402e-ad57-c1ac41eb8b2b及9ab5698b-93b4-4f02-aa4a-bfcb0d61fc34作为回归参考。
+
+更新内容
+- 原17条断言的业务语义、审核状态及定位阈值全部保留。
+- 新增PO202604090100_P1_IDENTICAL_TABLE_NO_FALSE_CHANGE：固定PDF对第1页表格内容一致，不能因结构解析失败而产生整表或局部表格差异。
+- 新增PO202604090100_CLAUSE_22_5_NO_FOREIGN_TEXT_CHANGE：固定PDF对第22.5条内容相同，红章碎字“公技股”和第8页报价单抬头不得回挂正文成为差异。按条款语义身份匹配，不绑定差异类型或页码。
+- 原有真实印章、第8及第9页报价单新增预期保留；不自动把待复核输出提升为黄金真值。
+- 本合同17→19条验收规则，全库265→267条，仍为15份合同及30份不可变PDF。
+- 当前任务仍为17项实际差异，黄金规则数与差异数不是同一计数。
+
+验证结果
+- 当前任务19条规则：6条正例和7条负例通过，共13条通过；6条既有失败保持不变。
+- 既有失败case_id后缀：P1_HEADER_FOOTER_ADD_F3064A8725、P1_HEADER_FOOTER_ADD_E32A6CBA71、P7_SEAL_DELETE_A00AA6A329、P7_SEAL_ADD_F15460918C、P8_PAGE_ADD_244807E55D、P9_PAGE_ADD_E3A2D751E8。它们代表黄金语义匹配失败，不等同于对应页或对象全部漏检。详见current-task-report.json。
+- 两条新规则均在当前任务通过；旧9ab任务同时触发表格和条款负例，旧40c任务触发条款负例。将旧误报类型分别变为ADD/MODIFY/DELETE仍能检出，避免只约束某一种事件投影。
+- 装载器验证全部30份封存PDF的哈希及页数、267条规则数量；当前任务输入PDF哈希与封存数据一致。
+- 原17条断言及其他14份oracle哈希不变。
+- 使用上一轮最终代码保存的15份合同计算结果重新匹配新黄金规则：无新增失败，既有158条失败记录不变。本次没有重新OCR或重跑生产计算，不宣称全库通过。
+- Golden基础设施测试15 passed；用户授权的基线变更检查通过。检查以HEAD为基准，包含此前既有黄金修改；本轮独立补丁见baseline-update.patch。
+
+证据
+output/analysis/golden-po-10052fcf-20261009/validation-summary.json
+output/analysis/golden-po-10052fcf-20261009/current-task-report.json
+output/analysis/golden-po-10052fcf-20261009/old-9ab-report.json
+output/analysis/golden-po-10052fcf-20261009/old-40c-report.json
+output/analysis/golden-po-10052fcf-20261009/baseline-update.patch
+output/analysis/golden-po-10052fcf-20261009/infrastructure-tests.log
+output/analysis/golden-po-10052fcf-20261009/baseline-guard.log
+前轮源PDF与根因验证：output/analysis/ownership-fix-20261009/verification-report.txt、output/analysis/d005-fix-20261009/verification-report.txt。
+
+本次仅更新黄金基线、计数及说明；未修改生产算法、任务数据库或人工审核状态，无需重启服务。

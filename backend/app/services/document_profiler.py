@@ -92,7 +92,7 @@ class DocumentProfiler:
                         source="document_profiler",
                     )
                 )
-            if page.table_heavy and "ppstructure" not in lower_extractor:
+            if page.table_heavy and "contract_extraction_v3" not in lower_extractor:
                 warnings.append(
                     ParseWarningDetail(
                         code="TABLE_HEAVY_PAGE",

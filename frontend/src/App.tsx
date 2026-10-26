@@ -1,32 +1,21 @@
 import { useMemo } from "react";
 
-import { LoginPage } from "./pages/LoginPage";
+import { type CurrentUser } from "./auth/currentUser";
 import { ComparisonRecordsPage } from "./pages/ComparisonRecordsPage";
 import { ResultPage } from "./pages/ResultPage";
 import { UploadPage } from "./pages/UploadPage";
-import {
-  navigateHome,
-  navigateToComparisonRecords,
-  navigateToTask,
-} from "./lib/routes";
+import { navigateHome, navigateToComparisonRecords, navigateToTask } from "./lib/routes";
 import { useApp } from "./lib/state";
 
-export function App() {
+interface AppProps {
+  currentUser: CurrentUser;
+  accessToken?: string;
+  onSignOut?: () => void;
+}
+
+export function App({ currentUser, accessToken = "", onSignOut }: AppProps) {
   const { state, dispatch } = useApp();
-  const { currentUser, route, isSidebarExpanded, isComparisonMenuOpen } = state;
-
-  function handleLogin(username: string, password: string): boolean {
-    if (username.trim() !== "" && password.trim() !== "") {
-      dispatch({ type: "LOGIN", username });
-      return true;
-    }
-    return false;
-  }
-
-  function handleLogout() {
-    dispatch({ type: "LOGOUT" });
-    navigateHome();
-  }
+  const { route, isSidebarExpanded, isComparisonMenuOpen } = state;
 
   function handleTaskCreated(taskId: string) {
     void taskId;
@@ -41,18 +30,10 @@ export function App() {
   }
 
   const content = useMemo(() => {
-    if (route.name === "task") {
-      return <ResultPage taskId={route.taskId} onBack={() => navigateHome()} />;
-    }
-    if (route.name === "records") {
-      return <ComparisonRecordsPage onOpenTask={navigateToTask} onCreateComparison={navigateHome} />;
-    }
+    if (route.name === "task") return <ResultPage taskId={route.taskId} onBack={navigateHome} accessToken={accessToken} />;
+    if (route.name === "records") return <ComparisonRecordsPage onOpenTask={navigateToTask} onCreateComparison={navigateHome} />;
     return <UploadPage onTaskCreated={handleTaskCreated} onOpenRecords={navigateToComparisonRecords} />;
-  }, [route]);
-
-  if (!currentUser) {
-    return <LoginPage onLogin={handleLogin} />;
-  }
+  }, [accessToken, route]);
 
   return (
     <div className={isSidebarExpanded ? "oa-frame sidebar-expanded" : "oa-frame"}>
@@ -66,9 +47,7 @@ export function App() {
               onClick={handleComparisonMenuClick}
               aria-expanded={isSidebarExpanded ? isComparisonMenuOpen : undefined}
             >
-              <span className="oa-nav-icon" aria-hidden="true">
-                []
-              </span>
+              <span className="oa-nav-icon" aria-hidden="true">[]</span>
               <span>{isSidebarExpanded ? "合同智能对比" : "对比"}</span>
               {isSidebarExpanded && <span className="oa-menu-chevron" aria-hidden="true" />}
             </button>
@@ -78,12 +57,7 @@ export function App() {
                   <span className="oa-subnav-dot" aria-hidden="true" />
                   <span>合同对比</span>
                 </button>
-                <button
-                  className={route.name === "records" ? "active" : ""}
-                  type="button"
-                  onClick={navigateToComparisonRecords}
-                  aria-current={route.name === "records" ? "page" : undefined}
-                >
+                <button className={route.name === "records" ? "active" : ""} type="button" onClick={navigateToComparisonRecords} aria-current={route.name === "records" ? "page" : undefined}>
                   <span className="oa-history-icon" aria-hidden="true" />
                   <span>对比记录</span>
                 </button>
@@ -93,16 +67,12 @@ export function App() {
         </nav>
         {isSidebarExpanded && (
           <div className="oa-user-panel" aria-label="当前用户">
-            <span className="oa-user-avatar" aria-hidden="true">
-              {currentUser.slice(0, 1).toUpperCase()}
-            </span>
+            <span className="oa-user-avatar" aria-hidden="true">{currentUser.displayName.slice(0, 1).toUpperCase()}</span>
             <div>
-              <small>当前用户</small>
-              <strong>{currentUser}</strong>
+              <small>{currentUser.departmentName || "当前用户"}</small>
+              <strong>{currentUser.displayName}</strong>
             </div>
-            <button type="button" onClick={handleLogout}>
-              退出登录
-            </button>
+            {onSignOut && <button type="button" onClick={onSignOut}>退出登录</button>}
           </div>
         )}
         <button
@@ -115,10 +85,7 @@ export function App() {
           <span aria-hidden="true" />
         </button>
       </aside>
-
-      <div className="oa-main">
-        <main className="app-shell">{content}</main>
-      </div>
+      <div className="oa-main"><main className="app-shell">{content}</main></div>
     </div>
   );
 }

@@ -18,6 +18,7 @@ from app.services.table_compare.types import (
     _LogicalTable,
 )
 from app.services.table_compare.html_parser import parse_html_tables
+from app.services.table_compare.repair_context import TableRepairContext
 from app.services.table_compare import utils
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,18 @@ class LogicalTableParser:
     """Extracts, parses, and builds logical tables from document blocks."""
 
     table_block_types = TABLE_BLOCK_TYPES
+
+    @staticmethod
+    def structure_state(block: TextBlock) -> str:
+        """A missing HTML tag is never evidence that a table is absent."""
+        explicit = getattr(block, "structure_status", "UNKNOWN")
+        if explicit in {"STRUCTURED_TABLE", "UNSTRUCTURED_TABLE_PRESENT", "TABLE_ABSENT"}:
+            return explicit
+        if block.block_type == "table":
+            return "STRUCTURED_TABLE" if "<table" in (block.raw_html or block.text or "").lower() else (
+                "UNSTRUCTURED_TABLE_PRESENT" if block.text.strip() else "UNKNOWN"
+            )
+        return "UNKNOWN"
 
     def table_blocks(self, document) -> list[tuple[TextBlock, str]]:
         result = []
@@ -50,6 +63,9 @@ class LogicalTableParser:
 
             has_html_table = "<table" in text.lower()
 
+            if self.structure_state(block) in {"UNSTRUCTURED_TABLE_PRESENT", "TABLE_ABSENT"}:
+                continue
+
             if not has_html_table:
                 # Non-HTML table_title block — remember as potential caption
                 if block.block_type == "table_title" and block.text.strip():
@@ -58,15 +74,56 @@ class LogicalTableParser:
 
             try:
                 cell_bboxes = [BBox(x0=b[0], y0=b[1], x1=b[2], y1=b[3]) for b in block.table_cell_bboxes] if block.table_cell_bboxes else None
+                historical_structure = "ppstructure" in (block.source or "").casefold() or any(
+                    evidence.source == "ppstructure" for evidence in block.source_evidence
+                )
                 parsed = parse_html_tables(
                     text,
                     page_no=block.page_no,
-                    source="ppstructure_html",
+                    source="ppstructure_html" if historical_structure else "table_html",
                     source_block_id=block.block_id,
                     cell_bboxes=cell_bboxes,
+                    cell_records=block.table_cells,
                     source_text=block.text if block.raw_html and block.text != block.raw_html else "",
+                    trusted_topology=bool(
+                        block.table_cells and block.table_validation.get("usable")
+                        and block.table_validation.get("topology_source") in {"UNet+TableRecover", "SLANet_plus"}
+                    ),
                 )
                 for t in parsed:
+                    # A located HTML cell is not automatically a reliable
+                    # reading. Stamp glyphs can leak into a merged total label
+                    # while the independent line OCR sees only the label.
+                    primary_lines = {re.sub(r"\s+", "", line) for line in block.text.splitlines()}
+                    for row in t.rows:
+                        for cell in row.cells:
+                            if cell.bbox is not None and block.char_boxes:
+                                box = cell.bbox
+                                primary = "".join(char.char for char in block.char_boxes if char is not None
+                                    and box.x0 <= (char.bbox.x0 + char.bbox.x1) / 2 <= box.x1
+                                    and box.y0 <= (char.bbox.y0 + char.bbox.y1) / 2 <= box.y1)
+                                if cell.text.strip() in {"1", "7"} and primary.strip() == "/":
+                                    cell.text = "/"
+                                if "蓄电池" in cell.text or "电池容量" in cell.text:
+                                    for token in re.findall(r"\d+(?:\.\d+)?H\b", cell.text):
+                                        corrected = token[:-1] + "AH"
+                                        if corrected in re.sub(r"\s+", "", primary):
+                                            cell.text = cell.text.replace(token, corrected)
+                                # Correct an OCR letter in a numeric unit only
+                                # when same-side line OCR inside this cell agrees.
+                                for token in re.findall(r"\d+O(?:V|A|W|Hz)\b", cell.text):
+                                    corrected = token.replace("O", "0")
+                                    if corrected in re.sub(r"\s+", "", primary) and token not in primary:
+                                        cell.text = cell.text.replace(token, corrected)
+                            label = re.match(r"^(合计|总计|小计)\s+(.+)$", cell.text.strip())
+                            if (label and cell.colspan > 1 and label.group(1) in primary_lines
+                                    and re.fullmatch(r"[\u4e00-\u9fff](?:\s+[\u4e00-\u9fff]){1,3}", label.group(2))
+                                    and re.sub(r"\s+", "", cell.text) not in primary_lines):
+                                cell.observation_reason = "TABLE_LABEL_OCR_CONFLICT"
+                                # The independent line recognizer supplies the
+                                # total label. Do not compare stamp glyphs as
+                                # cell content; retain the conflict provenance.
+                                cell.text = label.group(1)
                     if t.rows and any(cell.text.strip() for row in t.rows for cell in row.cells):
                         if pending_caption:
                             t.caption = pending_caption
@@ -349,15 +406,23 @@ class LogicalTableParser:
                 ))
                 logical_index += 1
 
-        rows = repair_service.normalize_merged_sequence_rows(rows, col_count)
-        rows = repair_service.repair_merged_adjacent_sequence_rows(rows, col_count)
-        rows = repair_service.repair_phantom_merged_name_rows(rows, col_count)
-        rows = repair_service.repair_product_continuation_rows(rows, col_count)
-        rows = repair_service.repair_shifted_product_field_rows(rows, col_count)
-        rows = repair_service.repair_embedded_summary_transitions(rows, col_count)
-        rows = repair_service.normalize_summary_rows(rows, col_count, tables)
-        rows = repair_service.remove_orphan_overflow_sequence_cells(rows, col_count)
+        repair_context = TableRepairContext.from_tables(tables)
+        rows = repair_service.normalize_merged_sequence_rows(repair_context, rows, col_count)
+        rows = repair_service.repair_merged_adjacent_sequence_rows(repair_context, rows, col_count)
+        rows = repair_service.repair_phantom_merged_name_rows(repair_context, rows, col_count)
+        rows = repair_service.repair_product_continuation_rows(repair_context, rows, col_count)
+        rows = repair_service.repair_shifted_product_field_rows(repair_context, rows, col_count)
+        rows = repair_service.repair_embedded_summary_transitions(repair_context, rows, col_count)
+        rows = repair_service.normalize_summary_rows(repair_context, rows, col_count, tables)
+        rows = repair_service.remove_orphan_overflow_sequence_cells(repair_context, rows, col_count)
         first = tables[0] if tables else None
+        geometry_status = self._combined_geometry_status(tables)
+        geometry_confidence = min((table.geometry_confidence for table in tables), default=1.0)
+        geometry_warnings = sorted({
+            warning
+            for table in tables
+            for warning in table.geometry_warnings
+        })
         return _LogicalTable(
             rows=rows,
             col_count=col_count,
@@ -366,7 +431,23 @@ class LogicalTableParser:
             source="logical_table",
             caption=first.caption if first else "",
             footnote=first.footnote if first else "",
+            geometry_status=geometry_status,
+            geometry_confidence=geometry_confidence,
+            geometry_warnings=geometry_warnings,
+            geometry_strategy=first.geometry_strategy if first else "",
+            bbox_grid_row_count=sum(table.bbox_grid_row_count for table in tables),
+            bbox_grid_col_count=max((table.bbox_grid_col_count for table in tables), default=0),
         )
+
+    @staticmethod
+    def _combined_geometry_status(tables: list[StructuredTable]) -> str:
+        statuses = [table.geometry_status for table in tables if table.geometry_status != "not_available"]
+        if not statuses:
+            return "not_available"
+        for status in ("severe_conflict", "geometry_unusable", "minor_conflict", "low_confidence"):
+            if status in statuses:
+                return status
+        return "consistent"
 
     def _logical_cells(self, table: StructuredTable, row: int, logical_row: int) -> list[_LogicalCell]:
         cells: list[_LogicalCell] = []
@@ -385,6 +466,7 @@ class LogicalTableParser:
                 source_col=col,
                 colspan=cell.colspan,
                 rowspan=cell.rowspan,
+                observation_reason=cell.observation_reason,
             ))
         return cells
 
@@ -441,10 +523,16 @@ class LogicalTableParser:
 
     def _section_title(self, cells: list[_LogicalCell], col_count: int) -> str:
         nonempty = [cell for cell in cells if utils.normalize(cell.text)]
+        # Named project fields carry comparable values. Their role must not
+        # depend on an extra OCR fragment in another (possibly spanning) cell.
+        if any(utils.table_metadata_labels(cell.text) for cell in nonempty):
+            return ""
         if len(nonempty) != 1:
             return ""
         cell = nonempty[0]
         text = utils.normalize(cell.text)
+        if len(text) > 100 or re.search(r"[。；;]", cell.text):
+            return ""
         if utils.summary_labels(text):
             return ""
         if utils.is_quote_remark_text(text):

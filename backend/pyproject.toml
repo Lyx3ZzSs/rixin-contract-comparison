@@ -6,13 +6,15 @@ build-backend = "setuptools.build_meta"
 name = "rixin-contract-comparison"
 version = "0.1.0"
 description = "Contract comparison and extraction service."
-readme = "../README.md"
+readme = { text = "Contract comparison and extraction service.", content-type = "text/plain" }
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",
     "uvicorn",
     "python-multipart",
     "pymupdf",
+    "opencv-python-headless",
+    "pillow",
     "diff-match-patch",
     "rapidfuzz",
     "reportlab",
@@ -21,12 +23,16 @@ dependencies = [
     "python-dotenv",
     "httpx",
     "psutil",
+    "pyjwt[crypto]>=2.13,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
     "ruff",
+]
+semantic = [
+    "sentence-transformers",
 ]
 
 [tool.setuptools.packages.find]
@@ -35,6 +41,9 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "golden_contract_blocking: executes the 15-contract semantic blocking regression gate",
+]
 
 [tool.ruff]
 line-length = 120

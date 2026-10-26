@@ -1,573 +1,291 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-import { getDiffs, getTask, updateAuditItemReview } from "../lib/api";
-import type { CompareTask, DiffItem } from "../types";
-import { ResultPage } from "./ResultPage";
-
-vi.mock("../components/PdfDocumentViewer", async () => {
-  const React = await vi.importActual<typeof import("react")>("react");
-  return {
-    PdfDocumentViewer: React.forwardRef(
-      (
-        props: {
-          side: "original" | "compare";
-          src: string;
-          title: string;
-          zoom: number;
-          hidden?: boolean;
-          onActivateDiff: (diffId: string) => void;
-        },
-        ref,
-      ) => {
-        React.useImperativeHandle(ref, () => ({
-          scrollToDiff: vi.fn(),
-          syncScrollFrom: vi.fn(),
-        }));
-        return (
-          <article aria-label={`${props.title}PDF 在线预览`} data-side={props.side} data-src={props.src}>
-            <span>{Math.round(props.zoom * 100)}%</span>
-            {props.hidden ? <span>原版已隐藏</span> : <button onClick={() => props.onActivateDiff("diff-1")}>定位差异</button>}
-          </article>
-        );
-      },
-    ),
-  };
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { beforeEach, expect, it, vi } from 'vitest';
+import { ResultPage } from './ResultPage';
+import type { CompareTask, DiffEventResponse } from '../types';
+const mocks = vi.hoisted(() => ({getEvents:vi.fn(),review:vi.fn(),scroll:vi.fn(),scrollPage:vi.fn(),scrollRatio:vi.fn(),retry:vi.fn(),download:vi.fn(),task:null as Partial<CompareTask> | null,error:'',isLoading:false,completionAnimating:false}));
+vi.mock('../lib/api',()=>({getEvents:mocks.getEvents,getPreviewMetadata:vi.fn().mockRejectedValue(new Error('metadata unavailable')),updateEventReview:mocks.review,toApiUrl:(s:string)=>s}));
+vi.mock('../lib/hooks',()=>({useTaskProgress:()=>({task:mocks.task,error:mocks.error,isLoading:mocks.isLoading,retry:mocks.retry,isRetrying:false,completionAnimating:mocks.completionAnimating})}));
+vi.mock('../lib/authFetch',()=>({downloadAuthenticatedFile:mocks.download}));
+vi.mock('../components/PdfDocumentViewer', async()=>{const {forwardRef,useImperativeHandle}=await import('react');return {PdfDocumentViewer:forwardRef(function Viewer({diffs,side,syncEnabled,onPageScroll,onScrollRatio}:any,ref){
+ useImperativeHandle(ref,()=>({scrollToDiff:mocks.scroll,scrollToPage:(...args:any[])=>mocks.scrollPage(side,...args),syncScrollFrom:(ratio:number)=>mocks.scrollRatio(side,ratio)}));
+ return <div data-testid="viewer" onScroll={()=>{if(syncEnabled){if(onPageScroll)onPageScroll(2,.25,side);else onScrollRatio(.4,side)}}}>{diffs.length}</div>;
+})}});
+const item=(id:string)=>({diff_id:id,diff_type:'ADD',source_type:'clause',title:id,compare_text:'新增条款',original_text:'',original_evidence:[],compare_evidence:[{page_no:15,bbox:{x0:10,y0:10,x1:100,y1:30}}],review_status:'UNREVIEWED',quality_status:'NEEDS_REVIEW'});
+const data={task_id:'x',revision:1,event_count:1,context_available:true,page_alignment:[],events:[{event_id:'E',raw_diff_ids:['a','b'],direction:'ADD',diff:{...item('E'),title:'连续新增内容'},children:[item('a'),item('b')],review_conflict:false}]} as unknown as DiffEventResponse;
+beforeEach(()=>{
+ vi.clearAllMocks();
+ window.history.replaceState({}, '', '/tasks/x');
+ mocks.task={status:'COMPLETED',revision:1,original_filename:'原.pdf',compare_filename:'新.pdf',original_pdf_url:'/o',compare_pdf_url:'/c'};
+ mocks.error=''; mocks.isLoading=false; mocks.completionAnimating=false;
+ mocks.getEvents.mockResolvedValue(data); mocks.review.mockResolvedValue(data); mocks.download.mockResolvedValue(undefined);
+});
+it('shows a party field first and expands its original clause context',async()=>{
+ const event={...data.events[0],children:[],diff:{...data.events[0].diff,title:'委托人 · 法定代表人',original_text:'许峰',compare_text:'吴峻'},context:{original_text:'原条款完整上下文',compare_text:'新条款完整上下文'}};
+ mocks.getEvents.mockResolvedValue({...data,events:[event]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('委托人 · 法定代表人');
+ expect(screen.getByText('许峰')).toBeVisible();
+ const summary=screen.getByText('查看条款上下文');
+ expect(summary.closest('details')).not.toHaveAttribute('open');
+ fireEvent.click(summary);
+ expect(summary.closest('details')).toHaveAttribute('open');
+ expect(screen.getByText('原条款完整上下文')).toBeVisible();
+});
+it('synchronizes legacy documents by reading progress in both directions and honors the checkbox',async()=>{
+ mocks.getEvents.mockResolvedValue({...data,context_available:false,page_alignment:[]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('连续新增内容');
+ const [original,compare]=screen.getAllByTestId('viewer');
+ fireEvent.scroll(original);
+ expect(mocks.scrollRatio).toHaveBeenLastCalledWith('compare',.4);
+ fireEvent.scroll(compare);
+ expect(mocks.scrollRatio).toHaveBeenLastCalledWith('original',.4);
+ expect(mocks.scrollPage).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByLabelText('同步滚动'));
+ mocks.scrollRatio.mockClear();fireEvent.scroll(original);fireEvent.scroll(compare);
+ expect(mocks.scrollRatio).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByLabelText('同步滚动'));fireEvent.scroll(original);
+ expect(mocks.scrollRatio).toHaveBeenCalledWith('compare',.4);
+});
+it('uses explicit page correspondence when available',async()=>{
+ mocks.getEvents.mockResolvedValue({...data,page_alignment:[{status:'MATCHED',original_pages:[2],compare_pages:[3],alignment_score:.99}]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);await screen.findByText('连续新增内容');
+ fireEvent.scroll(screen.getAllByTestId('viewer')[0]);
+ expect(mocks.scrollPage).toHaveBeenCalledWith('compare',3,.25);
+ expect(mocks.scrollRatio).not.toHaveBeenCalled();
+});
+it.each(['INSERTED','UNCERTAIN'])('does not substitute progress for an explicitly unpaired %s page',async(status)=>{
+ mocks.getEvents.mockResolvedValue({...data,page_alignment:[{status,original_pages:[],compare_pages:[2],alignment_score:.3}]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);await screen.findByText('连续新增内容');
+ fireEvent.scroll(screen.getAllByTestId('viewer')[1]);
+ expect(mocks.scrollRatio).not.toHaveBeenCalled();expect(mocks.scrollPage).not.toHaveBeenCalled();
+ expect(screen.getByRole('status')).toHaveTextContent('无可靠对应页');
+});
+it('counts a grouped change once, including after expand and filtering',async()=>{
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(await screen.findByText('已筛选出 1 条')).toBeInTheDocument();
+ fireEvent.click(screen.getByText('2 项明细'));
+ expect(screen.getByText('已筛选出 1 条')).toBeInTheDocument();
+ expect(screen.getAllByTestId('viewer').map(v=>v.textContent)).toEqual(['1','1']);
+ fireEvent.change(screen.getByLabelText('类型筛选'),{target:{value:'ADD'}});
+ expect(screen.getByText('连续新增内容')).toBeInTheDocument();
+ fireEvent.change(screen.getByLabelText('类型筛选'),{target:{value:'DELETE'}});
+ expect(screen.getByText('当前筛选无差异')).toBeInTheDocument();
+});
+it.each(['TABLE_STRUCTURE_UNRESOLVED','TABLE_PRESENCE_UNKNOWN'])('labels uncertain metadata ADD as review after event serialization (%s)',async(reason)=>{
+ const uncertain={...data.events[0].diff,source_type:'metadata',quality_status:'NEEDS_REVIEW',match_score_details:{decision_reason:reason}};
+ mocks.getEvents.mockResolvedValue({...data,events:[{...data.events[0],diff:uncertain}]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('连续新增内容');
+ expect(document.querySelector('.event-badge')).toHaveTextContent('待复核');
+});
+it('locates children without changing parent event identity and submits a versioned group review',async()=>{
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ fireEvent.click(await screen.findByText('连续新增内容'));
+ expect(mocks.scroll.mock.calls[0][0].diff_id).toBe('E');
+ fireEvent.click(screen.getByText('2 项明细'));fireEvent.click(screen.getByText('a'));
+ expect(mocks.scroll.mock.calls.at(-1)?.[0].diff_id).toBe('a');
+ fireEvent.change(screen.getByLabelText('审核差异 1'),{target:{value:'CONFIRMED'}});
+ await waitFor(()=>expect(mocks.review).toHaveBeenCalledWith('x','E',1,'CONFIRMED'));
+});
+it('locates both observed graphic regions without adding a change event',async()=>{
+ mocks.getEvents.mockResolvedValue({...data,graphic_observations:[{side:'compare',page:8,bbox:[430,690,490,745],counterpart_page:8,counterpart_bbox:[431,722,488,777],decision:'UNOBSERVED',reason:'VISIBLE_COUNTERPART_CONTENT_UNRESOLVED'}]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ fireEvent.click(await screen.findByText('比对第 8 页 · 查看图形'));
+ expect(mocks.scroll).toHaveBeenCalledTimes(2);
+ expect(mocks.scroll.mock.calls[0][0].compare_evidence[0].page_no).toBe(8);
+ expect(mocks.scroll.mock.calls[1][0].original_evidence[0].bbox.y0).toBe(722);
+ expect(screen.getByText('已筛选出 1 条')).toBeInTheDocument();
+ fireEvent.click(screen.getByLabelText('仅看待复核'));
+ expect(screen.getByText('已筛选出 1 条')).toBeInTheDocument();
 });
 
-vi.mock("../lib/api", () => ({
-  getTask: vi.fn(async () => mockTask),
-  getDiffs: vi.fn(async () => mockDiffs),
-  getCompareQuality: vi.fn(async () => mockQuality),
-  updateAuditItemReview: vi.fn(async (
-    _taskId: string,
-    auditItemId: string,
-    payload: { review_status: string; review_comment?: string },
-  ) => ({
-    task_id: "task-1",
-    audit_item_id: auditItemId,
-    audit_item_review: {
-      audit_item_id: auditItemId,
-      review_status: payload.review_status,
-      review_comment: payload.review_comment ?? "",
-      reviewed_by: "local_reviewer",
-      reviewed_at: "2026-05-12T00:00:20Z",
-    },
-    review_stats: {
-      reviewed_count: 1,
-      confirmed_count: payload.review_status === "CONFIRMED" ? 1 : 0,
-      false_positive_count: payload.review_status === "FALSE_POSITIVE" ? 1 : 0,
-      manual_review_count: payload.review_status === "NEEDS_REVIEW" ? 1 : 0,
-      ignored_count: payload.review_status === "IGNORED" ? 1 : 0,
-    },
-  })),
-  toApiUrl: (path: string) => `http://api.test${path}`,
-}));
-
-const mockEventSource = {
-  onmessage: null as ((e: MessageEvent) => void) | null,
-  onerror: null as (() => void) | null,
-  close: vi.fn(),
-};
-
-vi.mock("../lib/api_sse", () => ({
-  createProgressEventSource: vi.fn(() => mockEventSource),
-}));
-
-const mockTask: CompareTask = {
-  task_id: "task-1",
-  status: "COMPLETED",
-  stage: "已完成",
-  progress_percent: 100,
-  created_at: "2026-05-12T00:00:00Z",
-  updated_at: "2026-05-12T00:00:10Z",
-  original_filename: "original.pdf",
-  compare_filename: "compare.pdf",
-  diff_count: 3,
-  reviewed_count: 0,
-  confirmed_count: 0,
-  false_positive_count: 0,
-  manual_review_count: 0,
-  ignored_count: 0,
-  audit_item_reviews: {},
-  report_url: "/api/compare/task-1/report",
-  report_filename: "销售合同差异分析报告.pdf",
-  original_pdf_url: "/api/compare/task-1/original",
-  compare_pdf_url: "/api/compare/task-1/compare",
-  original_highlight_pdf_url: "",
-  compare_highlight_pdf_url: "",
-  errors: [],
-};
-
-const mockDiffs: DiffItem[] = [
-  {
-    diff_id: "diff-1",
-    diff_type: "MODIFY",
-    clause_no: "1",
-    title: "付款",
-    original_text: "Buyer shall pay within 30 days.",
-    compare_text: "Buyer shall pay within 45 days.",
-    original_snippet: "30 days",
-    compare_snippet: "45 days",
-    readable_change: "付款期限由 30 天调整为 45 天。",
-    source_type: "clause",
-    match_score: 62,
-    match_method: "same_clause_no_low_similarity",
-    review_flags: ["SAME_CLAUSE_NO_LOW_SIMILARITY"],
-    review_status: "UNREVIEWED",
-    review_comment: "",
-    original_evidence: [
-      {
-        page_no: 1,
-        bbox: { x0: 72, y0: 120, x1: 240, y1: 146 },
-        method: "block",
-        text: "30 days",
-        highlight_type: "MODIFY",
-        confidence: 0.46,
-        evidence_quality: "LOW",
-      },
-    ],
-    compare_evidence: [
-      {
-        page_no: 1,
-        bbox: { x0: 72, y0: 120, x1: 240, y1: 146 },
-        method: "block",
-        text: "45 days",
-        highlight_type: "MODIFY",
-        confidence: 0.98,
-        evidence_quality: "HIGH",
-      },
-      {
-        page_no: 1,
-        bbox: { x0: 250, y0: 120, x1: 340, y1: 146 },
-        method: "block",
-        text: "新增付款说明",
-        highlight_type: "ADD",
-        confidence: 0.98,
-        evidence_quality: "HIGH",
-      },
-    ],
-  },
-  {
-    diff_id: "diff-2",
-    diff_type: "ADD",
-    clause_no: "2",
-    title: "发票",
-    original_text: "",
-    compare_text: "Seller shall provide invoice.",
-    original_snippet: "",
-    compare_snippet: "新增发票条款",
-    readable_change: "新增发票条款。",
-    source_type: "metadata",
-    review_status: "UNREVIEWED",
-    original_evidence: [],
-    compare_evidence: [
-      {
-        page_no: 1,
-        bbox: { x0: 72, y0: 60, x1: 240, y1: 86 },
-        method: "block",
-        text: "",
-        highlight_type: "ADD",
-      },
-    ],
-  },
-  {
-    diff_id: "diff-3",
-    diff_type: "DELETE",
-    clause_no: "3",
-    title: "旧质保",
-    original_text: "Warranty lasts 12 months.",
-    compare_text: "",
-    original_snippet: "12 months",
-    compare_snippet: "",
-    readable_change: "删除旧质保约定。",
-    source_type: "clause",
-    review_status: "UNREVIEWED",
-    original_evidence: [
-      {
-        page_no: 1,
-        bbox: { x0: 72, y0: 240, x1: 240, y1: 266 },
-        method: "block",
-        text: "12 months",
-        highlight_type: "DELETE",
-      },
-    ],
-    compare_evidence: [],
-  },
-  {
-    diff_id: "diff-4",
-    diff_type: "DELETE",
-    clause_no: "4",
-    title: "无定位表格项",
-    original_text: "3 | 短期模型 | 光伏场短期功率预报 模型开发。 | 国能日新 | 套 | 1",
-    compare_text: "",
-    original_snippet: "3 | 短期模型 | 光伏场短期功率预报 模型开发。 | 国能日新 | 套 | 1",
-    compare_snippet: "",
-    readable_change: "表格行38: 删除 '3', 删除 '短期模型'",
-    source_type: "table",
-    review_flags: ["LOW_CONFIDENCE_ORIGINAL_TABLE_EVIDENCE"],
-    review_status: "UNREVIEWED",
-    original_evidence: [],
-    compare_evidence: [],
-  },
-];
-
-const mockQuality = {
-  task_id: "task-1",
-  status: "COMPLETED" as const,
-  diff_count: 3,
-  review_stats: {
-    reviewed_count: 0,
-    confirmed_count: 0,
-    false_positive_count: 0,
-    manual_review_count: 0,
-    ignored_count: 0,
-  },
-  source_counts: { clause: 3 },
-  evidence_quality_counts: { HIGH: 2, MEDIUM: 0, LOW: 1 },
-  document_profile_summary: {},
-  parse_warning_details: [
-    { code: "LOW_TEXT_PAGE", message: "文本量较低", severity: "WARNING" as const, source: "document_profiler" },
-  ],
-  low_confidence_diffs: [
-    {
-      diff_id: "diff-1",
-      title: "付款",
-      diff_type: "MODIFY" as const,
-      source_type: "clause",
-      match_score: 62,
-      match_method: "same_clause_no_low_similarity",
-      review_flags: ["SAME_CLAUSE_NO_LOW_SIMILARITY"],
-      review_status: "UNREVIEWED" as const,
-    },
-  ],
-  low_similarity_diffs: [
-    {
-      diff_id: "diff-1",
-      title: "付款",
-      diff_type: "MODIFY" as const,
-      source_type: "clause",
-      match_score: 62,
-      match_method: "same_clause_no_low_similarity",
-      review_flags: ["SAME_CLAUSE_NO_LOW_SIMILARITY"],
-      review_status: "UNREVIEWED" as const,
-    },
-  ],
-  debug_artifacts: { clause_matches: "clause_matches.json" },
-};
-
-function makeBottomAxisDiff(index: number): DiffItem {
-  return {
-    diff_id: `bottom-${index}`,
-    diff_type: "ADD",
-    clause_no: `${index + 1}`,
-    title: `底部差异 ${index + 1}`,
-    original_text: "",
-    compare_text: `新增底部差异 ${index + 1}`,
-    original_snippet: "",
-    compare_snippet: `新增底部差异 ${index + 1}`,
-    readable_change: `新增底部差异 ${index + 1}`,
-    source_type: "clause",
-    review_status: "UNREVIEWED",
-    original_evidence: [],
-    compare_evidence: [
-      {
-        page_no: 1,
-        bbox: { x0: 72, y0: 812 + index * 5, x1: 240, y1: 830 + index * 5 },
-        method: "block",
-        text: `新增底部差异 ${index + 1}`,
-        highlight_type: "ADD",
-      },
-    ],
-  };
-}
-
-describe("ResultPage", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.clearAllMocks();
-    mockEventSource.onmessage = null;
-    mockEventSource.onerror = null;
-    mockEventSource.close.mockClear();
-  });
-
-  it("renders processing state as a progress ring without visible percent text", async () => {
-    vi.mocked(getTask).mockResolvedValueOnce({
-      ...mockTask,
-      status: "PROCESSING",
-      stage: "证据定位中",
-      progress_percent: 66,
-      report_url: "",
-    });
-
-    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
-
-    await screen.findByText("证据定位中");
-    expect(screen.getByRole("progressbar", { name: /证据定位中/ })).toHaveAttribute("aria-valuenow", "66");
-    expect(screen.queryByText("66%")).not.toBeInTheDocument();
-  });
-
-  it("keeps the progress ring visible briefly when SSE completes before rendering results", async () => {
-    vi.useFakeTimers();
-    vi.mocked(getTask)
-      .mockResolvedValueOnce({
-        ...mockTask,
-        status: "PROCESSING",
-        stage: "证据定位中",
-        progress_percent: 66,
-        report_url: "",
-      })
-      .mockResolvedValueOnce(mockTask);
-    vi.mocked(getDiffs).mockResolvedValueOnce(mockDiffs);
-
-    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
-
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(screen.getByText("证据定位中")).toBeInTheDocument();
-
-    await act(async () => {
-      mockEventSource.onmessage?.({
-        data: JSON.stringify({
-          task_id: "task-1",
-          stage: "已完成",
-          progress_percent: 100,
-          status: "COMPLETED",
-        }),
-      } as MessageEvent);
-    });
-
-    expect(screen.getByText("收尾完成中")).toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: /收尾完成中/ })).toHaveAttribute("aria-valuenow", "100");
-    expect(screen.queryByLabelText("原版PDF 在线预览")).not.toBeInTheDocument();
-
-    await act(async () => {
-      vi.advanceTimersByTime(1200);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument();
-  });
-
-  it("renders only the PDF.js comparison workspace", async () => {
-    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
-
-    await waitFor(() => expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument());
-    expect(screen.getByLabelText("原版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/original");
-    expect(screen.getByLabelText("新版PDF 在线预览")).toHaveAttribute("data-src", "http://api.test/api/compare/task-1/compare");
-    expect(screen.getByRole("button", { name: "下载原版文件" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "下载新版文件" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "导出报告" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "缩小预览" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "放大预览" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "定位新增改动 diff-1:ADD" })).toBeInTheDocument();
-    expect(container.querySelector(".audit-panel")).toHaveClass("is-closed");
-    expect(container.querySelector(".audit-panel")).toHaveAttribute("aria-hidden", "true");
-    expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument();
-    expect(screen.queryByText("差异审查结果")).not.toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "审查详情" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "下载报告" })).not.toBeInTheDocument();
-  });
-
-  it("updates real preview zoom controls", async () => {
-    const user = userEvent.setup();
-    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
-
-    await waitFor(() => expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument());
-    expect(screen.getAllByText("100%").length).toBeGreaterThan(0);
-
-    await user.click(screen.getByRole("button", { name: "放大预览" }));
-
-    expect(screen.getAllByText("110%").length).toBeGreaterThan(0);
-  });
-
-  it("expands compare preview layout when original PDF is hidden", async () => {
-    const user = userEvent.setup();
-    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
-
-    await waitFor(() => expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument());
-    expect(container.querySelector(".pdf-compare")).toHaveClass("original-visible");
-
-    await user.click(screen.getByRole("button", { name: "隐藏原版" }));
-
-    expect(container.querySelector(".pdf-compare")).toHaveClass("original-hidden");
-    expect(screen.getByLabelText("原版PDF 在线预览")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "显示原版" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "显示原版" }));
-
-    expect(container.querySelector(".pdf-compare")).toHaveClass("original-visible");
-  });
-
-  it("downloads the audit analysis report from the task report url", async () => {
-    const user = userEvent.setup();
-    const fetchMock = vi.fn(async () => new Response(new Blob(["pdf"], { type: "application/pdf" }), { status: 200 }));
-    const createObjectUrl = vi.fn(() => "blob:report");
-    const revokeObjectUrl = vi.fn();
-    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
-      expect(this.download).toBe("销售合同差异分析报告.pdf");
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    Object.defineProperty(URL, "createObjectURL", { value: createObjectUrl, configurable: true });
-    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectUrl, configurable: true });
-    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "导出报告" })).toBeInTheDocument());
-    await user.click(screen.getByRole("button", { name: "导出报告" }));
-
-    expect(fetchMock).toHaveBeenCalledWith("http://api.test/api/compare/task-1/report");
-    expect(createObjectUrl).toHaveBeenCalled();
-    expect(anchorClick).toHaveBeenCalled();
-    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:report");
-  });
-
-  it("orders comparison axis markers by audit item position and colors them by audit type", async () => {
-    const user = userEvent.setup();
-    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "定位新增改动 diff-2:ADD" })).toBeInTheDocument());
-
-    const topAddMarker = screen.getByRole("button", { name: "定位新增改动 diff-2:ADD" });
-    const mixedAddMarker = screen.getByRole("button", { name: "定位新增改动 diff-1:ADD" });
-    const mixedModifyMarker = screen.getByRole("button", { name: "定位修改改动 diff-1:MODIFY" });
-    const deleteMarker = screen.getByRole("button", { name: "定位删除改动 diff-3:DELETE" });
-    const markers = Array.from(container.querySelectorAll(".compare-axis .axis-marker"));
-
-    expect(markers).toHaveLength(4);
-    expect(screen.queryByRole("button", { name: "定位删除改动 diff-4:DELETE" })).not.toBeInTheDocument();
-    expect(topAddMarker).toHaveClass("add");
-    expect(mixedAddMarker).toHaveClass("add");
-    expect(mixedModifyMarker).toHaveClass("modify");
-    expect(deleteMarker).toHaveClass("delete");
-    expect(parseFloat(topAddMarker.style.top)).toBeLessThan(parseFloat(mixedAddMarker.style.top));
-    expect(parseFloat(mixedAddMarker.style.top)).toBeLessThan(parseFloat(mixedModifyMarker.style.top));
-    expect(parseFloat(mixedModifyMarker.style.top)).toBeLessThan(parseFloat(deleteMarker.style.top));
-
-    await user.click(mixedModifyMarker);
-
-    expect(mixedModifyMarker).toHaveClass("active");
-  });
-
-  it("spreads clustered comparison axis markers away from the bottom boundary", async () => {
-    vi.mocked(getDiffs).mockResolvedValueOnce(Array.from({ length: 6 }, (_, index) => makeBottomAxisDiff(index)));
-    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "定位新增改动 bottom-0:ADD" })).toBeInTheDocument());
-
-    const tops = Array.from(container.querySelectorAll<HTMLButtonElement>(".compare-axis .axis-marker"))
-      .map((marker) => parseFloat(marker.style.top));
-
-    expect(tops).toHaveLength(6);
-    expect(Math.min(...tops)).toBeGreaterThanOrEqual(3);
-    expect(Math.max(...tops)).toBeLessThanOrEqual(97);
-    for (let index = 1; index < tops.length; index += 1) {
-      expect(tops[index] - tops[index - 1]).toBeGreaterThanOrEqual(3.99);
-    }
-  });
-
-  it("filters audit panel items and marks the selected diff", async () => {
-    const user = userEvent.setup();
-    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
-    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
-
-    expect(screen.getByRole("button", { name: "筛选全部差异" })).toHaveTextContent("4");
-    expect(screen.getByRole("button", { name: "筛选删除差异" })).toHaveTextContent("1");
-    expect(screen.getByRole("button", { name: "筛选新增差异" })).toHaveTextContent("2");
-    expect(screen.getByRole("button", { name: "筛选修改差异" })).toHaveTextContent("1");
-    expect(screen.queryByRole("button", { name: "审计定位改动 diff-4:DELETE" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "筛选新增差异" }));
-
-    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:ADD" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "审计定位改动 diff-2:ADD" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "审计定位改动 diff-3:DELETE" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:ADD" })).toHaveTextContent("新增");
-
-    const addCard = screen.getByRole("button", { name: "审计定位改动 diff-2:ADD" });
-    await user.click(addCard);
-
-    expect(addCard.closest(".audit-diff-card")).toHaveClass("active");
-
-    await user.click(screen.getByRole("button", { name: "筛选修改差异" }));
-
-    expect(screen.getByRole("button", { name: "审计定位改动 diff-1:MODIFY" })).toHaveTextContent("修改");
-    expect(screen.queryByRole("button", { name: "审计定位改动 diff-2:ADD" })).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "筛选删除差异" }));
-
-    expect(screen.getByRole("button", { name: "审计定位改动 diff-3:DELETE" })).toHaveTextContent("删除");
-    expect(screen.queryByRole("button", { name: "审计定位改动 diff-1:ADD" })).not.toBeInTheDocument();
-  });
-
-  it("submits an ignored review decision from the audit panel", async () => {
-    const user = userEvent.setup();
-    render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
-    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
-
-    expect(screen.queryByLabelText("质量诊断摘要")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("复核意见 diff-1")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "确认 diff-1" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "误报 diff-1" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "待确认 diff-1" })).not.toBeInTheDocument();
-    expect(screen.queryByText("封面")).not.toBeInTheDocument();
-    expect(screen.queryByText(/证据高/)).not.toBeInTheDocument();
-    expect(screen.queryByText("未复核")).not.toBeInTheDocument();
-    expect(screen.queryByText("同编号低相似")).not.toBeInTheDocument();
-
-    const ignoreButton = screen.getByRole("button", { name: "忽略 diff-1:ADD" });
-    const auditCard = ignoreButton.closest(".audit-diff-card");
-    await user.click(ignoreButton);
-
-    await waitFor(() => expect(updateAuditItemReview).toHaveBeenCalled());
-    expect(updateAuditItemReview).toHaveBeenCalledWith("task-1", "diff-1:ADD", {
-      review_status: "IGNORED",
-      review_comment: "",
-      reviewed_by: "local_reviewer",
-    });
-    await waitFor(() => expect(auditCard).toHaveClass("ignored"));
-    expect(screen.getByRole("button", { name: "恢复 diff-1:ADD" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "恢复 diff-1:ADD" }));
-
-    await waitFor(() =>
-      expect(updateAuditItemReview).toHaveBeenLastCalledWith("task-1", "diff-1:ADD", {
-        review_status: "UNREVIEWED",
-        review_comment: "",
-        reviewed_by: "local_reviewer",
-      }),
-    );
-    await waitFor(() => expect(auditCard).not.toHaveClass("ignored"));
-    expect(screen.getByRole("button", { name: "忽略 diff-1:ADD" })).toBeInTheDocument();
-  });
-
-  it("collapses and reopens the audit panel", async () => {
-    const user = userEvent.setup();
-    const { container } = render(<ResultPage taskId="task-1" onBack={vi.fn()} />);
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument());
-    expect(container.querySelector(".audit-panel")).toHaveClass("is-closed");
-    expect(container.querySelector(".audit-panel")).toHaveAttribute("aria-hidden", "true");
-
-    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
-
-    expect(container.querySelector(".audit-panel")).toHaveClass("is-open");
-
-    await user.click(screen.getByRole("button", { name: "收起审计侧栏" }));
-
-    expect(container.querySelector(".audit-panel")).toHaveClass("is-closed");
-    expect(container.querySelector(".audit-panel")).toHaveAttribute("aria-hidden", "true");
-    expect(screen.getByRole("button", { name: "展开审计侧栏" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "展开审计侧栏" }));
-
-    expect(screen.getByLabelText("审计统计侧栏")).toBeInTheDocument();
-    expect(container.querySelector(".audit-panel")).toHaveClass("is-open");
-  });
+it.each(['', '?view=legacy', '?view=events'])('opens the unified result for current and bookmarked URLs (%s)', async (query) => {
+ window.history.replaceState({}, '', `/tasks/x${query}`);
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(await screen.findByText('连续新增内容')).toBeInTheDocument();
+ expect(screen.queryByRole('link', {name:'原审计视图'})).not.toBeInTheDocument();
+ expect(mocks.getEvents).toHaveBeenCalledWith('x', expect.any(AbortSignal));
+});
+it('shows historical detail and review conflicts without hiding saved conclusions',async()=>{
+ mocks.getEvents.mockResolvedValue({...data,context_available:false,events:[{...data.events[0],review_conflict:true,diff:{...data.events[0].diff,review_status:'NEEDS_REVIEW'}}]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(await screen.findByText('历史结果缺少已保存的分组上下文，当前按独立变化展示。')).toBeInTheDocument();
+ expect(screen.getByText('成员审核结论不一致，请复核')).toBeInTheDocument();
+ expect(screen.getByLabelText('审核差异 1')).toHaveValue('NEEDS_REVIEW');
+});
+it('downloads the event report from a legacy bookmark',async()=>{
+ window.history.replaceState({}, '', '/tasks/x?view=legacy');
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('连续新增内容');
+ fireEvent.click(screen.getByRole('button',{name:'导出报告'}));
+ await waitFor(()=>expect(mocks.download).toHaveBeenCalledWith('/api/compare/x/events/report','合同差异分析报告.pdf'));
+});
+it('shows event loading errors',async()=>{
+ mocks.getEvents.mockRejectedValue(new Error('读取差异失败'));
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(await screen.findByRole('alert')).toHaveTextContent('读取差异失败');
+ expect(screen.getByRole('button',{name:'导出报告'})).toBeDisabled();
+});
+it('shows task loading and not-found states with a return action',()=>{
+ mocks.task=null; mocks.isLoading=true;
+ const onBack=vi.fn();
+ const {rerender}=render(<ResultPage taskId="x" onBack={onBack}/>);
+ expect(screen.getByRole('heading',{name:'正在载入对比结果'})).toBeInTheDocument();
+ mocks.isLoading=false; mocks.error='任务不存在';
+ rerender(<ResultPage taskId="x" onBack={onBack}/>);
+ expect(screen.getByRole('heading',{name:'无法打开对比结果'})).toBeInTheDocument();
+ expect(screen.getByText('任务不存在')).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'返回'}));
+ expect(onBack).toHaveBeenCalledOnce();
+});
+it('shows processing progress',()=>{
+ mocks.task={status:'PROCESSING',stage:'文档解析中',progress_percent:35};
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(screen.getByRole('heading',{name:'文档解析中'})).toBeInTheDocument();
+ expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow','35');
+ expect(mocks.getEvents).not.toHaveBeenCalled();
+});
+it('previews published documents during processing without exposing unfinished differences or export',async()=>{
+ mocks.task={status:'PROCESSING',stage:'文档解析中',progress_percent:35,preview_available:true,original_pdf_url:'/o',compare_pdf_url:'/c'};
+ const {rerender}=render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(screen.getAllByTestId('viewer')).toHaveLength(2);
+ const original=screen.getAllByTestId('viewer')[0];
+ expect(screen.getByRole('heading',{name:'文档预览'})).toBeInTheDocument();
+ expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow','35');
+ expect(screen.getByRole('button',{name:'导出报告'})).toBeDisabled();
+ expect(screen.queryByText('当前筛选无差异')).not.toBeInTheDocument();
+ expect(mocks.getEvents).not.toHaveBeenCalled();
+ fireEvent.scroll(original);expect(mocks.scrollRatio).toHaveBeenCalledWith('compare',.4);
+ mocks.task={...mocks.task,status:'COMPLETED',revision:2};
+ rerender(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(await screen.findByText('连续新增内容')).toBeInTheDocument();
+ expect(screen.getAllByTestId('viewer')[0]).toBe(original);
+ expect(screen.getByRole('button',{name:'导出报告'})).toBeEnabled();
+});
+it.each([
+ ['EXECUTION_FAILED', undefined, true, '执行失败'],
+ ['EXECUTION_FAILED', false, false, '执行失败'],
+ ['SUBMISSION_FAILED', true, true, '提交失败'],
+ ['SUBMISSION_FAILED', false, false, '提交失败'],
+ ['CANCELLED', true, false, '已取消'],
+] as const)('preserves failure and retry behavior for %s (%s)',(terminal_reason,retry_eligible,retryable,title)=>{
+ mocks.task={status:'FAILED',terminal_reason,retry_eligible,errors:['处理已终止']};
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(screen.getByRole('heading',{name:title})).toBeInTheDocument();
+ expect(screen.getByText('处理已终止')).toBeInTheDocument();
+ if(retryable){fireEvent.click(screen.getByRole('button',{name:'重试'}));expect(mocks.retry).toHaveBeenCalledOnce();}
+ else expect(screen.queryByRole('button',{name:'重试'})).not.toBeInTheDocument();
+});
+
+it('requests events during completion animation and does not refetch or remount when it ends', async () => {
+ mocks.completionAnimating=true; mocks.task={...mocks.task,progress_percent:100};
+ const {rerender}=render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(await screen.findByText('连续新增内容')).toBeInTheDocument();
+ expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow','100');
+ const viewer=screen.getAllByTestId('viewer')[0];
+ const card=screen.getByText('连续新增内容');
+ expect(mocks.getEvents).toHaveBeenCalledTimes(1);
+ mocks.completionAnimating=false;
+ rerender(<ResultPage taskId="x" onBack={()=>{}}/>);
+ expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+ expect(screen.getAllByTestId('viewer')[0]).toBe(viewer);
+ expect(screen.getByText('连续新增内容')).toBe(card);
+ expect(mocks.getEvents).toHaveBeenCalledTimes(1);
+});
+
+it('locates and reviews unresolved tables when there are no change events', async () => {
+ const observation = {observation_id:'observation-D005',title:'表格对应关系待复核',reason:'TABLE_STRUCTURE_UNRESOLVED',message:'单元格对应关系尚未完整建立',review_status:'UNREVIEWED',original_evidence:[{page_no:1,bbox:{x0:20,y0:300,x1:570,y1:500},method:'comparison_observation'}],compare_evidence:[{page_no:1,bbox:{x0:30,y0:310,x1:560,y1:510},method:'comparison_observation'}]};
+ mocks.getEvents.mockResolvedValue({...data,event_count:0,events:[],comparison_observations:[observation]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ fireEvent.click(await screen.findByText('区域待复核 1 处（不计入差异数）'));
+ fireEvent.click(await screen.findByRole('button',{name:/表格对应关系待复核/}));
+ expect(mocks.scroll).toHaveBeenCalledTimes(2);
+ expect(mocks.scroll.mock.calls[0][0].diff_id).toBe('observation-D005');
+ expect(screen.getByText('已筛选出 0 条')).toBeInTheDocument();
+ expect(screen.getByText('当前筛选无已确认变化，仍有区域待复核')).toBeInTheDocument();
+ fireEvent.change(screen.getByLabelText('核验 observation-D005'),{target:{value:'CONFIRMED'}});
+ await waitFor(()=>expect(mocks.review).toHaveBeenCalledWith('x','observation-D005',1,'CONFIRMED'));
+});
+
+it('keeps many footer observations in the sidebar scrollport without changing counts', async () => {
+ const observations = Array.from({length:41}, (_,i) => ({observation_id:`ink-${i}`,title:'页脚印迹待复核',
+   reason:'VISUAL_FOOTER_CONTENT_UNVERIFIED',message:'尚不能确认是笔迹还是残影',review_status:'UNREVIEWED',
+   original_evidence:[],compare_evidence:[{page_no:i+1,bbox:{x0:20,y0:780,x1:120,y1:825},method:'comparison_observation'}]}));
+ mocks.getEvents.mockResolvedValue({...data,comparison_observations:observations});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ const summary=await screen.findByText('区域待复核 41 处（不计入差异数）');
+ const panel=summary.closest('details')!;
+ expect(panel).not.toHaveAttribute('open');
+ expect(panel.closest('.event-cards')).not.toBeNull();
+ fireEvent.click(summary);
+ fireEvent.click(screen.getByRole('button',{name:/页脚印迹待复核 · 标准第 无 页 \/ 比对第 41 页/}));
+ expect(mocks.scroll.mock.calls.at(-1)?.[0].compare_evidence[0].page_no).toBe(41);
+ expect(screen.getByText('已筛选出 1 条')).toBeInTheDocument();
+});
+
+it('shows seal observations by default while footer outlines remain optional and filtered', async () => {
+ const o={observation_id:'ink-1',source_type:'header_footer',title:'页脚印迹待复核',reason:'VISUAL_FOOTER_CONTENT_UNVERIFIED',message:'待复核',review_status:'UNREVIEWED',original_evidence:[],compare_evidence:[{page_no:1,bbox:{x0:20,y0:780,x1:120,y1:825},method:'comparison_observation'}]};
+ mocks.getEvents.mockResolvedValue({...data,comparison_observations:[o,{...o,observation_id:'seal-1',source_type:'seal',title:'印章待复核'}]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('连续新增内容');
+ const counts=()=>screen.getAllByTestId('viewer').map(v=>v.textContent);
+ expect(counts()).toEqual(['2','2']);
+ fireEvent.click(screen.getByText('区域待复核 2 处（不计入差异数）'));
+ fireEvent.click(screen.getByRole('button',{name:/页脚印迹待复核/}));
+ expect(counts()).toEqual(['3','3']);
+ fireEvent.click(screen.getByLabelText('显示其他待复核框'));
+ expect(counts()).toEqual(['3','3']);
+ fireEvent.change(screen.getByLabelText('元素筛选'),{target:{value:'seal'}});
+ expect(counts()).toEqual(['1','1']);
+ expect(screen.queryByRole('button',{name:/页脚印迹待复核/})).not.toBeInTheDocument();
+ fireEvent.change(screen.getByLabelText('类型筛选'),{target:{value:'DELETE'}});
+ expect(counts()).toEqual(['0','0']);
+ fireEvent.change(screen.getByLabelText('类型筛选'),{target:{value:'ALL'}});
+ fireEvent.click(screen.getByLabelText('显示其他待复核框'));
+ expect(counts()).toEqual(['1','1']);
+});
+
+it('keeps both a suspected mirrored seal and an unresolved seal visible without adding events', async () => {
+ const seal={source_type:'seal',title:'印章印迹待复核',reason:'FAINT_INK_OR_SCAN_ARTIFACT_UNRESOLVED',message:'已检测到印章印迹',review_status:'UNREVIEWED',original_evidence:[],compare_evidence:[{page_no:12,bbox:{x0:336,y0:136,x1:448,y1:256},method:'comparison_observation'}]};
+ mocks.getEvents.mockResolvedValue({...data,event_count:0,events:[],comparison_observations:[
+   {...seal,observation_id:'right'},
+   {...seal,observation_id:'left',reason:'MIRRORED_ADJACENT_PAGE_IMPRESSION',title:'印章印迹（疑似透印）',compare_evidence:[{...seal.compare_evidence[0],bbox:{x0:103,y0:146,x1:212,y1:261}}]},
+   {...seal,observation_id:'ignored',review_status:'IGNORED'}]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('区域待复核 3 处（不计入差异数）');
+ expect(screen.getAllByTestId('viewer').map(v=>v.textContent)).toEqual(['2','2']);
+ expect(screen.getByText('已筛选出 0 条')).toBeInTheDocument();
+ fireEvent.change(screen.getByLabelText('元素筛选'),{target:{value:'header_footer'}});
+ expect(screen.getAllByTestId('viewer').map(v=>v.textContent)).toEqual(['0','0']);
+});
+
+it('keeps review and historical undo without seal confirmation buttons', async () => {
+ const seal={observation_id:'seal-1',source_type:'seal',title:'印章印迹（疑似透印）',reason:'MIRRORED_ADJACENT_PAGE_IMPRESSION',message:'疑似透印',review_status:'UNREVIEWED',original_evidence:[],compare_evidence:[{page_no:12,bbox:{x0:100,y0:100,x1:200,y1:200},method:'comparison_observation'}]};
+ const promoted={...data.events[0],event_id:'seal-event',raw_diff_ids:['seal-raw'],direction:'ADD',children:[],diff:{...item('seal-event'),source_type:'seal',title:'印章印迹',match_score_details:{seal_observation_id:'historical-seal',seal_change_decision:'CONFIRMED'}}};
+ mocks.getEvents.mockResolvedValue({...data,event_count:1,events:[promoted],comparison_observations:[seal]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ fireEvent.click(await screen.findByText('区域待复核 1 处（不计入差异数）'));
+ expect(screen.queryByRole('button',{name:/确认.*印章|确认为透印/})).not.toBeInTheDocument();
+ expect(screen.getByLabelText('审核差异 1')).toBeInTheDocument();
+ expect(screen.getByLabelText('核验 seal-1')).toBeInTheDocument();
+ mocks.review.mockRejectedValueOnce(new Error('任务或审核版本已变化'));
+ fireEvent.click(screen.getByRole('button',{name:'撤销印章裁决'}));
+ await waitFor(()=>expect(mocks.review).toHaveBeenCalledWith('x','seal-event',1,'UNREVIEWED','RESET'));
+ expect(await screen.findByRole('alert')).toHaveTextContent('任务或审核版本已变化');
+ expect(screen.getByText('已筛选出 1 条')).toBeInTheDocument();
+});
+
+it('shows counted footer ink and its origin note without enabling observation outlines', async () => {
+ const event={...data.events[0],event_id:'ink',raw_diff_ids:['ink'],direction:'ADD',diff:{...data.events[0].diff,
+  diff_id:'ink',source_type:'header_footer',title:'第35页左下角印迹（疑似透印）',
+  readable_change:'本页存在印迹变化，已计入差异；疑似透印，具体字迹待复核。',
+  match_score_details:{object_type:'FOOTER_INK_CHANGE',footer_origin_decision:'SUSPECTED_MIRROR'},
+  compare_evidence:[{page_no:35,bbox:{x0:40,y0:780,x1:90,y1:815},method:'footer_ink_change'}]}};
+ mocks.getEvents.mockResolvedValue({...data,event_count:1,events:[event],comparison_observations:[]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('第35页左下角印迹（疑似透印）');
+ expect(screen.getByText(event.diff.readable_change)).toBeInTheDocument();
+ expect(screen.getAllByTestId('viewer').map(v=>v.textContent)).toEqual(['1','1']);
+ expect(screen.queryByLabelText('显示其他待复核框')).not.toBeInTheDocument();
 });

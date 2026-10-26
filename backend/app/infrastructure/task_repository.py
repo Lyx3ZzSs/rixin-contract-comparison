@@ -1,41 +1,15 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from app.config import Settings, settings
-from app.models import CompareTask, OcrRawResultPaths
-from app.models_extraction import ExtractionTask
-
-
-class TaskRepository(Protocol):
-    def save_compare_task(self, task: CompareTask) -> Path | None:
-        raise NotImplementedError
-
-    def load_compare_task(self, task_id: str) -> CompareTask:
-        raise NotImplementedError
-
-    def list_compare_tasks(self) -> list[CompareTask]:
-        raise NotImplementedError
-
-    def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
-        raise NotImplementedError
-
-    def save_extraction_task(self, task: ExtractionTask) -> Path | None:
-        raise NotImplementedError
-
-    def load_extraction_task(self, task_id: str) -> ExtractionTask:
-        raise NotImplementedError
-
-    def list_extraction_tasks(self) -> list[ExtractionTask]:
-        raise NotImplementedError
-
-    def update_extraction_task(self, task_id: str, mutate: Callable[[ExtractionTask], None]) -> ExtractionTask:
-        raise NotImplementedError
+from app.models import CompareTask
 
 
 def to_jsonable(model: Any) -> dict[str, Any]:
@@ -44,313 +18,257 @@ def to_jsonable(model: Any) -> dict[str, Any]:
     return model.dict()
 
 
-class LocalJsonTaskRepository:
-    """MinerU-style local file task store.
+_COLUMNS = (
+    "task_id",
+    "schema_version",
+    "revision",
+    "status",
+    "terminal_reason",
+    "report_revision",
+    "stage",
+    "progress_percent",
+    "created_at",
+    "updated_at",
+    "owner_sub",
+    "owner_username",
+    "owner_display_name",
+    "owner_department_code",
+    "owner_department_name",
+    "original_filename",
+    "compare_filename",
+    "execution_id",
+    "execution_no",
+    "execution_status",
+    "execution_queued_at",
+    "execution_started_at",
+    "execution_finished_at",
+    "execution_error_code",
+    "execution_last_error",
+    "diff_count",
+)
 
-    Each task owns a directory under ``storage/tasks/{task_id}``. The complete
-    task payload lives in ``task.json`` and task artifacts live beside it.
-    """
+_RUNTIME_PATH_FIELDS = {
+    "original_pdf_path",
+    "compare_pdf_path",
+    "report_pdf_path",
+    "ocr_raw_result_path",
+    "ocr_raw_result_paths",
+    "debug_artifact_paths",
+}
+
+
+class SQLiteTaskRepository:
+    """SQLite is the sole authority for structured comparison-task state."""
 
     def __init__(self, app_settings: Settings = settings) -> None:
         self.settings = app_settings
         self._lock = threading.RLock()
+        self._connection: sqlite3.Connection | None = None
+        self._connection_path: Path | None = None
 
-    def save_compare_task(self, task: CompareTask) -> Path:
-        data = self._normalize_compare_payload_for_storage(task.task_id, to_jsonable(task))
-        return self._write_task(task.task_id, self._stamped_payload(task.task_id, data))
+    def resolve(self) -> SQLiteTaskRepository:
+        self._connect()
+        return self
+
+    def close(self) -> None:
+        with self._lock:
+            if self._connection is not None:
+                self._connection.close()
+            self._connection = None
+            self._connection_path = None
+
+    def healthcheck(self) -> None:
+        with self._lock:
+            self._connect().execute("SELECT 1").fetchone()
+
+    def save_compare_task(self, task: CompareTask) -> Path | None:
+        with self._lock:
+            connection = self._connect()
+            existing = connection.execute(
+                "SELECT revision, created_at, owner_sub FROM tasks WHERE task_id = ?",
+                (task.task_id,),
+            ).fetchone()
+            if existing is not None:
+                task.revision = int(existing["revision"]) + 1
+                task.created_at = str(existing["created_at"])
+                if task.owner_sub != str(existing["owner_sub"]):
+                    raise ValueError("任务所有者不能变更。")
+            else:
+                task.revision = max(1, task.revision)
+            task.schema_version = max(3, task.schema_version)
+            task.diff_count = len(task.diffs)
+            task.updated_at = datetime.now(UTC).isoformat()
+            values = self._serialize(task)
+            placeholders = ", ".join("?" for _ in values)
+            columns = ", ".join(values)
+            updates = ", ".join(f"{name}=excluded.{name}" for name in values if name != "task_id")
+            with connection:
+                connection.execute(
+                    f"INSERT INTO tasks ({columns}) VALUES ({placeholders}) "
+                    f"ON CONFLICT(task_id) DO UPDATE SET {updates}",
+                    tuple(values.values()),
+                )
+        return None
 
     def load_compare_task(self, task_id: str) -> CompareTask:
-        data = self._read_task_data(task_id)
-        if data.get("task_type") == "extraction":
-            raise FileNotFoundError(f"任务 {task_id} 不是对比任务。")
-        data = self._hydrate_compare_payload(task_id, data)
-        return CompareTask(**data)
+        with self._lock:
+            row = self._connect().execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise FileNotFoundError(f"任务不存在: {task_id}")
+        return self._deserialize(row)
 
     def list_compare_tasks(self) -> list[CompareTask]:
-        tasks: list[CompareTask] = []
-        for data in self._iter_task_data():
-            if data.get("task_type") == "extraction":
-                continue
-            try:
-                task_id = str(data.get("task_id") or "")
-                if task_id:
-                    data = self._hydrate_compare_payload(task_id, data)
-                tasks.append(CompareTask(**data))
-            except (ValueError, TypeError):
-                continue
-        return sorted(tasks, key=lambda task: task.updated_at or task.created_at, reverse=True)
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute("SELECT * FROM tasks ORDER BY COALESCE(created_at, updated_at) DESC, task_id DESC")
+                .fetchall()
+            )
+        return [self._deserialize(row) for row in rows]
+
+    def list_compare_record_summaries(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute(
+                    """
+                SELECT task_id, owner_sub, status, terminal_reason, revision, report_revision,
+                       stage, progress_percent, created_at, updated_at,
+                       original_filename, compare_filename, diff_count,
+                       json_extract(details_json, '$.event_summary.event_count') AS event_count,
+                       json_extract(details_json, '$.event_summary.event_version') AS event_version,
+                       CASE WHEN json_extract(details_json, '$.event_summary.observation_projection') IS NULL
+                         AND (instr(json_extract(details_json, '$.diffs'), 'TABLE_STRUCTURE_UNRESOLVED') > 0
+                           OR instr(json_extract(details_json, '$.diffs'), 'TABLE_PRESENCE_UNKNOWN') > 0)
+                       THEN 1 ELSE 0 END AS legacy_table_observation
+                FROM tasks
+                ORDER BY COALESCE(created_at, updated_at) DESC, task_id DESC
+                """
+                )
+                .fetchall()
+            )
+        summaries = [dict(row) for row in rows]
+        for summary in summaries:
+            legacy = summary.pop("legacy_table_observation", False)
+            if legacy and summary["event_count"] is not None:
+                from app.services.comparison_observations import visible_snapshot_events
+                task = self.load_compare_task(summary["task_id"])
+                if task.event_snapshot:
+                    summary["event_count"] = len(visible_snapshot_events(task, task.event_snapshot))
+        return summaries
 
     def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
         with self._lock:
             task = self.load_compare_task(task_id)
+            owner_sub = task.owner_sub
             mutate(task)
-            data = self._normalize_compare_payload_for_storage(task.task_id, to_jsonable(task))
-            self._write_task(task.task_id, self._stamped_payload(task.task_id, data))
-            return self.load_compare_task(task_id)
+            if task.task_id != task_id:
+                raise ValueError("任务 ID 不能变更。")
+            if task.owner_sub != owner_sub:
+                raise ValueError("任务所有者不能变更。")
+            self.save_compare_task(task)
+            return task.model_copy(deep=True)
 
-    def save_extraction_task(self, task: ExtractionTask) -> Path:
-        return self._write_task(task.task_id, self._stamped_payload(task.task_id, to_jsonable(task)))
+    def fail_interrupted_tasks(self) -> int:
+        interrupted = [task for task in self.list_compare_tasks() if task.status == "PROCESSING"]
+        for task in interrupted:
 
-    def load_extraction_task(self, task_id: str) -> ExtractionTask:
-        data = self._read_task_data(task_id)
-        if data.get("task_type") != "extraction":
-            raise FileNotFoundError(f"任务 {task_id} 不是提取任务。")
-        return ExtractionTask(**data)
+            def fail(current: CompareTask) -> None:
+                now = datetime.now(UTC).isoformat()
+                current.status = "FAILED"
+                current.terminal_reason = "EXECUTION_FAILED"
+                current.stage = "服务重启，任务已中止"
+                current.progress_percent = 100
+                current.execution_status = "FAILED"
+                current.execution_finished_at = now
+                current.execution_error_code = "SERVICE_RESTARTED"
+                current.execution_last_error = "服务重启，请手动重试。"
+                if current.execution_last_error not in current.errors:
+                    current.errors.append(current.execution_last_error)
 
-    def list_extraction_tasks(self) -> list[ExtractionTask]:
-        tasks: list[ExtractionTask] = []
-        for data in self._iter_task_data():
-            if data.get("task_type") != "extraction":
-                continue
-            try:
-                tasks.append(ExtractionTask(**data))
-            except (ValueError, TypeError):
-                continue
-        return sorted(tasks, key=lambda task: task.updated_at or task.created_at, reverse=True)
+            self.update_compare_task(task.task_id, fail)
+        return len(interrupted)
 
-    def update_extraction_task(self, task_id: str, mutate: Callable[[ExtractionTask], None]) -> ExtractionTask:
-        with self._lock:
-            task = self.load_extraction_task(task_id)
-            mutate(task)
-            self._write_task(task.task_id, self._stamped_payload(task.task_id, to_jsonable(task)))
-            return self.load_extraction_task(task_id)
-
-    def task_json_path(self, task_id: str) -> Path:
-        return self.task_dir(task_id) / "task.json"
-
-    def task_dir(self, task_id: str) -> Path:
-        return self.settings.tasks_dir / self._safe_task_id(task_id)
-
-    def _write_task(self, task_id: str, data: dict[str, Any]) -> Path:
-        with self._lock:
-            self.settings.tasks_dir.mkdir(parents=True, exist_ok=True)
-            path = self.task_json_path(task_id)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = path.with_suffix(path.suffix + ".tmp")
-            temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            temp_path.replace(path)
-            self._write_manifest(task_id, data)
-            return path
-
-    def _stamped_payload(self, task_id: str, data: dict[str, Any]) -> dict[str, Any]:
-        current_revision = 0
-        try:
-            current_revision = int(self._read_task_data(task_id).get("revision") or 0)
-        except (FileNotFoundError, TypeError, ValueError):
-            current_revision = int(data.get("revision") or 0)
-        data["schema_version"] = int(data.get("schema_version") or 1)
-        data["revision"] = current_revision + 1
-        data["updated_at"] = datetime.now(UTC).isoformat()
-        return data
-
-    def _normalize_compare_payload_for_storage(self, task_id: str, data: dict[str, Any]) -> dict[str, Any]:
-        normalized = dict(data)
-        normalized["schema_version"] = max(2, int(normalized.get("schema_version") or 1))
-        normalized["diff_count"] = len(normalized.get("diffs") or [])
-        self._coerce_empty_optional_paths(normalized)
-
-        for field in self._compare_path_fields():
-            normalized[field] = self._to_task_relative_path(task_id, normalized.get(field))
-        for field in self._required_compare_path_fields():
-            if normalized.get(field) is None:
-                normalized[field] = ""
-
-        debug_paths = normalized.get("debug_artifact_paths")
-        if isinstance(debug_paths, dict):
-            normalized["debug_artifact_paths"] = {
-                str(name): self._to_task_relative_path(task_id, value) or ""
-                for name, value in debug_paths.items()
-            }
-
-        raw_paths = normalized.get("ocr_raw_result_paths")
-        if not raw_paths and normalized.get("ocr_raw_result_path"):
-            raw_paths = OcrRawResultPaths.from_legacy_value(normalized.get("ocr_raw_result_path")).model_dump(mode="json")
-        normalized["ocr_raw_result_paths"] = self._normalize_ocr_raw_result_paths(task_id, raw_paths)
-        normalized["ocr_raw_result_path"] = ""
-        return normalized
-
-    def _hydrate_compare_payload(self, task_id: str, data: dict[str, Any]) -> dict[str, Any]:
-        hydrated = dict(data)
-        self._coerce_empty_optional_paths(hydrated)
-
-        for field in self._compare_path_fields():
-            hydrated[field] = self._to_task_absolute_path(task_id, hydrated.get(field))
-        for field in self._required_compare_path_fields():
-            if hydrated.get(field) is None:
-                hydrated[field] = ""
-
-        debug_paths = hydrated.get("debug_artifact_paths")
-        if isinstance(debug_paths, dict):
-            hydrated["debug_artifact_paths"] = {
-                str(name): self._to_task_absolute_path(task_id, value) or ""
-                for name, value in debug_paths.items()
-            }
-
-        raw_paths = hydrated.get("ocr_raw_result_paths")
-        if not raw_paths and hydrated.get("ocr_raw_result_path"):
-            raw_paths = OcrRawResultPaths.from_legacy_value(hydrated.get("ocr_raw_result_path")).model_dump(mode="json")
-        hydrated["ocr_raw_result_paths"] = self._hydrate_ocr_raw_result_paths(task_id, raw_paths)
-        return hydrated
-
-    def _normalize_ocr_raw_result_paths(self, task_id: str, raw_paths: Any) -> dict[str, Any]:
-        paths = OcrRawResultPaths.from_legacy_value(raw_paths).model_dump(mode="json")
-        for side in ["original", "compare"]:
-            side_paths = paths.get(side) or {}
-            for kind, value in list(side_paths.items()):
-                side_paths[kind] = self._to_task_relative_path(task_id, value)
-        return paths
-
-    def _hydrate_ocr_raw_result_paths(self, task_id: str, raw_paths: Any) -> dict[str, Any]:
-        paths = OcrRawResultPaths.from_legacy_value(raw_paths).model_dump(mode="json")
-        for side in ["original", "compare"]:
-            side_paths = paths.get(side) or {}
-            for kind, value in list(side_paths.items()):
-                side_paths[kind] = self._to_task_absolute_path(task_id, value)
-        return paths
-
-    def _to_task_relative_path(self, task_id: str, value: Any) -> str | None:
-        if value in (None, ""):
-            return None
-        path = Path(str(value))
-        if not path.is_absolute():
-            return path.as_posix()
-        try:
-            return path.resolve().relative_to(self.task_dir(task_id).resolve()).as_posix()
-        except ValueError:
-            return str(path)
-
-    def _to_task_absolute_path(self, task_id: str, value: Any) -> str | None:
-        if value in (None, ""):
-            return None
-        path = Path(str(value))
-        if path.is_absolute():
-            return str(path)
-        return str(self.task_dir(task_id) / path)
-
-    def _coerce_empty_optional_paths(self, data: dict[str, Any]) -> None:
-        for field in [
-            "original_highlight_pdf_path",
-            "compare_highlight_pdf_path",
-            "report_pdf_path",
-        ]:
-            if data.get(field) == "":
-                data[field] = None
-
-    def _compare_path_fields(self) -> list[str]:
-        return [
-            "original_pdf_path",
-            "compare_pdf_path",
-            "original_highlight_pdf_path",
-            "compare_highlight_pdf_path",
-            "report_pdf_path",
-        ]
-
-    def _required_compare_path_fields(self) -> list[str]:
-        return [
-            "original_pdf_path",
-            "compare_pdf_path",
-        ]
-
-    def _read_task_data(self, task_id: str) -> dict[str, Any]:
-        path = self.task_json_path(task_id)
-        if not path.exists():
-            raise FileNotFoundError(f"任务不存在: {task_id}")
-        with self._lock:
-            return json.loads(path.read_text(encoding="utf-8"))
-
-    def _iter_task_data(self) -> list[dict[str, Any]]:
-        if not self.settings.tasks_dir.exists():
-            return []
-
-        items: list[dict[str, Any]] = []
-        for path in self.settings.tasks_dir.glob("*/task.json"):
-            try:
-                with self._lock:
-                    items.append(json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, ValueError, TypeError):
-                continue
-        return items
-
-    def _write_manifest(self, task_id: str, data: dict[str, Any]) -> None:
-        task_dir = self.task_dir(task_id)
-        manifest_path = task_dir / "manifest.json"
-        now = datetime.now(UTC).isoformat()
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError):
-                manifest = {}
-        else:
-            manifest = {}
-        artifacts = {
-            str(item.get("path")): item
-            for item in manifest.get("artifacts", [])
-            if isinstance(item, dict) and item.get("path")
-        }
-        artifacts["task.json"] = {
-            "path": "task.json",
-            "area": "metadata",
-            "kind": "json",
-            "updated_at": now,
-        }
-        manifest.update(
-            {
-                "task_id": self._safe_task_id(task_id),
-                "task_type": data.get("task_type") or "compare",
-                "status": data.get("status", ""),
-                "stage": data.get("stage", ""),
-                "updated_at": now,
-                "artifacts": sorted(artifacts.values(), key=lambda item: str(item["path"])),
-            }
+    def _connect(self) -> sqlite3.Connection:
+        path = self.settings.task_database_path.resolve()
+        if self._connection is not None and self._connection_path == path:
+            return self._connection
+        if self._connection is not None:
+            self._connection.close()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(path, timeout=5, check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=5000")
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS tasks (
+                task_id TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL,
+                revision INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('PROCESSING', 'COMPLETED', 'FAILED')),
+                terminal_reason TEXT NOT NULL,
+                report_revision INTEGER NOT NULL,
+                stage TEXT NOT NULL,
+                progress_percent INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                owner_sub TEXT NOT NULL,
+                owner_username TEXT NOT NULL,
+                owner_display_name TEXT NOT NULL,
+                owner_department_code TEXT NOT NULL,
+                owner_department_name TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                compare_filename TEXT NOT NULL,
+                execution_id TEXT NOT NULL,
+                execution_no INTEGER NOT NULL,
+                execution_status TEXT NOT NULL,
+                execution_queued_at TEXT NOT NULL,
+                execution_started_at TEXT NOT NULL,
+                execution_finished_at TEXT NOT NULL,
+                execution_error_code TEXT NOT NULL,
+                execution_last_error TEXT NOT NULL,
+                diff_count INTEGER NOT NULL,
+                details_json TEXT NOT NULL CHECK (json_valid(details_json))
+            );
+            CREATE INDEX IF NOT EXISTS idx_tasks_owner_created
+                ON tasks(owner_sub, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_tasks_status_created
+                ON tasks(status, created_at DESC);
+            """
         )
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._connection = connection
+        self._connection_path = path
+        return connection
 
-    def _safe_task_id(self, task_id: str) -> str:
-        sanitized = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in task_id)
-        return sanitized or "task"
+    def _serialize(self, task: CompareTask) -> dict[str, Any]:
+        payload = to_jsonable(task)
+        from app.services.diff_events import source_fingerprint
+        from app.services.comparison_observations import visible_snapshot_events
+        snapshot = task.event_snapshot
+        payload["event_summary"] = ({"event_count": len(visible_snapshot_events(task, snapshot)), "event_version": snapshot["version"], "observation_projection": 1}
+                                    if snapshot and snapshot.get("source_fingerprint") == source_fingerprint(task) else None)
+        values = {name: payload.pop(name) for name in _COLUMNS}
+        for field in _RUNTIME_PATH_FIELDS:
+            payload.pop(field, None)
+        values["details_json"] = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        return values
 
-
-def build_task_repository(app_settings: Settings = settings) -> TaskRepository:
-    return LocalJsonTaskRepository(app_settings)
-
-
-class LazyDefaultTaskRepository:
-    """Defers repository initialization until runtime configuration is available."""
-
-    def __init__(self, app_settings: Settings = settings) -> None:
-        self.settings = app_settings
-        self._lock = threading.RLock()
-        self._repository: TaskRepository | None = None
-
-    def resolve(self) -> TaskRepository:
-        with self._lock:
-            if self._repository is None:
-                self._repository = build_task_repository(self.settings)
-            return self._repository
-
-    def save_compare_task(self, task: CompareTask) -> Path | None:
-        return self.resolve().save_compare_task(task)
-
-    def load_compare_task(self, task_id: str) -> CompareTask:
-        return self.resolve().load_compare_task(task_id)
-
-    def list_compare_tasks(self) -> list[CompareTask]:
-        return self.resolve().list_compare_tasks()
-
-    def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
-        return self.resolve().update_compare_task(task_id, mutate)
-
-    def save_extraction_task(self, task: ExtractionTask) -> Path | None:
-        return self.resolve().save_extraction_task(task)
-
-    def load_extraction_task(self, task_id: str) -> ExtractionTask:
-        return self.resolve().load_extraction_task(task_id)
-
-    def list_extraction_tasks(self) -> list[ExtractionTask]:
-        return self.resolve().list_extraction_tasks()
-
-    def update_extraction_task(self, task_id: str, mutate: Callable[[ExtractionTask], None]) -> ExtractionTask:
-        return self.resolve().update_extraction_task(task_id, mutate)
+    def _deserialize(self, row: sqlite3.Row) -> CompareTask:
+        payload = json.loads(str(row["details_json"]))
+        payload.update({name: row[name] for name in _COLUMNS})
+        task_root = self.settings.tasks_dir / str(row["task_id"])
+        payload["original_pdf_path"] = str(task_root / "input" / "original" / str(row["original_filename"]))
+        payload["compare_pdf_path"] = str(task_root / "input" / "compare" / str(row["compare_filename"]))
+        payload["report_pdf_path"] = str(task_root / "report" / f"report-r{row['report_revision']}.pdf")
+        return CompareTask.model_validate(payload)
 
 
-default_task_repository = LazyDefaultTaskRepository()
+TaskRepository = SQLiteTaskRepository
+default_task_repository = SQLiteTaskRepository()
