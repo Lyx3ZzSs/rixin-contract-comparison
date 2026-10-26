@@ -20,6 +20,7 @@ class DocumentPreparationDecision:
     block_id: str
     reason: str
     text_preview: str
+    source_evidence: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -35,6 +36,7 @@ class DocumentPreparationResult:
                 "block_id": decision.block_id,
                 "reason": decision.reason,
                 "text_preview": decision.text_preview,
+                **({"source_evidence": decision.source_evidence} if decision.source_evidence else {}),
             }
             for decision in self.decisions
         ]
@@ -118,6 +120,14 @@ class DocumentPreparer:
         from app.services.document_role_repair import reconcile_contact_placeholders, reconcile_body_roles, reconcile_local_source_disagreement
         result = DocumentPreparationResult()
         timed = result.performance.call
+        from app.services.address_evidence import reconcile_addresses
+        for side, block in timed("address_evidence", reconcile_addresses, original, compare):
+            result.decisions.append(DocumentPreparationDecision(side=side, page_no=block.page_no,
+                block_id=block.block_id, reason=("address_line_readings_disagree"
+                    if "address_line_readings_disagree" in block.semantic_reasons
+                    else "own_address_line_two_scale_verified"), text_preview=block.text,
+                source_evidence=[e.model_dump(mode="json") for e in block.source_evidence
+                                 if e.source.startswith("address_line_")]))
         from app.services.cover.party_ocr import reconcile_cover_title_roles
         for side, block in timed("cover_title_roles", reconcile_cover_title_roles, original, compare):
             result.decisions.append(DocumentPreparationDecision(side=side,page_no=block.page_no,block_id=block.block_id,

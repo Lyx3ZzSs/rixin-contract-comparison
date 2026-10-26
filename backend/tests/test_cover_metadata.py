@@ -428,12 +428,11 @@ def test_reports_changed_preamble_buyer_even_when_cover_buyer_is_unchanged() -> 
     assert diff.compare_text == "甲方：国能长源随州发电有限公司"
     assert diff.original_snippet == diff.original_text
     assert diff.compare_snippet == diff.compare_text
-    assert [evidence.text for evidence in diff.original_evidence] == [diff.original_text]
-    assert [evidence.text for evidence in diff.compare_evidence] == [diff.compare_text]
+    assert [evidence.text for evidence in diff.original_evidence] == ["随县分公司"]
+    assert diff.compare_evidence == []
     assert diff.original_evidence[0].bbox == BBox(x0=70, y0=147, x1=310, y1=162)
-    assert diff.compare_evidence[0].bbox == BBox(x0=55, y0=147, x1=216, y1=162)
-    assert {evidence.highlight_type for evidence in diff.original_evidence} == {"MODIFY"}
-    assert {evidence.highlight_type for evidence in diff.compare_evidence} == {"MODIFY"}
+    assert diff.match_score_details["compare_field_anchors"][0]["page_no"] == 2
+    assert {evidence.highlight_type for evidence in diff.original_evidence} == {"DELETE"}
     assert "CRITICAL_VALUE_CHANGE" in diff.review_flags
     assert all(diff.title != "封面字段：甲方" for diff in diffs)
 

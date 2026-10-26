@@ -33,6 +33,18 @@ class EvidenceLocator:
                     diff.diff_type,
                     side="compare",
                 )
+        from app.services.preamble_field_ownership import reconcile_preamble_fields
+        diffs = reconcile_preamble_fields(diffs, original_by_id, compare_by_id)
+        for diff in diffs:
+            if not diff.match_score_details.get("preamble_fields_excluded"):
+                continue
+            for side, clauses in (("original", original_by_id), ("compare", compare_by_id)):
+                evidence = self._locate_clause_ranges(
+                    clauses.get(getattr(diff, f"{side}_clause_id")),
+                    self._side_ranges(getattr(diff, f"{side}_change_ranges"), side),
+                    getattr(diff, f"{side}_snippet"), [], diff.diff_type, side,
+                )
+                setattr(diff, f"{side}_evidence", evidence)
         self._resolve_side_conflicts(diffs, side="original")
         self._resolve_side_conflicts(diffs, side="compare")
         self.assign_evidence_confidence(diffs)
@@ -189,6 +201,11 @@ class EvidenceLocator:
                 ):
                     continue
                 if {diffs[left_diff].source_type, diffs[right_diff].source_type} == {"metadata", "clause"}:
+                    if any(d.match_score_details.get("field_kind") in {"preamble_party", "preamble_address"}
+                           for d in (diffs[left_diff], diffs[right_diff])):
+                        # Fully owned fields have already been reconciled. A
+                        # partial overlap cannot erase an independent field's anchor.
+                        continue
                     clause_diff, clause_evidence, metadata_evidence = (
                         (diffs[left_diff], left, right) if diffs[left_diff].source_type == "clause"
                         else (diffs[right_diff], right, left)

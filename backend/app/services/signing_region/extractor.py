@@ -447,6 +447,12 @@ class SigningRegionExtractor:
                 if field_key == "bank":
                     continuation_blocks = [item for item in continuation_blocks
                                            if value.endswith("支") and item.text.strip() == "行"][:1]
+                unresolved_address_lines = []
+                if field_key == "address":
+                    from app.services.address_evidence import address_tail_candidates
+                    accepted_ids = {b.block_id for b in continuation_blocks}
+                    unresolved_address_lines = [b for b in address_tail_candidates(
+                        source, field_bbox, list(blocks_by_id.values())) if b.block_id not in accepted_ids]
                 value_bbox = (
                     self._field_bbox(source, value_start, value_end) if value and value_end > value_start else None
                 )
@@ -531,6 +537,15 @@ class SigningRegionExtractor:
                 ]
                 if preferred_value:
                     value = preferred_value
+                address_disputed = field_key == "address" and any(
+                    "address_line_readings_disagree" in b.semantic_reasons
+                    for b in [source, *continuation_blocks])
+                if address_disputed:
+                    content_recognition_status = "NEEDS_REVIEW"
+                    content_recognition_reason = "ADDRESS_LINE_READINGS_DISAGREE"
+                elif unresolved_address_lines:
+                    content_recognition_status = "NEEDS_REVIEW"
+                    content_recognition_reason = "INCOMPLETE_ADDRESS_LINES"
                 used_source_ids.update(
                     [
                         source.block_id,
@@ -550,6 +565,13 @@ class SigningRegionExtractor:
                         source="inferred",
                         raw_ref={
                             "field_key": field_key,
+                            **({"address_recognition_disputed": True} if address_disputed else {}),
+                            **({"address_readings": [dict(e.model_dump(mode="json"), text=e.raw_text)
+                                for b in [source, *continuation_blocks] for e in b.source_evidence
+                                if e.source == "address_line_roi_ppocr_disputed"]} if address_disputed else {}),
+                            **({"unresolved_address_lines": [
+                                {"block_id": b.block_id, "text": b.text, "bbox": b.bbox.model_dump()}
+                                for b in unresolved_address_lines]} if unresolved_address_lines else {}),
                             "column_midpoint": midpoint if self._uses_party_columns(signing_block) else None,
                             "field_label": label,
                             "field_prefix": field_prefix or label,

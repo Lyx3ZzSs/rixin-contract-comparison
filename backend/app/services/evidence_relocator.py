@@ -45,6 +45,16 @@ class EvidenceRelocator:
         current_evidence = self._side_evidence(diff, side)
         before_quality = self._quality_snapshot(current_evidence)
 
+        if diff.source_type == "metadata" and (
+            (not current_evidence and page_no is None)
+            or (diff.match_score_details.get("field_kind") in {"preamble_party", "preamble_address"}
+                and not getattr(diff, f"{side}_change_ranges"))
+        ):
+            return EvidenceRelocationResult(
+                status="SKIPPED", reason="NO_LOCATED_METADATA_CHANGE",
+                before_quality=before_quality, after_quality=dict(before_quality),
+            )
+
         if self._has_high_confidence_evidence(current_evidence):
             return EvidenceRelocationResult(
                 status="SKIPPED",

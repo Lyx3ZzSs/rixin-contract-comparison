@@ -10,6 +10,8 @@ FIELD_LABELS: dict[str, str] = {
     "sign_date": "签订日期",
     "cover_date": "封面日期",
     "validity_period": "有效期限",
+    "buyer_address": "甲方通讯地址",
+    "seller_address": "乙方通讯地址",
 }
 
 LABEL_TO_KEY: dict[str, str] = {

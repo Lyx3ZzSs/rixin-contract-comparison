@@ -87,7 +87,7 @@ def _build_preamble_field_diffs(
     for page_no in page_numbers:
         original_fields = original_extraction.preamble_fields.get(page_no, {})
         compare_fields = compare_extraction.preamble_fields.get(page_no, {})
-        for key in ("buyer", "seller"):
+        for key in ("buyer", "seller", "buyer_address", "seller_address"):
             left = original_fields.get(key)
             right = compare_fields.get(key)
             if left is None and right is None:
@@ -119,24 +119,26 @@ def _build_preamble_field_diff(
 ) -> DiffItem:
     label = FIELD_LABELS[key]
     title = f"前置字段（第{page_no}页）：{label}"
-    original_text = f"{label}：{left.value}" if left else ""
-    compare_text = f"{label}：{right.value}" if right else ""
+    is_address = key.endswith("_address")
+    original_text = (left.value if is_address else f"{label}：{left.value}") if left else ""
+    compare_text = (right.value if is_address else f"{label}：{right.value}") if right else ""
     if left is not None and right is not None:
         diff_type = "MODIFY"
     elif right is not None:
         diff_type = "ADD"
     else:
         diff_type = "DELETE"
-    original_ranges = (
-        [TextRange(start=0, end=len(original_text), highlight_type=diff_type)]
-        if original_text
-        else []
-    )
-    compare_ranges = (
-        [TextRange(start=0, end=len(compare_text), highlight_type=diff_type)]
-        if compare_text
-        else []
-    )
+    _, _, original_ranges, compare_ranges = DiffEngine()._changed_snippets(original_text, compare_text)
+    def changed_evidence(field, ranges):
+        if field is None:
+            return []
+        offset = 0 if is_address else len(label) + 1
+        value_ranges = [TextRange(start=max(0, r.start-offset), end=max(0, r.end-offset),
+                                 highlight_type=r.highlight_type) for r in ranges]
+        return field_evidence(field, value_ranges)
+
+    def anchors(field):
+        return [{"page_no": e.page_no, "bbox": e.bbox.model_dump()} for e in field.evidences] if field else []
     return DiffItem(
         diff_id=generate_diff_id(index),
         diff_type=diff_type,
@@ -147,9 +149,11 @@ def _build_preamble_field_diff(
         compare_snippet=compare_text,
         readable_change=f"{title}变更：{original_text} -> {compare_text}",
         source_type="metadata",
+        match_score_details={"field_kind": "preamble_address" if key.endswith("_address") else "preamble_party", "field_key": key,
+                             "original_field_anchors": anchors(left), "compare_field_anchors": anchors(right)},
         review_flags=["CRITICAL_VALUE_CHANGE"],
-        original_evidence=_preamble_field_evidence(left, original_text, diff_type),
-        compare_evidence=_preamble_field_evidence(right, compare_text, diff_type),
+        original_evidence=changed_evidence(left, original_ranges),
+        compare_evidence=changed_evidence(right, compare_ranges),
         original_change_ranges=original_ranges,
         compare_change_ranges=compare_ranges,
     )

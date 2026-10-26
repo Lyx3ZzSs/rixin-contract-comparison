@@ -209,6 +209,19 @@ class SigningFieldValueOCR:
             return diagnostic
         roi = BBox.model_validate(element.raw_ref["value_roi"])
         page = document[element.page_no - 1]
+        address_lines = []
+        if element.raw_ref.get("field_key") == "address":
+            segments = element.raw_ref.get("field_segments") or [element.text]
+            boxes = element.raw_ref.get("field_bboxes") or [element.bbox.model_dump()]
+            address_lines = list(zip(segments, [BBox.model_validate(b) for b in boxes]))
+            address_lines.extend((item["text"], BBox.model_validate(item["bbox"]))
+                                 for item in element.raw_ref.get("unresolved_address_lines", []))
+            # Column-local field anchors include wrapped lines; do not reuse a
+            # truncated value ROI or a rejected two-column source row.
+            if len(address_lines) > 1:
+                roi = BBox(x0=min(b.x0 for _, b in address_lines), y0=min(b.y0 for _, b in address_lines),
+                           x1=max(b.x1 for _, b in address_lines), y1=max(b.y1 for _, b in address_lines))
+            diagnostic["required_address_lines"] = [{"text": t, "bbox": b.model_dump()} for t, b in address_lines]
         if element.raw_ref.get("field_key") == "date":
             # Broad inferred value ROIs may include the next party's date label.
             # Re-read the independently located field line instead.
@@ -237,6 +250,17 @@ class SigningFieldValueOCR:
                 # nearby labels, signatures or multiple detected text rows.
                 allow_wrapped_party = element.element_type == SigningElementType.PARTY_FIELD
                 allow_wrapped_address = element.raw_ref.get("field_key") == "address"
+                if allow_wrapped_address and len(address_lines) > 1:
+                    selected = self._address_value_lines(blocks, address_lines, clip, parsed.pages[0])
+                    if selected is None:
+                        diagnostic["status"] = "INCOMPLETE_ADDRESS_READING"
+                        element.raw_ref["content_recognition_status"] = "NEEDS_REVIEW"
+                        element.raw_ref["content_recognition_reason"] = "INCOMPLETE_ADDRESS_READING"
+                        return diagnostic
+                    diagnostic.setdefault("excluded_neighbor_lines", []).extend(
+                        {"text": b.text, "bbox": b.bbox.model_dump(), "render_scale": scale}
+                        for b in blocks if b not in selected)
+                    blocks = selected
                 if allow_wrapped_party:
                     rejected = [b for b in blocks if b.confidence is not None and b.confidence < 0.5 and len(b.text.strip()) == 1]
                     diagnostic.setdefault("rejected_local_fragments", []).extend(
@@ -260,12 +284,14 @@ class SigningFieldValueOCR:
                 if len(blocks) > 1:
                     for first, second in zip(blocks, blocks[1:]):
                         if (second.bbox.y0 < first.bbox.y1 - 2 or second.bbox.x0 > first.bbox.x0 + 30
-                            or second.bbox.y0 - first.bbox.y1 > first.bbox.y1 - first.bbox.y0):
+                            or (not allow_wrapped_address and second.bbox.y0 - first.bbox.y1 > first.bbox.y1 - first.bbox.y0)):
                             diagnostic["status"] = "AMBIGUOUS_WRAPPED_FIELD"
                             return diagnostic
                     block = block.model_copy(update={"bbox": BBox(
                         x0=min(item.bbox.x0 for item in blocks), y0=min(item.bbox.y0 for item in blocks),
                         x1=max(item.bbox.x1 for item in blocks), y1=max(item.bbox.y1 for item in blocks))})
+                    if allow_wrapped_address:
+                        block.confidence = min((b.confidence for b in blocks if b.confidence is not None), default=None)
                 if allow_wrapped_address:
                     value = re.sub(r"^地址\s*[:：]\s*", "", value)
                 if element.raw_ref.get("field_key") == "date":
@@ -333,18 +359,22 @@ class SigningFieldValueOCR:
         element.raw_ref["value_bbox"] = readings[0]["bbox"]
         element.raw_ref["display_value_bbox"] = readings[0]["bbox"]
         element.raw_ref["value_bboxes"] = [readings[0]["bbox"]]
+        if address_lines:
+            element.raw_ref["resolved_address_lines"] = element.raw_ref.pop("unresolved_address_lines", [])
         prior_content_status = element.raw_ref.get("content_recognition_status")
         prior_content_reason = element.raw_ref.get("content_recognition_reason")
         unresolved_date = element.raw_ref.get("field_key") == "date" and prior_content_status == "NEEDS_REVIEW"
+        unresolved_address = bool(element.raw_ref.get("address_recognition_disputed"))
+        unresolved_content = unresolved_date or unresolved_address
         # Two render scales use the same recognizer. They can recover a date
         # candidate, but cannot by themselves resolve an existing content review.
-        element.raw_ref["content_recognition_status"] = "NEEDS_REVIEW" if unresolved_date else "CONFIRMED"
+        element.raw_ref["content_recognition_status"] = "NEEDS_REVIEW" if unresolved_content else "CONFIRMED"
         element.raw_ref["content_recognition_reason"] = (
             str(prior_content_reason or "DATE_CONTENT_REVIEW_PRESERVED")
-            if unresolved_date else "CONSISTENT_RED_SUPPRESSED_LOCAL_READINGS"
+            if unresolved_content else "CONSISTENT_RED_SUPPRESSED_LOCAL_READINGS"
         )
         diagnostic["prior_content_recognition_status"] = prior_content_status
-        diagnostic["content_review_preserved"] = unresolved_date
+        diagnostic["content_review_preserved"] = unresolved_content
         if element.raw_ref.get("field_key") == "date":
             parts = re.fullmatch(r"(\d+)年(\d+)月(\d+)日", value)
             element.raw_ref["date_components"] = dict(zip(("year", "month", "day"), parts.groups()))
@@ -358,6 +388,35 @@ class SigningFieldValueOCR:
         element.raw_ref["observation_reason"] = element.observation_reason
         diagnostic.update(status="RECOVERED", after=value)
         return diagnostic
+
+    @classmethod
+    def _address_value_lines(cls, blocks, required, clip, parsed_page):
+        """Select every independently located address row, never just its prefix.
+
+        A low-confidence piece overlapping an address row still blocks recovery.
+        Only geometrically separate stamp debris may be excluded.
+        """
+        from app.services.address_evidence import same_address_reading
+        def value(text):
+            return re.sub(r"^(?:通讯地址|通信地址|联系地址|注册地址|住所地|地址)[:：]", "", cls._compact(text))
+        selected = []
+        mapped = [(b, cls._map_crop_bbox(b.bbox, clip=clip,
+                   image_width=parsed_page.width, image_height=parsed_page.height)) for b in blocks]
+        for text, box in required:
+            matches = [b for b, bb in mapped if
+                       abs((bb.y0+bb.y1)-(box.y0+box.y1))/2 <= max(4., (box.y1-box.y0)*.6)
+                       and min(bb.x1,box.x1) > max(bb.x0,box.x0)
+                       and same_address_reading(value(text), value(b.text))]
+            if len(matches) != 1 or matches[0] in selected:
+                return None
+            selected.append(matches[0])
+        for b, bb in mapped:
+            if b in selected:
+                continue
+            if any(min(bb.y1, box.y1)-max(bb.y0, box.y0) > min(bb.y1-bb.y0,box.y1-box.y0)*.5
+                   and min(bb.x1,box.x1)-max(bb.x0,box.x0) > 5 for _,box in required):
+                return None
+        return selected
 
     @classmethod
     def _ordered_fragment(cls, fragment: str, value: str) -> bool:

@@ -30,7 +30,15 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
     fields: dict[str, CoverField] = {}
     preamble_fields: dict[int, dict[str, CoverField]] = {}
     consumed: set[str] = set()
+    # Address identity belongs to a party on this page, not to a document-wide
+    # bag of strings. Ambiguous/repeated labels remain unconsumed for review.
+    from .address_fields import extract_party_addresses
+    address_fields, address_ids = extract_party_addresses(blocks)
+    preamble_fields.update(address_fields)
+    consumed.update(address_ids)
     for index, block in enumerate(blocks):
+        if block.block_id in address_ids:
+            continue
         table_fields = _extract_cover_table_fields(block)
         if table_fields:
             for key, field in table_fields.items():

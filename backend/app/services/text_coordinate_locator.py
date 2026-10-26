@@ -33,7 +33,7 @@ class TextCoordinateLocator:
                 snippet = diff.original_snippet if side == "original" else diff.compare_snippet
                 highlight_type = self._side_highlight_type(diff, side)
                 existing = diff.original_evidence if side == "original" else diff.compare_evidence
-                if not existing and diff.source_type in {"table", "signing_region", "seal"}:
+                if not existing and diff.source_type in {"table", "signing_region", "seal", "metadata"}:
                     # A repeated value elsewhere is not the missing cell's
                     # location. Structured ownership must supply a page first.
                     continue

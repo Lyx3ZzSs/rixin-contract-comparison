@@ -217,6 +217,13 @@ class SigningRegionComparator:
                 )
                 content_reason = self._content_recognition_reason(compare_element or original_element)
                 content_candidates = self._content_candidates(compare_element or original_element)
+                uncertain = [(side, element) for side, element in (
+                    ("original", original_element), ("compare", compare_element))
+                    if self._content_recognition_status(element) == "NEEDS_REVIEW"]
+                if uncertain:
+                    content_reason = ";".join(dict.fromkeys(self._content_recognition_reason(e) for _, e in uncertain))
+                    content_candidates = [dict(item, side=side) for side, element in uncertain
+                                          for item in self._content_candidates(element)]
                 if field_key in {"legal_representative", "authorized_representative", "signature"}:
                     partial_names = [
                         (side, element) for side, element in (("original", original_element), ("compare", compare_element))
@@ -373,6 +380,7 @@ class SigningRegionComparator:
             for item in [
                 *(element.raw_ref.get("value_evidence") or []),
                 *(element.raw_ref.get("supporting_unlocalized_evidence") or []),
+                *(element.raw_ref.get("address_readings") or []),
             ]
             if isinstance(item, dict)
         ]
@@ -397,6 +405,10 @@ class SigningRegionComparator:
                 ObservationReason.FIELD_ELEMENT_MISSING.value,
             )
 
+        if element.raw_ref.get("unresolved_address_lines"):
+            observation = FieldObservation(ObservationState.UNOBSERVED, "INCOMPLETE_ADDRESS_LINES")
+            cls._store_observation(element, observation)
+            return observation
         explicit_state = element.observation_state or element.raw_ref.get("observation_state")
         explicit_reason = element.observation_reason or str(element.raw_ref.get("observation_reason") or "")
         if explicit_state:
@@ -482,6 +494,18 @@ class SigningRegionComparator:
 
     @staticmethod
     def _has_rejected_cross_column_evidence(element: SigningElement) -> bool:
+        # A discarded source candidate is not a veto on independently located
+        # evidence for the complete current value. Partial support cannot clear it.
+        value = SigningRegionComparator._normalized_field_value(
+            str(element.raw_ref.get("field_key") or ""), element.text)
+        if value and any(
+            item.get("localized") is True and item.get("provenance_valid") is True
+            and item.get("bbox")
+            and SigningRegionComparator._normalized_field_value(
+                str(element.raw_ref.get("field_key") or ""), str(item.get("text") or item.get("normalized_text") or "")) == value
+            for item in element.raw_ref.get("value_evidence") or [] if isinstance(item, dict)
+        ):
+            return False
         reasons = {
             str(item.get("rejection_reason") or "")
             for item in element.raw_ref.get("rejected_contaminated_evidence") or []
