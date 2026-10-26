@@ -57,7 +57,9 @@ def build_report_filename(task: CompareTask) -> str:
 
 
 def _visible_audit_items(task: CompareTask) -> list[AuditItem]:
-    return [item for item in build_task_audit_items(task) if item.review_status != "IGNORED"]
+    from app.services.comparison_observations import is_unresolved_change
+    unresolved = {d.diff_id for d in task.diffs if is_unresolved_change(d)}
+    return [item for item in build_task_audit_items(task) if item.review_status != "IGNORED" and item.diff_id not in unresolved]
 
 
 class ReportGenerator:
@@ -97,6 +99,8 @@ class ReportGenerator:
             *(self._event_flowables(indexed_items, styles) if event_view else self._diff_grouped_tables(indexed_items, styles)),
         ]
 
+        story.extend(self._comparison_observations(task, styles))
+
         doc = SimpleDocTemplate(
             str(output_path),
             pagesize=A4,
@@ -109,6 +113,25 @@ class ReportGenerator:
         return output_path
 
     # ── Font & Styles ──────────────────────────────────────────────
+
+    def _comparison_observations(self, task, styles):
+        from app.services.comparison_observations import observations_for_task
+        observations = observations_for_task(task)
+        if not observations:
+            return []
+        label = "表格待复核" if all(o.reason.startswith("TABLE_") for o in observations) else "区域待复核"
+        rows = [Spacer(1, 0.35 * cm), Paragraph(f"{label}（{len(observations)} 处，不计入差异数）", styles["Heading2"])]
+        statuses = {"UNREVIEWED": "未核验", "CONFIRMED": "已核验", "FALSE_POSITIVE": "无需关注", "NEEDS_REVIEW": "待复核", "IGNORED": "忽略"}
+        for observation in observations:
+            pages = []
+            for side, label in (("original", "标准"), ("compare", "比对")):
+                numbers = sorted({e.page_no for e in getattr(observation, f"{side}_evidence")})
+                pages.append(f"{label}：{'、'.join(map(str, numbers)) or '无'} 页")
+            text = f"{observation.title} · {' / '.join(pages)} · {statuses[observation.review_status]}。{observation.message}"
+            if observation.review_comment:
+                text += f" 核验备注：{observation.review_comment}"
+            rows.append(Paragraph(escape(text), styles["Small"]))
+        return rows
 
     def _event_flowables(self, indexed_items, styles):
         from app.services.report_comparison import comparison_cards

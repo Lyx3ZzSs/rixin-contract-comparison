@@ -141,7 +141,7 @@ def test_personal_seal_does_not_remain_both_seal_and_signature_diffs() -> None:
         additions=[_object(SigningVisualObjectType.PERSONAL_NAME_SEAL, bbox=bbox)]
     )
 
-    _, signing = WholePageSigningVisualRecall().reconcile_diffs(
+    signing, _ = WholePageSigningVisualRecall().reconcile_diffs(
         result,
         [],
         [seal_diff, signature_diff],
@@ -225,7 +225,7 @@ def test_company_seal_does_not_retype_overlapping_signing_date() -> None:
         bbox=BBox(x0=110, y0=545, x1=225, y1=645),
     )
 
-    _, signing = WholePageSigningVisualRecall().reconcile_diffs(
+    seals, signing = WholePageSigningVisualRecall().reconcile_diffs(
         SigningVisualRecallResult(additions=[seal]),
         [],
         [date_diff],
@@ -234,7 +234,7 @@ def test_company_seal_does_not_retype_overlapping_signing_date() -> None:
 
     assert date_diff.match_score_details.get("object_type") is None
     assert date_diff.compare_evidence[0].bbox == date_bbox
-    assert any(item.match_score_details.get("object_type") == "COMPANY_ROUND_SEAL" for item in signing)
+    assert any(item.match_score_details.get("object_type") == "COMPANY_ROUND_SEAL" for item in seals)
 
 
 def test_visual_existence_confirmation_is_not_downgraded_by_ocr_risk() -> None:
@@ -371,7 +371,7 @@ def test_dense_full_document_edge_marks_remain_review_candidates() -> None:
         "document_page_count": 5,
     }
 
-    _, diffs = WholePageSigningVisualRecall().reconcile_diffs(
+    diffs, _ = WholePageSigningVisualRecall().reconcile_diffs(
         SigningVisualRecallResult(additions=[seam]),
         [],
         [],
@@ -434,7 +434,7 @@ def test_edge_seam_does_not_retype_distant_signature_on_same_page() -> None:
     seam.supporting_pages = [1, 2, 3]
     seam.fragment_bboxes = [seam.bbox] * 3
 
-    _, signing = WholePageSigningVisualRecall().reconcile_diffs(
+    seals, signing = WholePageSigningVisualRecall().reconcile_diffs(
         SigningVisualRecallResult(additions=[seam]),
         [],
         [signature],
@@ -442,7 +442,7 @@ def test_edge_seam_does_not_retype_distant_signature_on_same_page() -> None:
     )
 
     assert signature.match_score_details.get("object_type") is None
-    assert any(item.match_score_details.get("object_type") == "EDGE_SEAM_SEAL" for item in signing)
+    assert any(item.match_score_details.get("object_type") == "EDGE_SEAM_SEAL" for item in seals)
 
 
 def test_printed_red_logo_is_not_admitted_as_seal(tmp_path: Path) -> None:
@@ -480,7 +480,7 @@ def test_faint_rectangular_stamp_enters_review_recall(tmp_path: Path) -> None:
     stamps = [item for item in objects if item.object_type == SigningVisualObjectType.OTHER_STAMP]
     assert len(stamps) == 1
     result = SigningVisualRecallResult(additions=stamps)
-    _, diffs = WholePageSigningVisualRecall().reconcile_diffs(result, [], [], start_index=1)
+    diffs, _ = WholePageSigningVisualRecall().reconcile_diffs(result, [], [], start_index=1)
     assert diffs[0].quality_status == "NEEDS_REVIEW"
     assert diffs[0].match_score_details["change_decision"] == "NEEDS_REVIEW"
 
@@ -488,7 +488,7 @@ def test_faint_rectangular_stamp_enters_review_recall(tmp_path: Path) -> None:
 def test_seal_text_uncertainty_does_not_downgrade_visual_existence() -> None:
     result = SigningVisualRecallResult(additions=[_object(SigningVisualObjectType.COMPANY_ROUND_SEAL)])
 
-    _, diffs = WholePageSigningVisualRecall().reconcile_diffs(result, [], [], start_index=1)
+    diffs, _ = WholePageSigningVisualRecall().reconcile_diffs(result, [], [], start_index=1)
 
     assert diffs[0].match_score_details["change_decision"] == "CONFIRMED"
     assert diffs[0].content_recognition_status == "NEEDS_REVIEW"
@@ -600,7 +600,7 @@ def test_object_evidence_keeps_round_and_personal_seal_bboxes_separate() -> None
     )
     result = SigningVisualRecallResult(additions=[company, personal])
 
-    _, diffs = WholePageSigningVisualRecall().reconcile_diffs(result, [], [], start_index=1)
+    diffs, _ = WholePageSigningVisualRecall().reconcile_diffs(result, [], [], start_index=1)
 
     assert len(diffs) == 2
     assert diffs[0].compare_evidence[0].bbox == company.bbox
@@ -667,5 +667,5 @@ def test_name_seal_top_row_signature_interpretation_is_fused() -> None:
     result = SigningVisualRecallResult(additions=[visual])
     seals, signing = WholePageSigningVisualRecall().reconcile_diffs(result, [], [signature], start_index=2)
     assert len(seals + signing) == 1
-    assert signing[0].match_score_details["object_type"] == "PERSONAL_NAME_SEAL"
+    assert seals[0].match_score_details["object_type"] == "PERSONAL_NAME_SEAL"
     assert result.new_diff_ids == []

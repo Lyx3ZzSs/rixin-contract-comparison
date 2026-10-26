@@ -164,13 +164,13 @@ class WindowedExtractionWrapper:
             table_region_count=sum(report.table_region_count for report in reports),
             table_cell_matched_count=sum(report.table_cell_matched_count for report in reports),
             table_cell_unmatched_count=sum(report.table_cell_unmatched_count for report in reports),
-            ocr_block_count=sum(not block.source.startswith("ppstructure_layout_only") for block in blocks),
+            ocr_block_count=sum(not block.source == "layout_only" for block in blocks),
             matched_ocr_block_count=sum(
-                bool(block.layout_block_id) and not block.source.startswith("ppstructure_layout_only")
+                bool(block.layout_block_id) and not block.source == "layout_only"
                 for block in blocks
             ),
             unmatched_ocr_block_count=sum(
-                not block.layout_block_id and not block.source.startswith("ppstructure_layout_only")
+                not block.layout_block_id and not block.source == "layout_only"
                 for block in blocks
             ),
             ambiguous_match_count=sum(block.layout_match_status == "ambiguous" for block in blocks),

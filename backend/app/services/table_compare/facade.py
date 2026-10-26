@@ -6,7 +6,7 @@ from difflib import SequenceMatcher
 import logging
 import re
 
-from app.models import DiffItem, Document
+from app.models import DiffItem, Document, EvidenceBox
 from app.services.table_compare.parser import LogicalTableParser
 from app.services.table_compare.repair import TableRepairService
 from app.services.table_compare.matcher import TableMatcher
@@ -17,6 +17,7 @@ from app.services.table_compare.constants import TABLE_BLOCK_TYPES
 from app.services.table_compare.types import CellDiff, _LogicalTable
 from app.services.table_compare import utils
 from app.utils.id_utils import generate_diff_id
+from app.services.region_comparison import RegionComparator, RegionComparisonResult
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,8 @@ class TableComparator:
         self._diff_builder.cell_similarity_threshold = self.cell_similarity_threshold
         self._flat = FlatTextComparator()
         self.last_debug_payload: dict[str, object] = {}
+        self.region_result = RegionComparisonResult()
+        self._region_comparator = None
 
     def build_diffs(
         self,
@@ -50,6 +53,13 @@ class TableComparator:
         page_alignment=None,
     ) -> tuple[list[DiffItem], list[str]]:
         self._matcher.page_alignment = page_alignment
+        self._region_comparator = RegionComparator(original, compare, page_alignment)
+        self.region_result = self._region_comparator.compare_documents()
+        self._diff_builder.claimed_rows = self.region_result.claimed_rows
+        self._diff_builder.page_blocks = {
+            "original": [b for p in original.pages for b in p.blocks],
+            "compare": [b for p in compare.pages for b in p.blocks],
+        }
         warnings: list[str] = []
         self.last_debug_payload = {
             "table_block_counts": {"original": 0, "compare": 0},
@@ -75,7 +85,7 @@ class TableComparator:
                 warnings.append("未获得结构化表格区域，已跳过表格比对。")
             self.last_debug_payload["tier"] = "no_structured_tables"
             self.last_debug_payload["warnings"] = list(warnings)
-            return [], warnings
+            return self._finish_regions([], start_index), warnings
 
         original_parsed = self._parser.parse_tables(original_blocks)
         compare_parsed = self._parser.parse_tables(compare_blocks)
@@ -171,20 +181,64 @@ class TableComparator:
                 else:
                     kept.append(diff)
             diffs = kept
+            for diff in diffs:
+                if (diff.source_type != "table" or diff.diff_type not in {"DELETE", "ADD"}
+                        or not diff.readable_change.startswith("整表")):
+                    continue
+                deleted = diff.diff_type == "DELETE"
+                if diff.match_score_details.get("counterpart_table_state") == "PAGE_ABSENT":
+                    continue
+                counterpart = compare if deleted else original
+                counterpart_blocks = compare_blocks if deleted else original_blocks
+                if self._protect_unstructured_table_presence(diff, counterpart_blocks, counterpart):
+                    continue
+                # Absence is an explicit observation, not a parser miss. Old
+                # documents default to UNKNOWN and therefore remain reviewable.
+                alignment = diff.match_score_details.get("page_alignment") or {}
+                key = "compare_pages" if deleted else "original_pages"
+                pages = alignment.get(key) or [e.page_no for e in (
+                    diff.original_evidence if deleted else diff.compare_evidence)]
+                known = [p for p in counterpart.pages if p.page_no in pages]
+                if known and len(known) == len(set(pages)) and all(
+                    p.table_presence_status == "TABLE_ABSENT"
+                    and not any(self._parser.is_table_block(block) for block in p.blocks)
+                    for p in known
+                ):
+                    diff.match_score_details = {**diff.match_score_details,
+                                                "counterpart_table_state": "TABLE_ABSENT"}
+                    continue
+                diff.diff_type = "MODIFY"
+                diff.title = "表格存在性待复核"
+                diff.readable_change = "对侧表格存在性证据不足；需人工复核"
+                diff.quality_status = "NEEDS_REVIEW"
+                diff.match_score_details = {**diff.match_score_details,
+                                            "change_decision": "CANDIDATE",
+                                            "decision_reason": "TABLE_PRESENCE_UNKNOWN",
+                                            "counterpart_table_state": "UNKNOWN"}
+                diff.review_flags.append("TABLE_PRESENCE_UNKNOWN")
             self.last_debug_payload["cross_representation_equivalence"] = equivalent_forms
             self.last_debug_payload["diff_count"] = len(diffs)
             self.last_debug_payload["suppressed_diffs"] = self._diff_builder.diagnostics_payload()
             self.last_debug_payload["warnings"] = list(warnings)
-            return diffs, warnings
+            return self._finish_regions(diffs, start_index), warnings
 
         # Fallback: flat-text comparison for blocks without HTML
         self.last_debug_payload["tier"] = "flat_text_no_html"
-        diffs, warnings = self._flat.flat_compare(original_blocks, compare_blocks, start_index, warnings)
+        diffs, warnings = self._flat.flat_compare(
+            [(b, t) for b, t in original_blocks if not self.region_result.claims('original', b)],
+            [(b, t) for b, t in compare_blocks if not self.region_result.claims('compare', b)],
+            start_index, warnings)
         self.last_debug_payload["flat_text"] = self._flat.last_debug_payload
         self.last_debug_payload["diff_count"] = len(diffs)
         self.last_debug_payload["suppressed_diffs"] = self._empty_suppressed_diff_payload()
         self.last_debug_payload["warnings"] = list(warnings)
-        return diffs, warnings
+        return self._finish_regions(diffs, start_index), warnings
+
+    def _finish_regions(self, diffs, start_index):
+        diffs = self._renumber_diffs([*diffs, *self.region_result.diffs], start_index)
+        self.last_debug_payload['region_comparison'] = self.region_result.diagnostics()
+        self.last_debug_payload['diff_count'] = len(diffs)
+        return diffs
 
     @staticmethod
     def _tables_quality_ok(tables: list[_LogicalTable], min_score: float = 0.1) -> bool:
@@ -613,40 +667,19 @@ class TableComparator:
         used_original: set[int] = set()
         used_compare: set[int] = set()
 
-        # Establish continuation ownership before emitting orphan tables.
-        # The whole last row, including its label, must match after appending
-        # the fragment. A repeated date somewhere else on the page is not a
-        # counterpart, and a changed value must still produce a difference.
-        import unicodedata
-        def exact(text):
-            return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
-        def row_text(row):
-            return "".join(c.text for c in row.cells)
-        continuation_matches = []
-        for side, tables, others, indices, used in (
-            ("original", original_tables, compare_tables, [(a,b) for a,b,_ in pairs], used_original),
-            ("compare", compare_tables, original_tables, [(b,a) for a,b,_ in pairs], used_compare),
-        ):
-            paired_indices = {a for a,_ in indices}
-            for idx, tail in enumerate(tables):
-                if idx in paired_indices or len(tail.rows) != 1:
-                    continue
-                fragment = exact(row_text(tail.rows[0]))
-                if not fragment or len(fragment) > 40:
-                    continue
-                for previous_idx, other_idx in indices:
-                    previous, other = tables[previous_idx], others[other_idx]
-                    if not previous.rows or not other.rows or previous.rows[-1].page_no+1 != tail.rows[0].page_no:
-                        continue
-                    prefix = exact(row_text(previous.rows[-1]))
-                    if len(prefix) < 8 or prefix+fragment != exact(row_text(other.rows[-1])):
-                        continue
-                    used.add(idx)
-                    continuation_matches.append({"side": side, "source_page": tail.rows[0].page_no,
-                        "owner_page": previous.rows[-1].page_no, "counterpart_page": other.rows[-1].page_no,
-                        "owner_row": prefix, "continuation": fragment, "reason": "complete_row_continuation_identity"})
-                    break
-        self.last_debug_payload["continuation_content_matches"] = continuation_matches
+        from app.services.table_compare.continuation import join_continuations
+        pages = self._region_comparator.pages if self._region_comparator is not None else {}
+        used_original, left_joins = join_continuations(
+            original_tables, compare_tables, [(a, b) for a, b, _ in pairs], pages.get('original'))
+        used_compare, right_joins = join_continuations(
+            compare_tables, original_tables, [(b, a) for a, b, _ in pairs], pages.get('compare'))
+        self.last_debug_payload["continuation_content_matches"] = [
+            *[{"side": "original", **item} for item in left_joins],
+            *[{"side": "compare", **item} for item in right_joins],
+        ]
+
+        if self._region_comparator is not None:
+            self._region_comparator.reconcile_rows(original_tables, compare_tables, pairs, self._matcher)
 
         for orig_idx, comp_idx, score in pairs:
             used_original.add(orig_idx)
@@ -694,6 +727,78 @@ class TableComparator:
         diffs = self._reconcile_quote_remark_diffs(diffs)
         return self._renumber_diffs(diffs, start_index), warnings
 
+    def _protect_unstructured_table_presence(
+        self, diff: DiffItem, counterpart_blocks: list[tuple], counterpart: Document,
+    ) -> bool:
+        """A located OCR table on the aligned page is evidence against deletion."""
+        alignment = diff.match_score_details.get("page_alignment") or {}
+        deleted = diff.diff_type == "DELETE"
+        source_evidence = diff.original_evidence if deleted else diff.compare_evidence
+        source_pages = {e.page_no for e in source_evidence}
+        counterpart_key = "compare_pages" if deleted else "original_pages"
+        counterpart_pages = {int(page) for page in alignment.get(counterpart_key) or []}
+        if not counterpart_pages:
+            counterpart_pages = {p.page_no for p in counterpart.pages if p.page_no in source_pages}
+        if not counterpart_pages or not source_evidence:
+            return False
+
+        def area(box) -> float:
+            return max(0.0, box.x1 - box.x0) * max(0.0, box.y1 - box.y0)
+
+        def coverage(first, second) -> float:
+            intersection = max(0.0, min(first.x1, second.x1) - max(first.x0, second.x0)) * max(
+                0.0, min(first.y1, second.y1) - max(first.y0, second.y0)
+            )
+            return intersection / max(min(area(first), area(second)), 1.0)
+
+        regions = {}
+        for block, _ in counterpart_blocks:
+            if (block.page_no not in counterpart_pages or block.block_type != "table"
+                    or self._parser.structure_state(block) != "UNSTRUCTURED_TABLE_PRESENT"
+                    or not block.text.strip()):
+                continue
+            bounds = block.layout_bbox or block.bbox
+            if not any(coverage(evidence.bbox, bounds) >= 0.5 for evidence in source_evidence):
+                continue
+            key = (block.page_no, block.layout_block_id or block.block_id)
+            regions.setdefault(key, []).append(block)
+        if not regions:
+            return False
+
+        blocks = [block for group in regions.values() for block in group]
+        diff.diff_type = "MODIFY"
+        diff.title = "表格结构待复核"
+        diff.readable_change = "对侧存在表格文字，但结构未解析；需人工复核"
+        text = " ".join(block.text for block in blocks)[:300]
+        if deleted:
+            diff.compare_text = diff.compare_snippet = text
+        else:
+            diff.original_text = diff.original_snippet = text
+        counterpart_evidence = [
+            EvidenceBox(page_no=group[0].page_no, bbox=group[0].layout_bbox or group[0].bbox,
+                        method="table_region_unstructured", text=" ".join(block.text for block in group)[:300],
+                        highlight_type="MODIFY")
+            for group in regions.values()
+        ]
+        if deleted:
+            diff.compare_evidence = counterpart_evidence
+        else:
+            diff.original_evidence = counterpart_evidence
+        for evidence in source_evidence:
+            evidence.highlight_type = "MODIFY"
+        diff.quality_status = "NEEDS_REVIEW"
+        diff.match_score_details = {
+            **diff.match_score_details,
+            "change_decision": "CANDIDATE",
+            "decision_reason": "TABLE_STRUCTURE_UNRESOLVED",
+            "original_table_state": "STRUCTURED_TABLE" if deleted else "UNSTRUCTURED_TABLE_PRESENT",
+            "compare_table_state": "UNSTRUCTURED_TABLE_PRESENT" if deleted else "STRUCTURED_TABLE",
+            "counterpart_region_ids": [key[1] for key in regions],
+        }
+        if "TABLE_STRUCTURE_UNRESOLVED" not in diff.review_flags:
+            diff.review_flags.append("TABLE_STRUCTURE_UNRESOLVED")
+        return True
+
     def _mark_aligned_unmatched_table_candidate(
         self,
         diff: DiffItem,
@@ -706,6 +811,17 @@ class TableComparator:
         if not callable(lookup):
             return
         entry = lookup(page_no)
+        evidence_pages = {e.page_no for e in (diff.original_evidence if deleted else diff.compare_evidence)} or {page_no}
+        absent_status = "DELETED" if deleted else "INSERTED"
+        entries = [lookup(number) for number in evidence_pages]
+        if entries and all(item is not None and str(item.status) == absent_status for item in entries):
+            diff.match_score_details = {
+                **diff.match_score_details,
+                "counterpart_table_state": "PAGE_ABSENT",
+                "page_alignment": entry.to_debug_payload(),
+                "page_alignments": [item.to_debug_payload() for item in entries],
+            }
+            return
         if entry is None or str(entry.status) not in {"MATCHED", "MERGED", "SPLIT"}:
             return
         counterpart_pages = entry.compare_pages if deleted else entry.original_pages
@@ -722,44 +838,6 @@ class TableComparator:
         }
         if "ALIGNED_PAGE_STRUCTURE_NOT_EXTRACTED" not in diff.review_flags:
             diff.review_flags.append("ALIGNED_PAGE_STRUCTURE_NOT_EXTRACTED")
-
-    def _business_field_level_diffs(
-        self,
-        original_tables: list[_LogicalTable],
-        compare_tables: list[_LogicalTable],
-        start_index: int,
-    ) -> list[DiffItem]:
-        diffs: list[DiffItem] = []
-        next_index = start_index
-        for orig_idx, comp_idx, _score in self._matcher.match_tables(original_tables, compare_tables):
-            original = original_tables[orig_idx]
-            compare = compare_tables[comp_idx]
-            for orig_row, comp_row in self._matcher.align_rows(original, compare):
-                if orig_row is None or comp_row is None:
-                    continue
-                if not self._is_confident_business_row_pair(original, compare, orig_row, comp_row):
-                    continue
-                for col in range(max(original.col_count, compare.col_count)):
-                    if not self._is_trusted_business_field_col(original, compare, col):
-                        continue
-                    original_text = self._matcher._cell_text(original, orig_row, col)
-                    compare_text = self._matcher._cell_text(compare, comp_row, col)
-                    if not self._is_amount_or_quantity_change(original_text, compare_text, col):
-                        continue
-                    diffs.append(DiffItem(
-                        diff_id=generate_diff_id(next_index),
-                        diff_type="MODIFY",
-                        title=f"表格字段：{self._business_field_name(col)}",
-                        original_text=original_text,
-                        compare_text=compare_text,
-                        original_snippet=original_text,
-                        compare_snippet=compare_text,
-                        readable_change=f"表格{self._business_field_name(col)}变更：{original_text} -> {compare_text}",
-                        source_type="table",
-                        structural_flags=["row_level_business_field_check"],
-                    ))
-                    next_index += 1
-        return diffs
 
     def _is_confident_business_row_pair(
         self,

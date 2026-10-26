@@ -1,13 +1,15 @@
 {
   "schema_version": 1,
   "contract_key": "TIANJIN_XINKOU",
-  "expected_case_count": 2,
+  "expected_case_count": 4,
   "review_provenance": {
     "method": "agent_visual_pdf_review",
-    "authorization": "用户明确要求：加入正式GOlden",
-    "source_run_id": "bc755fda-af6f-4733-80f6-9a68ea55956c",
-    "date": "2026-09-08",
-    "evidence_root": "output/analysis/golden-v3-update"
+    "authorization": "用户明确要求：更新b0384a14-9a6a-4364-a539-e748f7d65227对比任务黄金集",
+    "source_run_id": "b0384a14-9a6a-4364-a539-e748f7d65227",
+    "date": "2026-10-20",
+    "evidence_root": "output/analysis/golden-tianjin-b0384a14-20261020",
+    "previous_source_run_id": "bc755fda-af6f-4733-80f6-9a68ea55956c",
+    "visual_review_evidence_root": "output/analysis/fa4ad745-two-diffs-20261020"
   },
   "assertions": [
     {
@@ -37,8 +39,8 @@
       "assertion": "MUST_EXIST",
       "page": 1,
       "diff_type": "ADD",
-      "source_type": "signing_region",
-      "review_note": "第1页右边缘有新增骑缝章；以物理图形定位，不确认归属方。",
+      "source_type": "seal",
+      "review_note": "2026-10-20原PDF核对：第1页右边缘有新增页边章印迹，属于印章对象，不属于签署字段。修订旧signing_region分类；保留MUST_EXIST、object_type、物理框和min_iou=0.35，不确认归属方或跨页同一性。",
       "visual_object_type": "seal",
       "object_type": "EDGE_SEAM_SEAL",
       "bbox_expectation": {
@@ -52,6 +54,22 @@
         },
         "min_iou": 0.35
       }
+    },
+    {
+      "case_id": "TIANJIN_PRINTED_STAMP_LABEL_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 5,
+      "source_type": "signing_region",
+      "title": "甲方 · 签章标签变化",
+      "review_note": "两侧第5页甲方（盖章）印刷标签均存在。比对侧OCR读到盖章），不得因印章覆盖及seal归属造成标签增删/修改误报，待复核误报也不允许。"
+    },
+    {
+      "case_id": "TIANJIN_BLANK_SIGN_PLACE_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 1,
+      "source_type": "metadata",
+      "title": "封面字段：签订地点",
+      "review_note": "两侧封面签订地点单元格均为空。页边印章OCR碎片北工型不是地点字段值；不得报告任何地点字段变化，包含待复核项。"
     }
   ]
 }

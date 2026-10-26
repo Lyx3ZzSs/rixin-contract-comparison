@@ -92,6 +92,8 @@ def comparison_cards(indexed_items, styles, width: float, page_label):
         if item.quality_status == "NEEDS_REVIEW":
             review += "；内容识读或变化证据需复核"
         header = [Paragraph(escape(title), heading), Paragraph(escape(f"{page_label(item)} · {review}"), styles["Small"])]
+        if item.source_type in {'seal', 'header_footer'} and item.summary and item.summary != item.title:
+            header.append(Paragraph(escape(item.summary), styles['Small']))
         if len(sides) == 1:
             absence = ("原文对应内容未确认" if item.diff_type == "ADD" else "新版对应内容未确认") if unresolved else (
                 "原文无对应新增内容" if item.diff_type == "ADD" else "新版无对应保留内容")

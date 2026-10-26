@@ -105,17 +105,15 @@ def test_signing_region_stage_builds_diff_and_covers_seal(monkeypatch, tmp_path:
     PreClauseDiffStage(artifact_store=artifact_store).execute(ctx)
     stage = SigningRegionStage(artifact_store=artifact_store, visual_enabled=False)
     stage.block_detector = _NoCandidateDetector()
+    expected_index = len(ctx.header_footer_diffs) + len(ctx.metadata_diffs) + len(ctx.table_diffs) + len(ctx.seal_diffs) + 1
     stage.execute(ctx)
 
-    assert len(ctx.signing_region_diffs) == 1
-    assert ctx.signing_region_diffs[0].source_type == "signing_region"
-    expected_index = (
-        len(ctx.header_footer_diffs) + len(ctx.metadata_diffs) + len(ctx.table_diffs) + len(ctx.seal_diffs) + 1
-    )
-    assert ctx.signing_region_diffs[0].diff_id == f"D{expected_index:03d}"
-    assert ctx.signing_region_diffs[0].diff_id in ctx.signing_region_covered_diff_ids
+    assert ctx.signing_region_diffs == []
+    classified = next(d for d in ctx.seal_diffs if d.diff_id == f"D{expected_index:03d}")
+    assert classified.source_type == "seal"
+    assert classified.diff_id in ctx.signing_region_covered_diff_ids
     assert ctx.seal_diffs[0].diff_id not in ctx.signing_region_covered_diff_ids
-    assert ctx.signing_region_diffs[0].diff_id in ctx.signing_region_debug["coverage"]["covered_diff_ids"]
+    assert classified.diff_id in ctx.signing_region_debug["coverage"]["covered_diff_ids"]
     assert ctx.signing_region_debug["legacy_region_fallback"] == {"original": True, "compare": True}
     assert ctx.task.debug_artifact_paths["signing_region"].endswith("signing_region.json")
 
@@ -1458,7 +1456,8 @@ def test_signing_region_stage_records_unavailable_visual_adapter_without_failing
 
     stage.execute(ctx)
 
-    assert len(ctx.signing_region_diffs) == 1
+    assert len(ctx.seal_diffs) == 1
+    assert ctx.signing_region_diffs == []
     assert ctx.signing_region_debug["visual_adapter_status"]["original"]["available"] is False
     assert ctx.signing_region_debug["visual_adapter_status"]["original"]["error"] == "remote_call_failed"
     assert ctx.signing_region_debug["configuration"]["visual_enabled"] is True

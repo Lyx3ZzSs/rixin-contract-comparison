@@ -17,6 +17,14 @@ from app.services.table_compare.constants import (
 )
 
 
+def table_metadata_labels(text: str) -> tuple[str, ...]:
+    """Named quotation fields, not free-form section titles or product prose."""
+    compact = re.sub(r"\s+", "", text)
+    if not re.match(r"^(?:项目名称|工程名称|报价单位)[:：]", compact):
+        return ()
+    return tuple(re.findall(r"(项目名称|工程名称|报价单位)[:：]", compact))
+
+
 _TABLE_OCR_CHAR_REPLACEMENTS: dict[str, str] = {
     "香": "否",
     "己": "已",

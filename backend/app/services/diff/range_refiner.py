@@ -179,7 +179,7 @@ def changed_snippets_from_opcodes(
                 left_ranges.extend(refined_left_ranges)
                 right_ranges.extend(refined_right_ranges)
             else:
-                left_ranges.append(expand_token_range(left, left_start, left_end, "DELETE"))
+                left_ranges.append(expand_token_range(left, left_start, left_end, "DELETE", right, right_start))
         elif has_right_change:
             percent_ranges = percent_ocr_suffix_modify_ranges(
                 left, left_start, left_end, right, right_start, right_end,
@@ -189,7 +189,7 @@ def changed_snippets_from_opcodes(
                 left_ranges.extend(refined_left_ranges)
                 right_ranges.extend(refined_right_ranges)
             else:
-                right_ranges.append(expand_token_range(right, right_start, right_end, "ADD"))
+                right_ranges.append(expand_token_range(right, right_start, right_end, "ADD", left, left_start))
 
     left_ranges = merge_ranges(left_ranges)
     right_ranges = merge_ranges(right_ranges)
@@ -382,7 +382,7 @@ def refine_inline_changed_ranges(
                 left_ranges.extend(refined_left_ranges)
                 right_ranges.extend(refined_right_ranges)
             else:
-                left_ranges.append(expand_token_range(left, current_left_start, current_left_end, "DELETE"))
+                left_ranges.append(expand_token_range(left, current_left_start, current_left_end, "DELETE", right, current_right_start))
         elif has_right:
             percent_ranges = percent_ocr_suffix_modify_ranges(
                 left, current_left_start, current_left_end,
@@ -393,7 +393,7 @@ def refine_inline_changed_ranges(
                 left_ranges.extend(refined_left_ranges)
                 right_ranges.extend(refined_right_ranges)
             else:
-                right_ranges.append(expand_token_range(right, current_right_start, current_right_end, "ADD"))
+                right_ranges.append(expand_token_range(right, current_right_start, current_right_end, "ADD", left, current_left_start))
     return left_ranges, right_ranges
 
 
@@ -539,6 +539,18 @@ def expand_token_range(
     while end < len(text) and is_ascii_token_char(text[end]):
         end += 1
 
+    if other_text is not None and other_pos is not None and highlight_type in {"DELETE", "ADD"}:
+        # Missing letters inside a variable do not delete the letters which
+        # remain on the other side. Keep numeric-token expansion unchanged.
+        token = text[start:end]
+        prefix, suffix = text[start:original_start], text[original_end:end]
+        if (token.isascii() and token.isalpha() and (prefix or suffix)
+                and other_pos >= len(prefix)
+                and other_text[other_pos-len(prefix):other_pos] == prefix
+                and other_text[other_pos:other_pos+len(suffix)] == suffix):
+            return TextRange(start=original_start, end=original_end, highlight_type=highlight_type)
+        return TextRange(start=start, end=end, highlight_type=highlight_type)
+
     if other_text is not None and other_pos is not None:
         expanded_left = text[start:original_start]
         if expanded_left:
@@ -663,6 +675,13 @@ def _match_lines_by_content(
     right_lines: list[tuple[str, int, int]],
     threshold: float = 0.5,
 ) -> list[tuple[int, int]]:
+    # Repeated explanations cannot be paired by globally identical text:
+    # one OCR error would move an earlier occurrence into a later section.
+    # Keep content-based reordering for unique form labels.
+    keys = [[re.sub(r"\s+", "", line[0]) for line in lines] for lines in (left_lines, right_lines)]
+    if any(any(items.count(text) > 1 and sum("一" <= c <= "鿿" for c in text) >= 10
+                   for text in items) for items in keys):
+        return _match_ordered_lines(left_lines, right_lines, threshold)
     candidates: list[tuple[float, int, int]] = []
     for li, (left_text, _, _) in enumerate(left_lines):
         for ri, (right_text, _, _) in enumerate(right_lines):
@@ -680,6 +699,32 @@ def _match_lines_by_content(
         used_left.add(li)
         used_right.add(ri)
     pairs.sort(key=lambda p: p[0])
+    return pairs
+
+
+def _match_ordered_lines(left_lines, right_lines, threshold):
+    """Maximum-similarity non-crossing alignment, allowing missing lines."""
+    n, m = len(left_lines), len(right_lines)
+    scores = [[0.0] * (m + 1) for _ in range(n + 1)]
+    choices = {}
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            score = line_similarity(left_lines[i][0], right_lines[j][0])
+            options = [(scores[i+1][j], "left"), (scores[i][j+1], "right")]
+            if score >= threshold:
+                options.insert(0, (score + scores[i+1][j+1], "pair"))
+            scores[i][j], choices[i, j] = max(options, key=lambda item: item[0])
+    pairs = []
+    i = j = 0
+    while i < n and j < m:
+        choice = choices[i, j]
+        if choice == "pair":
+            pairs.append((i, j))
+            i, j = i + 1, j + 1
+        elif choice == "left":
+            i += 1
+        else:
+            j += 1
     return pairs
 
 

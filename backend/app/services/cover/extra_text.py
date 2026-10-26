@@ -74,7 +74,12 @@ def group_extra_fragments_by_row(fragments: list[CoverExtraFragment]) -> list[li
         fragment_mid_y = mid_y(bbox)
         height = max(1.0, bbox.y1 - bbox.y0)
         threshold = max(4.0, min(current_height or height, height) * 0.8)
-        if current and (fragment.evidence.page_no != current_page or abs(fragment_mid_y - current_mid_y) > threshold):
+        overlapping_lines = any(
+            _vertically_separate_overlapping_lines(item.evidence.bbox, bbox)
+            for item in current
+        )
+        if current and (fragment.evidence.page_no != current_page or abs(fragment_mid_y - current_mid_y) > threshold
+                        or overlapping_lines):
             rows.append(current)
             current = []
         if not current:
@@ -90,6 +95,14 @@ def group_extra_fragments_by_row(fragments: list[CoverExtraFragment]) -> list[li
     if current:
         rows.append(current)
     return rows
+
+
+def _vertically_separate_overlapping_lines(left: BBox, right: BBox) -> bool:
+    """Tall search-layer boxes must not turn adjacent whole lines into columns."""
+    overlap = min(left.x1, right.x1) - max(left.x0, right.x0)
+    width = max(1.0, left.x1 - left.x0, right.x1 - right.x0)
+    height = max(1.0, min(left.y1 - left.y0, right.y1 - right.y0))
+    return overlap > width * 0.8 and abs(mid_y(left) - mid_y(right)) > max(3.0, height * 0.2)
 
 
 def merge_extra_row(row: list[CoverExtraFragment]) -> list[CoverExtraText]:

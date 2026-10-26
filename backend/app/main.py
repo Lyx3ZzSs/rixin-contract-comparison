@@ -26,7 +26,6 @@ from app.infrastructure.artifact_store import default_artifact_store
 from app.infrastructure.task_repository import default_task_repository
 from app.infrastructure.task_runner import default_task_runner
 from app.logging_config import setup_logging
-from app.services.models.setup import register_default_models, teardown_models
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -43,7 +42,6 @@ async def lifespan(app: FastAPI):
             logger.warning("Marked %s interrupted tasks as failed", interrupted)
         _cleanup_task_files()
         default_task_runner.start()
-        register_default_models()
 
         if settings.auth.is_oidc:
             try:
@@ -64,7 +62,6 @@ async def lifespan(app: FastAPI):
 
         yield
     finally:
-        teardown_models()
         default_task_runner.stop(wait=True)
         close_clients()
         auth_runtime.close()

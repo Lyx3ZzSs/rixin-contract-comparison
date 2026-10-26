@@ -1576,6 +1576,7 @@ h2 {
   stroke-dasharray: 5 4;
 }
 
+.pdf-highlight-mark.observation rect,
 .pdf-highlight-mark.signing-region rect {
   fill-opacity: 0;
   stroke: rgba(180, 83, 9, 0.78);
@@ -1622,6 +1623,9 @@ h2 {
   filter: none;
 }
 
+.pdf-highlight-mark.active.observation rect,
+.pdf-highlight-mark.observation:hover rect,
+.pdf-highlight-mark.observation:focus-visible rect,
 .pdf-highlight-mark.active.signing-region rect,
 .pdf-highlight-mark.signing-region:hover rect,
 .pdf-highlight-mark.signing-region:focus-visible rect {

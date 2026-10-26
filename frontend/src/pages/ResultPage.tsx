@@ -7,11 +7,18 @@ import { useTaskProgress } from '../lib/hooks';
 import { getEvents, getPreviewMetadata, toApiUrl, updateEventReview } from '../lib/api';
 import { downloadAuthenticatedFile } from '../lib/authFetch';
 import { counterpart } from '../lib/eventAlignment';
-import type { DiffEvent, DiffEventResponse, DiffItem, DiffType, ReviewStatus } from '../types';
+import type { ComparisonObservation, DiffEvent, DiffEventResponse, DiffItem, DiffType, ReviewStatus } from '../types';
 import './eventResult.css';
 import { PdfPreviewRuntime } from '../lib/pdfPreviewRuntime';
 import type { PreviewMetadata } from '../lib/pdfPreviewTypes';
 
+// Viewer projection only; observations never enter event counts or change cards.
+function observationRegion(o: ComparisonObservation): DiffItem {
+  return { diff_id: o.observation_id, diff_type: 'MODIFY', clause_no: '', title: o.title,
+    original_text: '', compare_text: '', original_snippet: '', compare_snippet: '', readable_change: '',
+    source_type: o.source_type ?? (o.reason.startsWith('TABLE_') ? 'table' : 'header_footer'), original_evidence: o.original_evidence, compare_evidence: o.compare_evidence,
+    match_score_details: {decision_reason: o.reason} };
+}
 const labels = { ADD: '新增', DELETE: '删除', MODIFY: '修改' };
 export function ResultPage({ taskId, onBack, accessToken = '' }: { taskId: string; onBack: () => void; accessToken?: string }) {
   const { task, error: taskError, isLoading, retry, isRetrying, completionAnimating } = useTaskProgress(taskId);
@@ -28,6 +35,7 @@ export function ResultPage({ taskId, onBack, accessToken = '' }: { taskId: strin
   const [data, setData] = useState<DiffEventResponse | null>(null);
   const [error, setError] = useState('');
   const [active, setActive] = useState('');
+  const [showObservations, setShowObservations] = useState(false);
   const [filter, setFilter] = useState<DiffType | 'ALL'>('ALL');
   const [element, setElement] = useState('ALL');
   const [needsReview, setNeedsReview] = useState(false);
@@ -39,14 +47,28 @@ export function ResultPage({ taskId, onBack, accessToken = '' }: { taskId: strin
   const compare = useRef<PdfDocumentViewerHandle>(null);
   useEffect(() => {
     const controller = new AbortController();
-    setData(null); setActive(''); setError('');
+    setData(null); setActive(''); setShowObservations(false); setError('');
     if (task?.status === 'COMPLETED') getEvents(taskId, controller.signal).then(setData).catch(e => {
       if (!controller.signal.aborted) setError(e.message);
     });
     return () => controller.abort();
   }, [taskId, task?.status, task?.revision]);
   const events = useMemo(() => (data?.events ?? []).filter(e => (filter === 'ALL' || e.direction === filter) && (element === 'ALL' || e.diff.source_type === element) && (!needsReview || e.review_conflict || e.diff.quality_status === 'NEEDS_REVIEW' || e.diff.review_status === 'NEEDS_REVIEW')), [data, filter, element, needsReview]);
-  const diffs = useMemo(() => events.map(e => e.diff), [events]);
+  const observations = useMemo(() => (data?.comparison_observations ?? []).filter(o => {
+    const direction = o.original_evidence.length && o.compare_evidence.length ? 'MODIFY' : o.compare_evidence.length ? 'ADD' : 'DELETE';
+    return (element === 'ALL' || observationRegion(o).source_type === element)
+      && (filter === 'ALL' || direction === filter)
+      && (!needsReview || ['UNREVIEWED', 'NEEDS_REVIEW'].includes(o.review_status));
+  }), [data, element, filter, needsReview]);
+  const diffs = useMemo(() => [...events.map(e => e.diff), ...observations
+    .filter(o => (o.source_type === 'seal' && !['FALSE_POSITIVE', 'IGNORED'].includes(o.review_status))
+      || showObservations || o.observation_id === active).map(observationRegion)], [events, observations, showObservations, active]);
+  function locateObservation(o: ComparisonObservation) {
+    setActive(o.observation_id);
+    const region = observationRegion(o);
+    original.current?.scrollToDiff(region); compare.current?.scrollToDiff(region);
+    setLocationNote(o.message);
+  }
   const hasPageAlignment = Boolean(data?.page_alignment.length);
   function locate(event: DiffEvent, child?: DiffItem) {
     setActive(event.event_id);
@@ -73,7 +95,7 @@ export function ResultPage({ taskId, onBack, accessToken = '' }: { taskId: strin
     if (!sync || hasPageAlignment) return;
     (side === 'original' ? compare : original).current?.syncScrollFrom(ratio);
   }
-  async function review(event: DiffEvent, status: ReviewStatus) {
+  async function review(event: Pick<DiffEvent, 'event_id'>, status: ReviewStatus) {
     if (!data) return;
     setSaving(true); setError('');
     try { setData(await updateEventReview(taskId, event.event_id, data.revision, status)); }
@@ -83,6 +105,16 @@ export function ResultPage({ taskId, onBack, accessToken = '' }: { taskId: strin
   async function exportEvents() {
     try { await downloadAuthenticatedFile(toApiUrl(`/api/compare/${taskId}/events/report`), task?.report_filename || '合同差异分析报告.pdf'); }
     catch (e) { setError(e instanceof Error ? e.message : '导出失败'); }
+  }
+  async function resetSeal(id: string) {
+    if (!data) return;
+    setSaving(true); setError('');
+    try {
+      setData(await updateEventReview(taskId, id, data.revision, 'UNREVIEWED', 'RESET'));
+      setActive('');
+      setLocationNote('已恢复自动判定结果');
+    } catch (e) { setError(e instanceof Error ? e.message : '印章裁决失败'); }
+    finally { setSaving(false); }
   }
   if (!task) return <section className="state-screen">
     <h1>{isLoading ? '正在载入对比结果' : '无法打开对比结果'}</h1>
@@ -110,7 +142,7 @@ export function ResultPage({ taskId, onBack, accessToken = '' }: { taskId: strin
     {(error || taskError) && <p role="alert" className="event-alert">{error || taskError}</p>}
     {locationNote && <p role="status" className="event-location">{locationNote}</p>}
     <div className="event-workspace"><div className="event-documents">
-      {(['original', 'compare'] as const).map(side => <div className="event-document" key={side}><header><strong>{side === 'original' ? '标准文档' : '比对文档'}</strong><span title={task[`${side}_filename`]}>{task[`${side}_filename`]}</span></header>{runtime && runtime.taskId === taskId && <PdfDocumentViewer runtime={runtime} metadata={metadata === null ? null : metadata?.documents[side]} ref={side === 'original' ? original : compare} side={side} title={side === 'original' ? '标准文档' : '比对文档'} src={toApiUrl(task[`${side}_pdf_url`])} accessToken={accessToken} diffs={diffs} zoom={zoom} activeDiffId={active} syncEnabled={sync} onScrollRatio={syncRatio} onPageScroll={hasPageAlignment ? syncPage : undefined} onActivateDiff={id => { const e = events.find(e => e.event_id === id); if(e) locate(e); }} />}</div>)}
+      {(['original', 'compare'] as const).map(side => <div className="event-document" key={side}><header><strong>{side === 'original' ? '标准文档' : '比对文档'}</strong><span title={task[`${side}_filename`]}>{task[`${side}_filename`]}</span></header>{runtime && runtime.taskId === taskId && <PdfDocumentViewer runtime={runtime} metadata={metadata === null ? null : metadata?.documents[side]} ref={side === 'original' ? original : compare} side={side} title={side === 'original' ? '标准文档' : '比对文档'} src={toApiUrl(task[`${side}_pdf_url`])} accessToken={accessToken} diffs={diffs} zoom={zoom} activeDiffId={active} syncEnabled={sync} onScrollRatio={syncRatio} onPageScroll={hasPageAlignment ? syncPage : undefined} onActivateDiff={id => { const e = events.find(e => e.event_id === id); if(e) locate(e); else { const o = observations.find(o => o.observation_id === id); if(o) locateObservation(o); } }} />}</div>)}
     </div><aside className="event-list" aria-label="比对结果">
       {(processing || completionAnimating) && <div className={processing ? 'state-screen' : 'event-completion-animation'} aria-live="polite">
         <h2>{processing ? task.stage || '处理中' : '比对完成'}</h2>
@@ -119,18 +151,41 @@ export function ResultPage({ taskId, onBack, accessToken = '' }: { taskId: strin
       </div>}
       {!processing && <>
       <header><h2>差异项 <span>{data?.event_count ?? '—'}</span></h2><div><button aria-label="上一条差异" disabled={events.findIndex(e => e.event_id === active) <= 0} onClick={() => locate(events[events.findIndex(e => e.event_id === active) - 1])}><ChevronLeft size={17}/></button><button aria-label="下一条差异" disabled={!events.length || events.findIndex(e => e.event_id === active) >= events.length - 1} onClick={() => locate(events[events.findIndex(e => e.event_id === active) + 1])}><ChevronRight size={17}/></button></div></header>
-      <div className="event-filters"><select aria-label="元素筛选" value={element} onChange={e => setElement(e.target.value)}><option value="ALL">元素 · 全部</option><option value="clause">文本</option><option value="seal">印章</option><option value="table">表格</option><option value="graphic">图形</option><option value="metadata">封面 / 水印</option><option value="signing_region">签章区</option></select><select aria-label="类型筛选" value={filter} onChange={e => setFilter(e.target.value as typeof filter)}><option value="ALL">类型 · 全部</option>{(['ADD','DELETE','MODIFY'] as const).map(t => <option key={t} value={t}>{labels[t]}</option>)}</select><label><input type="checkbox" checked={needsReview} onChange={e => setNeedsReview(e.target.checked)} />仅看待复核</label></div>
+      <div className="event-filters"><select aria-label="元素筛选" value={element} onChange={e => { setElement(e.target.value); setActive(''); }}><option value="ALL">元素 · 全部</option><option value="clause">文本</option><option value="header_footer">页眉 / 页脚</option><option value="seal">印章</option><option value="table">表格</option><option value="graphic">图形</option><option value="metadata">封面 / 水印</option><option value="signing_region">签章区</option></select><select aria-label="类型筛选" value={filter} onChange={e => { setFilter(e.target.value as typeof filter); setActive(''); }}><option value="ALL">类型 · 全部</option>{(['ADD','DELETE','MODIFY'] as const).map(t => <option key={t} value={t}>{labels[t]}</option>)}</select><label><input type="checkbox" checked={needsReview} onChange={e => setNeedsReview(e.target.checked)} />仅看待复核</label></div>
       <p className="event-count">已筛选出 {events.length} 条 <small>共 {data?.event_count ?? 0} 项 · 展开不增计数</small></p>
       {data && !data.context_available && <p className="event-location">历史结果缺少已保存的分组上下文，当前按独立变化展示。</p>}
       {(data?.graphic_observations ?? []).some(o => o.decision === 'UNOBSERVED') && <details className="event-location"><summary>图形观察待核查（不计入差异数）</summary>{(data?.graphic_observations ?? []).filter(o => o.decision === 'UNOBSERVED').map((o,i) => <button key={i} className="event-child" onClick={() => { const viewer = (o.side === 'original' ? original : compare).current; const sample = data?.events[0]?.diff; if (sample && o.bbox?.length === 4) { const [x0,y0,x1,y1] = o.bbox; viewer?.scrollToDiff({ ...sample, original_evidence: [], compare_evidence: [], [`${o.side}_evidence`]: [{page_no:o.page,bbox:{x0,y0,x1,y1}}] }); } else viewer?.scrollToPage(o.page); if (sample && o.counterpart_page && o.counterpart_bbox?.length === 4) { const [x0,y0,x1,y1] = o.counterpart_bbox; const otherSide = o.side === 'original' ? 'compare' : 'original'; (otherSide === 'original' ? original : compare).current?.scrollToDiff({ ...sample, original_evidence: [], compare_evidence: [], [`${otherSide}_evidence`]: [{page_no:o.counterpart_page,bbox:{x0,y0,x1,y1}}] }); } setLocationNote('该区域已观察到图形，现有证据不足以确认内容变化'); }}>{o.side === 'original' ? '标准' : '比对'}第 {o.page} 页 · 查看图形</button>)}</details>}
-      <div className="event-cards">{events.map((event, index) => <article key={event.event_id} className={`event-card ${event.direction.toLowerCase()} ${active === event.event_id ? 'selected' : ''}`}>
+      <div className="event-cards">
+      {observations.length > 0 && <details className="event-location event-observations" aria-label="区域待复核">
+        <summary>区域待复核 {observations.length} 处（不计入差异数）</summary>
+        <p>印章待复核框默认显示，不计入差异数。其他区域可点击某一项查看虚线框。</p>
+        <label><input type="checkbox" checked={showObservations} onChange={e => { setShowObservations(e.target.checked); if (!e.target.checked) setActive(''); }} />显示其他待复核框</label>
+        {observations.map(o => <article key={o.observation_id}>
+          <button className="event-child" onClick={() => locateObservation(o)}>{o.title} · 标准第 {[...new Set(o.original_evidence.map(e => e.page_no))].join('、') || '无'} 页 / 比对第 {[...new Set(o.compare_evidence.map(e => e.page_no))].join('、') || '无'} 页</button>
+          <p>{o.message}</p>
+          <label>核验状态 <select aria-label={`核验 ${o.observation_id}`} disabled={saving} value={o.review_status} onChange={e => void review({event_id: o.observation_id}, e.target.value as ReviewStatus)}>
+            <option value="UNREVIEWED">未核验</option><option value="NEEDS_REVIEW">待复核</option><option value="CONFIRMED">已核验</option><option value="FALSE_POSITIVE">无需关注</option><option value="IGNORED">忽略</option>
+          </select></label>
+          {o.review_comment && <p>{o.review_comment}</p>}
+          {o.source_type === 'seal' && o.change_resolution && Boolean(o.original_evidence.length) !== Boolean(o.compare_evidence.length) && <div>
+            {o.change_resolution && <button disabled={saving} onClick={() => void resetSeal(o.observation_id)}>撤销印章裁决</button>}
+          </div>}
+        </article>)}
+      </details>}
+      {events.map((event, index) => <article key={event.event_id} className={`event-card ${event.direction.toLowerCase()} ${active === event.event_id ? 'selected' : ''}`}>
         <button className="event-select" onClick={() => locate(event)} aria-pressed={active === event.event_id}><span className="event-number">{index + 1}</span><span className="event-badge">{event.diff.quality_status === 'NEEDS_REVIEW' && ['TABLE_STRUCTURE_UNRESOLVED', 'TABLE_PRESENCE_UNKNOWN'].includes(String(event.diff.match_score_details?.decision_reason)) ? '待复核' : labels[event.direction]}</span><strong>{event.diff.title}</strong></button>
         <div className="event-pages">{(['original','compare'] as const).map(side => <span key={side}>{side === 'original' ? '标准' : '比对'}：{[...new Set((event.diff[`${side}_evidence`] ?? []).map(e => e.page_no))].join('、') || '无'} 页</span>)}</div>
         {event.diff.original_text && <p className="event-text original-text">{event.diff.original_text}</p>}{event.diff.compare_text && <p className="event-text compare-text">{event.diff.compare_text}</p>}
+        {event.context && <details><summary>查看条款上下文</summary><p className="event-text original-text">{event.context.original_text}</p><p className="event-text compare-text">{event.context.compare_text}</p></details>}
         {event.children.length > 1 && <details><summary>{event.children.length} 项明细</summary>{event.children.map(child => <button className="event-child" key={child.diff_id} onClick={() => locate(event, child)}>{child.clause_no} {child.title}<ChevronRight size={14}/></button>)}</details>}
         {(event.diff.quality_status === 'NEEDS_REVIEW' || event.review_conflict) && <p className="event-review-note">{event.review_conflict ? '成员审核结论不一致，请复核' : '部分内容识读或变化证据需复核'}</p>}
+        {event.diff.match_score_details?.seal_change_decision === 'CANDIDATE' && !event.diff.match_score_details?.seal_origin_decision && <p className="event-review-note">印章变化候选，已计入差异；独立盖章或透印尚待核验。</p>}
+        {Boolean(event.diff.match_score_details?.seal_origin_decision || event.diff.match_score_details?.footer_origin_decision) && <p className="event-review-note">{event.diff.readable_change}</p>}
+        {event.diff.source_type === 'seal' && Boolean(event.diff.match_score_details?.seal_observation_id) && event.raw_diff_ids.length === 1 && ['ADD','DELETE'].includes(event.direction) && <div>
+          {Boolean(event.diff.match_score_details?.seal_observation_id) && <button disabled={saving} onClick={() => void resetSeal(event.event_id)}>撤销印章裁决</button>}
+        </div>}
         <label className="event-review">审核<select aria-label={`审核差异 ${index + 1}`} disabled={saving} value={event.diff.review_status} onChange={e => void review(event, e.target.value as ReviewStatus)}><option value="UNREVIEWED">未审核</option><option value="CONFIRMED">确认差异</option><option value="FALSE_POSITIVE">误报</option><option value="NEEDS_REVIEW">待复核</option><option value="IGNORED">忽略</option></select></label>
-      </article>)}{data && !events.length && <p className="event-empty">当前筛选无差异</p>}</div>
+      </article>)}{data && !events.length && <p className="event-empty">{observations.length ? '当前筛选无已确认变化，仍有区域待复核' : '当前筛选无差异'}</p>}</div>
       </>}
     </aside></div>
   </section>;

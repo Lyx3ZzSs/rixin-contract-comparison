@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "KAILI_FOUR_PROJECTS",
-  "expected_case_count": 14,
+  "expected_case_count": 15,
   "assertions": [
     {
       "case_id": "KAILI_FOUR_PROJECTS_P1_DATE_MODIFY_D36455B8CC",
@@ -327,7 +327,27 @@
       "source_type": "seal",
       "forbidden_value_pattern": "<(?:img|div)\\b",
       "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "KAILI_FOUR_PROJECTS_P9_IDENTICAL_FOOTER_NO_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 9,
+      "source_type": "header_footer",
+      "review_note": "该固定PDF对的第9页页脚均为印刷页码“共9页第9页”，没有新增签注或其他页脚变化。不得输出页眉页脚差异；不限差异类型、标题或审核状态，改名为“视觉变化（待复核）”仍需拦截。此规则仅针对本合同该页，不禁止其他合同的真实手写签注。"
     }
   ],
-  "baseline_version": "contract-golden-v2"
+  "baseline_version": "contract-golden-v3",
+  "review_revision": "2026-10-08-kaili-footer-page-number-verified",
+  "review_source_task_id": "928b3727-d136-4a71-b767-2182e2d328d7",
+  "regression_coverage": {
+    "source_task_id": "928b3727-d136-4a71-b767-2182e2d328d7",
+    "reference_tasks": [
+      "fa4b163e-7809-49d6-bf87-0adda99388ee",
+      "9146476b-0a08-489a-9926-a9c4116dbe98"
+    ],
+    "evidence_root": "output/analysis/golden-kaili-928b3727-20261008",
+    "fix_evidence_root": "output/analysis/footer-fix-20261008",
+    "approval": "用户明确要求更新任务 928b3727-d136-4a71-b767-2182e2d328d7 黄金集。",
+    "scope": "保留全部14条原有断言，新增第9页相同页脚不得报差异的负例。更新来源，不把其余未标注候选自动认定为正确。"
+  }
 }

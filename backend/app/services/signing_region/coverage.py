@@ -30,6 +30,26 @@ SIGNING_TEXT_MARKERS = (
 class SigningCoverageResult:
     entries: list[SigningCoverageEntry] = field(default_factory=list)
     covered_diff_ids: set[str] = field(default_factory=set)
+    restored_seal_diff_ids: set[str] = field(default_factory=set)
+
+    def reconcile_seal_owners(self, retained_diffs: list[DiffItem]) -> None:
+        """A seal may be suppressed only while its canonical owner survives.
+
+        Visual fusion can choose the signing-region observation and consume
+        the legacy seal. In that case the earlier coverage decision is stale.
+        Preserve frozen text/table coverage; only seal ownership is revisited.
+        """
+        retained_ids = {diff.diff_id for diff in retained_diffs}
+        visible_owners = retained_ids - self.covered_diff_ids
+        owners: dict[str, set[str]] = {}
+        for entry in self.entries:
+            for owner_id, reason in entry.reasons.items():
+                if reason == "duplicate_seal_diff":
+                    owners.setdefault(entry.signing_region_diff_id, set()).add(owner_id)
+        for signing_id, owner_ids in owners.items():
+            if signing_id in retained_ids and not owner_ids.intersection(visible_owners):
+                self.covered_diff_ids.discard(signing_id)
+                self.restored_seal_diff_ids.add(signing_id)
 
 
 class SigningRegionCoverageBuilder:

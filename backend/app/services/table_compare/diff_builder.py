@@ -20,6 +20,7 @@ from app.services.table_compare.types import (
     CharSegment,
 )
 from app.services.table_compare import utils
+from app.services.table_compare.row_evidence import metadata_row_present, evidence_text_confidence
 from app.services.table_compare.matcher import TableMatcher
 from app.services.table_compare.repair_context import BusinessChangeProtector
 from app.services.table_compare.summary import SummaryComparator
@@ -37,6 +38,8 @@ class TableDiffBuilder:
         self._suppressed_diffs: list[dict[str, object]] = []
         self._change_protector = BusinessChangeProtector()
         self.source_blocks: dict[str, dict[str, TextBlock]] = {"original": {}, "compare": {}}
+        self.page_blocks: dict[str, list[TextBlock]] = {"original": [], "compare": []}
+        self.claimed_rows: set[int] = set()
 
     def reset_diagnostics(self) -> None:
         self._suppressed_diffs = []
@@ -79,6 +82,9 @@ class TableDiffBuilder:
         )
 
     def _is_protected_business_change(self, original_text: str, compare_text: str) -> bool:
+        labels = utils.table_metadata_labels(original_text)
+        if labels and labels == utils.table_metadata_labels(compare_text):
+            return utils.normalize_cell_for_compare(original_text) != utils.normalize_cell_for_compare(compare_text)
         return self._change_protector.is_protected_change(original_text, compare_text)
 
     def _row_has_protected_business_change(
@@ -110,8 +116,25 @@ class TableDiffBuilder:
 
         aligned_rows = self._matcher.align_rows(original, compare)
         for align_index, (orig_row, comp_row) in enumerate(aligned_rows):
+            if ((orig_row is not None and id(original.rows[orig_row]) in self.claimed_rows)
+                    or (comp_row is not None and id(compare.rows[comp_row]) in self.claimed_rows)):
+                continue
             original_block = self._source_block_for_row(original, orig_row, "original", original_default)
             compare_block = self._source_block_for_row(compare, comp_row, "compare", compare_default)
+            if (orig_row is None) != (comp_row is None):
+                present, row = (original, orig_row) if orig_row is not None else (compare, comp_row)
+                other_side = "compare" if orig_row is not None else "original"
+                page_no = getattr(present.rows[row], "page_no", present.page_no)
+                alignment = self._matcher.page_alignment
+                pages = ([page_no] if alignment is None else
+                         list((alignment.counterparts_for_original if orig_row is not None else
+                               alignment.counterparts_for_compare)(page_no)))
+                cells = self._matcher._row_nonempty_cells(present, row)
+                if len(pages) == 1 and cells and all(
+                    metadata_row_present(cell.text, self.page_blocks[other_side], pages[0]) for cell in cells
+                ):
+                    self._record_suppressed_diff("metadata_row_present_in_source", original, compare, orig_row, comp_row)
+                    continue
             if (orig_row is None) != (comp_row is None):
                 present_block = original_block if orig_row is not None else compare_block
                 other_side = "compare" if orig_row is not None else "original"
@@ -976,6 +999,22 @@ class TableDiffBuilder:
             "compare",
         )
 
+        # A deletion inside a continued field still has a counterpart location.
+        # Keep that context separate from changed-text highlighting.
+        for cd in group.diffs:
+            left = utils.anchor_cell(orig_table, cd.original_row, cd.original_col) if (
+                orig_table and cd.original_row is not None and cd.original_col is not None) else None
+            right = utils.anchor_cell(comp_table, cd.compare_row, cd.compare_col) if (
+                comp_table and cd.compare_row is not None and cd.compare_col is not None) else None
+            if not left or not right or max(len(getattr(left, 'source_fragments', [])),
+                                            len(getattr(right, 'source_fragments', []))) < 2:
+                continue
+            for cell, evidence in ((left, orig_evidences), (right, comp_evidences)):
+                if not evidence:
+                    evidence.extend(EvidenceBox(page_no=f.page_no, bbox=f.bbox, text=f.text,
+                                                method='table_counterpart_anchor', granularity='cell')
+                                    for f in cell.source_fragments if f.bbox is not None)
+
         needs_orig_evidence = self._side_needs_evidence(group, "original")
         needs_comp_evidence = self._side_needs_evidence(group, "compare")
         if (needs_orig_evidence and not orig_evidences) or (needs_comp_evidence and not comp_evidences):
@@ -1015,6 +1054,9 @@ class TableDiffBuilder:
             review_flags.append("LOW_CONFIDENCE_COMPARE_TABLE_EVIDENCE")
 
         observation_details = self._group_observation_details(group, orig_table, comp_table)
+        if self._group_source_order_conflict(group, orig_table, comp_table, orig_block, comp_block):
+            observation_details.update(change_decision="NEEDS_REVIEW", decision_reason="CELL_TEXT_SOURCE_ORDER_CONFLICT")
+            review_flags.append("CELL_TEXT_SOURCE_ORDER_CONFLICT")
         observation_details["table_shapes"] = {side: {"row_count": len(table.rows), "col_count": table.col_count}
                                               for side, table in (("original", orig_table), ("compare", comp_table)) if table}
         observation_details["table_change_scope"] = "cell"
@@ -1030,8 +1072,11 @@ class TableDiffBuilder:
                     and coverage == set(range(table.col_count))):
                 observation_details["table_change_scope"] = "row"
         if observation_details["change_decision"] == "NEEDS_REVIEW":
-            review_flags.append("OBSERVATION_UNOBSERVED")
-            readable = f"{readable}；一侧未观察，无法确认增删"
+            if observation_details["decision_reason"] == "CELL_TEXT_SOURCE_ORDER_CONFLICT":
+                readable = f"{readable}；格内文字与原始文字顺序不一致，需复核"
+            else:
+                review_flags.append("OBSERVATION_UNOBSERVED")
+                readable = f"{readable}；一侧未观察，无法确认增删"
 
         caption = self._resolve_caption(orig_table, comp_table)
         caption_prefix = f"「{caption}」" if caption else ""
@@ -1060,6 +1105,14 @@ class TableDiffBuilder:
                 observation_details["column_index"] = column
 
         diff_type = self._group_diff_type(group)
+        confidences = [score for side, evidences in (("original", orig_evidences), ("compare", comp_evidences))
+                       if (score := evidence_text_confidence(evidences, self.page_blocks[side])) is not None]
+        text_confidence = min(confidences) if confidences else None
+        low_text_confidence = text_confidence is not None and text_confidence < 0.85
+        if low_text_confidence:
+            review_flags.append("TABLE_CELL_LOW_OCR_CONFIDENCE")
+            if observation_details["change_decision"] != "NEEDS_REVIEW":
+                observation_details.update(change_decision="NEEDS_REVIEW", decision_reason="TABLE_CELL_LOW_OCR_CONFIDENCE")
         return DiffItem(
             diff_id=generate_diff_id(index),
             diff_type=diff_type,
@@ -1070,12 +1123,45 @@ class TableDiffBuilder:
             compare_snippet=" | ".join(comp_texts)[:300],
             readable_change=readable,
             source_type="table",
+            text_confidence=text_confidence,
+            content_recognition_status="NEEDS_REVIEW" if low_text_confidence else "CONFIRMED",
+            content_recognition_reason="TABLE_CELL_LOW_OCR_CONFIDENCE" if low_text_confidence else "",
             review_flags=review_flags,
             quality_status=("NEEDS_REVIEW" if observation_details["change_decision"] == "NEEDS_REVIEW" else "NORMAL"),
             match_score_details=observation_details,
             original_evidence=orig_evidences,
             compare_evidence=comp_evidences,
         )
+
+    def _group_source_order_conflict(self, group, original, compare, original_block, compare_block) -> bool:
+        # New model text can expose a legacy HTML reading-order mistake. Do
+        # not rewrite either source or confirm a change contradicted by its
+        # canonical text. Character permutations alone are never sufficient.
+        original_block = original_block[0] if isinstance(original_block, tuple) else original_block
+        compare_block = compare_block[0] if isinstance(compare_block, tuple) else compare_block
+        if not any(block is not None and block.table_cells
+                   and block.table_validation.get("topology_source") in {"UNet+TableRecover", "SLANet_plus"}
+                   for block in (original_block, compare_block)):
+            return False
+        for diff in group.diffs:
+            left = utils.normalize_cell_for_compare(diff.original_text)
+            right = utils.normalize_cell_for_compare(diff.compare_text)
+            if not left or left == right or len(left) > 80 or Counter(left) != Counter(right):
+                continue
+            for side, table, fallback, value, counterpart in (
+                ("original", original, original_block, left, right),
+                ("compare", compare, compare_block, right, left),
+            ):
+                if table is None or fallback is None:
+                    continue
+                available = list(self.source_blocks[side].values())
+                if fallback.block_id not in self.source_blocks[side]:
+                    available.append(fallback)
+                blocks = self.find_blocks([(b, b.text) for b in available], table)
+                spans = [utils.normalize_cell_for_compare(b.text) for b, _ in blocks]
+                if counterpart in spans and not any(value in span for span in spans):
+                    return True
+        return False
 
     @classmethod
     def _group_observation_details(
@@ -1143,6 +1229,11 @@ class TableDiffBuilder:
         return {"row": cell.row_index, "col": cell.col_index, "rowspan": cell.rowspan, "colspan": cell.colspan,
                 "page_no": getattr(cell, "page_no", table.page_no), "text": text,
                 "bbox": cell.bbox.model_dump() if cell.bbox else None,
+                "source_fragments": [
+                    {"text": f.text, "page_no": f.page_no, "bbox": f.bbox.model_dump() if f.bbox else None,
+                     "source_block_id": f.source_block_id}
+                    for f in getattr(cell, "source_fragments", [])
+                ],
                 "table_id": getattr(cell, "source_block_id", table.source_block_id)}
 
     @classmethod
@@ -1805,6 +1896,16 @@ class TableDiffBuilder:
                 found.append((block, text))
                 seen.add(block.block_id)
         if found:
+            anchors = [item[0] for item in found]
+            for block, text in blocks:
+                if block.block_id in seen:
+                    continue
+                if any(block.page_no == anchor.page_no and (
+                    (anchor.layout_block_id and block.layout_block_id == anchor.layout_block_id)
+                    or (anchor.layout_bbox is not None and block.layout_bbox == anchor.layout_bbox)
+                ) for anchor in anchors):
+                    found.append((block, text))
+                    seen.add(block.block_id)
             return found
         for block, text in blocks:
             if block.page_no == table.page_no:
@@ -1890,7 +1991,9 @@ class TableDiffBuilder:
                 if score > 0:
                     candidates.append((score, orig_cell["col"], comp_cell["col"]))
 
-        candidates.sort(reverse=True)
+        # Repeated scalars (e.g. serial number 1 and quantity 1) must not
+        # displace an equally strong match in their own column.
+        candidates.sort(key=lambda item: (item[0], item[1] == item[2], -abs(item[1]-item[2])), reverse=True)
         orig_to_comp: dict[int, int] = {}
         comp_to_orig: dict[int, int] = {}
         for _score, orig_col, comp_col in candidates:
@@ -2033,7 +2136,7 @@ class TableDiffBuilder:
             for evidence in self._evidence_from_block(block_and_text, highlight_type):
                 bbox = evidence.bbox
                 key = (
-                    block_and_text[0].block_id,
+                    highlight_type,
                     evidence.page_no,
                     bbox.x0,
                     bbox.y0,
@@ -2043,6 +2146,7 @@ class TableDiffBuilder:
                 if key in seen:
                     continue
                 seen.add(key)
+                evidence.method = "table_region"
                 evidences.append(evidence)
         return evidences
 
@@ -2259,6 +2363,22 @@ class TableDiffBuilder:
             if col is None:
                 continue
             cell = utils.anchor_cell(table, row, col)
+            fragments = getattr(cell, "source_fragments", [])
+            if len(fragments) > 1:
+                ranges = list(self._side_char_ranges(cd, side)) if cd.char_segments else [
+                    (0, len(cell.text), "DELETE" if side == "original" else "ADD")]
+                offset = 0
+                for fragment in fragments:
+                    for start, end, highlight_type in ranges:
+                        lo, hi = max(start, offset), min(end, offset + len(fragment.text))
+                        if lo < hi and fragment.bbox is not None:
+                            evidences.append(EvidenceBox(
+                                page_no=fragment.page_no, bbox=fragment.bbox,
+                                method="table_cell_fragment", granularity="cell",
+                                text=fragment.text[lo-offset:hi-offset], highlight_type=highlight_type,
+                            ))
+                    offset += len(fragment.text)
+                continue
             if not cell or not cell.bbox:
                 continue
             block = self.source_blocks[side].get(getattr(cell, "source_block_id", ""))
@@ -2277,7 +2397,8 @@ class TableDiffBuilder:
                 if not text:
                     continue
                 estimated_bbox = self._usable_cell_bbox(table, row, cell, text)
-                bbox = self._block_char_bbox_for_fragment(block, cell.bbox, text, estimated_bbox) or estimated_bbox
+                source_bbox = self._table_fragment_bbox(side, block, cell.bbox, text, estimated_bbox)
+                bbox = source_bbox or estimated_bbox
                 if not bbox:
                     continue
                 highlight_type = "DELETE" if side == "original" else "ADD"
@@ -2286,6 +2407,7 @@ class TableDiffBuilder:
                     page_no=getattr(cell, "page_no", block.page_no if block else 1),
                     bbox=bbox,
                     method="table_cell",
+                    granularity="source_text" if source_bbox is not None else "cell",
                     text=text,
                     highlight_type=highlight_type,
                     )
@@ -2295,12 +2417,14 @@ class TableDiffBuilder:
                 evidence_text = text[start:end]
                 if not evidence_text and text:
                     evidence_text = text[max(0, start - 1):min(len(text), start + 1)]
-                estimated_bbox = self._cell_char_bbox_for_text(table, row, cell, text, start, end)
-                bbox = (
-                    self._block_char_bbox_for_fragment(block, cell.bbox, evidence_text, estimated_bbox)
-                    or self._block_char_bbox_for_range(block, cell.bbox, text, start, end, estimated_bbox)
-                    or estimated_bbox
+                estimated_bbox = (cell.bbox if block is not None and block.table_cells
+                                  else self._cell_char_bbox_for_text(table, row, cell, text, start, end))
+                source_bbox = (
+                    self._table_fragment_bbox(side, block, cell.bbox, evidence_text, estimated_bbox)
+                    or (None if block is not None and block.table_cells else
+                        self._block_char_bbox_for_range(block, cell.bbox, text, start, end, estimated_bbox))
                 )
+                bbox = source_bbox or estimated_bbox
                 if not bbox:
                     continue
                 evidences.append(
@@ -2308,11 +2432,52 @@ class TableDiffBuilder:
                     page_no=getattr(cell, "page_no", block.page_no if block else 1),
                     bbox=bbox,
                     method="table_cell",
+                    granularity="source_text" if source_bbox is not None else "cell",
                     text=evidence_text,
                     highlight_type=highlight_type,
                     )
                 )
         return evidences
+
+    def _table_fragment_bbox(self, side, anchor, cell_bbox, fragment, estimated_bbox):
+        """Search actual source spans in the cell's page/region; never mix indexes.
+
+        Repeated amounts outside the cell do not compete. Multiple distinct
+        matching locations inside it remain uncertain, so keep coarse evidence.
+        """
+        if anchor is None or cell_bbox is None or not utils.normalize(fragment):
+            return None
+        blocks = {anchor.block_id: anchor}
+        blocks.update(self.source_blocks.get(side, {}))
+        allowed_ids = set()
+        for metadata in anchor.table_cells:
+            values = metadata.get("bbox", [])
+            if len(values) == 4 and max(abs(a-b) for a,b in zip(values,
+                    [cell_bbox.x0,cell_bbox.y0,cell_bbox.x1,cell_bbox.y1])) < .1:
+                allowed_ids.update(ref.get("block_id") for ref in metadata.get("token_refs", []) if ref.get("block_id"))
+        candidates = {}
+        for block in blocks.values():
+            if block.page_no != anchor.page_no:
+                continue
+            if allowed_ids and block.block_id not in allowed_ids:
+                continue
+            if block.block_id != anchor.block_id and not allowed_ids and not (
+                (anchor.layout_block_id and block.layout_block_id == anchor.layout_block_id)
+                or (anchor.layout_bbox is not None and block.layout_bbox == anchor.layout_bbox)
+            ):
+                continue
+            for start, end in self._fragment_spans(block.text, fragment):
+                chars = self._char_boxes_for_span(block.char_boxes, start, end)
+                bbox = self._merge_char_box_bboxes(chars)
+                if bbox is None or not chars:
+                    continue
+                cx, cy = (bbox.x0+bbox.x1)/2, (bbox.y0+bbox.y1)/2
+                if not (cell_bbox.x0 <= cx <= cell_bbox.x1 and cell_bbox.y0 <= cy <= cell_bbox.y1):
+                    continue
+                if not self._accept_block_char_bbox(bbox, chars, fragment, estimated_bbox):
+                    continue
+                candidates[tuple(round(v,4) for v in (bbox.x0,bbox.y0,bbox.x1,bbox.y1))] = bbox
+        return next(iter(candidates.values())) if len(candidates) == 1 else None
 
     def _block_char_bbox_for_fragment(
         self,

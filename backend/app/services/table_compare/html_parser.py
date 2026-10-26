@@ -23,7 +23,7 @@ class TableHTMLParser(HTMLParser):
 
     def parse_tables(
         self, html: str, page_no: int = 0, source: str = "", source_block_id: str = "",
-        cell_bboxes: list[BBox] | None = None, source_text: str = "",
+        cell_bboxes: list[BBox] | None = None, source_text: str = "", trusted_topology: bool = False,
     ) -> list[StructuredTable]:
         self._tables = []
         self._current = None
@@ -40,6 +40,7 @@ class TableHTMLParser(HTMLParser):
                 source=source,
                 source_block_id=source_block_id,
                 source_text=source_text,
+                trusted_topology=trusted_topology,
             )
             for builder in self._tables
         ]
@@ -138,6 +139,7 @@ class _TableBuilder:
         source_block_id: str = "",
         source_text: str = "",
         provided_bbox_count: int | None = None,
+        trusted_topology: bool = False,
     ) -> StructuredTable:
         if not self._raw_rows:
             return StructuredTable(page_no=page_no, rows=[], col_count=0, source=source, source_block_id=source_block_id, source_text=source_text)
@@ -145,6 +147,15 @@ class _TableBuilder:
         max_cols = self._estimate_col_count()
         grid = self._normalize_grid(max_cols)
         rows = self._grid_to_rows(grid)
+        if trusted_topology:
+            # The publishing gate already owns logical spans. Axis-aligned
+            # bounds of inverse-rotated cells must not re-cluster that grid.
+            return StructuredTable(page_no=page_no, rows=rows, col_count=max_cols, source=source,
+                                   source_block_id=source_block_id, source_text=source_text,
+                                   geometry_status="consistent", geometry_strategy="published_cell_topology",
+                                   bbox_grid_row_count=len(grid), bbox_grid_col_count=max_cols,
+                                   bbox_cell_count=self._assigned_bbox_count(),
+                                   html_cell_count=sum(len(r) for r in self._raw_rows))
         geometry_analyzer = BBoxGridAnalyzer()
         bbox_count = provided_bbox_count if provided_bbox_count is not None else self._assigned_bbox_count()
         geometry = geometry_analyzer.analyze(rows, max_cols, provided_bbox_count=bbox_count)
@@ -244,7 +255,11 @@ class _TableBuilder:
 
 def parse_html_tables(
     html: str, page_no: int = 0, source: str = "", source_block_id: str = "",
-    cell_bboxes: list[BBox] | None = None, source_text: str = "",
+    cell_bboxes: list[BBox] | None = None, source_text: str = "", trusted_topology: bool = False,
+    cell_records: list[dict] | None = None,
 ) -> list[StructuredTable]:
+    if cell_records and all({"row", "column", "bbox"} <= cell.keys() for cell in cell_records):
+        cell_bboxes = [BBox(x0=c["bbox"][0], y0=c["bbox"][1], x1=c["bbox"][2], y1=c["bbox"][3])
+                       for c in sorted(cell_records, key=lambda c: (c["row"], c["column"]))]
     parser = TableHTMLParser()
-    return parser.parse_tables(html, page_no=page_no, source=source, source_block_id=source_block_id, cell_bboxes=cell_bboxes, source_text=source_text)
+    return parser.parse_tables(html, page_no=page_no, source=source, source_block_id=source_block_id, cell_bboxes=cell_bboxes, source_text=source_text, trusted_topology=trusted_topology)

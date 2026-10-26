@@ -136,14 +136,26 @@ class SQLiteTaskRepository:
                        stage, progress_percent, created_at, updated_at,
                        original_filename, compare_filename, diff_count,
                        json_extract(details_json, '$.event_summary.event_count') AS event_count,
-                       json_extract(details_json, '$.event_summary.event_version') AS event_version
+                       json_extract(details_json, '$.event_summary.event_version') AS event_version,
+                       CASE WHEN json_extract(details_json, '$.event_summary.observation_projection') IS NULL
+                         AND (instr(json_extract(details_json, '$.diffs'), 'TABLE_STRUCTURE_UNRESOLVED') > 0
+                           OR instr(json_extract(details_json, '$.diffs'), 'TABLE_PRESENCE_UNKNOWN') > 0)
+                       THEN 1 ELSE 0 END AS legacy_table_observation
                 FROM tasks
                 ORDER BY COALESCE(created_at, updated_at) DESC, task_id DESC
                 """
                 )
                 .fetchall()
             )
-        return [dict(row) for row in rows]
+        summaries = [dict(row) for row in rows]
+        for summary in summaries:
+            legacy = summary.pop("legacy_table_observation", False)
+            if legacy and summary["event_count"] is not None:
+                from app.services.comparison_observations import visible_snapshot_events
+                task = self.load_compare_task(summary["task_id"])
+                if task.event_snapshot:
+                    summary["event_count"] = len(visible_snapshot_events(task, task.event_snapshot))
+        return summaries
 
     def update_compare_task(self, task_id: str, mutate: Callable[[CompareTask], None]) -> CompareTask:
         with self._lock:
@@ -233,8 +245,9 @@ class SQLiteTaskRepository:
     def _serialize(self, task: CompareTask) -> dict[str, Any]:
         payload = to_jsonable(task)
         from app.services.diff_events import source_fingerprint
+        from app.services.comparison_observations import visible_snapshot_events
         snapshot = task.event_snapshot
-        payload["event_summary"] = ({"event_count": len(snapshot["events"]), "event_version": snapshot["version"]}
+        payload["event_summary"] = ({"event_count": len(visible_snapshot_events(task, snapshot)), "event_version": snapshot["version"], "observation_projection": 1}
                                     if snapshot and snapshot.get("source_fingerprint") == source_fingerprint(task) else None)
         values = {name: payload.pop(name) for name in _COLUMNS}
         for field in _RUNTIME_PATH_FIELDS:

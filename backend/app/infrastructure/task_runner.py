@@ -11,7 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from app.config import Settings, settings
-from app.errors import ConflictError, NotFoundError, TaskCancelled
+from app.errors import ConflictError, TaskCancelled
 from app.infrastructure.task_repository import SQLiteTaskRepository, default_task_repository
 from app.models import CompareTask
 from app.services.progress_bus import ProgressBus, ProgressEvent
@@ -143,12 +143,6 @@ class QueuedTaskRunner:
         del task_type
         return self._job_from_task(self.repository.load_compare_task(task_id))
 
-    def load_job(self, job_id: str) -> TaskJob:
-        for task in self.repository.list_compare_tasks():
-            if task.execution_id == job_id:
-                return self._job_from_task(task)
-        raise NotFoundError(f"任务执行记录不存在: {job_id}")
-
     def cancel_active_task(self, task_id: str, *, task_type: TaskJobType = "compare") -> TaskJob:
         del task_type
         task = self.repository.load_compare_task(task_id)
@@ -172,12 +166,6 @@ class QueuedTaskRunner:
             return [self._job_from_task(self.repository.load_compare_task(task_id))]
         except FileNotFoundError:
             return []
-
-    def latest_job(self, task_id: str, *, task_type: TaskJobType | None = None) -> TaskJob:
-        jobs = self.jobs_for_task(task_id, task_type=task_type)
-        if not jobs:
-            raise NotFoundError(f"任务执行记录不存在: {task_id}")
-        return jobs[0]
 
     def stats(self) -> dict[str, int]:
         counts = {

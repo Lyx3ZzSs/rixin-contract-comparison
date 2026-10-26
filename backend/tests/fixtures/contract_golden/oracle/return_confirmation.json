@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "RETURN_CONFIRMATION",
-  "expected_case_count": 15,
+  "expected_case_count": 23,
   "assertions": [
     {
       "case_id": "RETURN_CONFIRMATION_P1_HEADER_FOOTER_MODIFY_278788ADC9",
@@ -298,12 +298,14 @@
       "page": 7,
       "region": "clause",
       "source_type": "clause",
-      "diff_type": "MODIFY",
-      "title": "标的物",
       "quality_status": "NEEDS_REVIEW",
       "content_recognition_status": "CONFIRMED",
-      "semantic_before": "一、标的物上述价格为含13%增值税价格,总金额包括光伏功率预测系统V2.0软件部分价格,支持该系统所需的硬件设备价格。该价格为固定不变价,包括设",
-      "semantic_after": "一、标的物上述价格为含13%增值税价格,总金额包括光伏功率预测系统V2.0软件部分价格,支持该系统所需的硬件设备价格。该价格为固定不变价,包括设"
+      "semantic_after": "安装",
+      "highlight_expectation": {
+        "side": "compare",
+        "pattern": "^安装$"
+      },
+      "review_note": "原第6页还包含调试、技术服务，扫描第7页还包含安装调试、技术服务；保留真实新增安装，不能绑定旧的标题标的物或截断且相同的前后文本。兼容原始MODIFY与单边ADD事件投影。"
     },
     {
       "case_id": "RETURN_CONFIRMATION_SEAL_NO_HTML_MARKUP",
@@ -311,7 +313,108 @@
       "source_type": "seal",
       "forbidden_value_pattern": "<(?:img|div)\\b",
       "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_HEADING_ONE_NO_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "original",
+        "pattern": "一、"
+      },
+      "review_note": "原件第11页与扫描第12页均有一、系统开放性与可配置性要求，旧OCR漏编号。",
+      "page": 11
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P13_TRAINING_HEADING_NO_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "original",
+        "pattern": "五、培训与文档交付"
+      },
+      "review_note": "双方第13/14页均有该完整标题，禁止切分残余误删。",
+      "page": 13
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P13_DOCUMENT_NUMBER_NO_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "original",
+        "pattern": "(?:^|\\n)1\\.(?:\\n|$)"
+      },
+      "review_note": "1.技术文档交付编号必须归属其正文，不能因补匹配遗留为删除。",
+      "page": 13
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P13_ACCEPTANCE_NUMBER_NO_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "original",
+        "pattern": "六、"
+      },
+      "review_note": "六、验收标准在双方原图均存在。",
+      "page": 13
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P14_ACCEPTANCE_NUMBER_NO_ADD",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "compare",
+        "pattern": "六、"
+      },
+      "review_note": "同一验收标题编号不能因条款切分产生新增。",
+      "page": 14
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_TECH_SUPPORT_HEADING_NO_ADD",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "highlight_expectation": {
+        "side": "compare",
+        "pattern": "二、调试与技术支持责任界定"
+      },
+      "review_note": "双方都有此章节及正文，不能因错并入前条款误报新增。"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_PARTY_NAME_OCR_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 11,
+      "source_type": "signing_region",
+      "party": "甲方",
+      "forbidden_value_pattern": "江苏东达全智信息系统有限公司",
+      "review_note": "两份PDF甲方均为江苏东大金智信息系统有限公司；扫描原图红章干扰，3倍/5倍本侧局部OCR读数均为东大金智。即便降为NEEDS_REVIEW，仍不得作为主体变更输出。"
+    },
+    {
+      "case_id": "RETURN_CONFIRMATION_P11_STAMP_INSTRUCTION_NO_HIGHLIGHT",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 11,
+      "source_type": "signing_region",
+      "party": "甲方",
+      "highlight_expectation": {
+        "side": "compare",
+        "pattern": "盖章"
+      },
+      "review_note": "公司名称与盖章提示可以组成一个签署字段，但未变化的盖章提示不得被名称差异整体高亮；不是要求拆出两个差异。"
     }
   ],
-  "baseline_version": "contract-golden-v2"
+  "baseline_version": "contract-golden-v3",
+  "review_revision": "2026-10-08-return-confirmation-party-verified",
+  "review_source_task_id": "bc3bbb91-4d4c-4bd4-928a-9843540998c0",
+  "regression_coverage": {
+    "source_task_id": "bc3bbb91-4d4c-4bd4-928a-9843540998c0",
+    "reference_tasks": [
+      "62ca3935-7793-4b68-8da4-61ccc0600d94",
+      "f566b562-9a68-4187-a2f9-32678e26d020",
+      "8f4c4bc2-e475-4794-a681-ab3ce9618cf6"
+    ],
+    "evidence_root": "output/analysis/golden-return-bc3bbb91-20261008",
+    "approval": "用户明确请求更新任务 bc3bbb91-4d4c-4bd4-928a-9843540998c0 黄金集。",
+    "scope": "更新修复验证任务来源与证据；23条语义断言及阈值保持不变。公司名误报与盖章误高亮两项已通过，其余5项失败继续保留验收要求。",
+    "previous_evidence_root": "output/analysis/golden-return-update-20261008",
+    "fix_evidence_root": "output/analysis/signing-party-fix-20261008"
+  }
 }

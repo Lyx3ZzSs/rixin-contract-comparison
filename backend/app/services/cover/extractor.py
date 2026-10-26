@@ -86,12 +86,25 @@ def _extract_cover(normalizer, document: Document) -> CoverExtraction:
                 consumed.update(consumed_ids)
                 consumed.add(block.block_id)
 
+    # A standalone value already owned by the sign-date field is not an
+    # additional cover date. Require the same physical source, not date equality.
+    dated = fields.get("cover_date")
+    signed = fields.get("sign_date")
+    if dated and signed and any(
+        a.page_no == b.page_no
+        and b.bbox.x0 - 2 <= a.bbox.x0 <= a.bbox.x1 <= b.bbox.x1 + 2
+        and b.bbox.y0 - 2 <= a.bbox.y0 <= a.bbox.y1 <= b.bbox.y1 + 2
+        for a in dated.evidences for b in signed.evidences
+    ):
+        fields.pop("cover_date")
+
     title_blocks = [
         block
         for block in blocks
         if block.page_no == first_page_no and block.block_id not in consumed and is_title_candidate(normalizer, block)
     ]
     if title_blocks and "project_title" not in fields:
+        title_blocks.sort(key=lambda block: (block.bbox.y0, block.bbox.x0))
         title_lines: list[str] = []
         evidences: list[EvidenceBox] = []
         for block in title_blocks:
@@ -192,7 +205,7 @@ def _is_contract_number_key(key: str) -> bool:
 
 def _cover_blocks(document: Document) -> list[TextBlock]:
     blocks: list[TextBlock] = []
-    skip_types = {"attachment_header", "seal_region", "edge_noise", "watermark"}
+    skip_types = {"attachment_header", "seal_region", "seal", "stamp", "edge_noise", "watermark"}
     for page in document.pages:
         for block in page.blocks:
             if block.block_role in {"revision_artifact", "page_footer"}:

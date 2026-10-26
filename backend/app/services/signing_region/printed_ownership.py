@@ -73,6 +73,7 @@ def exclude_equal_signing_prose(left_result, right_result, matches, left_blocks,
     for left, right, _ in matches:
         if left is None or right is None:
             continue
+        _consume_complete_party_date_fields(left_result, right_result, left, right)
         lf, rf = fields(left), fields(right)
         if not lf or lf != rf or not all((role, 'party_name') in lf for role in ('甲方', '乙方')):
             continue
@@ -100,3 +101,53 @@ def exclude_equal_signing_prose(left_result, right_result, matches, left_blocks,
                     else:
                         kept.append(block)
                 page.blocks = kept
+
+
+def _consume_complete_party_date_fields(left_result, right_result, left, right):
+    """Matched field comparisons own complete party/date source lines, including edits.
+
+    Partial OCR field matches cannot consume a block with unrelated content.
+    Dates are kept out of a second, less structured clause comparison.
+    """
+    def fields(region):
+        found = {}
+        for e in region.elements:
+            key = (e.raw_ref.get('party_role'), e.raw_ref.get('field_key'))
+            if e.element_type not in {'party_field', 'field'} or key[0] not in {'甲方', '乙方'}:
+                continue
+            if key[1] not in {'party_name', 'date'}:
+                continue
+            if key in found:
+                return {}
+            found[key] = e
+        return found
+
+    lf, rf = fields(left), fields(right)
+    if not all((role, 'party_name') in lf and (role, 'party_name') in rf for role in ('甲方', '乙方')):
+        return
+    common = lf.keys() & rf.keys()
+    for result, region, fs in ((left_result, left, lf), (right_result, right, rf)):
+        owned = {}
+        for key in common:
+            for source_id in fs[key].raw_ref.get('source_block_ids', []):
+                owned.setdefault(source_id, []).append(fs[key])
+        for page in result.document.pages:
+            if page.page_no != region.page_no:
+                continue
+            kept = []
+            for b in page.blocks:
+                elems = owned.get(b.block_id, [])
+                text = re.sub(r'\s+', '', b.text).replace('：', ':')
+                party_parts = [re.sub(r'\s+', '', e.text).replace('：', ':') for e in elems
+                               if e.raw_ref.get('field_key') == 'party_name']
+                party_text = ''.join(sorted(party_parts, key=text.find))
+                date_only = (len(elems) == 1 and elems[0].raw_ref.get('field_key') == 'date'
+                             and re.fullmatch(r'(?:\d{4})?年(?:\d{1,2})?月(?:\d{1,2})?日', text))
+                if elems and (text == party_text or date_only):
+                    result.excluded_block_ids.append(b.block_id)
+                    result.entries.append(dict(page_no=page.page_no, block_id=b.block_id,
+                                               signing_block_id=region.signing_block_id,
+                                               reason='matched_complete_party_date_field'))
+                else:
+                    kept.append(b)
+            page.blocks = kept

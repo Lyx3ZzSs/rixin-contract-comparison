@@ -125,6 +125,13 @@ class RepeatedOverlayFilter:
                     part for part in [block.source, "repeated_overlay_filter"] if part
                 )
                 block.semantic_reasons = [*block.semantic_reasons, "repeated_overlay_filter"]
+                # Repetition alone also occurs in real signatures. Only a
+                # recognized native scanner attribution gets a cross-channel
+                # exclusion; other repeated marks retain their visual owner.
+                if ("native_pdf" in block.source and re.fullmatch(
+                    r"(?:扫描全能王(?:创建|扫描)?|(?:createdby|scannedwith)?camscanner)", key.lower()
+                )):
+                    block.semantic_reasons.append("scanner_generated_overlay")
             result.decisions.append(
                 {
                     "action": "filtered",

@@ -36,7 +36,8 @@ def retain_recognition_evidence(diffs: list[DiffItem], original: Document, compa
                         if r.raw_text.strip() and comparable(r)
                     }
                     local_date = "CONSISTENT_LOCAL_COVER_DATE" in block.semantic_reasons
-                    risk = (len(normalized) > 1 and not local_date) or "UNRESOLVED_COVER_DATE" in block.semantic_reasons
+                    unresolved = bool({"UNRESOLVED_COVER_DATE", "UNRESOLVED_COVER_IDENTIFIER"}.intersection(block.semantic_reasons))
+                    risk = (len(normalized) > 1 and not local_date) or unresolved
                     disputed |= risk
                     if block.confidence is not None:
                         confidences.append(block.confidence)
@@ -76,6 +77,12 @@ def retain_recognition_evidence(diffs: list[DiffItem], original: Document, compa
             diff.match_score_details["recognition_evidence"] = observations
         if confidences:
             diff.text_confidence = min(confidences)
+        if (diff.source_type == "header_footer" and diff.text_confidence is not None
+                and diff.text_confidence < .8 and not diff.match_score_details.get("repeated_footer_consensus")):
+            diff.content_recognition_status = "NEEDS_REVIEW"
+            diff.content_recognition_reason = "LOW_FOOTER_OCR_CONFIDENCE"
+            diff.quality_status = "NEEDS_REVIEW"
+            diff.review_flags = list(dict.fromkeys([*diff.review_flags, "CONTENT_RECOGNITION_REVIEW"]))
         if disputed:
             diff.content_recognition_status = "NEEDS_REVIEW"
             diff.content_recognition_reason = "SOURCE_READINGS_DISAGREE_OR_DATE_UNRESOLVED"

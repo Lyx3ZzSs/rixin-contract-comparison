@@ -35,10 +35,6 @@ def make_pdf(path: Path, lines: list[str]) -> None:
 
 def configure_storage(tmp_path: Path) -> None:
     settings.storage_dir = tmp_path / "storage"
-    settings.document_extractor = "auto"
-    settings.compare_document_extractor = "ppstructure_ocr_hybrid"
-    settings.compare_require_structured_ocr = True
-    settings.align_structured_extraction = True
     settings.ensure_storage()
 
 
@@ -103,7 +99,7 @@ def test_compare_service_generates_artifacts(tmp_path: Path) -> None:
 
     assert task.status == "PROCESSING"
     assert task.progress_percent < 100
-    assert task.extractor_used == "ppstructure_ocr_hybrid"
+    assert task.extractor_used == "contract_extraction_v3"
     assert task.document_profiles["original"].recommended_strategy == "text"
     assert task.document_profiles["compare"].total_text_chars > 0
     assert Path(task.debug_artifact_paths["document_profiles"]).exists()
@@ -225,67 +221,6 @@ def test_compare_service_execution_progress_persists_to_sqlite(
     assert events[-1].revision == task.revision
 
 
-def test_compare_service_aligns_pymupdf_side_to_structured_extraction(tmp_path: Path) -> None:
-    configure_storage(tmp_path)
-    structured_extractor = FakeStructuredExtractor()
-    stage = ExtractionStage(
-        structured_extractor=structured_extractor,
-    )
-
-    original_result = ExtractionResult(
-        document=make_document("original table", "table"),
-        extractor_used="auto_ppstructure_ocr_hybrid",
-        raw_result_path="/tmp/original_raw.json",
-    )
-    compare_result = ExtractionResult(
-        document=make_document("compare text", "text"),
-        extractor_used="pymupdf",
-    )
-
-    original_aligned, compare_aligned = stage._align_structured_extractions(
-        tmp_path / "original.pdf",
-        tmp_path / "compare.pdf",
-        "TALIGN000001",
-        original_result,
-        compare_result,
-    )
-
-    assert original_aligned is original_result
-    assert compare_aligned.extractor_used == "ppstructure_ocr_hybrid"
-    assert compare_aligned.document.pages[0].blocks[0].block_type == "table"
-    assert compare_aligned.raw_result_path == "/tmp/structured_raw.json"
-    assert structured_extractor.calls == [(tmp_path / "compare.pdf", "TALIGN000001")]
-    assert "compare 已从 PyMuPDF 切换为结构化 OCR 抽取" in compare_aligned.warnings[0]
-
-
-def test_compare_service_keeps_pymupdf_when_structured_alignment_fails(tmp_path: Path) -> None:
-    configure_storage(tmp_path)
-    stage = ExtractionStage(
-        structured_extractor=FailingStructuredExtractor(),
-    )
-
-    original_result = ExtractionResult(
-        document=make_document("original table", "table"),
-        extractor_used="auto_ppstructure_ocr_hybrid",
-    )
-    compare_result = ExtractionResult(
-        document=make_document("compare text", "text"),
-        extractor_used="pymupdf",
-    )
-
-    _, compare_aligned = stage._align_structured_extractions(
-        tmp_path / "original.pdf",
-        tmp_path / "compare.pdf",
-        "TALIGN000002",
-        original_result,
-        compare_result,
-    )
-
-    assert compare_aligned is compare_result
-    assert compare_aligned.extractor_used == "pymupdf"
-    assert "compare 尝试切换结构化 OCR 抽取失败，已保留 PyMuPDF 结果" in compare_aligned.warnings[0]
-
-
 def test_compare_service_leaves_terminal_failure_to_execution_coordinator(tmp_path: Path) -> None:
     configure_storage(tmp_path)
     original = tmp_path / "original.pdf"
@@ -304,9 +239,9 @@ def test_compare_service_leaves_terminal_failure_to_execution_coordinator(tmp_pa
 
 
 def test_extraction_stage_rejects_ocr_only_result_in_strict_mode(tmp_path: Path) -> None:
-    stage = ExtractionStage(extractor=OCRonlyExtractor(), require_structured_ocr=True)
+    stage = ExtractionStage(extractor=OCRonlyExtractor())
 
-    with pytest.raises(DocumentExtractionError, match="非结构化结果 ppstructure_ocr_hybrid_ocr_only"):
+    with pytest.raises(DocumentExtractionError, match="非结构化结果 ocr_only"):
         stage._extract_side(tmp_path / "original.pdf", "TSTRICT_RESULT", "原版文件")
 
 
@@ -334,30 +269,15 @@ def make_document(text: str, block_type: str) -> Document:
     )
 
 
-class FakeStructuredExtractor:
-    name = "ppstructure_ocr_hybrid"
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[Path, str | None]] = []
-
-    def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
-        self.calls.append((Path(path), task_id))
-        return ExtractionResult(
-            document=make_document("structured table", "table"),
-            extractor_used="ppstructure_ocr_hybrid",
-            raw_result_path="/tmp/structured_raw.json",
-        )
-
-
 class FailingStructuredExtractor:
-    name = "ppstructure_ocr_hybrid"
+    name = "contract_extraction_v3"
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         raise DocumentExtractionError("remote OCR unavailable")
 
 
 class LocalStructuredExtractor:
-    name = "ppstructure_ocr_hybrid"
+    name = "contract_extraction_v3"
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         result = PyMuPDFExtractor().extract(path, task_id=task_id)
@@ -366,10 +286,10 @@ class LocalStructuredExtractor:
 
 
 class OCRonlyExtractor:
-    name = "ppstructure_ocr_hybrid"
+    name = "contract_extraction_v3"
 
     def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
         return ExtractionResult(
             document=make_document("ocr only", "ocr_line"),
-            extractor_used="ppstructure_ocr_hybrid_ocr_only",
+            extractor_used="ocr_only",
         )

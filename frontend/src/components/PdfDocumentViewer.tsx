@@ -13,7 +13,7 @@ import { previewPolicy, type PreviewDocument, type PreviewPage } from '../lib/pd
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 interface PageHighlight {
   diffId: string; type: 'ADD' | 'DELETE' | 'MODIFY'; evidence: EvidenceBox; fallback: boolean;
-  markKind: 'fallback' | 'seal' | 'signing-region' | 'table' | 'text'; recognition?: boolean;
+  markKind: 'fallback' | 'seal' | 'signing-region' | 'observation' | 'table' | 'text'; recognition?: boolean;
 }
 export interface PdfDocumentViewerHandle {
   scrollToDiff: (diff: DiffItem) => number | null;
@@ -85,7 +85,9 @@ export const PdfDocumentViewer = forwardRef<PdfDocumentViewerHandle, PdfDocument
     anchor.current = { page: 1, fraction: 0 }; pending.current = null; navigationId.current++;
     if (!src || hidden) { setLoadState(src ? 'idle' : 'error'); setLoadError(src ? '' : 'PDF 文件地址不可用。'); return; }
     let mounted = true;
-    const loading = pdfjsLib.getDocument({ url: src, ...previewTransport(), ...(hasToken ? { httpHeaders: { Authorization: `Bearer ${token.current}` } } : {}) });
+    const loading = pdfjsLib.getDocument({ url: src,
+      cMapUrl: `${import.meta.env.BASE_URL}pdfjs/cmaps/`, cMapPacked: true,
+      ...previewTransport(), ...(hasToken ? { httpHeaders: { Authorization: `Bearer ${token.current}` } } : {}) });
     setLoadState('loading'); setLoadError('');
     loading.promise.then(doc => { if (mounted) { setLoadedSource({ src, version: documentVersion }); setPdf(doc); setLoadState('ready'); } }).catch(error => {
       if (mounted) { console.error('PDF preview loading failed', error); setLoadError(formatPdfLoadError(error)); setLoadState('error'); }
@@ -275,6 +277,8 @@ function PdfPageCanvas({ pdf, pageNumber, zoom, dpr, runtime, generation, side, 
 }
 
 function getEvidence(diff: DiffItem, side: "original" | "compare"): EvidenceBox[] {
+  const display = diff.field_display_evidence?.[side] ?? diff.clause_display_evidence?.[side];
+  if (diff.diff_type === "MODIFY" && display?.length) return display;
   return side === "original" ? (diff.original_evidence ?? []) : (diff.compare_evidence ?? []);
 }
 
@@ -310,10 +314,15 @@ export function getPageHighlights(
       )
       .sort((left, right) => left.bbox.y0 - right.bbox.y0 || left.bbox.x0 - right.bbox.x0);
 
+    const seen = new Set<string>();
     for (const evidence of evidences) {
+      const key = JSON.stringify([evidence.page_no, evidence.method, evidence.highlight_type,
+        ...[evidence.bbox.x0, evidence.bbox.y0, evidence.bbox.x1, evidence.bbox.y1].map(v => Math.round(v * 2))]);
+      if (seen.has(key)) continue;
+      seen.add(key);
       const type = evidence.highlight_type ?? diff.diff_type;
       const fallback = evidence.method === "block_fallback";
-      const markKind = highlightMarkKind(evidence, fallback);
+      const markKind = highlightMarkKind(evidence, fallback, diff);
       const previous = highlights[highlights.length - 1];
       if (previous && canMergeHighlight(previous, diff.diff_id, type, evidence, fallback, markKind)) {
         previous.evidence = mergeEvidence(previous.evidence, evidence);
@@ -352,12 +361,19 @@ function highlightArea(highlight: PageHighlight): number {
   return Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
 }
 
-function highlightMarkKind(evidence: EvidenceBox, fallback: boolean): PageHighlight["markKind"] {
+function highlightMarkKind(evidence: EvidenceBox, fallback: boolean, diff: DiffItem): PageHighlight["markKind"] {
   const method = evidence.method || "";
+  if (method === "comparison_observation" ||
+      (method === "footer_visual_registered" && diff.content_recognition_reason === "VISUAL_FOOTER_CONTENT_UNVERIFIED") ||
+      ["TABLE_STRUCTURE_UNRESOLVED", "TABLE_PRESENCE_UNKNOWN"].includes(String(diff.match_score_details?.decision_reason))) {
+    return "observation";
+  }
   if (fallback) {
     return "fallback";
   }
-  if (method === "seal_region") {
+  const objectType = diff.match_score_details?.object_type;
+  const sealObject = ['COMPANY_ROUND_SEAL', 'PERSONAL_NAME_SEAL', 'EDGE_SEAM_SEAL', 'OTHER_STAMP'].includes(String(objectType));
+  if (diff.source_type === "seal" || sealObject || method === "seal_region" || diff.section_type === "signature:seal") {
     return "seal";
   }
   if (method === "signing_region_element") {
@@ -380,7 +396,7 @@ function canMergeHighlight(
   fallback: boolean,
   markKind: PageHighlight["markKind"],
 ): boolean {
-  if (current.diffId !== diffId || current.type !== type || current.fallback || fallback || current.markKind !== markKind) {
+  if (markKind === "seal" || current.diffId !== diffId || current.type !== type || current.fallback || fallback || current.markKind !== markKind) {
     return false;
   }
   const currentBox = current.evidence.bbox;
@@ -471,7 +487,7 @@ export function PdfHighlightLayer({
               markKind,
               isActive ? "active" : "muted",
             ].join(" ")}
-            aria-label={`定位差异 ${highlight.diffId}`}
+            aria-label={`${markKind === "observation" ? "定位待复核区域" : "定位差异"} ${highlight.diffId}`}
             onClick={() => onActivateDiff(highlight.diffId)}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {

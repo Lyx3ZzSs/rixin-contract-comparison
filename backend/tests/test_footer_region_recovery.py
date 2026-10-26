@@ -1,7 +1,6 @@
 import numpy as np
 
 from app.models import BBox, Document, Page, TextBlock
-from app.services.extractors.ppstructure_ocr_hybrid import PPStructureOCRHybridExtractor
 from app.services.footer_annotation_visual import FooterAnnotationVisualComparator, PageRegistration, RenderedPage
 from app.services.header_footer_compare import HeaderFooterComparator
 
@@ -10,21 +9,6 @@ def block(key, text, kind, box):
     return TextBlock(
         block_id=key, page_no=1, text=text, block_type=kind, bbox=BBox(x0=box[0], y0=box[1], x1=box[2], y1=box[3])
     )
-
-
-def test_unmatched_footer_region_survives_as_unverified_geometry_not_confirmed_name():
-    number = block("number", "26", "number", (300, 705, 314, 718))
-    layout = block("layout-footer", "童", "footnote", (305, 730, 510, 790))
-    body_note = block("body-note", "注：报价不含税", "footnote", (100, 600, 400, 620))
-    page = Page(page_no=1, width=600, height=820, blocks=[layout, body_note])
-    merged = PPStructureOCRHybridExtractor()._merge_page_blocks([number], page, 600, 820)
-    retained = [b for b in merged if b.layout_block_id == "layout-footer"]
-    assert len(retained) == 1
-    assert retained[0].bbox == layout.bbox and retained[0].text == "童"
-    assert "UNVERIFIED_LAYOUT_FOOTER" in retained[0].semantic_reasons
-    assert not any(b.layout_block_id == "body-note" for b in merged)
-    doc = Document(filename="x", path="x", page_count=1, pages=[Page(page_no=1, width=600, height=820, blocks=merged)])
-    assert not any(e.text == "童" for e in HeaderFooterComparator()._entries_by_slot(doc).get("footer", []))
 
 
 class Registrar:

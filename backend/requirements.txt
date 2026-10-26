@@ -3,6 +3,7 @@ uvicorn
 python-multipart
 pymupdf
 opencv-python-headless
+pillow
 diff-match-patch
 rapidfuzz
 reportlab

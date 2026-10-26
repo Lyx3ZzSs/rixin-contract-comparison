@@ -91,6 +91,8 @@ def is_noise_line(line: str) -> bool:
 
 
 def skip_extra_block(block: TextBlock) -> bool:
+    if "scanner_generated_overlay" in block.semantic_reasons:
+        return True
     block_type = (block.block_type or "").lower()
     if block_type == "watermark":
         return True

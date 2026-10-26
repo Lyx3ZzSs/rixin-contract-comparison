@@ -86,6 +86,19 @@ class SigningRegionMatcher:
         return set(re.findall(r"(甲方|乙方|丙方|丁方|买方|卖方|设计方|采购方|供货方)[:：]", text))
 
     def _score(self, original: SigningRegion, compare: SigningRegion) -> float:
+        alignment = getattr(self, "page_alignment", None)
+        entry_for_original = getattr(alignment, "entry_for_original", None)
+        if callable(entry_for_original):
+            original_pages = {original.page_no, *(e.page_no for e in original.elements)}
+            compare_pages = {compare.page_no, *(e.page_no for e in compare.elements)}
+            entries = [entry_for_original(p) for p in original_pages]
+            # A generic form's repeated labels cannot override a reliable page
+            # alignment. Explicit multi-page forms retain all their page spans.
+            if entries and all(e is not None and e.alignment_score >= 0.8
+                               and e.compare_pages for e in entries):
+                allowed = {p for e in entries for p in e.compare_pages}
+                if not allowed.intersection(compare_pages):
+                    return 0.0
         text_score = self._text_structure_score(original, compare)
         page_score = self._page_score(original, compare)
         same_explicit_role = original.region_role == compare.region_role and original.region_role.value != "unknown"

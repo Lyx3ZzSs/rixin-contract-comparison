@@ -79,18 +79,6 @@ def test_line_geometry_ignores_oversized_parent():
     assert SigningBlockDetector._effective_bbox(b)==b.bbox
 
 
-def test_missing_address_row_recovers_from_independent_same_side_layout():
-    from app.services.extractors.ppstructure_ocr_hybrid import PPStructureOCRHybridExtractor
-    blocks=[_block('rep','法人代表或授权委托人：',BBox(x0=82,y0=230,x1=240,y1=245))]
-    address=_block('layout','地址：北京市海淀区西三旗建材城',BBox(x0=82,y0=166,x1=315,y1=182))
-    merged=PPStructureOCRHybridExtractor()._append_structure_only_regions(blocks,[address])
-    assert len(merged)==2 and merged[-1].text==address.text
-    assert merged[-1].source=='ppstructure_layout_only'
-    # An overlapping primary reading must not be duplicated or overwritten.
-    primary=address.model_copy(update={'block_id':'primary','text':'地址：真实新地址'})
-    assert len(PPStructureOCRHybridExtractor()._append_structure_only_regions([*blocks,primary],[address]))==2
-
-
 def test_total_label_ocr_conflict_cannot_be_confirmed_as_business_change():
     from app.services.table_compare.parser import LogicalTableParser
     from app.services.table_compare.repair import TableRepairService

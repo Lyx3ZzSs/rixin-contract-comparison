@@ -823,6 +823,7 @@ class TestStructuredTableComparison:
         html = '<table><tr><td>A</td><td>B</td></tr></table>'
         orig = _make_doc([_make_table_block("o1", 1, html)])
         comp = _make_doc([])
+        comp.pages = [Page(page_no=1, width=595, height=842, table_presence_status="TABLE_ABSENT")]
         diffs, warnings = TableComparator().build_diffs(orig, comp)
         assert any(d.diff_type == "DELETE" for d in diffs)
 
@@ -830,6 +831,7 @@ class TestStructuredTableComparison:
         html = '<table><tr><td>A</td><td>B</td></tr></table>'
         bbox = BBox(x0=50, y0=120, x1=540, y1=300)
         orig = _make_doc([])
+        orig.pages = [Page(page_no=1, width=595, height=842, table_presence_status="TABLE_ABSENT")]
         comp = _make_doc([_make_table_block("c1", 1, html, bbox)])
         diffs, warnings = TableComparator().build_diffs(orig, comp)
         add_diff = next(d for d in diffs if d.diff_type == "ADD")
@@ -850,6 +852,8 @@ class TestStructuredTableComparison:
             _product_row("4", "网络设备"),
         ])
         original = _make_doc([])
+        original.pages = [Page(page_no=page_no, width=595, height=842, table_presence_status="TABLE_ABSENT")
+                          for page_no in (8, 9)]
         compare = _make_doc([
             _make_text_block("c8_context", 8, "国能日新科技股份有限公司 24小时服务热线 报价标题", page8_context_bbox),
             _make_table_block("c8_table", 8, page8_table, page8_table_bbox),
@@ -1677,10 +1681,10 @@ class TestStructuredTableComparison:
         diffs, warnings = TableComparator().build_diffs(original, compare)
 
         assert warnings == []
-        assert [diff.diff_type for diff in diffs] == ["ADD"]
+        assert [diff.diff_type for diff in diffs] == ["MODIFY"]
         assert "备注：本报价有效期为30天" in diffs[0].compare_text
         combined_deleted_text = "\n".join(diff.original_text for diff in diffs if diff.diff_type == "DELETE")
-        combined_added_text = "\n".join(diff.compare_text for diff in diffs if diff.diff_type == "ADD")
+        combined_added_text = "\n".join(diff.compare_text for diff in diffs if diff.diff_type == "MODIFY")
         assert "数值气象服务" not in combined_deleted_text
         assert "功率预测服务" not in combined_deleted_text
         assert "日常维护服务" not in combined_deleted_text

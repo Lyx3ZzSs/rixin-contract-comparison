@@ -1020,3 +1020,17 @@ def test_native_heading_index_requires_exact_number_and_title(tmp_path: Path) ->
     assert index.contains_exact("17", "合同生效", {1})
     assert index.contains_exact("18", "份数", {1})
     assert not index.contains_exact("17", "份数", {1})
+
+
+def test_repaired_heading_consumes_only_the_same_located_title_fragment(tmp_path: Path):
+    path = tmp_path / 'split-heading.pdf'
+    _write_pdf(path, [(96, '8. 知识产权'), (130, '8.1 甲方拥有工作成果。')])
+    document = _ocr_document(path)
+    page = document.pages[0]
+    page.blocks.insert(1, TextBlock(block_id='native-title', page_no=1, text='知识产权',
+        bbox=BBox(x0=92, y0=82, x1=155, y1=102), source='native'))
+    page.blocks.append(TextBlock(block_id='body-mention', page_no=1, text='知识产权',
+        bbox=BBox(x0=92, y0=200, x1=155, y1=220), source='native'))
+    result = NativeHeadingRepairService().repair(document)
+    assert [b.text for b in page.blocks] == ['8. 知识产权', '8.1 甲方拥有工作成果。', '知识产权']
+    assert any(d.get('consumed_block_ids') == ['native-title'] for d in result.decisions)

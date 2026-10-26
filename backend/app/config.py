@@ -9,45 +9,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.auth.models import AuthSettings
 from app.config_models import (
     DocumentUnderstandingSettings,
-    HybridSettings,
     MatchingSettings,
     PPOCRV5Settings,
-    PPStructureSettings,
-    RegistrySettings,
 )
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 BASE_DIR = BACKEND_DIR.parent
-SUPPORTED_DOCUMENT_EXTRACTORS = {
-    "auto",
-    "default",
-    "pymupdf",
-    "fitz",
-    "pdf_text",
-    "ppocrv5",
-    "pp_ocrv5",
-    "paddleocr",
-    "paddle_ocr",
-    "paddle",
-    "ppstructure_ocr_hybrid",
-    "ppstructure_ppocrv5",
-    "structure_ocr",
-    "ppstructure",
-}
-STRUCTURED_DOCUMENT_EXTRACTORS = {
-    "ppstructure_ocr_hybrid",
-    "ppstructure_ppocrv5",
-    "structure_ocr",
-    "ppstructure",
-}
-
-
 class Settings(BaseSettings):
     """Application settings with hierarchical nested models.
 
     All flat fields are kept for backward compatibility — existing ``.env``
     files and ``settings.xxx`` access patterns continue to work.
-    Nested models (``matching``, ``ppstructure``, ``ppocrv5``, etc.) provide
+    Nested models (``matching``, ``ppocrv5``, etc.) provide
     per-domain grouped access. Document extraction/OCR settings configure the
     comparison pipeline; they are not a separate product model.
     """
@@ -68,23 +41,12 @@ class Settings(BaseSettings):
 
     # -- Document extraction/OCR ------------------------------------------
 
-    document_extractor: str = "auto"
-    compare_document_extractor: str = "ppstructure_ocr_hybrid"
-    compare_require_structured_ocr: bool = True
     compare_parallel_extraction_enabled: bool = False
     compare_parallel_extraction_max_inflight: int = Field(default=2, ge=1, le=16)
     compare_footer_visual_max_inflight: int = Field(default=4, ge=1, le=16)
     compare_page_alignment_cache_size: int = Field(default=50_000, ge=0, le=100_000)
     compare_page_render_cache_mb: int = Field(default=64, ge=0, le=256)
     compare_image_analysis_max_inflight: int = Field(default=2, ge=1, le=4)
-    compare_native_fast_path_mode: str = "off"
-    compare_native_page_mode: str = Field(default="off", pattern="^(off|shadow|enabled)$")
-    compare_native_page_max_ocr_segments: int = Field(default=4, ge=1, le=8)
-    compare_native_fast_path_min_chars_per_page: int = Field(default=80, ge=1)
-    compare_native_fast_path_min_char_box_coverage: float = Field(default=0.98, ge=0.0, le=1.0)
-    compare_native_fast_path_max_suspicious_char_ratio: float = Field(default=0.01, ge=0.0, le=1.0)
-    pymupdf_min_text_chars: int = Field(default=1, ge=0)
-    align_structured_extraction: bool = True
     save_ocr_raw_result: bool = True
 
     ppocrv5_url: str = ""
@@ -99,23 +61,28 @@ class Settings(BaseSettings):
     ppocrv5_use_doc_unwarping: bool = False
     ppocrv5_use_textline_orientation: bool = False
 
-    ppstructure_url: str = ""
-    ppstructure_access_token: str = ""
-    ppstructure_timeout_seconds: int = Field(default=600, ge=1)
-    ppstructure_use_doc_orientation_classify: bool = False
-    ppstructure_use_doc_unwarping: bool = False
-    ppstructure_use_textline_orientation: bool = False
-    ppstructure_use_table_recognition: bool = True
-    ppstructure_use_seal_recognition: bool = True
-    ppstructure_use_region_detection: bool = True
-    ppstructure_format_block_content: bool = True
+    ppdoclayout_endpoint: str = ""
+    ppdoclayout_timeout: int = Field(default=120, ge=1)
+    ppdoclayout_max_inflight: int = Field(default=4, ge=1, le=4)
+    ppdoclayout_title_threshold: float = Field(default=0.4, ge=0, le=1)
+    ppdoclayout_default_threshold: float = Field(default=0.5, ge=0, le=1)
+    ppdoclayout_nms: bool = False
 
-    hybrid_layout_overlap_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    hybrid_layout_center_fallback: bool = True
-    hybrid_save_merged_raw: bool = True
-    hybrid_component_parallel_enabled: bool = False
+    table_structure_mode: str = Field(default="legacy", pattern="^(legacy|shadow|enabled)$")
+    table_structure_endpoint: str = ""
+    table_structure_timeout: int = Field(default=30, ge=1, le=120)
+    table_structure_max_inflight: int = Field(default=1, ge=1, le=4)
+    table_structure_wired_enabled: bool = True
+    table_structure_wireless_enabled: bool = False
+    table_structure_alternate_enabled: bool = True
 
-    layout_analysis_mode: str = "v2"
+    table_orientation_mode: str = Field(default="enabled", pattern="^(off|shadow|enabled)$")
+    table_orientation_endpoint: str = "http://127.0.0.1:8092"
+    table_orientation_timeout: float = Field(default=10, gt=0, le=60)
+    table_orientation_document_budget: float = Field(default=30, gt=0, le=300)
+    table_orientation_min_score: float = Field(default=0.85, ge=0, le=1)
+    table_orientation_margin: float = Field(default=0.08, ge=0, le=1)
+
 
     # -- Document understanding (flat env vars) --------------------------
 
@@ -191,34 +158,18 @@ class Settings(BaseSettings):
     oidc_resource_client_id: str = ""
     oidc_allowed_algorithms: str = "RS256"
 
-    # -- Model registry (flat env vars) ----------------------------------
-
-    model_registry_preload: str = ""
-
     # -- Nested models (populated by model_validator) --------------------
 
     matching: MatchingSettings = Field(default_factory=MatchingSettings, exclude=True)
-    registry: RegistrySettings = Field(default_factory=RegistrySettings, exclude=True)
     document_understanding: DocumentUnderstandingSettings = Field(
         default_factory=DocumentUnderstandingSettings,
         exclude=True,
     )
 
-    ppstructure: PPStructureSettings = Field(default_factory=PPStructureSettings, exclude=True)
     ppocrv5: PPOCRV5Settings = Field(default_factory=PPOCRV5Settings, exclude=True)
-    hybrid: HybridSettings = Field(default_factory=HybridSettings, exclude=True)
     auth: AuthSettings = Field(default_factory=AuthSettings, exclude=True)
 
     # -- Validators (flat env var validation, unchanged) -----------------
-
-    @field_validator("document_extractor", "compare_document_extractor", mode="before")
-    @classmethod
-    def validate_document_extractor(cls, value: Any) -> str:
-        extractor = str(value or "auto").strip().lower()
-        if extractor not in SUPPORTED_DOCUMENT_EXTRACTORS:
-            allowed = ", ".join(sorted(SUPPORTED_DOCUMENT_EXTRACTORS))
-            raise ValueError(f"DOCUMENT_EXTRACTOR must be one of: {allowed}")
-        return extractor
 
     @field_validator("diff_engine", mode="before")
     @classmethod
@@ -228,7 +179,7 @@ class Settings(BaseSettings):
             raise ValueError("DIFF_ENGINE must be one of: diff_match_patch, difflib")
         return engine
 
-    @field_validator("ppocrv5_url", "ppstructure_url")
+    @field_validator("ppocrv5_url", "ppdoclayout_endpoint", "table_structure_endpoint")
     @classmethod
     def validate_optional_http_url(cls, value: str) -> str:
         url = value.strip()
@@ -268,21 +219,6 @@ class Settings(BaseSettings):
             raise ValueError("MATCH_SEMANTIC_BASE_URL or MATCH_RERANK_BASE_URL must start with http:// or https://")
         return url
 
-    @field_validator("layout_analysis_mode")
-    @classmethod
-    def validate_layout_analysis_mode(cls, value: str) -> str:
-        if value not in {"v2", "v3", "v3_shadow", "shadow"}:
-            raise ValueError("LAYOUT_ANALYSIS_MODE must be one of: v2, v3, v3_shadow, shadow")
-        return value
-
-    @field_validator("compare_native_fast_path_mode", mode="before")
-    @classmethod
-    def validate_compare_native_fast_path_mode(cls, value: Any) -> str:
-        mode = str(value or "off").strip().lower()
-        if mode not in {"off", "shadow", "enabled"}:
-            raise ValueError("COMPARE_NATIVE_FAST_PATH_MODE must be one of: off, shadow, enabled")
-        return mode
-
     @field_validator("signing_visual_backend", mode="before")
     @classmethod
     def validate_signing_visual_backend(cls, value: Any) -> str:
@@ -311,16 +247,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _build_nested_and_paths(self) -> Settings:
-        if (
-            self.compare_require_structured_ocr
-            and self.compare_document_extractor not in STRUCTURED_DOCUMENT_EXTRACTORS
-        ):
-            allowed = ", ".join(sorted(STRUCTURED_DOCUMENT_EXTRACTORS))
-            raise ValueError(
-                "COMPARE_DOCUMENT_EXTRACTOR must use a structured OCR extractor "
-                f"when COMPARE_REQUIRE_STRUCTURED_OCR=true: {allowed}"
-            )
-
         # Populate nested models from flat fields
         self.matching = MatchingSettings(
             threshold=self.match_threshold,
@@ -352,28 +278,8 @@ class Settings(BaseSettings):
             low_confidence_review_threshold=self.match_low_confidence_review_threshold,
         )
 
-        preload_list = (
-            [s.strip() for s in self.model_registry_preload.split(",") if s.strip()]
-            if self.model_registry_preload
-            else []
-        )
-        self.registry = RegistrySettings(preload_models=preload_list)
-
         self.document_understanding = DocumentUnderstandingSettings(
             enabled=self.document_understanding_enabled,
-        )
-
-        self.ppstructure = PPStructureSettings(
-            url=self.ppstructure_url,
-            access_token=self.ppstructure_access_token,
-            timeout_seconds=self.ppstructure_timeout_seconds,
-            use_doc_orientation_classify=self.ppstructure_use_doc_orientation_classify,
-            use_doc_unwarping=self.ppstructure_use_doc_unwarping,
-            use_textline_orientation=self.ppstructure_use_textline_orientation,
-            use_table_recognition=self.ppstructure_use_table_recognition,
-            use_seal_recognition=self.ppstructure_use_seal_recognition,
-            use_region_detection=self.ppstructure_use_region_detection,
-            format_block_content=self.ppstructure_format_block_content,
         )
 
         self.ppocrv5 = PPOCRV5Settings(
@@ -388,13 +294,6 @@ class Settings(BaseSettings):
             use_doc_orientation_classify=self.ppocrv5_use_doc_orientation_classify,
             use_doc_unwarping=self.ppocrv5_use_doc_unwarping,
             use_textline_orientation=self.ppocrv5_use_textline_orientation,
-        )
-
-        self.hybrid = HybridSettings(
-            layout_overlap_threshold=self.hybrid_layout_overlap_threshold,
-            center_fallback=self.hybrid_layout_center_fallback,
-            save_merged_raw=self.hybrid_save_merged_raw,
-            component_parallel_enabled=self.hybrid_component_parallel_enabled,
         )
 
         self.auth = AuthSettings(

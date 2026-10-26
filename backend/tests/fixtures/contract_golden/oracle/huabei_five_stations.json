@@ -1,13 +1,22 @@
 {
   "schema_version": 1,
   "contract_key": "HUABEI_FIVE_STATIONS",
-  "expected_case_count": 17,
+  "expected_case_count": 23,
   "review_provenance": {
     "method": "agent_visual_pdf_review",
-    "authorization": "用户明确要求：加入正式GOlden",
-    "source_run_id": "80093c2d-a528-4fe5-9fc0-7738ffb88b9a",
-    "date": "2026-09-08",
-    "evidence_root": "output/analysis/golden-v3-update"
+    "authorization": "用户明确要求：更新8c97ce9a-96e2-44dd-ae30-c73336d4c108该对比任务黄金集",
+    "source_run_id": "8c97ce9a-96e2-44dd-ae30-c73336d4c108",
+    "date": "2026-10-20",
+    "evidence_root": "output/analysis/golden-huabei-8c97ce9a-20261020",
+    "previous_source_run_id": "80093c2d-a528-4fe5-9fc0-7738ffb88b9a",
+    "visual_review_evidence_root": "output/analysis/huabei-7e7650b0-20261020",
+    "previous_review_provenance": {
+      "method": "agent_visual_pdf_review",
+      "authorization": "用户明确要求：加入正式GOlden",
+      "source_run_id": "80093c2d-a528-4fe5-9fc0-7738ffb88b9a",
+      "date": "2026-09-08",
+      "evidence_root": "output/analysis/golden-v3-update"
+    }
   },
   "assertions": [
     {
@@ -361,6 +370,49 @@
         },
         "min_iou": 0.35
       }
+    },
+    {
+      "case_id": "HUABEI_AUDIT_DATE_CONTINUATION_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 29,
+      "source_type": "table",
+      "forbidden_value_pattern": "同意\\s*送\\s*审计",
+      "review_note": "项目结算审核表分管领导栏两侧内容相同；原件第29页复选项与第30页年月日属于同一跨页单元格，比对件都在第29页。不得因未合并续页文字报字段变化，包含待复核误报。"
+    },
+    {
+      "case_id": "HUABEI_PAYMENT_APPLICATION_BODY_NO_FALSE_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 26,
+      "semantic_before": "现申请支付",
+      "review_note": "附件三付款申请表正文两侧均存在；不得因正文与无结构表格的类型分流报告整段删除或修改，包含待复核误报。独立的局部识读观察项不视为整段内容删除。"
+    },
+    {
+      "case_id": "HUABEI_STATION_CAPTION_NO_FALSE_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 15,
+      "semantic_before": "合盛堡光伏电站",
+      "review_note": "两侧附件一均有（1）合盛堡光伏电站标题；不得因一侧归正文、一侧归表题而产生删除或修改误报，包含待复核误报。"
+    },
+    {
+      "case_id": "HUABEI_CONSTRUCTION_LABELS_NO_FALSE_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 27,
+      "semantic_before": "建设单位编号",
+      "review_note": "两侧项目开工申请单均有建设单位、编号空白字段标签。正文与表格行表示不同不构成内容删除或修改，包含待复核误报。"
+    },
+    {
+      "case_id": "HUABEI_HANDOVER_LABELS_NO_FALSE_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 28,
+      "semantic_before": "承包单位合同号建设单位编号",
+      "review_note": "两侧交工验收单均有承包单位、合同号、建设单位、编号四个空白字段标签；原件合并表格行不得误报删除，包含待复核误报。"
+    },
+    {
+      "case_id": "HUABEI_HANDOVER_LABELS_NO_FALSE_ADD",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 28,
+      "semantic_after": "合同号承包单位编号建设单位",
+      "review_note": "交工验收单比对侧四个分散文字块与原件表格行是同一组既有字段标签；不得在正文链路反向误报新增或修改，包含待复核误报。"
     }
   ]
 }

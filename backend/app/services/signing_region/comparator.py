@@ -309,6 +309,10 @@ class SigningRegionComparator:
                     else []
                 )
                 change_decision = observation_transition.change_decision
+                label_only_change = bool(original_element and compare_element and label_changed and not value_changed)
+                if label_only_change:
+                    # Empty value ROIs say nothing about recognition of the label.
+                    change_decision = "CANDIDATE"
                 observed_states = {original_observation.state, compare_observation.state}
                 if change_decision != "CONFIRMED" and (
                     field_key in {
@@ -342,7 +346,9 @@ class SigningRegionComparator:
                         "content_recognition_reason": content_reason,
                         "content_candidates": content_candidates,
                         "decision_reason": (
-                            "NARROW_OCR_CONTINUATION_NOISE"
+                            "LABEL_CHANGE_REQUIRES_TEXT_EVIDENCE"
+                            if label_only_change
+                            else "NARROW_OCR_CONTINUATION_NOISE"
                             if narrow_continuation_noise
                             else observation_transition.reason
                         ),
@@ -1473,6 +1479,12 @@ class SigningRegionComparator:
             original_text = original_fields.get(role, "")
             compare_text = compare_fields.get(role, "")
             if self._normalized_party_text(original_text) == self._normalized_party_text(compare_text):
+                if original_text and compare_text and ("盖章" in original_text) != ("盖章" in compare_text):
+                    comparison.label_changes.append({
+                        "type": "MODIFY", "element_type": SigningElementType.PARTY_FIELD.value,
+                        "party_role": role, "change_scope": "field",
+                        "original_text": original_text, "compare_text": compare_text,
+                    })
                 continue
             missing_region = compare if not compare_text else original if not original_text else None
             if (
@@ -1506,6 +1518,10 @@ class SigningRegionComparator:
                 change_type = "DELETE"
             else:
                 change_type = "ADD"
+            party_elements = [e for region in (original, compare) for e in region.elements
+                              if e.element_type == SigningElementType.PARTY_FIELD
+                              and e.raw_ref.get("party_role") == role]
+            unresolved = [e for e in party_elements if e.raw_ref.get("content_recognition_status") == "NEEDS_REVIEW"]
             comparison.party_changes.append(
                 {
                     "type": change_type,
@@ -1514,6 +1530,10 @@ class SigningRegionComparator:
                     "change_scope": "field",
                     "original_text": original_text,
                     "compare_text": compare_text,
+                    **({"content_recognition_status": "NEEDS_REVIEW", "change_decision": "NEEDS_REVIEW",
+                        "content_recognition_reason": ";".join(dict.fromkeys(
+                            str(e.raw_ref.get("content_recognition_reason") or "UNRESOLVED_PARTY_OCR") for e in unresolved))}
+                       if unresolved else {}),
                     **({"original_element_id": original_residual.element_id} if original_residual else {}),
                     **({"compare_element_id": compare_residual.element_id} if compare_residual else {}),
                     **({"original_residual_text": original_residual_text} if original_residual_text else {}),
@@ -1657,7 +1677,8 @@ class SigningRegionComparator:
     ) -> bool:
         if any(element.element_type == SigningElementType.PARTY_FIELD
                and str(element.raw_ref.get("party_role") or "") == role
-               and element.raw_ref.get("content_recognition_reason") == "CONSISTENT_RED_SUPPRESSED_LOCAL_READINGS"
+               and (element.raw_ref.get("content_recognition_reason") == "CONSISTENT_RED_SUPPRESSED_LOCAL_READINGS"
+                    or element.raw_ref.get("content_recognition_status") == "NEEDS_REVIEW")
                for region in (original_region, compare_region) for element in region.elements):
             return False
         original_reference = cls._normalized_party_name(original_references.get(role, ""))

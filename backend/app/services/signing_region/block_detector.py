@@ -67,6 +67,11 @@ class SigningBlockDetector:
     bottom_padding = 18.0
 
     def detect(self, document: Document) -> SigningBlockDetectionResult:
+        # All detection/extension routes must share the same business surface.
+        # Preserve the original document for revision observations and rendering.
+        document = document.model_copy(update={"pages": [page.model_copy(update={
+            "blocks": [b for b in page.blocks if b.block_role != "revision_artifact"]
+        }) for page in document.pages]})
         result = SigningBlockDetectionResult()
         page_roles = self._page_roles(document)
         pages_by_no = {page.page_no: page for page in document.pages}
@@ -126,6 +131,7 @@ class SigningBlockDetector:
             clusters = [candidates]
         for index, cluster in enumerate(clusters, start=1):
             cluster = self._extend_signing_continuation(cluster, page)
+            cluster = self._extend_party_dates(cluster, page)
             text = "\n".join(block.text.strip() for block in cluster if block.text.strip())
             bbox = self._padded_union([self._effective_bbox(block) for block in cluster], page)
             boundary = self.body_boundary(page, min(block.bbox.y0 for block in cluster))
@@ -189,6 +195,16 @@ class SigningBlockDetector:
         is_terminal_page: bool = False,
     ) -> list[TextBlock]:
         selected = {block.block_id: block for block in page.blocks if self._is_candidate(block, page)}
+        if page_role != "cover":
+            # A paired company row plus adjacent date slots establishes a local
+            # form even just above the page-bottom cutoff after scan scaling.
+            party_rows = [b for b in page.blocks if b.bbox.y0 >= page.height * .35
+                          and self._company_party_names(b.text)]
+            for cluster in self._cluster(party_rows):
+                extended = self._extend_party_dates(cluster, page)
+                if len(extended) > len(cluster):
+                    for b in extended:
+                        selected.setdefault(b.block_id, b)
         if page_role != "cover":
             for block in self._local_signing_structure_blocks(page):
                 selected.setdefault(block.block_id, block)
@@ -382,6 +398,9 @@ class SigningBlockDetector:
         if self._looks_two_column(blocks, page):
             score += 0.1
             reasons.append("two_column_layout")
+            if any(self._compact(b.text) == "年月日" or self._is_signing_date_value(b.text) for b in blocks):
+                score += 0.15
+                reasons.append("party_bound_date_slots")
         if page_role == "cover":
             score -= 0.35
             reasons.append("cover_page_penalty")
@@ -805,7 +824,49 @@ class SigningBlockDetector:
 
     def _looks_two_column(self, blocks: list[TextBlock], page: Page) -> bool:
         centers = [(block.bbox.x0 + block.bbox.x1) / 2 for block in blocks]
-        return bool(centers) and min(centers) < page.width * 0.35 and max(centers) > page.width * 0.6
+        return (
+            bool(centers) and min(centers) < page.width * 0.35 and max(centers) > page.width * 0.6
+        ) or any(
+            len(self._company_party_names(block.text)) == 2
+            and block.bbox.x0 < page.width * 0.35
+            and block.bbox.x1 > page.width * 0.6
+            and block.bbox.x1 - block.bbox.x0 > page.width * 0.5
+            and block.bbox.y1 - block.bbox.y0 < page.height * 0.06
+            for block in blocks
+        )
+
+    @classmethod
+    def _company_party_names(cls, text: str) -> dict[str, str]:
+        text = cls._compact(text)
+        matches = list(re.finditer(r"([甲乙]方)[:：]([^:：]+?)(?=[甲乙]方[:：]|$)", text))
+        if not matches or matches[0].start() != 0 or matches[-1].end() != len(text):
+            return {}
+        if len({m[1] for m in matches}) != len(matches):
+            return {}
+        return {m[1]: m[2] for m in matches if re.fullmatch(
+            r"[\u4e00-\u9fffA-Za-z0-9（）()·]{3,70}(?:公司|分部|中心|研究院)(?:[（(]盖章[）)])?", m[2]
+        )}
+
+    def _extend_party_dates(self, cluster: list[TextBlock], page: Page) -> list[TextBlock]:
+        # Bare 年月日 slots are evidence of a form only beside independently
+        # established party names. Never recruit arbitrary dates from prose.
+        names = self._company_party_names("".join(b.text for b in cluster))
+        if set(names) != {"甲方", "乙方"} or not self._looks_two_column(cluster, page):
+            return cluster
+        box = self._raw_union([b.bbox for b in cluster])
+        columns: dict[bool, list[TextBlock]] = {}
+        for b in page.blocks:
+            if b in cluster or b.flow_role in {"margin", "noise"}:
+                continue
+            if not (self._compact(b.text) == "年月日" or self._is_signing_date_value(b.text)):
+                continue
+            if not 0 <= b.bbox.y0 - box.y1 <= self.continuation_gap:
+                continue
+            center = (b.bbox.x0 + b.bbox.x1) / 2
+            if box.x0 - self.side_padding <= center <= box.x1 + self.side_padding:
+                columns.setdefault(center >= (box.x0 + box.x1) / 2, []).append(b)
+        return sorted([*cluster, *(items[0] for items in columns.values() if len(items) == 1)],
+                      key=lambda b: (b.bbox.y0, b.bbox.x0))
 
     def _padded_union(self, bboxes: list[BBox], page: Page) -> BBox:
         x0 = max(0.0, min(bbox.x0 for bbox in bboxes) - self.side_padding)

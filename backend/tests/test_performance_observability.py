@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 import threading
 import time
@@ -12,7 +11,6 @@ from app.config import Settings
 from app.infrastructure.artifact_store import LocalArtifactStore
 from app.models import BBox, Clause, CompareTask, Document, Page, TextBlock
 from app.services.extractors.base import DocumentExtractionError, ExtractionResult
-from app.services.extractors.ppstructure_ocr_hybrid import PPStructureOCRHybridExtractor
 from app.services.matcher import ClauseMatcher
 from app.services.matching.providers import RerankMatcher, SemanticMatcher
 from app.services.matching.types import MatchCandidate
@@ -75,192 +73,6 @@ def test_performance_recorder_aggregates_operation_timings_and_counters(
     assert snapshot["counters"]["request_count"] == 1
 
 
-def test_hybrid_extractor_exposes_component_and_merge_metrics() -> None:
-    class StaticExtractor:
-        def __init__(self, result: ExtractionResult) -> None:
-            self.result = result
-
-        def extract(self, _path: str | Path, task_id: str | None = None) -> ExtractionResult:
-            return self.result
-
-    ocr = ExtractionResult(
-        document=_document("ocr.pdf"),
-        extractor_used="ppocrv5",
-        performance={"counters": {"http_request_count": 1}},
-    )
-    structure = ExtractionResult(
-        document=_document("structure.pdf"),
-        extractor_used="ppstructure",
-        performance={"counters": {"http_request_count": 1}},
-    )
-
-    result = PPStructureOCRHybridExtractor(
-        structure_extractor=StaticExtractor(structure),
-        ocr_extractor=StaticExtractor(ocr),
-    ).extract("contract.pdf")
-
-    assert result.performance["components"]["ppocrv5"] == ocr.performance
-    assert result.performance["components"]["ppstructure"] == structure.performance
-    assert result.performance["operations"]["ppocrv5_component"]["count"] == 1
-    assert result.performance["operations"]["ppstructure_component"]["count"] == 1
-    assert result.performance["operations"]["document_merge"]["count"] == 1
-
-
-def test_hybrid_extractor_runs_independent_components_in_parallel() -> None:
-    state = {"active": 0, "max_active": 0}
-    lock = threading.Lock()
-
-    class DelayedExtractor:
-        def __init__(self, result: ExtractionResult) -> None:
-            self.result = result
-
-        def extract(self, _path: str | Path, task_id: str | None = None) -> ExtractionResult:
-            with lock:
-                state["active"] += 1
-                state["max_active"] = max(state["max_active"], state["active"])
-            try:
-                time.sleep(0.02)
-                return self.result
-            finally:
-                with lock:
-                    state["active"] -= 1
-
-    ocr = ExtractionResult(document=_document("ocr.pdf"), extractor_used="ppocrv5")
-    structure = ExtractionResult(document=_document("structure.pdf"), extractor_used="ppstructure")
-
-    result = PPStructureOCRHybridExtractor(
-        structure_extractor=DelayedExtractor(structure),
-        ocr_extractor=DelayedExtractor(ocr),
-        component_parallel_enabled=True,
-    ).extract("contract.pdf")
-
-    assert state["max_active"] == 2
-    assert result.performance["counters"]["component_parallel_requested"] == 1
-    assert result.performance["counters"]["component_parallel_used"] == 1
-    assert result.performance["operations"]["component_extraction"]["count"] == 1
-
-
-def test_hybrid_component_parallelism_preserves_serial_document_result() -> None:
-    class StaticExtractor:
-        def __init__(self, result: ExtractionResult) -> None:
-            self.result = result
-
-        def extract(self, _path: str | Path, task_id: str | None = None) -> ExtractionResult:
-            return self.result
-
-    def build(component_parallel_enabled: bool) -> ExtractionResult:
-        return PPStructureOCRHybridExtractor(
-            structure_extractor=StaticExtractor(
-                ExtractionResult(
-                    document=_document("structure.pdf"),
-                    extractor_used="ppstructure",
-                    warnings=["structure-warning"],
-                )
-            ),
-            ocr_extractor=StaticExtractor(
-                ExtractionResult(
-                    document=_document("ocr.pdf"),
-                    extractor_used="ppocrv5",
-                    warnings=["ocr-warning"],
-                )
-            ),
-            component_parallel_enabled=component_parallel_enabled,
-        ).extract("contract.pdf")
-
-    serial = build(False)
-    parallel = build(True)
-
-    assert parallel.document == serial.document
-    assert parallel.extractor_used == serial.extractor_used
-    assert parallel.warnings == serial.warnings
-
-
-@pytest.mark.parametrize("component_parallel_enabled", [False, True])
-def test_hybrid_components_reuse_one_encoded_pdf_payload(
-    tmp_path: Path,
-    component_parallel_enabled: bool,
-) -> None:
-    pdf_path = tmp_path / "contract.pdf"
-    pdf_bytes = b"%PDF-shared-request-payload"
-    pdf_path.write_bytes(pdf_bytes)
-    received_payloads: list[str] = []
-    lock = threading.Lock()
-
-    class SharedPayloadExtractor:
-        def __init__(self, result: ExtractionResult) -> None:
-            self.result = result
-
-        def extract(self, _path: str | Path, task_id: str | None = None) -> ExtractionResult:
-            raise AssertionError("shared payload path should be used")
-
-        def extract_with_encoded_file(
-            self,
-            _path: str | Path,
-            *,
-            encoded_file: str,
-            task_id: str | None = None,
-        ) -> ExtractionResult:
-            with lock:
-                received_payloads.append(encoded_file)
-            return self.result
-
-    result = PPStructureOCRHybridExtractor(
-        structure_extractor=SharedPayloadExtractor(
-            ExtractionResult(document=_document("structure.pdf"), extractor_used="ppstructure")
-        ),
-        ocr_extractor=SharedPayloadExtractor(ExtractionResult(document=_document("ocr.pdf"), extractor_used="ppocrv5")),
-        component_parallel_enabled=component_parallel_enabled,
-    ).extract(pdf_path)
-
-    assert len(received_payloads) == 2
-    assert received_payloads[0] is received_payloads[1]
-    assert received_payloads[0] == base64.b64encode(pdf_bytes).decode("ascii")
-    assert result.performance["counters"]["shared_request_payload_supported"] == 1
-    assert result.performance["counters"]["shared_request_payload_used"] == 1
-    assert result.performance["operations"]["shared_request_file_encode"]["count"] == 1
-
-
-def test_hybrid_parallel_structure_failure_preserves_ocr_only_fallback() -> None:
-    class StaticOCR:
-        def extract(self, _path: str | Path, task_id: str | None = None) -> ExtractionResult:
-            return ExtractionResult(document=_document("ocr.pdf"), extractor_used="ppocrv5")
-
-    class FailingStructure:
-        def extract(self, _path: str | Path, task_id: str | None = None) -> ExtractionResult:
-            raise DocumentExtractionError("structure unavailable")
-
-    result = PPStructureOCRHybridExtractor(
-        structure_extractor=FailingStructure(),
-        ocr_extractor=StaticOCR(),
-        require_structure=False,
-        component_parallel_enabled=True,
-    ).extract("contract.pdf")
-
-    assert result.extractor_used == "ppstructure_ocr_hybrid_ocr_only"
-    assert "structure unavailable" in result.warnings[0]
-    assert result.performance["counters"]["ppstructure_failure_count"] == 1
-
-
-def test_hybrid_parallel_raises_ocr_error_before_structure_error() -> None:
-    class FailingOCR:
-        def extract(self, _path: str | Path, task_id: str | None = None) -> ExtractionResult:
-            raise DocumentExtractionError("ocr unavailable")
-
-    class FailingStructure:
-        def extract(self, _path: str | Path, task_id: str | None = None) -> ExtractionResult:
-            raise DocumentExtractionError("structure unavailable")
-
-    extractor = PPStructureOCRHybridExtractor(
-        structure_extractor=FailingStructure(),
-        ocr_extractor=FailingOCR(),
-        require_structure=True,
-        component_parallel_enabled=True,
-    )
-
-    with pytest.raises(DocumentExtractionError, match="ocr unavailable"):
-        extractor.extract("contract.pdf")
-
-
 def test_extraction_stage_records_each_side_in_task_metrics(tmp_path: Path) -> None:
     original_path = tmp_path / "original.pdf"
     compare_path = tmp_path / "compare.pdf"
@@ -273,12 +85,12 @@ def test_extraction_stage_records_each_side_in_task_metrics(tmp_path: Path) -> N
                 [
                     ExtractionResult(
                         document=_document("original.pdf"),
-                        extractor_used="ppstructure_ocr_hybrid",
+                        extractor_used="contract_extraction_v3",
                         performance={"counters": {"http_request_count": 2}},
                     ),
                     ExtractionResult(
                         document=_document("compare.pdf"),
-                        extractor_used="ppstructure_ocr_hybrid",
+                        extractor_used="contract_extraction_v3",
                         performance={"counters": {"http_request_count": 2}},
                     ),
                 ]
@@ -322,7 +134,7 @@ def test_extraction_stage_uses_independent_extractors_for_parallel_pair(tmp_path
     lock = threading.Lock()
 
     class ParallelExtractor:
-        name = "ppstructure_ocr_hybrid"
+        name = "contract_extraction_v3"
 
         def __init__(self) -> None:
             with lock:
@@ -381,7 +193,7 @@ def test_extraction_stage_falls_back_to_serial_for_injected_extractor_without_fa
     calls: list[str] = []
 
     class PathExtractor:
-        name = "ppstructure_ocr_hybrid"
+        name = "contract_extraction_v3"
 
         def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
             calls.append(Path(path).name)
@@ -419,7 +231,7 @@ def test_parallel_extraction_preserves_serial_document_results(tmp_path: Path) -
     compare_path.write_bytes(b"%PDF-compare")
 
     class DeterministicExtractor:
-        name = "ppstructure_ocr_hybrid"
+        name = "contract_extraction_v3"
 
         def extract(self, path: str | Path, task_id: str | None = None) -> ExtractionResult:
             return ExtractionResult(

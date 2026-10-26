@@ -232,6 +232,10 @@ class ClauseMatcher(
 
         pairs.extend(self._recover_adjacent_heading_from_body_pair(original, pairs, matched_original))
 
+        from app.services.matching.scope_recovery import recover_adjacent_scopes
+        pairs = recover_adjacent_scopes(original, compare, pairs, matched_original, matched_compare,
+                                        self.normalizer, self.page_alignment)
+
         with self._performance.measure("structural_drift_matching"):
             structural_pairs = self._match_structural_drift_candidates(
                 original,

@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image
 import pytest
 
+from app.config import Settings
 from app.models import Document, Page
 from app.services.extractors.contract_v3.artifact import to_page
 from app.services.extractors.contract_v3.tables import TableResolver
@@ -94,7 +95,7 @@ def replay_raster(contract: str, side: str, page_no: int, suffix: int, provider:
           patch("app.services.extractors.contract_v3.tables.upright_table_crop", return_value=(crop_bgr, transform)),
           patch("app.services.extractors.contract_v3.tables._raster_cells", return_value=raw_boxes),
           patch("app.services.extractors.contract_v3.tables.build_graph", return_value=graph)):
-        count = TableResolver().resolve(artifact, object(), Image.open(ROOT / item["page_image_path"]).convert("RGB"))
+        count = TableResolver(Settings(_env_file=None, table_structure_mode="legacy")).resolve(artifact, object(), Image.open(ROOT / item["page_image_path"]).convert("RGB"))
     assert count == 1
     table = artifact["tables"][0]
     page = Page.model_validate_json(to_page(artifact).model_dump_json())
@@ -107,7 +108,7 @@ def replay_vector(contract: str, page_no: int, suffix: int):
                   and t["source"] == "PDF_vector_ruling")
     cells = [{k: c[k] for k in ("row", "column", "rowspan", "colspan", "bbox")} for c in source["cells"]]
     with patch("app.services.extractors.contract_v3.tables._native_cells", return_value=copy.deepcopy(cells)):
-        count = TableResolver().resolve(artifact, object(), Image.new("RGB", (1, 1), "white"))
+        count = TableResolver(Settings(_env_file=None, table_structure_mode="legacy")).resolve(artifact, object(), Image.new("RGB", (1, 1), "white"))
     assert count == 1
     return artifact["tables"][0], Page.model_validate_json(to_page(artifact).model_dump_json())
 
@@ -125,7 +126,7 @@ def replay_graph(contract: str, side: str, page_no: int, suffix: int):
                 return_value=(np.zeros((1, 1, 3), dtype=np.uint8), transform)),
           patch("app.services.extractors.contract_v3.tables._raster_cells", return_value=raw_boxes),
           patch("app.services.extractors.contract_v3.tables.build_graph", return_value=copy.deepcopy(graph))):
-        count = TableResolver().resolve(artifact, object(), Image.new("RGB", (1, 1), "white"))
+        count = TableResolver(Settings(_env_file=None, table_structure_mode="legacy")).resolve(artifact, object(), Image.new("RGB", (1, 1), "white"))
     assert count == 1
     return artifact["tables"][0], Page.model_validate_json(to_page(artifact).model_dump_json()), graph
 
@@ -186,6 +187,21 @@ def test_frozen_pdf_vector_resolver_publishes_and_round_trips():
     assert all(block.structure_status == "STRUCTURED_TABLE" for block in page.blocks)
     parser = LogicalTableParser()
     assert parser.parse_tables(parser.table_blocks(_doc(page)))
+
+
+def test_frozen_resolver_geometry_exception_stays_present_not_absent():
+    artifact, _, _ = _page_artifact("RETURN_CONFIRMATION", "compare", 3, 5)
+    with (patch("app.services.extractors.contract_v3.tables._tokens", return_value=[
+              {"id": "saved", "text": "金额", "bbox": [454, 319, 482, 335]}]),
+          patch("app.services.extractors.contract_v3.tables._native_cells", return_value=None),
+          patch("app.services.extractors.contract_v3.tables.upright_table_crop", side_effect=ValueError("frozen geometry error"))):
+        assert TableResolver().resolve(artifact, object(), Image.new("RGB", (1, 1), "white")) == 1
+    table = artifact["tables"][0]
+    page = Page.model_validate_json(to_page(artifact).model_dump_json())
+    assert table["structure_status"] == "UNSTRUCTURED_TABLE_PRESENT"
+    assert table["issues"][-1]["type"] == "TABLE_GEOMETRY_ERROR"
+    assert not table["html"] and not table["cells"]
+    assert page.blocks and all(b.structure_status == "UNSTRUCTURED_TABLE_PRESENT" for b in page.blocks)
 
 
 def test_all_frozen_production_providers_keep_publication_monotonic():

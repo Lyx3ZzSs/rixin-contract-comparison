@@ -25,7 +25,7 @@
 cp .env.example .env
 ```
 
-`.env.example` 使用安全占位值；接入扫描件 OCR、结构化版面识别时，按实际环境填写 `PPOCRV5_URL` 和 `PPSTRUCTURE_URL`。
+`.env.example` 提供服务配置示例；接入扫描件 OCR 与版面识别时，按实际环境填写 `PPOCRV5_URL` 和 `PPDOCLAYOUT_ENDPOINT`。
 
 安装后端依赖：
 
@@ -105,7 +105,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8001
 
 ## Docker 部署
 
-本项目支持 Docker Compose 部署前后端容器，OCR 和 PP-Structure 使用外部服务。详细步骤见 [Docker 部署指南](docs/docker-deployment.md)。
+本项目支持 Docker Compose 部署前后端容器，PP-DocLayoutV3 和 OCR 使用外部服务。详细步骤见 [Docker 部署指南](docs/docker-deployment.md)。
 
 快速启动：
 
@@ -124,32 +124,23 @@ docker compose up -d --build
 
 
 
-通用文档提取默认使用自动模式：可复制文本 PDF 优先使用 PyMuPDF 真实字符坐标，无法抽取文本或文本量不足时切换到结构化 OCR。该通用链路在 PP-Structure 不可用时可回退到仅 PP-OCRv5 文本抽取。
+合同比对固定使用 Native-first、PP-DocLayoutV3 与选择性 PP-OCRv6。Native 页保留字符坐标且不调用 OCR；Mixed 页只对未覆盖区域调用 OCR；Scanned 页执行一次全页 OCR。
 
 ```bash
-DOCUMENT_EXTRACTOR=auto
-COMPARE_DOCUMENT_EXTRACTOR=ppstructure_ocr_hybrid
-COMPARE_REQUIRE_STRUCTURED_OCR=true
-PYMUPDF_MIN_TEXT_CHARS=1
-ALIGN_STRUCTURED_EXTRACTION=true
+PPDOCLAYOUT_ENDPOINT=https://your-layout-host/layout-detection
+PPOCRV5_URL=https://your-ocr-host/
 ```
 
-合同比对接口默认强制使用 `ppstructure_ocr_hybrid`。每份文件都会同时调用 `{PPSTRUCTURE_URL}/layout-parsing` 和 `{PPOCRV5_URL}/ocr`，最终对比文本以 PP-OCRv5 为准，版面和表格区域以 PP-Structure 为准。任一服务不可用或 PP-Structure 解析失败时，比对任务会标记为失败，不会降级到 PyMuPDF 或仅 PP-OCRv5。
-
-`ALIGN_STRUCTURED_EXTRACTION=true` 时，如果同一对比任务中一侧已经切换到结构化抽取、另一侧仍为 PyMuPDF，系统会将 PyMuPDF 侧重新用结构化抽取器处理，以保持表格边界一致，避免表格文本被当作正文条款参与比对。
+合同比对请求逐页调用 `PPDOCLAYOUT_ENDPOINT`，固定 `dynamicBatch=false`。扫描页的 Layout 和全页 OCR 并行；Mixed 页先分析 Layout 与覆盖率，再识别缺失区域。识别失败会使比对任务失败。
 
 接入默认扫描件识别链路时配置：
 
 ```bash
-PPSTRUCTURE_URL=https://your-ppstructure-host/
-PPSTRUCTURE_TIMEOUT_SECONDS=600
-PPSTRUCTURE_USE_DOC_ORIENTATION_CLASSIFY=false
-PPSTRUCTURE_USE_DOC_UNWARPING=false
-PPSTRUCTURE_USE_TEXTLINE_ORIENTATION=false
-PPSTRUCTURE_USE_TABLE_RECOGNITION=true
-PPSTRUCTURE_USE_SEAL_RECOGNITION=false
-PPSTRUCTURE_USE_REGION_DETECTION=true
-PPSTRUCTURE_FORMAT_BLOCK_CONTENT=true
+PPDOCLAYOUT_ENDPOINT=https://your-layout-host/layout-detection
+PPDOCLAYOUT_TIMEOUT=120
+PPDOCLAYOUT_MAX_INFLIGHT=4
+PPDOCLAYOUT_TITLE_THRESHOLD=0.4
+PPDOCLAYOUT_DEFAULT_THRESHOLD=0.5
 PPOCRV5_URL=https://your-ppocrv5-host/
 PPOCRV5_TIMEOUT_SECONDS=600
 PPOCRV5_RETURN_WORD_BOX=true
@@ -160,7 +151,7 @@ PPOCRV5_TEXT_REC_SCORE_THRESH=0.0
 SAVE_OCR_RAW_RESULT=true
 ```
 
-OCR 原始结果会保存到 `storage/tasks/{task_id}/ocr`，用于排查识别质量。扫描件默认链路使用 PP-Structure 的结构区域标记 PP-OCRv5 文字行，不再基于 OCR 文本关键词推断表格区域。差异结果来自程序化条款匹配和结构化 diff，不依赖 AI 改写底层差异识别结果。
+表格结构只处理 Layout 标记的真实 table region。单元格网格或文字归属无法验证时，保留文字和页面证据，不发布推测的表格 HTML。差异结果来自程序化条款匹配和结构化 diff。
 
 点击导出报告或请求 `/api/compare/{task_id}/report` 时，系统不会调用大模型，会生成包含基础信息和审计统计改动点表格的差异分析报告。
 
@@ -271,7 +262,7 @@ GOLDEN_BASELINE_CHANGE_APPROVED=1 make golden-contract
 
 ## 当前限制
 
-- 合同比对必须同时配置可用的 `PPOCRV5_URL` 和 `PPSTRUCTURE_URL`；任一服务不可用都会使比对任务失败。
+- 合同比对必须配置可用的 `PPOCRV5_URL` 和 `PPDOCLAYOUT_ENDPOINT`；需要 OCR 的页面在 OCR 服务不可用时会失败。
 - 合同对比暂不支持 Word、Excel 和复杂表格深度 diff。
 - 任务由单个 API 进程内的工作线程异步执行；结构化状态存储在本地 SQLite，文件产物存储在本地文件系统。
 - 当前部署只支持单个 API 进程，不支持多实例或跨机器任务调度；服务重启时未完成任务会标记失败，可手动重试。

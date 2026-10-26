@@ -195,6 +195,19 @@ class EvidenceLocator:
             for right_diff, right_index, right in items[left_pos + 1 :]:
                 if (right_diff, right_index) in discarded:
                     continue
+                # A seal's display caption is not OCR text occupying its box.
+                # Embedded text (e.g. a misread "章" in a date) cannot compete
+                # with the independently detected physical object's location.
+                if any(
+                    visual.source_type == "seal"
+                    and visual.match_score_details.get("object_type") in {
+                        "COMPANY_ROUND_SEAL", "PERSONAL_NAME_SEAL", "EDGE_SEAM_SEAL", "OTHER_STAMP"
+                    }
+                    and text.source_type in {"clause", "metadata", "table", "header_footer"}
+                    for visual, text in ((diffs[left_diff], diffs[right_diff]),
+                                         (diffs[right_diff], diffs[left_diff]))
+                ):
+                    continue
                 if (
                     diffs[left_diff].source_type != diffs[right_diff].source_type
                     and "signing_region" in {diffs[left_diff].source_type, diffs[right_diff].source_type}
@@ -300,14 +313,6 @@ class EvidenceLocator:
     def _area(self, bbox: BBox) -> float:
         return max(0.0, bbox.x1 - bbox.x0) * max(0.0, bbox.y1 - bbox.y0)
 
-    def _union(self, left: BBox, right: BBox) -> BBox:
-        return BBox(
-            x0=min(left.x0, right.x0),
-            y0=min(left.y0, right.y0),
-            x1=max(left.x1, right.x1),
-            y1=max(left.y1, right.y1),
-        )
-
     def _union_rectified(self, left: BBox, right: BBox, reference_height: float) -> BBox:
         merged_x0 = min(left.x0, right.x0)
         merged_x1 = max(left.x1, right.x1)
@@ -324,7 +329,7 @@ class EvidenceLocator:
     def assign_evidence_confidence(self, diffs: list[DiffItem]) -> None:
         for diff in diffs:
             for evidence in [*diff.original_evidence, *diff.compare_evidence]:
-                if (evidence.method or "").lower() == "signing_region" and evidence.confidence is not None:
+                if (evidence.method or "").lower() in {"signing_region", "whole_page_visual_object", "footer_visual_registered"} and evidence.confidence is not None:
                     confidence = evidence.confidence
                 else:
                     confidence = self._confidence_for_method(evidence.method)

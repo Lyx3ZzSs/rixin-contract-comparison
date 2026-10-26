@@ -20,13 +20,11 @@ class CompareService:
     def __init__(
         self,
         extractor: DocumentExtractor | None = None,
-        structured_extractor: DocumentExtractor | None = None,
         repository: TaskRepository = default_task_repository,
         artifact_store: ArtifactStore = default_artifact_store,
         report_store: ReportStore | None = None,
     ) -> None:
         self._extractor = extractor
-        self._structured_extractor = structured_extractor
         self.repository = repository
         self.artifact_store = artifact_store
         self.report_store = report_store or ReportStore(artifact_store=artifact_store)
@@ -52,7 +50,6 @@ class CompareService:
 
         extraction = ExtractionStage(
             extractor=self._extractor,
-            structured_extractor=self._structured_extractor,
             artifact_store=self.artifact_store,
         )
         return ComparePipeline(

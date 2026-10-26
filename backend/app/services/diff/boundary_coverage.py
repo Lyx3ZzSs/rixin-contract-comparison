@@ -1208,12 +1208,6 @@ def _contains_high_risk_heading_term(text: str) -> bool:
     )
 
 
-def _is_critical_heading_fragment(text: str) -> bool:
-    if not _contains_critical_heading_term(text):
-        return False
-    return _looks_like_heading_fragment(text)
-
-
 def _is_material_heading_fragment(diff: DiffItem, text: str) -> bool:
     if not _looks_like_heading_fragment(text):
         return False

@@ -154,7 +154,7 @@ def _write_text_pdf(path: Path, text: str) -> None:
 
 
 class _SequentialExtractor:
-    name = "ppstructure_ocr_hybrid"
+    name = "contract_extraction_v3"
 
     def __init__(self, results: list[ExtractionResult]) -> None:
         self.results = results
@@ -166,7 +166,7 @@ class _SequentialExtractor:
         return result
 
 
-def _attach_profile(document: Document, extractor_used: str = "ppstructure_ocr_hybrid") -> Document:
+def _attach_profile(document: Document, extractor_used: str = "contract_extraction_v3") -> Document:
     profile = DocumentProfiler().profile(document, extractor_used)
     document.profile = profile
     return document
@@ -192,7 +192,7 @@ class _StubFooterVisualComparator:
     def __init__(self, diffs: list[DiffItem]) -> None:
         self.diffs = diffs
 
-    def build_diffs(self, _original: Document, _compare: Document, *, start_index: int) -> list[DiffItem]:
+    def build_diffs(self, _original: Document, _compare: Document, *, start_index: int, page_number_matches=None) -> list[DiffItem]:
         assert start_index == 1
         return self.diffs
 
@@ -272,12 +272,12 @@ def test_extraction_stage_repairs_native_heading_refreshes_preattached_profiles_
         [
             ExtractionResult(
                 document=original,
-                extractor_used="ppstructure_ocr_hybrid",
+                extractor_used="contract_extraction_v3",
                 profile=original.profile,
             ),
             ExtractionResult(
                 document=compare,
-                extractor_used="ppstructure_ocr_hybrid",
+                extractor_used="contract_extraction_v3",
                 profile=compare.profile,
             ),
         ]
@@ -354,8 +354,8 @@ def test_extraction_stage_propagates_native_heading_warning_to_task_parse_warnin
     )
     extractor = _SequentialExtractor(
         [
-            ExtractionResult(document=original, extractor_used="ppstructure_ocr_hybrid"),
-            ExtractionResult(document=compare, extractor_used="ppstructure_ocr_hybrid"),
+            ExtractionResult(document=original, extractor_used="contract_extraction_v3"),
+            ExtractionResult(document=compare, extractor_used="contract_extraction_v3"),
         ]
     )
     stage = ExtractionStage(
@@ -2172,7 +2172,7 @@ def test_ocr_quality_stage_writes_artifact_and_flags_diff(tmp_path: Path) -> Non
     ctx.set_extractions(
         ExtractionResult(
             document=original_doc,
-            extractor_used="ppstructure_ocr_hybrid",
+            extractor_used="contract_extraction_v3",
             layout_quality=LayoutQualityReport(
                 page_count=1,
                 page_quality=[
@@ -2185,7 +2185,7 @@ def test_ocr_quality_stage_writes_artifact_and_flags_diff(tmp_path: Path) -> Non
                 ],
             ),
         ),
-        ExtractionResult(document=compare_doc, extractor_used="ppstructure_ocr_hybrid"),
+        ExtractionResult(document=compare_doc, extractor_used="contract_extraction_v3"),
     )
     ctx.diffs = [
         DiffItem(
@@ -2750,8 +2750,8 @@ def test_ocr_quality_survives_diff_quality_cross_source_merge(tmp_path: Path) ->
         compare_pdf=tmp_path / "compare.pdf",
     )
     ctx.set_extractions(
-        ExtractionResult(document=original_doc, extractor_used="ppstructure_ocr_hybrid"),
-        ExtractionResult(document=compare_doc, extractor_used="ppstructure_ocr_hybrid"),
+        ExtractionResult(document=original_doc, extractor_used="contract_extraction_v3"),
+        ExtractionResult(document=compare_doc, extractor_used="contract_extraction_v3"),
     )
     ctx.diffs = [
         DiffItem(

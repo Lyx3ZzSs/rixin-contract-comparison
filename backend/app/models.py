@@ -6,10 +6,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.errors import TaskTransitionConflict
 
 
 DiffType = Literal["ADD", "DELETE", "MODIFY"]
+TableStructureStatus = Literal[
+    "STRUCTURED_TABLE", "UNSTRUCTURED_TABLE_PRESENT", "TABLE_ABSENT", "UNKNOWN"
+]
 EvidenceQuality = Literal["LOW", "MEDIUM", "HIGH"]
 DiffQualityStatus = Literal["NORMAL", "NEEDS_REVIEW"]
 ContentRecognitionStatus = Literal["CONFIRMED", "NEEDS_REVIEW"]
@@ -104,11 +106,27 @@ class EvidenceBox(BaseModel):
     page_no: int
     bbox: BBox
     method: str = "clause_fallback"
+    granularity: Literal["unknown", "source_text", "cell"] = "unknown"
     text: str = ""
     highlight_type: DiffType | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     evidence_quality: EvidenceQuality = "MEDIUM"
     text_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class ClauseDisplayEvidence(BaseModel):
+    """Presentation geometry; excluded from change detection and counting."""
+    unit: Literal["clause"] = "clause"
+    original: list[EvidenceBox] = Field(default_factory=list)
+    compare: list[EvidenceBox] = Field(default_factory=list)
+
+
+class FieldDisplayEvidence(BaseModel):
+    """Complete field value geometry; raw text edits remain authoritative."""
+    unit: Literal["field"] = "field"
+    field_key: str
+    original: list[EvidenceBox] = Field(default_factory=list)
+    compare: list[EvidenceBox] = Field(default_factory=list)
 
 
 class SigningRegionOutlines(BaseModel):
@@ -267,6 +285,10 @@ class TextBlock(BaseModel):
     source_evidence: list[TextSourceEvidence] = Field(default_factory=list)
     raw_html: str = ""
     table_cell_bboxes: list[list[float]] = Field(default_factory=list)
+    table_cells: list[dict[str, Any]] = Field(default_factory=list)
+    table_model_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    structure_status: TableStructureStatus = "UNKNOWN"
+    table_validation: dict[str, Any] = Field(default_factory=dict)
 
 
 class Page(BaseModel):
@@ -274,6 +296,7 @@ class Page(BaseModel):
     width: float
     height: float
     blocks: list[TextBlock] = Field(default_factory=list)
+    table_presence_status: TableStructureStatus = "UNKNOWN"
     semantic_role: str = "unknown"
     semantic_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     semantic_reasons: list[str] = Field(default_factory=list)
@@ -324,6 +347,8 @@ class ClausePair(BaseModel):
 
 
 class DiffItem(BaseModel):
+    field_display_evidence: FieldDisplayEvidence | None = None
+    clause_display_evidence: ClauseDisplayEvidence | None = None
     diff_id: str
     diff_type: DiffType
     original_clause_id: str | None = None
@@ -366,6 +391,20 @@ class AuditItemReview(BaseModel):
     review_comment: str = ""
     reviewed_by: str = ""
     reviewed_at: str = ""
+
+
+class ComparisonObservation(AuditItemReview):
+    change_resolution: Literal['CONFIRMED_CHANGE', 'IMPRESSION'] | None = None
+    source_diff: DiffItem | None = None
+    source_type: DiffSourceType | None = None
+    decision_evidence: dict[str, Any] = Field(default_factory=dict)
+    observation_id: str
+    reason: str
+    title: str = "表格对应关系待复核"
+    message: str = "表格单元格对应关系尚未完整建立，无法确认此区域是否存在内容变化。"
+    source_diff_ids: list[str] = Field(default_factory=list)
+    original_evidence: list[EvidenceBox] = Field(default_factory=list)
+    compare_evidence: list[EvidenceBox] = Field(default_factory=list)
 
 
 class CompareOptions(BaseModel):
@@ -478,6 +517,7 @@ class CompareTask(BaseModel):
     external_compare_options: dict[str, Any] = Field(default_factory=dict)
     compare_options: CompareOptions = Field(default_factory=CompareOptions)
     signing_region_outlines: SigningRegionOutlines = Field(default_factory=SigningRegionOutlines)
+    comparison_observations: list[ComparisonObservation] = Field(default_factory=list)
     diffs: list[DiffItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)
@@ -535,21 +575,3 @@ class CompareTask(BaseModel):
         if self.terminal_reason == "SUBMISSION_FAILED":
             return validated_inputs_exist
         return False
-
-    def ensure_transition_allowed(
-        self,
-        target_status: TaskStatus,
-        *,
-        terminal_reason: TaskTerminalReason = "NONE",
-        validated_inputs_exist: bool = False,
-    ) -> None:
-        if self.is_transition_allowed(
-            target_status,
-            terminal_reason=terminal_reason,
-            validated_inputs_exist=validated_inputs_exist,
-        ):
-            return
-        raise TaskTransitionConflict(
-            f"任务 {self.task_id} 不允许从 {self.status}/{self.terminal_reason} "
-            f"转换为 {target_status}/{terminal_reason}。"
-        )

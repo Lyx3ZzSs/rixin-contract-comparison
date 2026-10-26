@@ -73,6 +73,8 @@ class ClauseSplitter:
         self.normalizer = text_normalizer or TextNormalizer()
         self.alignment_analyzer = ClauseAlignmentAnalyzer(self.normalizer)
         self.table_detector = TableComparator()
+        self.region_result = None
+        self.comparison_side = ""
         self.number_parser = ClauseNumberParser()
         self.paragraph_builder = ParagraphBuilder()
         self.key_builder = ClauseKeyBuilder(
@@ -122,17 +124,20 @@ class ClauseSplitter:
             toc_page = self._page_looks_like_toc(page)
             page_masks = mask_index.get(page.page_no, [])
             for block in page.blocks:
-                if block.enter_clause_compare is False:
+                if self.region_result is not None and self.region_result.claims(self.comparison_side, block):
+                    continue
+                residual_caption = self.region_result is not None and block.block_role == 'table_caption'
+                if block.enter_clause_compare is False and not residual_caption:
                     continue
                 if block.flow_role in {"margin", "noise", "non_text"}:
                     continue
                 block_role = (block.block_role or "").lower()
-                if block_role in self.excluded_block_roles:
+                if block_role in self.excluded_block_roles and not residual_caption:
                     continue
                 block_type = (block.block_type or "").lower()
                 if block_type in self.skip_block_types and block_role != "quote_metadata":
                     continue
-                if self.table_detector.is_table_block(block):
+                if self.table_detector.is_table_block(block) and not residual_caption:
                     continue
                 if self._is_low_confidence(block):
                     continue
@@ -182,6 +187,11 @@ class ClauseSplitter:
                                 ),
                             ),
                             source_block_ids=(block.block_id,),
+                            split_flags=tuple([
+                                *(["DOCUMENT_ENTRY_BOUNDARY"] if "document_entry_boundary" in block.semantic_reasons else []),
+                                *("ATTACHMENT_INSTANCE:" + r.split(":", 1)[1] for r in block.semantic_reasons
+                                  if r.startswith("attachment_instance:")),
+                            ]),
                             semantic_reasons=tuple(block.semantic_reasons),
                         )
                     )
@@ -629,7 +639,8 @@ class ClauseSplitter:
                 entered_body = True
             section_changed = current is not None and current.section_type != unit.section_type
             attachment_body = self._starts_body_after_attachment_cover(current, unit)
-            if starts_clause or current is None or section_changed or attachment_body:
+            document_entry = "DOCUMENT_ENTRY_BOUNDARY" in unit.split_flags
+            if starts_clause or current is None or section_changed or attachment_body or document_entry:
                 if current is not None:
                     clauses.append(current)
                 clause_no = candidate.marker if candidate else ""
@@ -653,7 +664,8 @@ class ClauseSplitter:
                     bboxes=self._unit_evidences(unit),
                     source_block_ids=self._unit_source_block_ids(unit),
                     segmentation_reason=self._segmentation_reason(
-                        self._heading_reason(candidate, "attachment_cover_body_boundary" if attachment_body else
+                        self._heading_reason(candidate, "document_entry_boundary" if document_entry else
+                                             "attachment_cover_body_boundary" if attachment_body else
                                              "section_change" if section_changed and not starts_clause else "initial_unit_without_marker"),
                         unit,
                     ),
@@ -752,7 +764,7 @@ class ClauseSplitter:
         return repaired
 
     def _should_merge_with_previous(self, previous: ClauseItem, current: ClauseItem) -> bool:
-        if previous.section_type != current.section_type:
+        if previous.section_type != current.section_type or "DOCUMENT_ENTRY_BOUNDARY" in current.split_flags:
             return False
         first_text = str(current.first_text or "")
         marker = self._parse_marker(first_text)
@@ -835,9 +847,6 @@ class ClauseSplitter:
     def _has_heading_business_term(self, title: str) -> bool:
         return self.heading_detector.has_business_term(title)
 
-    def _is_date_like_heading(self, text: str, clause_no: str) -> bool:
-        return self.heading_detector.is_date_like_heading(text, clause_no)
-
     def _segmentation_reason(self, base_reason: str, unit: ClauseUnit) -> str:
         if unit.order_reason in {"", "source", "reading_order"}:
             return base_reason
@@ -846,7 +855,8 @@ class ClauseSplitter:
     def _single_unit_items(self, units: list[ClauseUnit]) -> list[ClauseItem]:
         items: list[ClauseItem] = []
         for unit in units:
-            if items and unit.section_type != "main_contract" and items[-1].section_type == unit.section_type:
+            if (items and unit.section_type != "main_contract" and items[-1].section_type == unit.section_type
+                    and "DOCUMENT_ENTRY_BOUNDARY" not in unit.split_flags):
                 self._merge_clause_items(
                     items[-1],
                     ClauseItem.from_part(
@@ -924,16 +934,9 @@ class ClauseSplitter:
     def _alignment_clause_key(self, base_key: str, fingerprint: ClauseAlignmentFingerprint) -> str:
         return self.key_builder.alignment_clause_key(base_key, fingerprint)
 
-    def _alignment_clause_no_key(self, clause_no_key: str) -> str:
-        return self.key_builder.alignment_clause_no_key(clause_no_key)
-
-    def _bounded_alignment_tokens(self, tokens: tuple[str, ...]) -> list[str]:
-        return self.key_builder.bounded_alignment_tokens(tokens)
-
-    def _canonical_path_label(self, label: str) -> str:
-        return self.key_builder.canonical_path_label(label)
-
     def _is_pre_body_noise(self, unit: ClauseUnit, marker: tuple[str, str] | None) -> bool:
+        if "DOCUMENT_ENTRY_BOUNDARY" in unit.split_flags:
+            return False
         block_type = unit.block_type
         text = unit.text
         if self._is_formal_marker_tuple(marker):
@@ -982,7 +985,8 @@ class ClauseSplitter:
         for index, unit in enumerate(units):
             text = unit.text
             marker = self._parse_marker(text)
-            if self._is_body_intro(text) or self._is_formal_body_marker(marker):
+            if ("DOCUMENT_ENTRY_BOUNDARY" in unit.split_flags
+                    or self._is_body_intro(text) or self._is_formal_body_marker(marker)):
                 return index
         return None
 
@@ -1018,15 +1022,6 @@ class ClauseSplitter:
     def _is_standalone_body_title(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", text or "")
         return compact == "正文"
-
-    def _is_unnumbered_section_title(self, unit: ClauseUnit, marker: tuple[str, str] | None) -> bool:
-        return self.heading_detector.is_unnumbered_section_title(unit, marker)
-
-    def _current_is_bare_marker(self, current: ClauseItem | None) -> bool:
-        return self.heading_detector.current_is_bare_marker(current)
-
-    def _is_attachment_title(self, compact: str) -> bool:
-        return self.heading_detector.is_attachment_title(compact)
 
     def _is_cover_noise_text(self, compact: str) -> bool:
         from app.services.cover.patterns import parse_labeled_line

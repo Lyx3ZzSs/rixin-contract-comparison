@@ -320,6 +320,10 @@ class EvidenceConsensusEvaluator:
                 field_key=identifier_field,
             )
         if text_decision.reason != "PROTECTED_PERCENT_UNIT_CHANGE":
+            phrase_sources = self._located_printed_phrase_sources(diff, original_document, compare_document)
+            if phrase_sources:
+                return EvidenceConsensusDecision(verdict="DIFFERENT", reason="LOCATED_NATIVE_AND_RECOGNIZED_PHRASE",
+                                                 sources=phrase_sources)
             return EvidenceConsensusDecision(verdict="UNKNOWN", reason=text_decision.reason)
 
         original_unit = self._visual_percent_unit(original_document, diff.original_evidence)
@@ -332,6 +336,26 @@ class EvidenceConsensusEvaluator:
             )
         sources = ["original:ocr", "original:visual", "compare:ocr", "compare:visual"]
         if original_unit == compare_unit:
+            # A unit-only visual check cannot clear a changed amount, deadline,
+            # negation, or another rate elsewhere in the same paragraph.
+            from app.services.normalizer import TextNormalizer
+            left_tokens = list(_PERCENT_TOKEN_RE.finditer(diff.original_text))
+            right_tokens = list(_PERCENT_TOKEN_RE.finditer(diff.compare_text))
+            if len(left_tokens) != 1 or len(right_tokens) != 1:
+                return EvidenceConsensusDecision(verdict="UNKNOWN", reason="MULTIPLE_RATE_VALUES", sources=sources)
+            def canonical(text, token, document, evidences):
+                start, end = token.span("unit")
+                block = self._percent_block(document, evidences) if document else None
+                match = _PERCENT_TOKEN_RE.search(block.text) if block else None
+                if (original_unit == "‰" and block and match
+                        and self.ocr_extractor._shared_percent_suffix(block, match.start("unit"))
+                        and text[end:end + 1] in {"。", "0", "o", "O"}):
+                    end += 1
+                return TextNormalizer().normalize_for_diff(text[:start] + original_unit + text[end:])
+            if canonical(diff.original_text, left_tokens[0], original_document, diff.original_evidence) != canonical(
+                diff.compare_text, right_tokens[0], compare_document, diff.compare_evidence
+            ):
+                return EvidenceConsensusDecision(verdict="UNKNOWN", reason="ADDITIONAL_TEXT_CHANGE", sources=sources)
             return EvidenceConsensusDecision(
                 verdict="EQUIVALENT",
                 reason="PERCENT_UNIT_VISUAL_CONSENSUS",
@@ -344,6 +368,43 @@ class EvidenceConsensusEvaluator:
             sources=sources,
             detail={"original_visual": original_unit, "compare_visual": compare_unit},
         )
+
+    @staticmethod
+    def _located_printed_phrase_sources(diff: DiffItem, original: Document | None, compare: Document | None) -> list[str]:
+        """Admit a substantial printed phrase change with actual character provenance.
+
+        Numeric-only OCR changes, unknown sources, margins and weak readings
+        cannot use this path. Geometry confidence alone is never consulted.
+        """
+        if diff.diff_type != "MODIFY" or diff.source_type != "clause" or original is None or compare is None:
+            return []
+        if set(diff.review_flags).intersection({"OCR_LOW_CONFIDENCE", "PAGE_UNRELIABLE", "SEAL_OR_SIGNATURE_RISK",
+                                               "READING_ORDER_RISK", "LAYOUT_MISMATCH_RISK", "EVIDENCE_UNRELIABLE"}):
+            return []
+        sources, native, phrase = [], False, False
+        def signature(char):
+            return (char.char, char.bbox.x0, char.bbox.y0, char.bbox.x1, char.bbox.y1)
+        for side, document, evidences in (("original", original, diff.original_evidence),
+                                          ("compare", compare, diff.compare_evidence)):
+            if not evidences:
+                return []
+            for evidence in evidences:
+                if not evidence.char_boxes or evidence.text_confidence is None or evidence.text_confidence < .98:
+                    return []
+                wanted = {signature(char) for char in evidence.char_boxes}
+                matches = [block for page in document.pages if page.page_no == evidence.page_no for block in page.blocks
+                           if block.source in {"native_pdf", "PP-OCRv6"} and block.block_type in {"text", "paragraph_title"}
+                           and block.confidence is not None and block.confidence >= .98
+                           and block.bbox.x0 > page.width * .04 and block.bbox.x1 < page.width * .96
+                           and block.bbox.y0 > page.height * .08 and block.bbox.y1 < page.height * .92
+                           and wanted.issubset({signature(char) for char in block.char_boxes})]
+                if len(matches) != 1:
+                    return []
+                block = matches[0]
+                native |= block.source == "native_pdf"
+                phrase |= bool(re.search(r"[\u4e00-\u9fff]{4,}", evidence.text))
+                sources.append(f"{side}:{block.source}:{block.block_id}")
+        return sources if native and phrase else []
 
     @staticmethod
     def _critical_identifier_field(diff: DiffItem) -> str:
@@ -596,15 +657,12 @@ class EvidenceConsensusEvaluator:
         if match is None:
             return None
         unit_index = match.start("unit")
-        indexes = {item.text_index for item in block.char_boxes if item.text_index is not None}
-        if not {unit_index - 1, unit_index, unit_index + 1}.issubset(indexes):
-            return None
         try:
             pdf = fitz.open(document.path)
         except Exception:
             return None
         try:
-            return "‰" if self.ocr_extractor._visual_glyph_is_per_mille(pdf, block, unit_index) else "%"
+            return self.ocr_extractor._visual_percent_unit(pdf, block, unit_index)
         finally:
             pdf.close()
 

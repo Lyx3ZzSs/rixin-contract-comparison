@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -29,11 +29,6 @@ class OcrRetryResult(BaseModel):
     changed_output: bool = False
     metrics: dict[str, object] = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
-
-
-class OcrRetryAdapter(Protocol):
-    def retry_page(self, request: OcrRetryRequest) -> OcrRetryResult:
-        """Retry OCR for one page or region."""
 
 
 class NoopOcrRetryAdapter:

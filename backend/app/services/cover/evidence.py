@@ -7,10 +7,6 @@ from .patterns import find_text_index
 from .types import CoverField
 
 
-def mark_evidences(evidences: list[EvidenceBox], highlight_type: str) -> list[EvidenceBox]:
-    return [evidence.model_copy(update={"highlight_type": highlight_type, "method": "cover_metadata"}) for evidence in evidences]
-
-
 def mark_extra_evidences(evidences: list[EvidenceBox], highlight_type: str) -> list[EvidenceBox]:
     return [evidence.model_copy(update={"highlight_type": highlight_type, "method": "cover_extra"}) for evidence in evidences]
 

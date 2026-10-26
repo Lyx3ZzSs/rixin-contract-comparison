@@ -98,7 +98,7 @@ def test_scan_edge_slivers_do_not_become_seal_additions():
     wide = thin.model_copy(deep=True)
     wide.fragment_bboxes = [BBox(x0=580,y0=100,x1=600,y1=160)]*3
     result = SigningVisualRecallResult(additions=[wide])
-    assert len(WholePageSigningVisualRecall().reconcile_diffs(result,[],[],start_index=1)[1])==1
+    assert len(WholePageSigningVisualRecall().reconcile_diffs(result,[],[],start_index=1)[0])==1
 
 
 def test_company_row_reconciliation_retains_added_obligation():

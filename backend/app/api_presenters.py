@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any
 import math
 from numbers import Real
@@ -12,7 +12,6 @@ from app.api_schemas import (
     AuditItemReviewUpdateResponse,
     CompareDiffListResponse,
     CompareDiffResponse,
-    CompareRecordListResponse,
     CompareRecordResponse,
     CompareTaskDetailResponse,
     CompareTaskResponse,
@@ -139,33 +138,6 @@ def compare_record_summary(task: CompareTask, *, retry_eligible: bool = False) -
         diff_count=task.diff_count,
         **event_summary(task),
         report_url=f"/api/compare/{task.task_id}/events/report" if task.status == "COMPLETED" else "",
-    )
-
-
-def compare_record_list_response(
-    tasks: list[CompareTask],
-    *,
-    total: int | None = None,
-    page: int = 1,
-    page_size: int | None = None,
-    total_pages: int | None = None,
-    retry_eligibility: Callable[[CompareTask], bool] | None = None,
-) -> CompareRecordListResponse:
-    resolved_total = len(tasks) if total is None else total
-    resolved_page_size = len(tasks) if page_size is None else page_size
-    resolved_total_pages = total_pages if total_pages is not None else (1 if resolved_total else 0)
-    return CompareRecordListResponse(
-        records=[
-            compare_record_summary(
-                task,
-                retry_eligible=retry_eligibility(task) if retry_eligibility is not None else False,
-            )
-            for task in tasks
-        ],
-        total=resolved_total,
-        page=page,
-        page_size=resolved_page_size,
-        total_pages=resolved_total_pages,
     )
 
 
@@ -304,7 +276,8 @@ def _match_confidence_or_none(value: object) -> str | None:
 
 def event_summary(task):
     from app.services.diff_events import source_fingerprint
+    from app.services.comparison_observations import visible_snapshot_events
     snapshot = task.event_snapshot
     if snapshot and snapshot.get("source_fingerprint") == source_fingerprint(task):
-        return {"event_count": len(snapshot["events"]), "event_version": snapshot["version"]}
+        return {"event_count": len(visible_snapshot_events(task, snapshot)), "event_version": snapshot["version"]}
     return {"event_count": None, "event_version": ""}

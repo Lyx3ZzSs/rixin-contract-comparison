@@ -195,11 +195,16 @@ def build_modify(pair: ClausePair, index: int) -> DiffItem | None:
 def critical_field_guard_snippet(text: str, ranges: list[TextRange], fallback: str) -> str:
     if not ranges:
         return fallback
+    changed = [text[item.start:item.end] for item in ranges]
+    if all(part.isascii() and part.isalpha() and len(part) <= 6 for part in changed):
+        # Short variable edits cannot establish a change to the percentages,
+        # dates or party labels sitting between their disjoint positions.
+        return "\n".join(changed)
     start = min(item.start for item in ranges)
     end = max(item.end for item in ranges)
-    while start > 0 and text[start - 1] in CRITICAL_FIELD_CONTEXT_CHARS:
+    while start > 0 and (text[start - 1] in CRITICAL_FIELD_CONTEXT_CHARS or text[start - 1].isspace()):
         start -= 1
-    while end < len(text) and text[end] in CRITICAL_FIELD_CONTEXT_CHARS:
+    while end < len(text) and (text[end] in CRITICAL_FIELD_CONTEXT_CHARS or text[end].isspace()):
         end += 1
     snippet = text[start:end]
     return snippet or fallback

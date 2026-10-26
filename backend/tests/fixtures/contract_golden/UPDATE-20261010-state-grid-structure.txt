@@ -1,0 +1,35 @@
+STATE_GRID_NORTH_CHINA 结构归属与附件边界修复后黄金集更新（2026-10-10）
+
+用户在修复验证完成后要求“更新该份对比任务的黄金集”。验证来源更新为 c06e36ff-0456-42e9-b1a1-dee01d0b0ac9；原验证来源和修复前任务 c6f9fe7d-7b14-4ee2-bdb8-3f3e88ab976e 保留在来源历史中。
+
+更新内容
+原21条断言的业务语义、审核要求及定位阈值全部保留，新增4条 MUST_NOT_EXIST：
+1. IDENTICAL_HEADER_NO_FALSE_CHANGE：相同 SGTYHT/23-JS-004 页眉不得因分块差异产生页眉或正文差异。
+2. CONFIDENTIALITY_ENTRY_NO_FALSE_CHANGE：原第18页与比对第17页相同的保密合同入口正文不得因附件切分不一致报差异。
+3. SERVICE_ACCEPTANCE_NO_FALSE_CHANGE：相同的项目服务期限及验收正文不得因吞入后续附件或段落切分不一致报差异。
+4. ADDRESS_CONTINUATION_NO_FALSE_CHANGE：第12页相同地址“27号金隅智造工场N6”的续行不得落入正文报差异。
+新规则针对封存PDF对的相同内容，不绑定运行时差异编号，不限制 ADD/MODIFY/DELETE。正文规则不抑制真实签章变化。
+
+计数
+本合同21→25条验收规则，全库267→271条规则；仍为15份合同、30份不可变PDF。
+任务页面仍为22项实际差异。验收规则包含不得出现差异的负例，规则数量不等于页面差异数量。
+
+验证结果
+当前任务25条规则中22条通过，3条既有失败保持不变；新增4条全部通过。
+既有失败：P1_METADATA_ADD_A5ED1AD126、P1_SEAL_ADD_68BDE56DFF、P2_SEAL_ADD_3CE9A856A0（完整case_id均带 STATE_GRID_NORTH_CHINA_ 前缀）。这些是黄金语义匹配失败，不等同于对应对象完全漏检。
+修复前 c6f9fe7d 任务触发全部4条新负例；将差异类型分别改成 ADD/MODIFY/DELETE 后，4条规则仍全部能检出，避免只验证单一显示类型。
+装载器验证30份封存PDF的哈希、页数及271条规则计数；新任务两侧输入PDF哈希与封存数据一致。
+原21条断言、其他14份oracle及所有PDF元数据不变。
+使用上一轮最终代码保存的15份合同结果重新验证新黄金规则：没有新增失败，既有157条失败记录不变。本次没有重新OCR，不宣称全库通过。
+黄金基础设施测试15 passed；用户授权的黄金基线变更检查通过。变更检查相对于HEAD，包含以前的未提交修改；本轮独立变更见 baseline-update.patch。
+
+证据
+output/analysis/golden-state-grid-c06e36ff-20261010/validation-summary.json
+output/analysis/golden-state-grid-c06e36ff-20261010/current-task-report.json
+output/analysis/golden-state-grid-c06e36ff-20261010/old-task-report.json
+output/analysis/golden-state-grid-c06e36ff-20261010/baseline-update.patch
+output/analysis/golden-state-grid-c06e36ff-20261010/infrastructure-tests.log
+output/analysis/golden-state-grid-c06e36ff-20261010/baseline-guard.log
+修复与原文验证：output/analysis/structure-remediation-20261009/verification-report.txt。
+
+本次仅更新黄金规则、来源、计数和说明，未修改生产算法、任务结果或人工审核状态，无需重启服务。

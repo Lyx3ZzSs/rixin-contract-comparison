@@ -1,0 +1,34 @@
+SHENNENG_NAIMAN 黄金集更新（2026-10-20）
+
+授权与来源
+用户明确要求：更新26a31da6-e826-4f0f-9240-84cab24d2165这个比对任务的黄金集。
+新来源为该已完成任务，实际14条差异。保留最初来源24715bf0-4f6b-4196-9483-2e26fcc9b28d的历史与审核来源。两份PDF均31页，SHA256及页数与既有奈曼样本完全一致。
+
+业务真值与变更
+保留原13条规则的case_id、MUST_EXIST/MUST_REVIEW要求、语义文本、对象类型、定位框、min_iou=0.35阈值。原PDF复核第19/20/30页个人姓名章、第30页公司圆章及第1页页边章后，将这5条旧source_type=signing_region修订为seal，与独立物理印章身份一致。姓名章保护的是独立对象及其框，不要求确认章文姓名。
+其中用户所称第18、28页是印刷页码，对应PDF物理第20、30页；其姓名章断言原本已存在，本轮没有重复添加。
+新增6条MUST_NOT_EXIST：第16页单位套、数量1不得误报删除（2条），不得因跨列合并/错配误报修改（2条）；第20页项目名称不得因印章遮挡误报正文变化（1条）；第27页相同300—1000元、500—2000元区间不得因OCR将横线读作一而误报条款变化（1条）。以上约束本组哈希固定的PDF，待复核误报也会被拦截。
+奈曼规则13→19，全库303→309；仍15合同、30份PDF。规则数不同于任务页面差异数。
+
+验证
+- 最新任务快照：19/19规则通过，0失败。保留1条未消费的待复核警告“乙方 · 签署日期”；没有将它直接提升为正例。
+- 紧邻本次更新的同PDF完整独立重跑结果：19/19通过。复用output/analysis/naiman-personal-seals-20261020/target结果，本轮未重新执行耗时提取。
+- 修复前b6f9e92a任务事件：6条新负例全部触发FALSE_POSITIVE_REGRESSION。将旧事件分别设置为确认及待复核状态，两组各6条均被规则拦截。
+- 删除第20或30页姓名章对象均触发FALSE_NEGATIVE_REGRESSION；将其框移到相邻圆章均触发BBOX_REGRESSION，共4项反向检查通过。
+- 30份Golden PDF的哈希与页数全部验证通过。
+- 其他14份oracle及manifest条目、全部30份PDF元数据保持本轮开始时的状态；业务代码与语义匹配器未改动。
+- 复用上一轮15合同冻结提取输入的流水线结果重新评估新规则：失败58→55。其他14合同的53项既有失败原样保留；奈曼原5项分类不匹配消除，但冻结的旧提取输入仍含第16页错误合并单元格，现被2条新负例准确揭示。因此冻结输入回放不是全绿，不能与最新原PDF完整重跑19/19通过混淆。本轮没有再次声称执行15合同完整流水线。
+
+本轮文件
+manifest.json；oracle/shenneng_naiman.json；README.md；本记录；golden_loader.py总断言数。
+新增规则6条、删除0条、原规则分类修订5条、定位阈值变化0条。数据库任务与审核记录未修改。
+
+证据
+output/analysis/golden-naiman-26a31da6-20261020/：before基线备份、task.json、old-task.json、semantic-diff.json、snapshot-report.json、full-pdf-report.json、old-task-rejection.json、两种状态反向报告、reused-15-report.json、validation-summary.json、validate.py及源PDF页图。
+原第16/20/27页双侧图：output/analysis/naiman-b6f9e92a-20261020/。
+姓名章浏览器定位证据：output/analysis/naiman-personal-seals-20261020/ui-dom-p20.json、ui-dom-p30.json及对应画布校验图。
+
+复现
+backend/.venv/bin/python output/analysis/golden-naiman-26a31da6-20261020/validate.py
+GOLDEN_CONTRACT_DATA_ROOT=storage/golden-intake/contract-golden-v3 backend/.venv/bin/python backend/scripts/verify_golden_contract_data.py
+backend/.venv/bin/python -m pytest backend/tests/test_contract_golden_infrastructure.py -q

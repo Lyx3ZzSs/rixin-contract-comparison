@@ -1,0 +1,37 @@
+NUOYANG 黄金集更新（2026-10-26）
+
+授权与来源
+用户明确要求“更新2aa339c7-fe60-4b9e-b718-e909167edcf4黄金集”。来源更新为该已完成任务，旧来源6bd0c5a4-20f4-4ff9-b605-edf08686c21e保留在历史中。两份6页PDF的SHA256与现有封存样本完全一致。
+来源任务21条底层差异、18项页面事件。黄金规则数与页面事件数分别统计。
+
+已确认业务真值
+原19条规则、case_id、业务文本、状态及定位阈值全部原样保留。新增7条MUST_NOT_EXIST，分别保护：
+1. 两侧相同SPIC/国家电投封面标识不得被误报新增。
+2. 两侧相同封面页码-1-不得成为封面额外文本差异。
+3. 第6页原稿页边字体/颜色修订批注不得成为合同字段差异。
+4. 第6页相同乙方地址、开户行、账号及纳税号不得因甲乙方分栏错配误报。
+5. 第2页传真/邮箱的原有斜杠不得误报删除。
+6—7. 第3页含增值税金额中的含/合OCR混淆，两侧均不得标为变化字符。
+这些负例只约束该组哈希固定的PDF，不是跨合同的词语屏蔽规则。第5页辖/轴真实差异、付款方式改写、5.2措辞改写、法定代表人姓名和签订地点仍由既有正例保护。
+来源任务其他待复核输出不整体提升为黄金真值。第3/5页红色页边章残片已留存原图裁图，但本轮不据此确认公司、甲乙方或跨页同一印章身份。
+条款/字段整体高亮及按行轮廓的显示行为由既有test_clause_rewrite_highlights.py、test_cover_field_highlights.py等保护，本轮不改语义匹配器或展示策略。
+
+计数
+诺阳19→26条，全库311→318条；仍15合同、30份PDF。
+
+验证
+当前来源任务：26条规则中25条通过、1条既有BBOX_REGRESSION继续保留（NUOYANG_89957C047F82，第3页旧合作方式条款删除定位）。新增7条规则全部通过。
+修复前同PDF历史任务集合分别置为NORMAL、NEEDS_REVIEW，两种状态下7条新负例均触发FALSE_POSITIVE_REGRESSION。
+分别移除签订地点、许峰→吴峻、付款流程改写、5.2改写及辖→轴5项真实差异，既有正例均触发FALSE_NEGATIVE_REGRESSION，证明新规则未替代或放宽真差异要求。
+其他14份oracle、全部原19条规则、其他manifest合同条目及全部PDF元数据逐项校验不变。全部30份PDF哈希/页数和318条规则装载通过。
+黄金基础设施测试15项通过，用户授权的基线变更检查通过。基线检查相对HEAD还包含此前未提交更新，本轮独立变更见baseline-update.patch。
+本轮使用已完成任务快照、历史原图核验及修复验证证据，没有重新执行15合同完整提取流水线，不宣称全库业务回放通过。
+
+证据与复现
+output/analysis/golden-nuoyang-2aa339c7-20261026/：before备份、当前/修复前任务快照、current-report.json、两种状态反向报告、validation-summary.json及baseline-update.patch。
+原始核验证据：output/analysis/nuoyang-root-fix-20261021/、nuoyang-ocr-fix-20261022/、nuoyang-page-counter-fix-20261022/、nuoyang-party-fix-20261022/。
+backend/.venv/bin/python output/analysis/golden-nuoyang-2aa339c7-20261026/validate.py
+GOLDEN_CONTRACT_DATA_ROOT=storage/golden-intake/contract-golden-v3 backend/.venv/bin/python backend/scripts/verify_golden_contract_data.py
+backend/.venv/bin/python -m pytest backend/tests/test_contract_golden_infrastructure.py -q
+
+本轮仅更新黄金来源、规则、计数及说明；未修改业务算法、任务结果或人工审核状态，无需重启。

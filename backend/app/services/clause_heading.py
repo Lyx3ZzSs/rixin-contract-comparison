@@ -64,6 +64,13 @@ class ClauseHeadingDetector:
         text = str(getattr(unit, "text", "") or "")
         block_type = str(getattr(unit, "block_type", "") or "")
         if marker is None:
+            # A confirmed attachment entry owns its immediately following title.
+            # Both native and OCR title labels must produce the same boundary.
+            if (current is not None and "DOCUMENT_ENTRY_BOUNDARY" in current.split_flags
+                    and re.fullmatch(r"(?:附件|附录)[一二三四五六七八九十百0-9]+[:：、.．]?",
+                                     re.sub(r"\s+", "", "".join(current.texts)))
+                    and block_type in {"doc_title", "paragraph_title", "title"}):
+                return None
             if not self.is_unnumbered_section_title(unit, marker) or self.current_is_bare_marker(current):
                 return None
             # Native attachment catalogs already own their following cover.
@@ -71,6 +78,7 @@ class ClauseHeadingDetector:
             document_title = (block_type in {"doc_title", "title"}
                               or self.is_cover_noise_text(re.sub(r"\s+", "", text)))
             if (current is not None and document_title
+                    and "DOCUMENT_ENTRY_BOUNDARY" not in current.split_flags
                     and re.search(r"(?:^|\n)附件[一二三四五六七八九十0-9]+", "\n".join(current.texts))):
                 return None
             title = self.title_from_text(text)

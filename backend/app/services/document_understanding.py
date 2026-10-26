@@ -53,7 +53,7 @@ class PairDocumentUnderstandingResult:
 
 
 class DocumentUnderstandingService:
-    """Semantic cleanup after PP-Structure/PPOCR hybrid extraction.
+    """Semantic cleanup after document extraction.
 
     The service applies deterministic rules to classify pages and blocks before
     clause splitting.
@@ -192,7 +192,19 @@ class DocumentUnderstandingService:
         confidence = 0.75
         reason = "rule_default"
 
-        if flow_role == "margin" or block_type in self.margin_block_types:
+        if block_type == "formula" and self._is_textual_indicator(page, block):
+            # Layout describes appearance, not whether recognized contract text
+            # may disappear from comparison. Keep the source text and geometry.
+            block.block_type = block.block_role = "text"
+            block.flow_role = "body"
+            role, enter, confidence = "main_clause", True, 0.95
+            reason = "textual_indicator_preserved_from_formula"
+        elif (block.source == "PP-OCRv6" and re.fullmatch(r"[A-Za-zÀ-ÿ●•]{1,2}", text)
+              and page.width and block.bbox.x0 >= page.width * .94
+              and block.bbox.x1 - block.bbox.x0 <= max(1.0, block.bbox.y1 - block.bbox.y0) * 1.5):
+            role, enter, confidence = "noise", False, 0.95
+            reason = "isolated_scan_edge_glyph"
+        elif flow_role == "margin" or block_type in self.margin_block_types:
             role = "footer" if page.height and block.bbox.y0 >= page.height * 0.5 else "header"
             enter = False
             confidence = 0.92
@@ -240,6 +252,24 @@ class DocumentUnderstandingService:
 
         if role:
             self._apply_block_decision(block, role, confidence, reason, "rule", enter, result)
+
+    def _is_textual_indicator(self, page: Page, block: TextBlock) -> bool:
+        text = self._compact(block.text)
+        if block.confidence is not None and block.confidence < 0.9:
+            return False
+        if not re.fullmatch(r"[\u4e00-\u9fffA-Za-z（）()、]{4,60}[≤≥<>＝=]{1,2}\d+(?:\.\d+)?[%‰\u4e00-\u9fffA-Za-z/]{0,12}", text):
+            return False
+        if len(re.findall(r"[\u4e00-\u9fff]", re.split(r"[≤≥<>＝=]", text, maxsplit=1)[0])) < 4:
+            return False
+        height = max(1.0, block.bbox.y1 - block.bbox.y0)
+        return any(
+            peer.block_id != block.block_id
+            and peer.block_type in {"text", "paragraph_title"}
+            and peer.flow_role not in {"noise", "margin", "non_text"}
+            and abs(peer.bbox.x0 - block.bbox.x0) <= height * 2
+            and 0 <= max(peer.bbox.y0 - block.bbox.y1, block.bbox.y0 - peer.bbox.y1) <= height * 3
+            for peer in page.blocks
+        )
 
     def _apply_page_decision(
         self,
@@ -325,12 +355,6 @@ class DocumentUnderstandingService:
         page_area = max(1.0, page.width * page.height)
         area = sum(max(0.0, block.bbox.x1 - block.bbox.x0) * max(0.0, block.bbox.y1 - block.bbox.y0) for block in blocks)
         return min(1.0, area / page_area)
-
-    def _main_clause_density(self, compact_texts: list[str]) -> float:
-        if not compact_texts:
-            return 0.0
-        clause_like = sum(1 for text in compact_texts if re.match(r"^(?:第[一二三四五六七八九十百千万0-9]+[章节条]|[一二三四五六七八九十0-9]+[、.．]|\d+(?:\.\d+)+)", text))
-        return clause_like / len(compact_texts)
 
     def _cover_body_start_y(self, blocks: list[TextBlock]) -> float | None:
         candidates = [

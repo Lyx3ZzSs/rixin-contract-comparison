@@ -7,6 +7,21 @@ from app.services.report_comparison import display_ranges, highlighted_text, tex
 from app.services.report_generator import ReportGenerator
 
 
+def test_event_report_preserves_mirrored_seal_origin_without_hiding_change(tmp_path):
+    from app.models import BBox, EvidenceBox
+    from app.services.diff_events import event_response
+    task=CompareTask(task_id='mirrored-report',status='COMPLETED',diffs=[DiffItem(
+        diff_id='seal',diff_type='ADD',source_type='seal',title='印章印迹（疑似透印）',
+        compare_text='公司圆章（章文待复核）',
+        readable_change='本页印迹计入差异；疑似与 PDF 第 13 页形成镜像透印，不代表独立盖章。',
+        match_score_details={'seal_origin_decision':'SUSPECTED_MIRROR'},
+        compare_evidence=[EvidenceBox(page_no=12,bbox=BBox(x0=100,y0=100,x1=200,y1=200))])])
+    path=ReportGenerator().generate(task,tmp_path/'mirrored.pdf',event_view=True)
+    with fitz.open(path) as pdf:text=''.join(''.join(page.get_text().split()) for page in pdf)
+    assert 'PDF第13页' in text and '不代表独立盖章' in text
+    assert '印章印迹（疑似透印）' in text and event_response(task)['event_count']==1
+
+
 def test_highlights_exact_replacement_and_escapes_contract_markup():
     item = SimpleNamespace(diff_type="MODIFY", original_text="应在30日内支付<款项>", compare_text="应在45日内支付<款项>",
                            original_change_ranges=[], compare_change_ranges=[])

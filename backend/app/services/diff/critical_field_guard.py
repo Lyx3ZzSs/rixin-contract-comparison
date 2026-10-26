@@ -140,10 +140,16 @@ def _changed_field_tokens(
         text = _strip_dates(text)
         snippet = _strip_dates(snippet)
     tokens: list[FieldToken] = []
+    snippet_matches = _pattern_matches(pattern, snippet)
+    snippet_values = {_normalize_token(field_type, match.raw) for match in snippet_matches}
     for match in _pattern_matches(pattern, text):
-        if _token_touches_change(match, text, snippet, change_spans):
+        # Emit all selected tokens in document order. Adding touched tokens
+        # before snippet tokens can reverse otherwise identical amounts when
+        # only the whitespace before one unit changed.
+        if (_normalize_token(field_type, match.raw) in snippet_values
+                or _token_touches_change(match, text, snippet, change_spans)):
             tokens.append(FieldToken(field_type, match.raw, _normalize_token(field_type, match.raw)))
-    for match in _pattern_matches(pattern, snippet):
+    for match in snippet_matches:
         tokens.append(FieldToken(field_type, match.raw, _normalize_token(field_type, match.raw)))
     return _dedupe_tokens(tokens)
 

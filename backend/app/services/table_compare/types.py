@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from app.models import BBox
+
+
+@dataclass(frozen=True)
+class CellSourceFragment:
+    """A physical reading belonging to a logical cell (possibly on another page)."""
+
+    text: str
+    page_no: int
+    bbox: BBox | None
+    source_block_id: str
 
 
 class RowSignature:
@@ -57,6 +69,7 @@ class LogicalCell:
         "colspan",
         "rowspan",
         "observation_reason",
+        "source_fragments",
     )
 
     def __init__(
@@ -84,6 +97,7 @@ class LogicalCell:
         self.colspan = colspan
         self.rowspan = rowspan
         self.observation_reason = observation_reason
+        self.source_fragments = [CellSourceFragment(text, page_no, bbox, source_block_id)]
 
 
 class LogicalRow:

@@ -53,6 +53,8 @@ class ParagraphBuilder:
         current: Any,
         parse_marker: Callable[[str], object | None],
     ) -> bool:
+        if "DOCUMENT_ENTRY_BOUNDARY" in getattr(current, "split_flags", ()):
+            return False
         if getattr(previous, "section_type", "main_contract") != getattr(current, "section_type", "main_contract"):
             return False
 

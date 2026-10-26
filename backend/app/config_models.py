@@ -14,15 +14,6 @@ from pydantic import BaseModel, Field, field_validator
 # ---------------------------------------------------------------------------
 
 
-class HybridSettings(BaseModel):
-    """Hybrid extractor (PPStructure + PPOCRv5) settings."""
-
-    layout_overlap_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    center_fallback: bool = True
-    save_merged_raw: bool = True
-    component_parallel_enabled: bool = False
-
-
 class PPOCRV5Settings(BaseModel):
     """PPOCRv5 OCR model settings."""
 
@@ -37,21 +28,6 @@ class PPOCRV5Settings(BaseModel):
     use_doc_orientation_classify: bool = False
     use_doc_unwarping: bool = False
     use_textline_orientation: bool = False
-
-
-class PPStructureSettings(BaseModel):
-    """PPStructure layout parsing model settings."""
-
-    url: str = ""
-    access_token: str = ""
-    timeout_seconds: int = Field(default=600, ge=1)
-    use_doc_orientation_classify: bool = False
-    use_doc_unwarping: bool = False
-    use_textline_orientation: bool = False
-    use_table_recognition: bool = True
-    use_seal_recognition: bool = True
-    use_region_detection: bool = True
-    format_block_content: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +116,3 @@ class MatchingSettings(BaseModel):
         if url and not url.startswith(("http://", "https://")):
             raise ValueError("rerank_base_url must start with http:// or https://")
         return url
-
-
-class RegistrySettings(BaseModel):
-    """Model registry preload settings."""
-
-    preload_models: list[str] = Field(default_factory=list)

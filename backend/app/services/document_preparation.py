@@ -5,6 +5,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.page_number_evidence import PAGE_NUMBER_PATTERN
 from app.services.document_understanding import DocumentUnderstandingService
 from app.models import BBox, Document, Page, TextBlock
 from app.services.cover.patterns import parse_labeled_line
@@ -46,9 +47,7 @@ class DocumentPreparer:
     def __init__(self, *, image_analysis_max_inflight: int = 2):
         self.image_analysis_max_inflight = image_analysis_max_inflight
 
-    page_number_pattern = re.compile(
-        r"^(?:第?\s*\d+\s*页?|第\s*\d+\s*页\s*共\s*\d+\s*页|共\s*\d+\s*页\s*第\s*\d+\s*页|[-—–_]*\s*\d+\s*[-—–_]*)$"
-    )
+    page_number_pattern = PAGE_NUMBER_PATTERN
     clause_heading_pattern = re.compile(
         r"^\s*(?:第[一二三四五六七八九十百千万0-9]+[章节条]|[一二三四五六七八九十百千万0-9]+[、.．])"
     )
@@ -135,6 +134,34 @@ class DocumentPreparer:
         for side, block in timed("local_source_disagreement", reconcile_local_source_disagreement, original, compare):
             result.decisions.append(DocumentPreparationDecision(side=side,page_no=block.page_no,block_id=block.block_id,
                 reason="own_layout_and_peer_sources_agree",text_preview=block.text))
+        from app.services.formula_variable_ocr import reconcile_formula_variables
+        for side, block in timed("formula_variables", reconcile_formula_variables, original, compare):
+            result.decisions.append(DocumentPreparationDecision(side=side, page_no=block.page_no,
+                block_id=block.block_id, reason="own_formula_variable_two_scale_verified", text_preview=block.text))
+        from app.services.payment_symbol_ocr import reconcile_payment_symbols
+        for side, block in timed("payment_symbols", reconcile_payment_symbols, original, compare):
+            result.decisions.append(DocumentPreparationDecision(side=side, page_no=block.page_no,
+                block_id=block.block_id, reason="own_payment_symbol_two_scale_verified", text_preview=block.text))
+        from app.services.numeric_range_ocr import reconcile_numeric_ranges
+        for side, block in timed("numeric_ranges", reconcile_numeric_ranges, original, compare):
+            result.decisions.append(DocumentPreparationDecision(side=side, page_no=block.page_no,
+                block_id=block.block_id, reason="own_numeric_range_two_scale_verified", text_preview=block.text))
+        from app.services.single_character_ocr import reconcile_single_characters
+        for side, block in timed("single_characters", reconcile_single_characters, original, compare):
+            result.decisions.append(DocumentPreparationDecision(side=side, page_no=block.page_no,
+                block_id=block.block_id, reason="own_single_character_two_context_verified", text_preview=block.text,
+                source_evidence=[e.model_dump(mode="json") for e in block.source_evidence
+                                 if e.source in {"single_character_before", "single_character_roi_ppocr"}]))
+        from app.services.financial_amount_ocr import reconcile_financial_amounts
+        for side, block in timed("financial_amounts", reconcile_financial_amounts, original, compare):
+            result.decisions.append(DocumentPreparationDecision(side=side, page_no=block.page_no,
+                block_id=block.block_id, reason="own_financial_amount_two_context_verified", text_preview=block.text,
+                source_evidence=[e.model_dump(mode="json") for e in block.source_evidence
+                                 if e.source in {"financial_amount_before", "financial_amount_roi_ppocr"}]))
+        from app.services.document_role_repair import reconcile_interior_document_titles
+        for side, block in timed("interior_titles", reconcile_interior_document_titles, original, compare):
+            result.decisions.append(DocumentPreparationDecision(side=side, page_no=block.page_no,
+                block_id=block.block_id, reason="paired_interior_document_title", text_preview=block.text))
         for side, block in timed("body_roles", reconcile_body_roles, original, compare):
             result.decisions.append(DocumentPreparationDecision(
                 side=side, page_no=block.page_no, block_id=block.block_id,
@@ -143,10 +170,37 @@ class DocumentPreparer:
         for side, block in timed("contact_placeholders", reconcile_contact_placeholders, original, compare):
             result.decisions.append(DocumentPreparationDecision(
                 side=side, page_no=block.page_no, block_id=block.block_id,
-                reason="paired_contact_placeholder", text_preview=block.text,
+                reason="own_contact_placeholder_pixels", text_preview=block.text,
+                source_evidence=[e.model_dump(mode="json") for e in block.source_evidence],
             ))
+        from app.services.printed_text_recall import recover_printed_signing_lines, recover_occluded_field_lines
+        for side, reference, target in (("compare", original, compare), ("original", compare, original)):
+            for block in timed("occluded_field_recall", recover_occluded_field_lines, reference, target):
+                result.decisions.append(DocumentPreparationDecision(side=side, page_no=block.page_no,
+                    block_id=block.block_id, reason="own_occluded_field_two_scale_verified", text_preview=block.text))
+            for block in timed("printed_signing_recall", recover_printed_signing_lines, reference, target):
+                result.decisions.append(DocumentPreparationDecision(side=side, page_no=block.page_no,
+                    block_id=block.block_id, reason="own_red_suppressed_printed_line", text_preview=block.text))
         timed("original", self.prepare, original, "original", result)
         timed("compare", self.prepare, compare, "compare", result)
+        from app.services.heading_recovery import reconcile_numbered_heading_roles
+        for side, block in timed("numbered_heading_roles", reconcile_numbered_heading_roles, original, compare):
+            result.decisions.append(DocumentPreparationDecision(
+                side=side, page_no=block.page_no, block_id=block.block_id,
+                reason="paired_located_numbered_heading", text_preview=block.text,
+            ))
+        from app.services.page_number_evidence import paired_counter_role_recoveries
+        for side, block, reference in timed("paired_page_counters", paired_counter_role_recoveries, original, compare):
+            block.enter_clause_compare = False
+            self._mark_role(block, side, "page_footer", "paired_page_counter_geometry_verified", result)
+            result.decisions[-1].source_evidence = [{
+                "source": "opposite_confirmed_page_counter",
+                "page_no": reference.page_no,
+                "block_id": reference.block_id,
+                "raw_text": reference.text,
+                "bbox": reference.bbox.model_dump(mode="json"),
+                "confidence": reference.confidence,
+            }]
         return result
 
     def prepare(self, document: Document, side: str, result: DocumentPreparationResult | None = None) -> DocumentPreparationResult:
@@ -212,11 +266,66 @@ class DocumentPreparer:
 
         from app.services.header_footer_compare import HeaderFooterComparator
         footer_blocks = timed("footer_ownership", HeaderFooterComparator().owned_footer_blocks, document)
+        header_blocks = timed("header_ownership", HeaderFooterComparator().owned_header_blocks, document)
+        attachment_instance = ""
         for page in document.pages:
+            entries = self._attachment_entry_blocks(page)
+            from app.services.page_number_evidence import page_counters
+            counters = page_counters(page)
             for block in page.blocks:
+                if any(c.bbox.x0 <= block.bbox.x0 and c.bbox.x1 >= block.bbox.x1
+                       and c.bbox.y0 <= block.bbox.y0 and c.bbox.y1 >= block.bbox.y1
+                       for c in counters):
+                    block.enter_clause_compare = False
+                    self._mark_role(block, side, "page_footer", "page_counter_glyph_ownership", result)
+                if block.block_id in entries:
+                    attachment_instance = entries[block.block_id]
+                    if "document_entry_boundary" not in block.semantic_reasons:
+                        block.semantic_reasons.append("document_entry_boundary")
+                    block.enter_clause_compare = True
+                    self._mark_role(block, side, "appendix_section", "attachment_page_entry", result)
+                if attachment_instance:
+                    reason = "attachment_instance:" + attachment_instance
+                    if reason not in block.semantic_reasons:
+                        block.semantic_reasons.append(reason)
+                if (page.page_no, block.block_id) in header_blocks:
+                    block.enter_clause_compare = False
+                    self._mark_role(block, side, "page_header", "shared_header_evidence_ownership", result)
                 if (page.page_no, block.block_id) in footer_blocks:
                     block.enter_clause_compare = False
                     self._mark_role(block, side, "page_footer", "shared_footer_evidence_ownership", result)
+        return result
+
+    @staticmethod
+    def _attachment_entry_blocks(page: Page) -> dict[str, str]:
+        """An attachment number followed by its title establishes a local entry.
+
+        A mid-page reference or a catalog of attachment numbers is not an entry.
+        Coordinate tolerance is relative to glyph height for scanned headings.
+        """
+        headings = {"doc_title", "paragraph_title", "title"}
+        blocks = [b for b in page.blocks if b.text.strip() and b.flow_role not in {"margin", "non_text"}
+                  and b.block_type not in {"header", "footer", "number", "image", "seal"}]
+        blocks.sort(key=lambda b: (b.bbox.y0, b.bbox.x0))
+        result = {}
+        for index, marker in enumerate(blocks[:-1]):
+            text = re.sub(r"\s+", "", marker.text)
+            if not re.fullmatch(r"(?:附件|附录)[一二三四五六七八九十百0-9]+[:：、.．]?", text):
+                continue
+            title = blocks[index+1]
+            height = max(1, marker.bbox.y1-marker.bbox.y0, title.bbox.y1-title.bbox.y0)
+            gap = title.bbox.y0-marker.bbox.y1
+            title_text = re.sub(r"\s+", "", title.text)
+            if (page.height <= 0 or marker.bbox.y0 > page.height*.25 or title.bbox.y1 > page.height*.35
+                    or title.block_type not in headings or not 2 <= len(title_text) <= 50
+                    or re.match(r"附件|附录|目录", title_text) or re.search(r"[。；;…]", title_text)
+                    or not -height*.25 <= gap <= height*4):
+                continue
+            # Do not treat an item in a contents list as an attachment opening.
+            if any("目录" == re.sub(r"\s+", "", b.text) for b in blocks[:index]):
+                continue
+            # The visible title may genuinely change; it is not an identity key.
+            result[marker.block_id] = text.rstrip(":：、.．")
         return result
 
     @staticmethod
@@ -408,6 +517,7 @@ class DocumentPreparer:
             if (block.block_type or "").lower() in self.table_block_types
         ]
 
+        entry_blocks = self._quotation_entry_blocks(page, table_blocks)
         for block in self._section_flow_blocks(page):
             if block.raw_html and "设置格式" in block.raw_html:
                 def strip_revision_cell(match: re.Match[str]) -> str:
@@ -432,6 +542,12 @@ class DocumentPreparer:
                 continue
             if self._is_page_number_footer(block, page, compact):
                 self._mark_role(block, side, "page_footer", "page_number_footer", result)
+                continue
+            if block.block_id in entry_blocks:
+                active_section_role = "quote_section"
+                self._mark_role(block, side, active_section_role, "quotation_page_entry", result)
+                if block.block_id == entry_blocks[0] and "document_entry_boundary" not in block.semantic_reasons:
+                    block.semantic_reasons.append("document_entry_boundary")
                 continue
             section_role = self._section_role(block, compact)
             if section_role:
@@ -471,6 +587,29 @@ class DocumentPreparer:
                 self._mark_role(block, side, role, "footnote_secondary_classification", result)
 
         return active_section_role
+
+    def _quotation_entry_blocks(self, page: Page, tables: list[TextBlock]) -> list[str]:
+        """Bind a quotation's leading masthead to its title, before forward roles.
+
+        Require a heading near the page top, followed by a table, with no prose
+        preceding it. Mid-page quotations and ordinary continuation text keep
+        their existing boundaries. No company-name vocabulary is involved.
+        """
+        headings = {"doc_title", "paragraph_title", "title"}
+        margins = {"header", "footer", "page_header", "page_footer", "image", "seal", "stamp"}
+        ordered = sorted(page.blocks, key=lambda b: (b.bbox.y0, b.bbox.x0))
+        for title in ordered:
+            compact = re.sub(r"\s+", "", title.text)
+            if (title.block_type not in headings or title.bbox.y1 > page.height * .25
+                    or self._section_role(title, compact) != "quote_section"
+                    or not any(t.bbox.y0 >= title.bbox.y1 for t in tables)):
+                continue
+            leading = [b for b in ordered if b.bbox.y0 < title.bbox.y0 and b.text.strip()
+                       and b.block_type not in margins and b.flow_role not in {"margin", "non_text"}]
+            if any(b.block_type not in headings for b in leading):
+                continue
+            return [b.block_id for b in [*leading, title]]
+        return []
 
     def _is_strong_clause_candidate(self, block: TextBlock, page: Page) -> bool:
         text = unicodedata.normalize("NFKC", block.text or "").strip()
@@ -569,10 +708,6 @@ class DocumentPreparer:
         if self.appendix_title_pattern.match(compact):
             return False
         return bool(re.search(r"(?:^正文$|达成合同如下|合同正文)", compact))
-
-    def _median_block_height(self, blocks: list[TextBlock]) -> float:
-        heights = sorted(max(0.0, block.bbox.y1 - block.bbox.y0) for block in blocks)
-        return heights[len(heights) // 2] if heights else 0.0
 
     def _is_cover_metadata(self, block: TextBlock) -> bool:
         for line in (block.text or "").splitlines():

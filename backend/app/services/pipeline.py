@@ -88,6 +88,7 @@ class PipelineContext:
     signing_region_covered_diff_ids: set[str] = field(default_factory=set)
     signing_region_debug: dict[str, Any] = field(default_factory=dict)
     page_alignment: Any | None = None
+    region_comparison: Any | None = None
     diffs: list[DiffItem] = field(default_factory=list)
     progress_callback: Callable[[int, str, dict[str, Any] | None], None] | None = None
     page_render_cache: Any | None = None

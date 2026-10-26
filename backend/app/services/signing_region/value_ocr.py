@@ -130,6 +130,10 @@ class SigningFieldValueOCR:
                 element.raw_ref["content_recognition_reason"] = "DISPUTED_DATE_REQUIRES_INDEPENDENT_EVIDENCE"
             return [self._recover_occluded_printed_field(document, element) for element in candidates]
 
+    def enrich_disputed_identifiers(self, pdf_path, region, peer) -> list[dict]:
+        from app.services.signing_region.identifier_ocr import recover_disputed_credit_codes
+        return recover_disputed_credit_codes(pdf_path, region, peer, self.extractor)
+
     def enrich(self, pdf_path: str | Path, regions: list[SigningRegion]) -> list[dict[str, object]]:
         candidates = [
             element
@@ -176,6 +180,8 @@ class SigningFieldValueOCR:
                         element.raw_ref["value_roi"] = roi.model_dump()
                 if any(seal.page_no == element.page_no and min(seal.bbox.x1, roi.x1) > max(seal.bbox.x0, roi.x0)
                        and min(seal.bbox.y1, roi.y1) > max(seal.bbox.y0, roi.y0) for seal in seals):
+                    if element.element_type == SigningElementType.PARTY_FIELD:
+                        self._expand_incomplete_party_roi(element, region, source_document)
                     candidates.append(element)
         if not candidates:
             return []
@@ -194,8 +200,63 @@ class SigningFieldValueOCR:
                                 support.append({"text":match[2],"page_no":p.page_no,"bbox":b.bbox.model_dump(),
                                                 "block_id":b.block_id,"source":b.source,"confidence":b.confidence})
                     element.raw_ref["same_document_party_support"] = support
-                diagnostics.append(self._recover_occluded_printed_field(document, element))
+                is_party = element.raw_ref.get("field_key") == "party_name"
+                if is_party:
+                    element.raw_ref["content_recognition_status"] = "NEEDS_REVIEW"
+                    element.raw_ref["content_recognition_reason"] = "OCCLUDED_PARTY_REQUIRES_LOCAL_EVIDENCE"
+                diagnostic = self._recover_occluded_printed_field(document, element)
+                if is_party and diagnostic["status"] != "RECOVERED":
+                    element.raw_ref["content_recognition_reason"] = str(diagnostic["status"])
+                diagnostics.append(diagnostic)
         return diagnostics
+
+    @classmethod
+    def _expand_incomplete_party_roi(cls, element, region, document) -> None:
+        """Recover the field extent from same-side column anchors, not missing OCR text."""
+        from app.services.signing_region.comparator import SigningRegionComparator
+        name = SigningRegionComparator._normalized_party_name(element.text)
+        if document is None or re.search(r"(?:公司|中心|厂|院|局)$", name):
+            return
+        page = next((p for p in document.pages if p.page_no == element.page_no), None)
+        boxes = element.raw_ref.get("field_bboxes") or []
+        if page is None or not boxes:
+            return
+        anchor = BBox.model_validate(boxes[0])
+        neighbors = [e for e in region.elements if e.element_type == SigningElementType.PARTY_FIELD
+                     and e.raw_ref.get("party_role") != element.raw_ref.get("party_role")
+                     and e.bbox.x0 > anchor.x1 + 40 and abs(e.bbox.y0-anchor.y0) < 30]
+        if not neighbors:
+            return
+        neighbor_roles = {e.raw_ref.get("party_role") for e in neighbors}
+        neighbor_lines = [b.bbox.x0 for b in page.blocks
+                          if (label := re.match(r"^(甲方|乙方|买方|卖方|设计方)\s*[:：]", b.text))
+                          and label[1] in neighbor_roles and b.bbox.x0 > anchor.x1+40
+                          and abs(b.bbox.y0-anchor.y0) < 30]
+        right = min([*(e.bbox.x0 for e in neighbors), *neighbor_lines])-1
+        if right <= anchor.x1 or right-anchor.x0 > 350:
+            return
+        # A wrapped company suffix can survive even when the preceding name
+        # was truncated. Use its own geometry without inventing missing text.
+        tails = [b.bbox for b in page.blocks
+                 if re.fullmatch(r"(?:司|公司|限公司|有限公司)", cls._compact(b.text))
+                 and abs(b.bbox.x0-anchor.x0) <= 25 and b.bbox.x1 < right
+                 and anchor.y1 <= b.bbox.y0 <= anchor.y1+40]
+        bottom = max([anchor.y1, *(b.y1 for b in tails)])
+        stops = [e.bbox.y0 for e in region.elements if e is not element
+                 and e.raw_ref.get("party_role") == element.raw_ref.get("party_role")
+                 and e.bbox.y0 > anchor.y1 and e.element_type != SigningElementType.SEAL
+                 and e.bbox.x0 < right]
+        if stops:
+            bottom = min(bottom, min(stops)-3)
+        if bottom < anchor.y1:
+            return
+        roi = BBox(x0=max(0, min([anchor.x0, *(b.x0 for b in tails)])-2),
+                   y0=anchor.y0-2, x1=min(right,page.width), y1=bottom)
+        element.raw_ref["party_recovery_roi"] = {
+            "before": element.raw_ref["value_roi"], "after": roi.model_dump(),
+            "basis": "SAME_SIDE_PARTY_COLUMN_AND_WRAPPED_SUFFIX",
+        }
+        element.raw_ref["value_roi"] = roi.model_dump()
 
     def _recover_occluded_printed_field(self, document: fitz.Document, element: SigningElement) -> dict[str, object]:
         import numpy as np
@@ -262,6 +323,14 @@ class SigningFieldValueOCR:
                         for b in blocks if b not in selected)
                     blocks = selected
                 if allow_wrapped_party:
+                    if element.raw_ref.get("party_recovery_roi"):
+                        for index, b in enumerate(blocks):
+                            label = re.match(r"^(甲方|乙方|买方|卖方|设计方)\s*[:：]\s*", b.text)
+                            if label:
+                                if label[1] != element.raw_ref.get("party_role"):
+                                    diagnostic["status"] = "NEIGHBOR_PARTY_IN_VALUE_ROI"
+                                    return diagnostic
+                                blocks[index] = b.model_copy(update={"text": b.text[label.end():]})
                     rejected = [b for b in blocks if b.confidence is not None and b.confidence < 0.5 and len(b.text.strip()) == 1]
                     diagnostic.setdefault("rejected_local_fragments", []).extend(
                         {"text": b.text, "confidence": b.confidence, "render_scale": scale} for b in rejected)
@@ -283,8 +352,11 @@ class SigningFieldValueOCR:
                 value = "".join(item.text.strip() for item in blocks)
                 if len(blocks) > 1:
                     for first, second in zip(blocks, blocks[1:]):
+                        wrapped_suffix = (allow_wrapped_party and element.raw_ref.get("party_recovery_roi")
+                                          and re.fullmatch(r"(?:司|公司|限公司|有限公司)", self._compact(second.text)))
                         if (second.bbox.y0 < first.bbox.y1 - 2 or second.bbox.x0 > first.bbox.x0 + 30
-                            or (not allow_wrapped_address and second.bbox.y0 - first.bbox.y1 > first.bbox.y1 - first.bbox.y0)):
+                            or (not allow_wrapped_address and second.bbox.y0 - first.bbox.y1 >
+                                (first.bbox.y1 - first.bbox.y0)*(1.8 if wrapped_suffix else 1))):
                             diagnostic["status"] = "AMBIGUOUS_WRAPPED_FIELD"
                             return diagnostic
                     block = block.model_copy(update={"bbox": BBox(
@@ -328,19 +400,23 @@ class SigningFieldValueOCR:
                               error=type(exc).__name__)
             return diagnostic
         values = {item["normalized_text"] for item in readings}
-        if len(values) != 1 or len(next(iter(values), "")) < 6:
+        if len(values) != 1:
             diagnostic["status"] = "LOCAL_READINGS_DISAGREE"
+            return diagnostic
+        if len(next(iter(values), "")) < 6:
+            diagnostic["status"] = ("INCOMPLETE_PARTY_NAME" if element.element_type == SigningElementType.PARTY_FIELD
+                                    else "INCOMPLETE_LOCAL_READING")
             return diagnostic
         value = readings[0]["text"]
         old = self._compact(element.text)
         if element.element_type == SigningElementType.PARTY_FIELD:
-            old = re.sub(r"^(?:甲方|乙方|丙方|丁方|买方|卖方|设计方)[:：]", "", old)
+            from app.services.signing_region.comparator import SigningRegionComparator
+            old = SigningRegionComparator._normalized_party_name(old)
         normalized = self._compact(value)
         repairing_contaminated_address = (element.raw_ref.get("field_key") == "address"
             and bool(element.raw_ref.get("rejected_contaminated_evidence"))
             and len(old) >= 6 and normalized.startswith(old[:6]))
         corroborated_party = (element.raw_ref.get("field_key") == "party_name"
-            and element.raw_ref.get("source_block_type") in {"seal", "seal_region"}
             and {self._compact(s['text']) for s in element.raw_ref.get("same_document_party_support", [])} == {normalized})
         if old and not self._ordered_fragment(old, normalized) and not repairing_contaminated_address and not corroborated_party:
             diagnostic["status"] = "LOCAL_READING_CONFLICTS_WITH_EXISTING_VALUE"
@@ -352,8 +428,19 @@ class SigningFieldValueOCR:
         ):
             diagnostic["status"] = "INCOMPLETE_PARTY_NAME"
             return diagnostic
-        element.text = (f"{element.raw_ref.get('party_role')}：{value}"
-                        if element.element_type == SigningElementType.PARTY_FIELD else value)
+        if element.element_type == SigningElementType.PARTY_FIELD:
+            # Local OCR reads the name only. Retain separately owned instructions
+            # and replace stale company geometry together with the corrected text.
+            suffixes = [(segment, bbox) for segment, bbox in zip(
+                element.raw_ref.get("field_segments", []), element.raw_ref.get("field_bboxes", []))
+                if re.fullmatch(r"[（(]?盖章[）)]?", segment.strip())]
+            company = f"{element.raw_ref.get('party_role')}：{value}"
+            element.text = company + "".join(s for s, _ in suffixes)
+            element.raw_ref["field_segments"] = [company, *(s for s, _ in suffixes)]
+            element.raw_ref["field_bboxes"] = [readings[0]["bbox"], *(b for _, b in suffixes)]
+            element.raw_ref["field_char_boxes"] = []
+        else:
+            element.text = value
         element.raw_ref["superseded_value_evidence"] = element.raw_ref.get("value_evidence", [])
         element.raw_ref["value_evidence"] = readings
         element.raw_ref["value_bbox"] = readings[0]["bbox"]

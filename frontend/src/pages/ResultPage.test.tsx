@@ -19,6 +19,18 @@ beforeEach(()=>{
  mocks.error=''; mocks.isLoading=false; mocks.completionAnimating=false;
  mocks.getEvents.mockResolvedValue(data); mocks.review.mockResolvedValue(data); mocks.download.mockResolvedValue(undefined);
 });
+it('shows a party field first and expands its original clause context',async()=>{
+ const event={...data.events[0],children:[],diff:{...data.events[0].diff,title:'委托人 · 法定代表人',original_text:'许峰',compare_text:'吴峻'},context:{original_text:'原条款完整上下文',compare_text:'新条款完整上下文'}};
+ mocks.getEvents.mockResolvedValue({...data,events:[event]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('委托人 · 法定代表人');
+ expect(screen.getByText('许峰')).toBeVisible();
+ const summary=screen.getByText('查看条款上下文');
+ expect(summary.closest('details')).not.toHaveAttribute('open');
+ fireEvent.click(summary);
+ expect(summary.closest('details')).toHaveAttribute('open');
+ expect(screen.getByText('原条款完整上下文')).toBeVisible();
+});
 it('synchronizes legacy documents by reading progress in both directions and honors the checkbox',async()=>{
  mocks.getEvents.mockResolvedValue({...data,context_available:false,page_alignment:[]});
  render(<ResultPage taskId="x" onBack={()=>{}}/>);
@@ -180,4 +192,100 @@ it('requests events during completion animation and does not refetch or remount 
  expect(screen.getAllByTestId('viewer')[0]).toBe(viewer);
  expect(screen.getByText('连续新增内容')).toBe(card);
  expect(mocks.getEvents).toHaveBeenCalledTimes(1);
+});
+
+it('locates and reviews unresolved tables when there are no change events', async () => {
+ const observation = {observation_id:'observation-D005',title:'表格对应关系待复核',reason:'TABLE_STRUCTURE_UNRESOLVED',message:'单元格对应关系尚未完整建立',review_status:'UNREVIEWED',original_evidence:[{page_no:1,bbox:{x0:20,y0:300,x1:570,y1:500},method:'comparison_observation'}],compare_evidence:[{page_no:1,bbox:{x0:30,y0:310,x1:560,y1:510},method:'comparison_observation'}]};
+ mocks.getEvents.mockResolvedValue({...data,event_count:0,events:[],comparison_observations:[observation]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ fireEvent.click(await screen.findByText('区域待复核 1 处（不计入差异数）'));
+ fireEvent.click(await screen.findByRole('button',{name:/表格对应关系待复核/}));
+ expect(mocks.scroll).toHaveBeenCalledTimes(2);
+ expect(mocks.scroll.mock.calls[0][0].diff_id).toBe('observation-D005');
+ expect(screen.getByText('已筛选出 0 条')).toBeInTheDocument();
+ expect(screen.getByText('当前筛选无已确认变化，仍有区域待复核')).toBeInTheDocument();
+ fireEvent.change(screen.getByLabelText('核验 observation-D005'),{target:{value:'CONFIRMED'}});
+ await waitFor(()=>expect(mocks.review).toHaveBeenCalledWith('x','observation-D005',1,'CONFIRMED'));
+});
+
+it('keeps many footer observations in the sidebar scrollport without changing counts', async () => {
+ const observations = Array.from({length:41}, (_,i) => ({observation_id:`ink-${i}`,title:'页脚印迹待复核',
+   reason:'VISUAL_FOOTER_CONTENT_UNVERIFIED',message:'尚不能确认是笔迹还是残影',review_status:'UNREVIEWED',
+   original_evidence:[],compare_evidence:[{page_no:i+1,bbox:{x0:20,y0:780,x1:120,y1:825},method:'comparison_observation'}]}));
+ mocks.getEvents.mockResolvedValue({...data,comparison_observations:observations});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ const summary=await screen.findByText('区域待复核 41 处（不计入差异数）');
+ const panel=summary.closest('details')!;
+ expect(panel).not.toHaveAttribute('open');
+ expect(panel.closest('.event-cards')).not.toBeNull();
+ fireEvent.click(summary);
+ fireEvent.click(screen.getByRole('button',{name:/页脚印迹待复核 · 标准第 无 页 \/ 比对第 41 页/}));
+ expect(mocks.scroll.mock.calls.at(-1)?.[0].compare_evidence[0].page_no).toBe(41);
+ expect(screen.getByText('已筛选出 1 条')).toBeInTheDocument();
+});
+
+it('shows seal observations by default while footer outlines remain optional and filtered', async () => {
+ const o={observation_id:'ink-1',source_type:'header_footer',title:'页脚印迹待复核',reason:'VISUAL_FOOTER_CONTENT_UNVERIFIED',message:'待复核',review_status:'UNREVIEWED',original_evidence:[],compare_evidence:[{page_no:1,bbox:{x0:20,y0:780,x1:120,y1:825},method:'comparison_observation'}]};
+ mocks.getEvents.mockResolvedValue({...data,comparison_observations:[o,{...o,observation_id:'seal-1',source_type:'seal',title:'印章待复核'}]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('连续新增内容');
+ const counts=()=>screen.getAllByTestId('viewer').map(v=>v.textContent);
+ expect(counts()).toEqual(['2','2']);
+ fireEvent.click(screen.getByText('区域待复核 2 处（不计入差异数）'));
+ fireEvent.click(screen.getByRole('button',{name:/页脚印迹待复核/}));
+ expect(counts()).toEqual(['3','3']);
+ fireEvent.click(screen.getByLabelText('显示其他待复核框'));
+ expect(counts()).toEqual(['3','3']);
+ fireEvent.change(screen.getByLabelText('元素筛选'),{target:{value:'seal'}});
+ expect(counts()).toEqual(['1','1']);
+ expect(screen.queryByRole('button',{name:/页脚印迹待复核/})).not.toBeInTheDocument();
+ fireEvent.change(screen.getByLabelText('类型筛选'),{target:{value:'DELETE'}});
+ expect(counts()).toEqual(['0','0']);
+ fireEvent.change(screen.getByLabelText('类型筛选'),{target:{value:'ALL'}});
+ fireEvent.click(screen.getByLabelText('显示其他待复核框'));
+ expect(counts()).toEqual(['1','1']);
+});
+
+it('keeps both a suspected mirrored seal and an unresolved seal visible without adding events', async () => {
+ const seal={source_type:'seal',title:'印章印迹待复核',reason:'FAINT_INK_OR_SCAN_ARTIFACT_UNRESOLVED',message:'已检测到印章印迹',review_status:'UNREVIEWED',original_evidence:[],compare_evidence:[{page_no:12,bbox:{x0:336,y0:136,x1:448,y1:256},method:'comparison_observation'}]};
+ mocks.getEvents.mockResolvedValue({...data,event_count:0,events:[],comparison_observations:[
+   {...seal,observation_id:'right'},
+   {...seal,observation_id:'left',reason:'MIRRORED_ADJACENT_PAGE_IMPRESSION',title:'印章印迹（疑似透印）',compare_evidence:[{...seal.compare_evidence[0],bbox:{x0:103,y0:146,x1:212,y1:261}}]},
+   {...seal,observation_id:'ignored',review_status:'IGNORED'}]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('区域待复核 3 处（不计入差异数）');
+ expect(screen.getAllByTestId('viewer').map(v=>v.textContent)).toEqual(['2','2']);
+ expect(screen.getByText('已筛选出 0 条')).toBeInTheDocument();
+ fireEvent.change(screen.getByLabelText('元素筛选'),{target:{value:'header_footer'}});
+ expect(screen.getAllByTestId('viewer').map(v=>v.textContent)).toEqual(['0','0']);
+});
+
+it('keeps review and historical undo without seal confirmation buttons', async () => {
+ const seal={observation_id:'seal-1',source_type:'seal',title:'印章印迹（疑似透印）',reason:'MIRRORED_ADJACENT_PAGE_IMPRESSION',message:'疑似透印',review_status:'UNREVIEWED',original_evidence:[],compare_evidence:[{page_no:12,bbox:{x0:100,y0:100,x1:200,y1:200},method:'comparison_observation'}]};
+ const promoted={...data.events[0],event_id:'seal-event',raw_diff_ids:['seal-raw'],direction:'ADD',children:[],diff:{...item('seal-event'),source_type:'seal',title:'印章印迹',match_score_details:{seal_observation_id:'historical-seal',seal_change_decision:'CONFIRMED'}}};
+ mocks.getEvents.mockResolvedValue({...data,event_count:1,events:[promoted],comparison_observations:[seal]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ fireEvent.click(await screen.findByText('区域待复核 1 处（不计入差异数）'));
+ expect(screen.queryByRole('button',{name:/确认.*印章|确认为透印/})).not.toBeInTheDocument();
+ expect(screen.getByLabelText('审核差异 1')).toBeInTheDocument();
+ expect(screen.getByLabelText('核验 seal-1')).toBeInTheDocument();
+ mocks.review.mockRejectedValueOnce(new Error('任务或审核版本已变化'));
+ fireEvent.click(screen.getByRole('button',{name:'撤销印章裁决'}));
+ await waitFor(()=>expect(mocks.review).toHaveBeenCalledWith('x','seal-event',1,'UNREVIEWED','RESET'));
+ expect(await screen.findByRole('alert')).toHaveTextContent('任务或审核版本已变化');
+ expect(screen.getByText('已筛选出 1 条')).toBeInTheDocument();
+});
+
+it('shows counted footer ink and its origin note without enabling observation outlines', async () => {
+ const event={...data.events[0],event_id:'ink',raw_diff_ids:['ink'],direction:'ADD',diff:{...data.events[0].diff,
+  diff_id:'ink',source_type:'header_footer',title:'第35页左下角印迹（疑似透印）',
+  readable_change:'本页存在印迹变化，已计入差异；疑似透印，具体字迹待复核。',
+  match_score_details:{object_type:'FOOTER_INK_CHANGE',footer_origin_decision:'SUSPECTED_MIRROR'},
+  compare_evidence:[{page_no:35,bbox:{x0:40,y0:780,x1:90,y1:815},method:'footer_ink_change'}]}};
+ mocks.getEvents.mockResolvedValue({...data,event_count:1,events:[event],comparison_observations:[]});
+ render(<ResultPage taskId="x" onBack={()=>{}}/>);
+ await screen.findByText('第35页左下角印迹（疑似透印）');
+ expect(screen.getByText(event.diff.readable_change)).toBeInTheDocument();
+ expect(screen.getAllByTestId('viewer').map(v=>v.textContent)).toEqual(['1','1']);
+ expect(screen.queryByLabelText('显示其他待复核框')).not.toBeInTheDocument();
 });

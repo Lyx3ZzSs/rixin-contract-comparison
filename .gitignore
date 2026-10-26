@@ -210,6 +210,8 @@ frontend/coverage/
 *.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+frontend/vite.pdf-cmaps.js
+frontend/vite.pdf-cmaps.d.ts
 .layout-report*/
 backend/.layout-report*/
 

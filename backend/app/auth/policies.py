@@ -17,6 +17,3 @@ class TaskAccessPolicy:
         if not owner_sub:
             return False
         return user.has_any_role(AGENT_ADMIN) or owner_sub == user.sub
-
-    def filter_visible(self, tasks: list[CompareTask], user: CurrentUser) -> list[CompareTask]:
-        return [task for task in tasks if self.can_read(task, user)]

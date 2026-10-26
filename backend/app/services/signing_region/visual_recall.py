@@ -10,6 +10,7 @@ import fitz
 from app.models import BBox, DiffItem, Document, EvidenceBox, Page, TextBlock, TextRange
 from app.services.page_alignment import PageAlignmentResult
 from app.services.signing_region.models import SigningVisualObject, SigningVisualObjectType
+from app.services.seal_semantics import normalize_seal_source
 
 
 _SIGNING_MARKER_RE = re.compile(r"甲方|乙方|委托人|承包人|发包人|承包方|采购人|供应商|法定代表|授权代表|委托代理|签字|签名|盖章|公章|签订日期|签字日期")
@@ -81,7 +82,9 @@ class WholePageSigningVisualRecall:
                 image = self._render_page(pdf[page_no - 1], np)
                 if image is None:
                     continue
-                red_objects = self._red_objects(model_page, image, cv2, np)
+                red_objects = self._red_objects(model_page, image, cv2, np,
+                    scan_right=self._scan_right(pdf[page_no - 1], model_page))
+                red_objects = self._resolve_layout_edge_seals(model_page, red_objects)
                 for item in red_objects:
                     item.raw_ref.setdefault("document_page_count", document.page_count)
                 date_objects = self._date_objects(model_page, image, cv2, np)
@@ -172,6 +175,12 @@ class WholePageSigningVisualRecall:
         next_index = start_index
         for visual_object in result.additions:
             if (visual_object.object_type == SigningVisualObjectType.EDGE_SEAM_SEAL
+                    and all(max(box.x1-box.x0, box.y1-box.y0) < 15.0
+                            for box in (visual_object.fragment_bboxes or [visual_object.bbox]))):
+                visual_object.raw_ref['change_decision'] = 'UNOBSERVED'
+                visual_object.raw_ref['decision_reason'] = 'EDGE_SPECKS_WITHOUT_SEAL_STRUCTURE'
+                continue
+            if (visual_object.object_type == SigningVisualObjectType.EDGE_SEAM_SEAL
                     and visual_object.fragment_bboxes
                     and all(box.x1-box.x0 <= 2.5 for box in visual_object.fragment_bboxes)):
                 # Sub-2.5-point scan-edge slivers have no observable seal
@@ -191,6 +200,7 @@ class WholePageSigningVisualRecall:
                     result.new_diff_ids.append(new_diff.diff_id)
                     continue
                 canonical = self._canonical_diff(visual_object, matches)
+                self._preserve_fused_party(canonical, visual_object, matches)
                 if visual_object.object_type == SigningVisualObjectType.EDGE_SEAM_SEAL:
                     canonical.compare_evidence = [e for item in matches for e in item.compare_evidence]
                 source_evidence = [
@@ -203,6 +213,7 @@ class WholePageSigningVisualRecall:
                 canonical.match_score_details["fused_object_evidence"] = source_evidence
                 result.reconciled_diff_ids.append(canonical.diff_id)
                 if visual_object.object_type in {
+                    SigningVisualObjectType.COMPANY_ROUND_SEAL,
                     SigningVisualObjectType.PERSONAL_NAME_SEAL,
                     SigningVisualObjectType.EDGE_SEAM_SEAL,
                 }:
@@ -210,7 +221,8 @@ class WholePageSigningVisualRecall:
                         if duplicate is canonical:
                             continue
                         if (
-                            visual_object.object_type == SigningVisualObjectType.PERSONAL_NAME_SEAL
+                            visual_object.object_type in {SigningVisualObjectType.PERSONAL_NAME_SEAL,
+                                                          SigningVisualObjectType.COMPANY_ROUND_SEAL}
                             and not self._same_physical_object(visual_object, duplicate)
                         ):
                             continue
@@ -227,7 +239,9 @@ class WholePageSigningVisualRecall:
             signing.append(new_diff)
             result.new_diff_ids.append(new_diff.diff_id)
         self._correct_global_signing_dates(signing)
-        return seals, signing
+        all_diffs = [normalize_seal_source(item) for item in [*seals, *signing]]
+        return ([item for item in all_diffs if item.source_type == "seal"],
+                [item for item in all_diffs if item.source_type != "seal"])
 
     def reconcile_matched_edge_diffs(self, result: SigningVisualRecallResult, diffs: list[DiffItem],
                                      original: Document, compare: Document) -> list[DiffItem]:
@@ -277,13 +291,26 @@ class WholePageSigningVisualRecall:
                 if page.page_no not in page_numbers or not 1 <= page.page_no <= len(pdf):
                     continue
                 image = self._render_page(pdf[page.page_no-1], np)
-                for item in self._red_objects(page, image, cv2, np, allow_inset_edge=True):
+                for item in self._red_objects(page, image, cv2, np, allow_inset_edge=True,
+                                             scan_right=self._scan_right(pdf[page.page_no-1], page)):
                     if item.object_type == SigningVisualObjectType.EDGE_SEAM_SEAL:
                         item.raw_ref["counterpart_guided_recall"] = True
                         recalled.append(item)
         return recalled
 
-    def _red_objects(self, page: Page, image: Any, cv2: Any, np: Any, *, allow_inset_edge: bool = False) -> list[SigningVisualObject]:
+    @staticmethod
+    def _scan_right(pdf_page: fitz.Page, page: Page) -> float | None:
+        """The large embedded scan can end before a scanner-added PDF margin."""
+        images = [fitz.Rect(item['bbox']) * pdf_page.rotation_matrix for item in pdf_page.get_image_info()]
+        scans = [r for r in images if r.height >= pdf_page.rect.height * .85
+                 and r.width >= pdf_page.rect.width * .75]
+        if len(scans) != 1:
+            return None
+        right = scans[0].x1 / pdf_page.rect.width * page.width
+        return right if page.width * .8 <= right < page.width * .975 else None
+
+    def _red_objects(self, page: Page, image: Any, cv2: Any, np: Any, *, allow_inset_edge: bool = False,
+                     scan_right: float | None = None) -> list[SigningVisualObject]:
         height, width = image.shape[:2]
         hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
         strong = cv2.bitwise_or(
@@ -301,12 +328,22 @@ class WholePageSigningVisualRecall:
         ]
         seeds = self._outer_components(seeds)
 
+        def at_scan_edge(component):
+            if scan_right is None:
+                return False
+            x, y, w, h, area = component
+            # Require a substantial, saturated fragment actually touching the
+            # scan boundary; merely relaxing the page-edge cutoff admits dirt.
+            return (abs((x+w)/width*page.width-scan_right) <= 3
+                    and w/width*page.width >= 5 and h/height*page.height >= 40
+                    and int(np.count_nonzero(strong[y:y+h, x:x+w])) >= max(60, area*.2))
+
         closed = cv2.morphologyEx(weak, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
         edge_components = [
             item
             for item in self._components(closed, cv2, min_area=10)
             if item[0] >= width * 0.84
-            and (item[0] + item[2] >= width * 0.925
+            and (item[0] + item[2] >= width * 0.925 or at_scan_edge(item)
                  or (allow_inset_edge and item[3] >= 30 and item[3] >= item[2] * 2))
             and item[2] <= width * 0.16
         ]
@@ -402,7 +439,8 @@ class WholePageSigningVisualRecall:
                     party_attribution_confidence=party_confidence,
                     supporting_pages=[page.page_no],
                     fragment_bboxes=[bbox] if object_type == SigningVisualObjectType.EDGE_SEAM_SEAL else [],
-                    raw_ref={"reason": reason, "red_pixel_count": component[4]},
+                    raw_ref={"reason": reason, "red_pixel_count": component[4], "scan_right": scan_right,
+                             "page_width": page.width, "page_height": page.height},
                 )
             )
         self._inherit_party_from_nearby_seals(
@@ -902,7 +940,142 @@ class WholePageSigningVisualRecall:
         return intersection / union
 
     @classmethod
+    def _resolve_layout_edge_seals(cls, page: Page, objects: list[SigningVisualObject]) -> list[SigningVisualObject]:
+        """Assign red islands to an independently detected, clipped seal parent.
+
+        OCR line boxes are not physical parents. Require a unique seal layout
+        region and visual coverage of its height; proximity alone cannot join
+        complete neighbouring stamps. Resolve before counterpart matching.
+        """
+        parents: dict[str, BBox] = {}
+        conflicting: set[str] = set()
+        for block in page.blocks:
+            if block.block_type != "seal" or not block.layout_block_id or block.layout_bbox is None:
+                continue
+            owner, box = block.layout_block_id, block.layout_bbox
+            if owner in parents and parents[owner] != box:
+                conflicting.add(owner)
+            parents[owner] = box
+
+        children: dict[str, list[SigningVisualObject]] = {}
+        for item in objects:
+            if item.page_no != page.page_no or item.raw_ref.get("reason") not in {
+                "PAGE_EDGE_RED_FRAGMENT", "PAGE_EDGE_ROUND_SEAL",
+            }:
+                continue
+            boundary = float(item.raw_ref.get("scan_right") or page.width)
+            owners = []
+            for owner, box in parents.items():
+                width, height = box.x1-box.x0, box.y1-box.y0
+                if (owner in conflicting or not (5 <= width <= 60 and 40 <= height <= 160)
+                        or width > .75*height or abs(box.x1-boundary) > 3):
+                    continue
+                b = item.bbox
+                if (b.x0 >= box.x0-2 and b.y0 >= box.y0-2
+                        and b.x1 <= box.x1+2 and b.y1 <= box.y1+2):
+                    owners.append(owner)
+            if len(owners) == 1:
+                children.setdefault(owners[0], []).append(item)
+
+        consumed: set[str] = set()
+        resolved = []
+        for owner, group in sorted(children.items()):
+            parent = parents[owner]
+            # This repair resolves several purported circles inside one
+            # clipped seal. Existing slender edge fragments already have an
+            # owner path; changing their geometry also changes cross-page
+            # grouping anchors and can drop small supported fragments.
+            if sum(o.object_type == SigningVisualObjectType.COMPANY_ROUND_SEAL for o in group) < 2:
+                continue
+            group.sort(key=lambda o: (o.bbox.y0, o.bbox.x0, o.object_id))
+            # A tiny cluster in a large layout ROI is insufficient evidence.
+            y0, y1 = min(o.bbox.y0 for o in group), max(o.bbox.y1 for o in group)
+            if y1-y0 < .65*(parent.y1-parent.y0):
+                continue
+            bbox = BBox(x0=min(parent.x0, *(o.bbox.x0 for o in group)),
+                        y0=min(parent.y0, y0),
+                        x1=max(parent.x1, *(o.bbox.x1 for o in group)),
+                        y1=max(parent.y1, y1))
+            seed = group[0]
+            resolved.append(seed.model_copy(update={
+                "object_type": SigningVisualObjectType.EDGE_SEAM_SEAL,
+                "bbox": bbox, "fragment_bboxes": [bbox], "supporting_pages": [page.page_no],
+                "visual_detection_confidence": min(o.visual_detection_confidence for o in group),
+                "party_role": "unknown", "party_attribution_reason": "PAGE_EDGE_LOGICAL_OBJECT",
+                "party_attribution_confidence": 0.0,
+                "raw_ref": {**seed.raw_ref, "reason": "PAGE_EDGE_RED_FRAGMENT",
+                            "physical_repair": "LAYOUT_SEAL_PARENT", "layout_owner_id": owner,
+                            "layout_owner_bbox": parent.model_dump(mode="json"),
+                            "component_ids": [o.object_id for o in group],
+                            "component_bboxes": [o.bbox.model_dump(mode="json") for o in group],
+                            "red_pixel_count": sum(o.raw_ref.get("red_pixel_count", 0) for o in group)},
+            }))
+            consumed.update(o.object_id for o in group)
+        return [*(o for o in objects if o.object_id not in consumed), *resolved]
+
+    @classmethod
+    def _coalesce_clipped_edge_objects(cls, objects: list[SigningVisualObject]) -> list[SigningVisualObject]:
+        """Resolve the physical page-edge object before assigning cross-page ownership.
+
+        A cropped circle can produce several disconnected red components with
+        different shape labels. Only narrow groups touching the page/scan cut
+        qualify; complete circles and separate vertical bands retain identity.
+        """
+        reasons = {"PAGE_EDGE_RED_FRAGMENT", "PAGE_EDGE_ROUND_SEAL"}
+
+        def eligible(item):
+            box = item.bbox
+            return (item.raw_ref.get("reason") in reasons
+                    and item.raw_ref.get("physical_repair") != "LAYOUT_SEAL_PARENT"
+                    and box.x1-box.x0 <= 60 and box.y1-box.y0 <= 160)
+
+        def clipped(item):
+            boundary = item.raw_ref.get("scan_right") or item.raw_ref.get("page_width")
+            box = item.bbox
+            return (boundary and abs(box.x1-float(boundary)) <= 3
+                    and box.x1-box.x0 <= .75*(box.y1-box.y0))
+
+        remaining = list(objects)
+        merged = []
+        for seed in sorted(objects, key=lambda o: (-(o.bbox.y1-o.bbox.y0), o.object_id)):
+            if seed not in remaining or not eligible(seed) or not clipped(seed):
+                continue
+            group = [seed]
+            anchor = seed.bbox
+            # Compare with a fixed seed, not a growing chain of nearby marks.
+            for item in remaining:
+                if item is seed or item.page_no != seed.page_no or not eligible(item):
+                    continue
+                box = item.bbox
+                x_overlap = max(0, min(anchor.x1, box.x1)-max(anchor.x0, box.x0))
+                y_gap = max(0, box.y0-anchor.y1, anchor.y0-box.y1)
+                if (x_overlap >= .5*min(anchor.x1-anchor.x0, box.x1-box.x0)
+                        and y_gap <= 10 and max(anchor.y1,box.y1)-min(anchor.y0,box.y0) <= 160):
+                    group.append(item)
+            bbox = BBox(x0=min(o.bbox.x0 for o in group), y0=min(o.bbox.y0 for o in group),
+                        x1=max(o.bbox.x1 for o in group), y1=max(o.bbox.y1 for o in group))
+            if bbox.y1-bbox.y0 > 160 or bbox.x1-bbox.x0 > .75*(bbox.y1-bbox.y0):
+                continue
+            # Small edge specks must not be promoted by this ownership repair.
+            if bbox.y1-bbox.y0 < 40:
+                continue
+            merged.append(seed.model_copy(update={
+                "object_type": SigningVisualObjectType.EDGE_SEAM_SEAL,
+                "bbox": bbox, "fragment_bboxes": [bbox], "supporting_pages": [seed.page_no],
+                "party_role": "unknown", "party_attribution_reason": "PAGE_EDGE_LOGICAL_OBJECT",
+                "party_attribution_confidence": .98,
+                "raw_ref": {**seed.raw_ref, "reason": "PAGE_EDGE_RED_FRAGMENT",
+                            "physical_repair": "CLIPPED_EDGE_COMPONENT_UNION",
+                            "component_ids": [o.object_id for o in group],
+                            "component_bboxes": [o.bbox.model_dump(mode="json") for o in group],
+                            "red_pixel_count": sum(o.raw_ref.get("red_pixel_count", 0) for o in group)},
+            }))
+            remaining = [o for o in remaining if o not in group]
+        return [*remaining, *merged]
+
+    @classmethod
     def _dedupe_objects(cls, objects: list[SigningVisualObject]) -> list[SigningVisualObject]:
+        objects = cls._coalesce_clipped_edge_objects(objects)
         edge_reasons = {"PAGE_EDGE_RED_FRAGMENT", "PAGE_EDGE_ROUND_SEAL"}
         # Closing the red mask can yield an outer edge seal and an inner
         # fragment with different labels. Resolve containment before matching
@@ -1003,33 +1176,66 @@ class WholePageSigningVisualRecall:
 
     @staticmethod
     def _aggregate_edge_fragments(objects: list[SigningVisualObject]) -> list[SigningVisualObject]:
-        edge = [
-            item
-            for item in objects
-            if item.object_type == SigningVisualObjectType.EDGE_SEAM_SEAL
-            or item.raw_ref.get("reason") == "PAGE_EDGE_ROUND_SEAL"
-        ]
+        """Group candidate edge marks by side and a bounded vertical band.
+
+        A complete circle remains its own object. A fixed anchor prevents a
+        chain of small intermediate marks from bridging unrelated bands.
+        Geometry never establishes that fragments belong to the same stamp.
+        """
+        import hashlib
+
+        edge = [item for item in objects if item.object_type == SigningVisualObjectType.EDGE_SEAM_SEAL]
         other = [item for item in objects if item not in edge]
-        if len({item.page_no for item in edge}) < 2:
-            return objects
-        edge.sort(key=lambda item: item.page_no)
-        first = edge[0]
-        aggregate = first.model_copy(
-            update={
-                "object_id": "VIS-EDGE-SEAM-AGGREGATE",
-                "object_type": SigningVisualObjectType.EDGE_SEAM_SEAL,
-                "visual_detection_confidence": min(item.visual_detection_confidence for item in edge),
-                "supporting_pages": [item.page_no for item in edge],
-                "fragment_bboxes": [item.bbox for item in edge],
+
+        def position(item):
+            width = float(item.raw_ref.get("page_width") or 0)
+            height = float(item.raw_ref.get("page_height") or 0)
+            side = ("left" if item.bbox.x0 + item.bbox.x1 < width else "right") if width else (
+                "left" if item.bbox.x0 <= item.bbox.x1 - item.bbox.x0 else "right")
+            scale = height or 800.0
+            return side, item.bbox.y0 / scale, item.bbox.y1 / scale
+
+        groups: list[list[SigningVisualObject]] = []
+        for item in sorted(edge, key=lambda o: (-(position(o)[2]-position(o)[1]), o.page_no, o.bbox.y0, o.object_id)):
+            side, y0, y1 = position(item)
+            compatible = []
+            for index, group in enumerate(groups):
+                anchor_side, a0, a1 = position(group[0])
+                center_distance = abs((y0+y1-a0-a1) / 2)
+                gap = max(0.0, y0-a1, a0-y1)
+                # Same-page disconnected marks also need to fit this band;
+                # preserve their separate boxes rather than inventing ink.
+                if (side == anchor_side and center_distance <= min(.09, max(.035, (a1-a0)*.75))
+                        and gap <= .025 and max(y1,a1)-min(y0,a0) <= .22):
+                    compatible.append((center_distance, index))
+            if compatible:
+                groups[min(compatible)[1]].append(item)
+            else:
+                groups.append([item])
+
+        for group in groups:
+            group.sort(key=lambda item: (item.page_no, item.bbox.y0, item.bbox.x0, item.object_id))
+            if len({item.page_no for item in group}) < 2:
+                other.extend(group)
+                continue
+            first = group[0]
+            identity = "|".join(f"{o.object_id}:{o.page_no}:{o.bbox}" for o in group)
+            group_id = "VIS-EDGE-SEAM-" + hashlib.sha256(identity.encode()).hexdigest()[:12]
+            other.append(first.model_copy(update={
+                "object_id": group_id,
+                "visual_detection_confidence": min(item.visual_detection_confidence for item in group),
+                "supporting_pages": [item.page_no for item in group],
+                "fragment_bboxes": [item.bbox for item in group],
                 "raw_ref": {
                     "reason": "MULTI_PAGE_EDGE_FRAGMENT_AGGREGATION",
-                    "fragment_count": len(edge),
+                    "fragment_count": len(group), "edge_group_id": group_id,
+                    "edge_side": position(first)[0],
+                    "identity_status": "UNVERIFIED", "grouping_basis": "EDGE_SIDE_AND_VERTICAL_BAND",
                     "document_page_count": first.raw_ref.get("document_page_count", 0),
-                    "counterpart_edge_present": any(item.raw_ref.get("counterpart_edge_present") for item in edge),
+                    "counterpart_edge_present": any(item.raw_ref.get("counterpart_edge_present") for item in group),
                 },
-            }
-        )
-        return sorted([*other, aggregate], key=lambda item: (item.page_no, item.bbox.y0, item.bbox.x0))
+            }))
+        return sorted(other, key=lambda item: (item.page_no, item.bbox.y0, item.bbox.x0))
 
     @classmethod
     def _overlapping_diffs(cls, visual_object: SigningVisualObject, diffs: list[DiffItem]) -> list[DiffItem]:
@@ -1038,6 +1244,9 @@ class WholePageSigningVisualRecall:
         object_evidence = cls._object_evidence(visual_object)
         for diff in diffs:
             if diff.diff_type != "ADD":
+                continue
+            existing_group = diff.match_score_details.get("edge_group_id")
+            if existing_group and existing_group != visual_object.raw_ref.get("edge_group_id"):
                 continue
             existing_object_type = str((diff.match_score_details or {}).get("object_type") or "")
             if existing_object_type and existing_object_type != visual_object.object_type.value:
@@ -1138,6 +1347,27 @@ class WholePageSigningVisualRecall:
         return max(matches, key=lambda item: max((evidence.confidence for evidence in item.compare_evidence), default=0.0))
 
     @classmethod
+    def _preserve_fused_party(cls, canonical, visual_object, matches) -> None:
+        """Deduplication must preserve an unambiguous signing-form binding.
+
+        A generic layout seal is often chosen as the canonical item. Its empty
+        title must not discard the party carried by the duplicate form field.
+        """
+        if visual_object.object_type != SigningVisualObjectType.COMPANY_ROUND_SEAL:
+            return
+        bound = []
+        for item in matches:
+            if item.source_type != "signing_region" or not item.section_type.endswith(":seal"):
+                continue
+            role = item.title.split("·", 1)[0].strip() if "·" in item.title else ""
+            if role in {"甲方", "乙方"} and cls._same_physical_object(visual_object, item):
+                bound.append((role, item.diff_id))
+        if len({role for role, _ in bound}) == 1:
+            role = bound[0][0]
+            canonical.title = f"{role} · 印章"
+            canonical.match_score_details["party_binding_source_diff_ids"] = [identity for _, identity in bound]
+
+    @classmethod
     def _enrich_diff(cls, diff: DiffItem, visual_object: SigningVisualObject) -> None:
         existing_details = dict(diff.match_score_details)
         bound_party = diff.title.split("·", 1)[0].strip() if "·" in diff.title else ""
@@ -1158,6 +1388,9 @@ class WholePageSigningVisualRecall:
         else:
             details.pop("change_decision", None)
             details.pop("decision_reason", None)
+        if visual_object.object_type == SigningVisualObjectType.EDGE_SEAM_SEAL:
+            details.update(change_decision="NEEDS_REVIEW", decision_reason="EDGE_IDENTITY_UNVERIFIED")
+            diff.quality_status = "NEEDS_REVIEW"
         flags = [flag for flag in cls._object_flags(visual_object) if flag != "VISUAL_OBJECT_EXISTENCE_CONFIRMED"]
         diff.match_method = "whole_page_visual_recall"
         diff.match_confidence = visual_object.visual_detection_confidence
@@ -1234,6 +1467,16 @@ class WholePageSigningVisualRecall:
             (item.bbox.x1 - item.bbox.x0) * (item.bbox.y1 - item.bbox.y0)
             for item in recalled
         )
+        if visual_object.raw_ref.get("reason") in {"PAGE_EDGE_ROUND_SEAL", "PAGE_EDGE_RED_FRAGMENT"}:
+            # A local red island must not erase the complete seal ROI. Later
+            # islands still need that parent to find the same physical owner.
+            if all(any(e.page_no == r.page_no
+                       and e.bbox.x0 <= r.bbox.x0+2 and e.bbox.y0 <= r.bbox.y0+2
+                       and e.bbox.x1 >= r.bbox.x1-2 and e.bbox.y1 >= r.bbox.y1-2
+                       and (e.bbox.x1-e.bbox.x0)*(e.bbox.y1-e.bbox.y0)
+                           > 1.25*(r.bbox.x1-r.bbox.x0)*(r.bbox.y1-r.bbox.y0)
+                       for e in existing) for r in recalled):
+                return False
         return recalled_area >= existing_area * 0.2
 
     @classmethod
@@ -1260,7 +1503,7 @@ class WholePageSigningVisualRecall:
             compare_snippet=display,
             readable_change=(f"{role_prefix}{display}（新增与否待复核）"
                              if visual_object.raw_ref.get("counterpart_edge_present") else f"新增{role_prefix}{display}"),
-            source_type="signing_region",
+            source_type="seal" if seal_like else "signing_region",
             section_type=f"signature:{visual_object.object_type.value.lower()}",
             match_method="whole_page_visual_recall",
             match_confidence=visual_object.visual_detection_confidence,
@@ -1282,7 +1525,7 @@ class WholePageSigningVisualRecall:
             SigningVisualObjectType.PERSONAL_NAME_SEAL: ("个人姓名章", "个人姓名章（章文识别待复核）"),
             SigningVisualObjectType.HANDWRITTEN_SIGNATURE: ("手写签名", "手写签名"),
             SigningVisualObjectType.HANDWRITTEN_DATE: ("手写日期", visual_object.text or "手写日期"),
-            SigningVisualObjectType.EDGE_SEAM_SEAL: ("骑缝章", "骑缝章"),
+            SigningVisualObjectType.EDGE_SEAM_SEAL: ("疑似骑缝章", "页边印迹（骑缝章待复核）"),
             SigningVisualObjectType.OTHER_STAMP: ("其他印章", "视觉印章（类型待复核）"),
             SigningVisualObjectType.UNKNOWN_SIGNING_MARK: ("签署视觉变化", "签署视觉变化（待复核）"),
         }
@@ -1292,18 +1535,13 @@ class WholePageSigningVisualRecall:
 
     @staticmethod
     def _is_confirmed_object(visual_object: SigningVisualObject) -> bool:
+        # Edge geometry establishes a candidate, not the identity of a stamp
+        # across pages. No current producer supplies such identity proof.
+        if visual_object.object_type == SigningVisualObjectType.EDGE_SEAM_SEAL:
+            return False
         if visual_object.raw_ref.get("counterpart_edge_present"):
             return False
         if visual_object.object_type == SigningVisualObjectType.HANDWRITTEN_DATE:
-            return False
-        if (
-            visual_object.object_type == SigningVisualObjectType.EDGE_SEAM_SEAL
-            and (
-                len(set(visual_object.supporting_pages)) < 3
-                or WholePageSigningVisualRecall._dense_edge_page_coverage(visual_object)
-                or WholePageSigningVisualRecall._substantial_edge_page_count(visual_object) < 4
-            )
-        ):
             return False
         if (
             visual_object.object_type
@@ -1335,6 +1573,7 @@ class WholePageSigningVisualRecall:
             ),
             "object_type": visual_object.object_type.value,
             "visual_detection_confidence": visual_object.visual_detection_confidence,
+            "visual_score_kind": "heuristic",
             "text_recognition_confidence": visual_object.text_recognition_confidence,
             "party_attribution_confidence": visual_object.party_attribution_confidence,
             "party_attribution_reason": visual_object.party_attribution_reason,
@@ -1343,6 +1582,9 @@ class WholePageSigningVisualRecall:
             "fragment_bboxes": [item.model_dump(mode="json") for item in visual_object.fragment_bboxes],
             "page_coverage_ratio": round(coverage_ratio, 3),
             "visual_candidate_reason": visual_object.raw_ref.get("reason", ""),
+            "edge_group_id": visual_object.raw_ref.get("edge_group_id"),
+            "edge_identity_status": visual_object.raw_ref.get("identity_status"),
+            "edge_grouping_basis": visual_object.raw_ref.get("grouping_basis"),
             "substantial_fragment_page_count": cls._substantial_edge_page_count(visual_object),
         }
 

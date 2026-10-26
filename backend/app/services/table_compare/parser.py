@@ -29,6 +29,18 @@ class LogicalTableParser:
 
     table_block_types = TABLE_BLOCK_TYPES
 
+    @staticmethod
+    def structure_state(block: TextBlock) -> str:
+        """A missing HTML tag is never evidence that a table is absent."""
+        explicit = getattr(block, "structure_status", "UNKNOWN")
+        if explicit in {"STRUCTURED_TABLE", "UNSTRUCTURED_TABLE_PRESENT", "TABLE_ABSENT"}:
+            return explicit
+        if block.block_type == "table":
+            return "STRUCTURED_TABLE" if "<table" in (block.raw_html or block.text or "").lower() else (
+                "UNSTRUCTURED_TABLE_PRESENT" if block.text.strip() else "UNKNOWN"
+            )
+        return "UNKNOWN"
+
     def table_blocks(self, document) -> list[tuple[TextBlock, str]]:
         result = []
         for page in document.pages:
@@ -51,6 +63,9 @@ class LogicalTableParser:
 
             has_html_table = "<table" in text.lower()
 
+            if self.structure_state(block) in {"UNSTRUCTURED_TABLE_PRESENT", "TABLE_ABSENT"}:
+                continue
+
             if not has_html_table:
                 # Non-HTML table_title block — remember as potential caption
                 if block.block_type == "table_title" and block.text.strip():
@@ -59,13 +74,21 @@ class LogicalTableParser:
 
             try:
                 cell_bboxes = [BBox(x0=b[0], y0=b[1], x1=b[2], y1=b[3]) for b in block.table_cell_bboxes] if block.table_cell_bboxes else None
+                historical_structure = "ppstructure" in (block.source or "").casefold() or any(
+                    evidence.source == "ppstructure" for evidence in block.source_evidence
+                )
                 parsed = parse_html_tables(
                     text,
                     page_no=block.page_no,
-                    source="ppstructure_html",
+                    source="ppstructure_html" if historical_structure else "table_html",
                     source_block_id=block.block_id,
                     cell_bboxes=cell_bboxes,
+                    cell_records=block.table_cells,
                     source_text=block.text if block.raw_html and block.text != block.raw_html else "",
+                    trusted_topology=bool(
+                        block.table_cells and block.table_validation.get("usable")
+                        and block.table_validation.get("topology_source") in {"UNet+TableRecover", "SLANet_plus"}
+                    ),
                 )
                 for t in parsed:
                     # A located HTML cell is not automatically a reliable
@@ -500,6 +523,10 @@ class LogicalTableParser:
 
     def _section_title(self, cells: list[_LogicalCell], col_count: int) -> str:
         nonempty = [cell for cell in cells if utils.normalize(cell.text)]
+        # Named project fields carry comparable values. Their role must not
+        # depend on an extra OCR fragment in another (possibly spanning) cell.
+        if any(utils.table_metadata_labels(cell.text) for cell in nonempty):
+            return ""
         if len(nonempty) != 1:
             return ""
         cell = nonempty[0]

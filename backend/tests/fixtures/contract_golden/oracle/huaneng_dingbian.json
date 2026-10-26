@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "HUANENG_DINGBIAN",
-  "expected_case_count": 14,
+  "expected_case_count": 20,
   "assertions": [
     {
       "case_id": "HUANENG_DINGBIAN_P1_METADATA_ADD_7B82F2924A",
@@ -280,6 +280,51 @@
       "source_type": "seal",
       "forbidden_value_pattern": "<(?:img|div)\\b",
       "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P1_IDENTICAL_LOGO_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 1,
+      "forbidden_value_pattern": "中国\\s*华\\s*能",
+      "review_note": "固定PDF对封面均有中国华能；不能因header/text归属不同报增删改。跨文字通道检查，不绑定运行时差异编号。"
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P9_IDENTICAL_PERMILLE_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 9,
+      "source_type": "clause",
+      "forbidden_value_pattern": "日常维护升级服务|每延迟一小时承担合同总价款",
+      "review_note": "固定PDF对第9页日常维护条款一致，两侧费率均为3‰；不得因OCR拆成3%。、页边清理误删3或符号校验不足产生正文差异。不限ADD/MODIFY/DELETE。"
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P15_IDENTICAL_PERMILLE_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 15,
+      "source_type": "clause",
+      "forbidden_value_pattern": "日常维护升级服务|每延迟一小时承担合同总价款",
+      "review_note": "固定PDF对第15页日常维护条款一致，两侧费率均为3‰；不得因OCR拆成3%。、页边清理误删3或符号校验不足产生正文差异。不限ADD/MODIFY/DELETE。"
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P18_REALTIME_INDICATOR_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 18,
+      "source_type": "clause",
+      "forbidden_value_pattern": "系统实时性指标|画面调用响应时间\\s*[≤<]\\s*4\\s*秒",
+      "review_note": "两侧画面调用响应时间≤4秒相同；不得因formula/text分类不一致丢失正文并报差异。"
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P38_PRINTED_SIGNING_PARTIES_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 38,
+      "forbidden_value_pattern": "签署区|甲方\\s*[:：]\\s*定边县瑞能新能源科技有限公司",
+      "review_note": "第38页两侧甲乙方公司印刷字段相同，合并OCR行不能导致整块签署区或公司字段增删改；不限定来源通道。规则按公司印刷文本匹配，不匹配真实纯日期或签字字段，原有日期正例保留。"
+    },
+    {
+      "case_id": "HUANENG_DINGBIAN_P40_PRINTED_SIGNING_PARTIES_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 40,
+      "forbidden_value_pattern": "签署区|甲方\\s*[:：]\\s*定边县瑞能新能源科技有限公司",
+      "review_note": "第40页两侧甲乙方公司印刷字段相同，合并OCR行不能导致整块签署区或公司字段增删改；不限定来源通道。规则按公司印刷文本匹配，不匹配真实纯日期或签字字段，原有日期正例保留。"
     }
   ],
   "baseline_version": "contract-golden-v2"

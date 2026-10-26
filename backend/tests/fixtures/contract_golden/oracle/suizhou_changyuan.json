@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "SUIZHOU_CHANGYUAN",
-  "expected_case_count": 83,
+  "expected_case_count": 90,
   "assertions": [
     {
       "case_id": "SUIZHOU_CHANGYUAN_P1_HEADER_FOOTER_ADD_1F4A48F439",
@@ -678,22 +678,47 @@
       "region": "cover",
       "source_type": "metadata",
       "diff_type": "ADD",
-      "title": "封面额外文本",
+      "title": "封面额外笔迹",
       "quality_status": "NEEDS_REVIEW",
-      "content_recognition_status": "CONFIRMED",
-      "semantic_after": "旅"
+      "content_recognition_status": "NEEDS_REVIEW",
+      "semantic_after": "检测到封面额外笔迹",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 462,
+          "y0": 229,
+          "x1": 504,
+          "y1": 267
+        },
+        "min_iou": 0.35
+      },
+      "review_note": "原/扫描封面及局部裁图核实：标题右侧仅扫描稿有独立笔迹。旧“旅”来自OCR猜字，不作为确切文字真值；局部识读“族/海”置信度均低于0.1。必须报告ADD及对应位置，文字须待复核，不把低置信猜字标成已识读。"
     },
     {
       "case_id": "SUIZHOU_CHANGYUAN_P1_METADATA_ADD_61268CFF85",
       "assertion": "MUST_REVIEW",
       "page": 1,
-      "region": "cover",
-      "source_type": "metadata",
+      "region": "signing",
+      "source_type": "seal",
       "diff_type": "ADD",
-      "title": "封面额外文本",
+      "title": "疑似骑缝章",
       "quality_status": "NEEDS_REVIEW",
       "content_recognition_status": "CONFIRMED",
-      "semantic_after": "止"
+      "semantic_after": "页边印迹",
+      "visual_object_type": "seal",
+      "object_type": "EDGE_SEAM_SEAL",
+      "change_decision": "NEEDS_REVIEW",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 511,
+          "y0": 417,
+          "x1": 541,
+          "y1": 515
+        },
+        "min_iou": 0.35
+      },
+      "review_note": "独立裁图核实封面右侧下方为红章残片，旧“止”是章内碎字误当普通文本。保留新增事实及定位；是否骑缝章、章文及身份仍待复核，不能因此漏掉或重复新增。"
     },
     {
       "case_id": "SUIZHOU_CHANGYUAN_P29_SEAL_ADD_B22FB2A844",
@@ -1155,8 +1180,19 @@
       "title": "合同总价（大写）",
       "quality_status": "NEEDS_REVIEW",
       "content_recognition_status": "CONFIRMED",
-      "semantic_before": "4.1.1.本合同为固定总价合同,总价为人民币(大写)柒万捌仟元整(¥73000.00元),含6%增值税。其中,不含税价为(大写)陆万捌仟捌佰陆",
-      "semantic_after": "4.1.1.本合同为固定总价合同,总价为人民币(大写)柒万叁任元整(¥73000.00元),含6%增值税。其中,不含税价为(大写)陆万捌任捌佰陆"
+      "semantic_before": "柒万捌仟元整",
+      "semantic_after": "柒万叁仟元整",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 354.7,
+          "y0": 525.2,
+          "x1": 368.8,
+          "y1": 547.3
+        },
+        "min_iou": 0.35
+      },
+      "review_note": "原PDF确认总价大写柒万捌仟→柒万叁仟；数值73000元未变，标准稿存在大小写不一致，仍保留真实修改及待复核要求。仟/任是扫描OCR混淆，不能将任固化为业务真值；不含税金额68867.92元及其大写未变。"
     },
     {
       "case_id": "SUIZHOU_CHANGYUAN_P11_CLAUSE_MODIFY_4736BD8B27",
@@ -1280,7 +1316,148 @@
       "diff_type": "ADD",
       "semantic_after": "双方义务",
       "review_note": "原件含双方义务，字体呈现缺失不构成新增。实际任务34f791e2已按对侧编号和子条款覆盖过滤D103；保留负例防止回归。"
+    },
+    {
+      "case_id": "SUIZHOU_CHANGYUAN_P1_UPPER_SCAN_EDGE_SEAL_PRESENT",
+      "assertion": "MUST_REVIEW",
+      "page": 1,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "visual_object_type": "seal",
+      "object_type": "EDGE_SEAM_SEAL",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "页边印迹",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 521,
+          "y0": 228,
+          "x1": 541,
+          "y1": 305
+        },
+        "min_iou": 0.35
+      },
+      "review_note": "扫描稿实际图片右边缘存在红章残片；PDF外加白边不能导致漏报。根据原/扫描PDF及局部裁图确认有无和区域，骑缝章身份待复核。允许跨页合并为一个对象，但必须保留本页独立定位。"
+    },
+    {
+      "case_id": "SUIZHOU_CHANGYUAN_P34_UPPER_SCAN_EDGE_SEAL_PRESENT",
+      "assertion": "MUST_REVIEW",
+      "page": 34,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "visual_object_type": "seal",
+      "object_type": "EDGE_SEAM_SEAL",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "页边印迹",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 515,
+          "y0": 203,
+          "x1": 521,
+          "y1": 312
+        },
+        "min_iou": 0.35
+      },
+      "review_note": "扫描稿实际图片右边缘存在红章残片；PDF外加白边不能导致漏报。根据原/扫描PDF及局部裁图确认有无和区域，骑缝章身份待复核。允许跨页合并为一个对象，但必须保留本页独立定位。"
+    },
+    {
+      "case_id": "SUIZHOU_CHANGYUAN_P36_UPPER_SCAN_EDGE_SEAL_PRESENT",
+      "assertion": "MUST_REVIEW",
+      "page": 36,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "visual_object_type": "seal",
+      "object_type": "EDGE_SEAM_SEAL",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "页边印迹",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 533,
+          "y0": 189,
+          "x1": 539,
+          "y1": 296
+        },
+        "min_iou": 0.35
+      },
+      "review_note": "扫描稿实际图片右边缘存在红章残片；PDF外加白边不能导致漏报。根据原/扫描PDF及局部裁图确认有无和区域，骑缝章身份待复核。允许跨页合并为一个对象，但必须保留本页独立定位。"
+    },
+    {
+      "case_id": "SUIZHOU_CHANGYUAN_P42_UPPER_SCAN_EDGE_SEAL_PRESENT",
+      "assertion": "MUST_REVIEW",
+      "page": 42,
+      "region": "signing",
+      "source_type": "seal",
+      "diff_type": "ADD",
+      "visual_object_type": "seal",
+      "object_type": "EDGE_SEAM_SEAL",
+      "quality_status": "NEEDS_REVIEW",
+      "content_recognition_status": "CONFIRMED",
+      "change_decision": "NEEDS_REVIEW",
+      "semantic_after": "页边印迹",
+      "bbox_expectation": {
+        "side": "compare",
+        "target_bbox": {
+          "x0": 520,
+          "y0": 204,
+          "x1": 525,
+          "y1": 295
+        },
+        "min_iou": 0.35
+      },
+      "review_note": "扫描稿实际图片右边缘存在红章残片；PDF外加白边不能导致漏报。根据原/扫描PDF及局部裁图确认有无和区域，骑缝章身份待复核。允许跨页合并为一个对象，但必须保留本页独立定位。"
+    },
+    {
+      "case_id": "SUIZHOU_CHANGYUAN_P1_SCANNER_ATTRIBUTION_NOT_CONTENT_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 1,
+      "forbidden_value_pattern": "扫描全能王|CamScanner",
+      "review_note": "重复出现的扫描软件生成文字是扫描附加信息，不是合同内容变更；预览应正确显示，但不得作为封面新增、删除或修改。"
+    },
+    {
+      "case_id": "SUIZHOU_CHANGYUAN_P3_AMOUNT_OCR_GLYPH_ORIGINAL_MUST_NOT_EXIST",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 3,
+      "region": "clause",
+      "source_type": "clause",
+      "forbidden_value_pattern": "陆万捌[仟任]捌佰陆拾柒元玖角贰分",
+      "highlight_expectation": {
+        "side": "original",
+        "pattern": "[仟任]"
+      },
+      "review_note": "该页原图两处金融单位均为仟；包含不含税大写金额的条款不得将仟/任作为变化字符，即使差异处于待复核状态。总价真实捌→叁仍由正例单独保护。"
+    },
+    {
+      "case_id": "SUIZHOU_CHANGYUAN_P3_AMOUNT_OCR_GLYPH_COMPARE_MUST_NOT_EXIST",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 3,
+      "region": "clause",
+      "source_type": "clause",
+      "forbidden_value_pattern": "陆万捌[仟任]捌佰陆拾柒元玖角贰分",
+      "highlight_expectation": {
+        "side": "compare",
+        "pattern": "[仟任]"
+      },
+      "review_note": "该页原图两处金融单位均为仟；包含不含税大写金额的条款不得将仟/任作为变化字符，即使差异处于待复核状态。总价真实捌→叁仍由正例单独保护。"
     }
   ],
-  "baseline_version": "contract-golden-v2.1"
+  "baseline_version": "contract-golden-v2.1",
+  "review_revision": {
+    "date": "2026-10-26",
+    "authorization": "用户明确要求：更新d2464761-6d53-45c6-a97d-27aa2a481c8c，黄金集",
+    "source_run_id": "d2464761-6d53-45c6-a97d-27aa2a481c8c",
+    "evidence_root": "output/analysis/golden-suizhou-d2464761-20261026",
+    "source_evidence": "output/analysis/financial-ocr-fix-20261026",
+    "scope": "修订第3页总价真值与定位；新增两侧金融单位OCR误报负例，其余87条规则原样保留。"
+  }
 }

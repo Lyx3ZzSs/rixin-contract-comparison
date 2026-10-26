@@ -71,6 +71,10 @@ class CandidatePolicyMixin:
         return default
 
     def _candidate_acceptable(self, candidate: MatchCandidate) -> bool:
+        from app.services.matching.scope_recovery import attachment_identity
+        left_owner, right_owner = attachment_identity(candidate.original), attachment_identity(candidate.compare)
+        if left_owner and right_owner and left_owner != right_owner:
+            return False
         details = candidate.details
         same_clause_no = self._same_clause_no(candidate.original.clause_no, candidate.compare.clause_no)
         if (candidate.original.section_type or "main_contract") != (candidate.compare.section_type or "main_contract"):

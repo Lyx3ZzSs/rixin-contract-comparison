@@ -1,0 +1,28 @@
+RETURN_CONFIRMATION 修复后 Golden 来源更新（2026-10-08）
+
+授权：用户明确要求“更新该任务bc3bbb91-4d4c-4bd4-928a-9843540998c0黄金集”。
+
+本次更新
+1. manifest.source_run_id、oracle.review_source_task_id 和 regression_coverage.source_task_id 更新为 bc3bbb91-4d4c-4bd4-928a-9843540998c0。
+2. 上一来源 f566b562-9a68-4187-a2f9-32678e26d020 以及更早来源保留在历史记录中；补充直接修复前任务 8f4c4bc2-e475-4794-a681-ab3ce9618cf6 作为参考。
+3. review_revision 更新为 2026-10-08-return-confirmation-party-verified；baseline_version 仍为 contract-golden-v3。
+4. 23条断言、case_id、语义要求、状态要求及定位阈值全部不变。修复后的正确行为已经被原有两条负例覆盖，无需新增重复规则或放宽标准。
+5. 新任务有20条实际差异，Golden有23条验收规则，两者不是同一计数。全库仍为15份合同、263条断言。
+
+验证结果
+- 新任务两份原始PDF SHA256与封存Golden一致；Golden装载器验证全部30份PDF哈希与页数。
+- 新任务该合同23条规则：9条正例通过、9条负例通过，5条既有失败。
+- RETURN_CONFIRMATION_P11_PARTY_NAME_OCR_FALSE_CHANGE 已通过。
+- RETURN_CONFIRMATION_P11_STAMP_INSTRUCTION_NO_HIGHLIGHT 已通过。
+- 5条既有失败为：封面签订日期、两条封面额外文本、两条签章通道预期。保留原验收要求。
+- 与修复前8f4任务相比，21条差异变为20条，仅移除甲方公司名误报，其余差异文本与类型相同。
+- Compare第11页局部OCR两次均识别为“江苏东大金智信息系统有限公司”，并有本侧第2页同名证据；浏览器实际SVG中两侧盖章提示均无MODIFY文本高亮。
+- 前一轮完整业务回归已执行15份合同、263条断言，失败项161→159，无新增失败case；本次只更新来源元数据，不重新运行未变化的生产计算。
+
+证据位置
+当前任务匹配报告：output/analysis/golden-return-bc3bbb91-20261008/current-task-report.json
+本次验证摘要：output/analysis/golden-return-bc3bbb91-20261008/validation-summary.json
+实现与原始文件重跑证据：output/analysis/signing-party-fix-20261008/
+此前标注证据：output/analysis/golden-return-update-20261008/
+
+本次未修改生产代码、原任务数据或人工审核状态，未重启服务；未将其他尚未解决的输出当作Golden真值。

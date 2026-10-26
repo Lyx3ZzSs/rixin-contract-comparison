@@ -1,6 +1,7 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { loadEnv } from "vite";
+import { pdfCMaps } from "./vite.pdf-cmaps";
 
 function normalizeViteBasePath(value: string | undefined): string {
   if (!value || value.trim() === "" || value.trim() === "/") {
@@ -16,7 +17,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     base: normalizeViteBasePath(env.VITE_BASE_PATH),
-    plugins: [react()],
+    plugins: [react(), pdfCMaps()],
     build: {
       rollupOptions: {
         output: {

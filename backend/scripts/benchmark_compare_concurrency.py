@@ -23,7 +23,6 @@ def main():
     parser.add_argument("--workers", type=int, choices=(1, 2), default=2)
     parser.add_argument("--code-root", type=Path)
     parser.add_argument("--http-mode", choices=("live", "replay"), default="live")
-    parser.add_argument("--extraction", choices=("live", "saved"), default="live")
     parser.add_argument("--cache", type=Path, help="Flat response cache shared by concurrent tasks")
     args = parser.parse_args()
     if args.http_mode == "replay" and args.cache is None:
@@ -36,7 +35,6 @@ def main():
     import psutil
     from app.infrastructure.task_runner import QueuedTaskRunner
     from app.models import CompareTask
-    from scripts.replay_reviewed_tasks import _ComponentReplayExtractor
 
     service = build_service(runtime)
     repository = service.repository
@@ -50,13 +48,7 @@ def main():
     for source_id in args.task_id:
         paths = input_paths(root, source_id)
         task_id = "concurrent-" + source_id
-        extractor = None
-        if args.extraction == "saved":
-            raw = {}
-            for path in (root / "storage/tasks" / source_id / "diagnostics/ocr").glob("*hybrid_raw.json"):
-                raw[json.loads(path.read_text())["document"]["filename"]] = path
-            extractor = _ComponentReplayExtractor(raw)
-        services[task_id] = build_service(runtime, extractor)
+        services[task_id] = build_service(runtime)
         ids.append(task_id)
         hashes[source_id] = {side: digest(path.read_bytes()) for side, path in paths.items()}
         repository.save_compare_task(CompareTask(task_id=task_id))
@@ -95,7 +87,7 @@ def main():
                      "execution_seconds": (finished - begun).total_seconds(),
                      "user_wait_seconds": (finished - queued).total_seconds()})
     failures = http_failures(recorder.calls)
-    result = {"workers": args.workers, "http_mode": args.http_mode, "extraction": args.extraction,
+    result = {"workers": args.workers, "http_mode": args.http_mode, "extraction": "live",
               "server_cache_state": "unknown", "wall_seconds": elapsed,
               "cpu_seconds": time.process_time() - cpu, "rss_peak_mb": peak / 1024**2,
               "rss_increment_mb": (peak - initial) / 1024**2,

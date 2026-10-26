@@ -276,7 +276,7 @@ class StructuralDriftMixin:
             right_body = self._strip_clause_prefix_only(right.text)
             if len(self._search_text(right_body)[0]) < 4:
                 continue
-            match = self._best_contained_match(right_body, right.section_type, original, consumed_spans)
+            match = self._numbered_contained_match(right, right_body, original, consumed_spans)
             if match is None:
                 continue
             parent, start, end, score = match
@@ -302,6 +302,44 @@ class StructuralDriftMixin:
             consumed_spans.setdefault(parent.clause_id, []).append((start, end))
             matched_compare.add(right.clause_id)
         return pairs
+
+    def _numbered_contained_match(self, needle, body, original, consumed_spans):
+        """Own the source line's prefix, including a genuinely different number."""
+        short = len(self._search_text(body)[0]) < 20
+        matches = []
+        for parent in original:
+            if (parent.section_type or "main_contract") != (needle.section_type or "main_contract"):
+                continue
+            if short and not self._short_heading_position_compatible(needle, parent):
+                continue
+            span = self._find_contained_span(body, parent.text, allow_short_heading=short)
+            if span is None:
+                continue
+            start, end, score = span
+            line_start = parent.text.rfind("\n", 0, start) + 1
+            line_end = parent.text.find("\n", start)
+            line = parent.text[line_start:line_end if line_end >= 0 else len(parent.text)]
+            parsed = self.number_parser.parse_line(line)
+            owns_prefix = False
+            if parsed and parsed.title:
+                prefix = line[:len(parsed.marker_text)].strip()
+                owns_prefix = (
+                    parent.text[line_start:start].strip().rstrip("、.． ") == prefix.rstrip("、.． ")
+                    and self._search_text(parsed.title)[0] == self._search_text(needle.title)[0]
+                )
+            if owns_prefix:
+                start = line_start
+            elif short:
+                # A short phrase in prose is not an independent heading.
+                continue
+            if self._overlaps_existing((start,end,score), consumed_spans.get(parent.clause_id, [])):
+                continue
+            if short and self._search_text(parent.text)[0].count(self._search_text(body)[0]) != 1:
+                continue
+            matches.append((parent,start,end,score))
+        if short:
+            return matches[0] if len(matches) == 1 else None
+        return max(matches,key=lambda item:item[3]) if matches else None
 
     def _match_unmatched_originals_inside_matched_compare(
         self,
@@ -440,25 +478,6 @@ class StructuralDriftMixin:
                 if sentence and sentence != paragraph:
                     fragments.append(sentence)
         return fragments
-
-    def _best_contained_match(
-        self,
-        body: str,
-        section_type: str,
-        original: list[Clause],
-        consumed_spans: dict[str, list[tuple[int, int]]],
-    ) -> tuple[Clause, int, int, float] | None:
-        best: tuple[Clause, int, int, float] | None = None
-        for clause in original:
-            if (clause.section_type or "main_contract") != (section_type or "main_contract"):
-                continue
-            span = self._find_contained_span(body, clause.text)
-            if span is None or self._overlaps_existing(span, consumed_spans.get(clause.clause_id, [])):
-                continue
-            start, end, score = span
-            if best is None or score > best[3]:
-                best = (clause, start, end, score)
-        return best
 
     def _find_contained_span(
         self,

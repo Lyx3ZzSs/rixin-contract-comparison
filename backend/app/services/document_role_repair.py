@@ -17,6 +17,32 @@ def revision_continuations(page: Page, is_revision) -> set[str]:
     comments = [b for b in ordered if is_revision(b, page)
                 and b.bbox.x0 >= page.width * 0.65]
     result: set[str] = set()
+    # Native PDF runs often split a balloon horizontally at the font change:
+    # "设置格式[author]:" and "字体:..." are separate blocks on one row.
+    # Keep the complete balloon extent so a wrapped payload can return to its
+    # original left edge. A format keyword without a revision anchor is not noise.
+    format_groups = [b.bbox.model_copy() for b in comments
+                     if compact(b.text).startswith("设置格式[")]
+    for block in ordered:
+        if block in comments or block.raw_html or block.bbox.x0 < page.width * .65:
+            continue
+        text = compact(block.text)
+        format_payload = bool(re.match(
+            r"^(?:字体|字号|字形|字体颜色|色|颜色|突出显示|Hyperlink\.\d+)[,:：]?", text))
+        for box in format_groups:
+            row_height = max(1.0, block.bbox.y1 - block.bbox.y0)
+            same_row = (min(box.y1, block.bbox.y1) - max(box.y0, block.bbox.y0) >= row_height * .5
+                        and 0 <= block.bbox.x0 - box.x1 <= row_height)
+            next_row = (0 <= block.bbox.y0 - box.y1 <= row_height * 1.1
+                        and abs(block.bbox.x0 - box.x0) <= row_height
+                        and block.bbox.x1 <= box.x1 + row_height)
+            if len(text) <= 80 and ((same_row and format_payload) or (next_row and (
+                    format_payload or re.match(r"^(?:宋体|黑体|楷体|仿宋|英语|中文|[（(]默认)", text)))):
+                result.add(block.block_id)
+                box.x0 = min(box.x0, block.bbox.x0)
+                box.x1 = max(box.x1, block.bbox.x1)
+                box.y1 = max(box.y1, block.bbox.y1)
+                break
     for block in ordered:
         if block in comments or block.block_type in {"table", "number"}:
             continue
@@ -46,43 +72,8 @@ def repeated_title_ids(document: Document) -> set[str]:
 
 
 def reconcile_contact_placeholders(original: Document, compare: Document) -> list[tuple[str, TextBlock]]:
-    """An isolated L in both fax and email slots is an OCR form placeholder.
-
-    Require a matching blank counterpart and two neighbouring, differently
-    labelled contact slots. This never rewrites an address or telephone number.
-    """
-    changed = []
-    pattern = re.compile(r"^(传真号码|邮箱地址)[:：]\s*([/／∠_]*|L)$")
-    for left_page, right_page in zip(original.pages, compare.pages):
-        if left_page.page_no != right_page.page_no:
-            continue
-        for side, page, other in (("original", left_page, right_page), ("compare", right_page, left_page)):
-            def by_label(p, label):
-                return sorted(
-                    [b for b in p.blocks if compact(b.text).startswith(label + ":")],
-                    key=lambda b: (b.bbox.y0, b.bbox.x0))
-            candidates = []
-            for label in ("传真号码", "邮箱地址"):
-                slots, peers = by_label(page, label), by_label(other, label)
-                if len(slots) != len(peers):
-                    continue
-                for block, peer in zip(slots, peers):
-                    m, p = pattern.fullmatch(compact(block.text)), pattern.fullmatch(compact(peer.text))
-                    if m and p and m[2] == "L" and p[2] != "L":
-                        candidates.append((label, block))
-            for label, block in candidates:
-                if not any(other_label != label and abs(block.bbox.y0 - neighbour.bbox.y0) <= 40
-                           and abs(block.bbox.x0 - neighbour.bbox.x0) <= 10
-                           for other_label, neighbour in candidates):
-                    continue
-                index = block.text.rfind("L")
-                block.text = block.text[:index] + block.text[index + 1:]
-                block.char_boxes = [c for c in block.char_boxes if c.text_index != index]
-                for char in block.char_boxes:
-                    if char.text_index is not None and char.text_index > index:
-                        char.text_index -= 1
-                changed.append((side, block))
-    return changed
+    from app.services.contact_placeholder_pixels import reconcile
+    return reconcile(original, compare)
 
 
 def repair_corroborated_ocr(page: Page) -> list[TextBlock]:
@@ -166,7 +157,10 @@ def reconcile_body_roles(original: Document, compare: Document) -> list[tuple[st
                     continue
                 peer = peers[0]
                 if (peer.block_type in {'paragraph_title','doc_title'} and text.endswith(('表','单','书'))
-                        and len(text) <= 24 and block.bbox.y0 < page.height*.3):
+                        and len(text) <= 24
+                        and (block.bbox.y0 < page.height*.3 or any(
+                            b.block_type == 'table' and 0 <= b.bbox.y0-block.bbox.y1 <= 60
+                            for b in page.blocks))):
                     block.block_type = peer.block_type = 'paragraph_title'
                     block.flow_role = peer.flow_role = 'heading'
                     block.enter_clause_compare = peer.enter_clause_compare = True
@@ -357,3 +351,57 @@ def reconcile_local_source_disagreement(original: Document, compare: Document) -
                         if char.text_index==index:char.char=replacement
                     changed.append((side,block));break
     return changed
+
+
+def reconcile_interior_document_titles(original: Document, compare: Document):
+    """Compare interior title prose on both sides, even when layout roles differ.
+
+    Require a paired contract opening (both party labels below a compact title
+    band). Give preamble metadata the whole title on both sides; later openings
+    outside its scope must remain in clause comparison.
+    """
+    changes = []
+    for left, right in zip(original.pages[1:], compare.pages[1:]):
+        if left.page_no != right.page_no:
+            continue
+        if not all(any(b.text.strip().startswith('鉴于') for b in p.blocks) for p in (left, right)):
+            continue
+        groups = []
+        for page in (left, right):
+            parties = [b for b in page.blocks if re.match(r'^(甲方|乙方)[:：]', compact(b.text))
+                       and b.bbox.y0 < page.height*.28]
+            if {compact(b.text)[:2] for b in parties} != {'甲方','乙方'}:
+                break
+            top = min(b.bbox.y0 for b in parties)
+            titles = [b for b in page.blocks if 6<=len(compact(b.text))<=65
+                      and b.block_type in {'text','paragraph_title','doc_title'}
+                      and b.bbox.y1 < top and b.bbox.y0 > page.height*.04
+                      and abs((b.bbox.x0+b.bbox.x1)/2-page.width/2)<page.width*.15]
+            if not 1<=len(titles)<=3 or not any('合同' in b.text or '协议' in b.text for b in titles):
+                break
+            groups.append(titles)
+        if len(groups)!=2 or not any(b.block_type=='doc_title' for g in groups for b in g):
+            continue
+        from app.services.cover.extractor import _extract_cover
+        from app.services.normalizer import TextNormalizer
+
+        for group in groups:
+            for block in group:
+                block.block_type = 'doc_title'
+        # Do not suppress clause text unless the metadata extractor actually
+        # owns every title line on BOTH sides, including unchanged titles.
+        fields = [_extract_cover(TextNormalizer(), doc).preamble_titles.get(left.page_no)
+                  for doc in (original, compare)]
+        metadata_owned = all(
+            field is not None
+            and {b.block_id for b in group} == {part.block.block_id for part in field.value_parts}
+            for field, group in zip(fields, groups)
+        )
+        for side, group in zip(('original','compare'), groups):
+            for block in group:
+                block.block_type = 'doc_title' if metadata_owned else 'paragraph_title'
+                block.enter_clause_compare = not metadata_owned
+                block.flow_role='heading'
+                block.semantic_reasons.append('paired_interior_document_title')
+                changes.append((side,block))
+    return changes

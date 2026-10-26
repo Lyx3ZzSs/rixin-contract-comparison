@@ -1,0 +1,43 @@
+HUANENG_DINGBIAN 黄金集更新（2026-10-10）
+
+授权与来源
+用户在修复及真实服务验证完成后明确要求“更新该任务黄金集”。来源更新为 ea7eef80-7d17-475b-864d-c328ab222c71，保留旧来源历史及31637269、78701070两次修复前任务引用。
+
+更新内容
+保留原14条业务、复核、状态和定位断言，新增6条MUST_NOT_EXIST：
+1. 第1页中国华能两侧均存在，不得因header/text分属不同通道报新增、删除或修改。
+2. 第9页7.2.8日常维护条款及费率3‰相同，不得因OCR/清理/符号验证问题报正文变化。
+3. 第15页2.2.8对应相同条款同上。
+4. 第18页画面调用响应时间≤4秒相同，不得因formula/text分类丢失报变化。
+5. 第38页两侧公司印刷签署字段相同，不得因OCR合并和签署块漏配报整区/公司文本变化。
+6. 第40页对应印刷签署字段同上。
+签署规则按印刷公司文本匹配，不匹配纯日期或签字变化；原有真实日期正例保留。
+断言不绑定运行时差异编号，也不限ADD/MODIFY/DELETE。
+
+计数
+本合同14→20条验收规则，全库271→277条；仍为15份合同、30份不可变PDF。
+任务页面仍为16条实际差异。负例表示“不得出现的差异”，黄金规则数不是页面差异数。
+
+验证
+- 当前任务20条规则：12条通过、8条既有失败；新增6条全部通过。
+- 修复前31637269、78701070任务能共同触发全部6条新规则；分别将差异类型变为ADD/MODIFY/DELETE后仍全部可检出。
+- 新任务两侧输入PDF与封存PDF哈希一致；全部30份PDF哈希、页数及277条规则计数通过装载校验。
+- 原14条断言、其他14份oracle及全部PDF元数据不变。
+- 对上一轮最终代码保存的15份合同结果重新应用黄金规则：新增失败0，既有161项失败不变。本轮没有重新OCR或重跑生产计算，不宣称全库黄金通过。
+- 黄金基础设施测试15 passed；用户授权的基线变更检查通过。检查基于HEAD，包含之前未提交的黄金更新；本轮独立差异见baseline-update.patch。
+
+既有8项失败
+封面合同编号、封面手写附注、封面骑缝章3项语义匹配失败；第13页签字日期1项内容状态不一致；第28/30/38/40页4项日期规则仍绑定旧metadata来源、整段文字及局部数字框，与新signing_region纯日期表示不匹配。
+这些失败不等于对应内容完全漏检。本轮保持其断言，不将待复核OCR读数或对象归属自动提升为已确认真值，也不降低原复核要求。
+
+证据
+output/analysis/golden-huaneng-ea7eef80-20261010/validation-summary.json
+output/analysis/golden-huaneng-ea7eef80-20261010/current-task-report.json
+output/analysis/golden-huaneng-ea7eef80-20261010/old-cover-report.json
+output/analysis/golden-huaneng-ea7eef80-20261010/old-structure-report.json
+output/analysis/golden-huaneng-ea7eef80-20261010/baseline-update.patch
+output/analysis/golden-huaneng-ea7eef80-20261010/infrastructure-tests.log
+output/analysis/golden-huaneng-ea7eef80-20261010/baseline-guard.log
+原文与根因验证见output/analysis/cover-permille-fix-20261010和output/analysis/three-deletes-fix-20261010。
+
+本轮仅更新黄金来源、规则、计数和说明；未修改生产算法、任务结果或人工审核状态，无需重启服务。

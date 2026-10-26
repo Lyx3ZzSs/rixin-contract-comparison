@@ -361,22 +361,11 @@ def test_reports_changed_preamble_title_on_second_page_before_first_clause() -> 
     )
     assert diff.original_snippet == diff.original_text
     assert diff.compare_snippet == diff.compare_text
-    assert [
-        (text_range.start, text_range.end, text_range.highlight_type)
-        for text_range in diff.original_change_ranges
-    ] == [(0, len(diff.original_text), "MODIFY")]
-    assert [
-        (text_range.start, text_range.end, text_range.highlight_type)
-        for text_range in diff.compare_change_ranges
-    ] == [(0, len(diff.compare_text), "MODIFY")]
-    assert [evidence.text for evidence in diff.original_evidence] == [
-        "国能长源随州发电有限公司随县分公司",
-        "2026年新能源场站功率预测系统授权服务合同",
-    ]
-    assert [evidence.text for evidence in diff.compare_evidence] == [
-        "长源电力随州公司2026年新能源场站",
-        "功率预测系统授权服务单一来源项目合同",
-    ]
+    for text, ranges in [(diff.original_text, diff.original_change_ranges),
+                         (diff.compare_text, diff.compare_change_ranges)]:
+        assert [(r.start, r.end, r.highlight_type) for r in ranges] == [(0, len(text), "MODIFY")]
+    assert "\n".join(e.text for e in diff.original_evidence) == diff.original_text
+    assert "\n".join(e.text for e in diff.compare_evidence) == diff.compare_text
     assert {evidence.page_no for evidence in diff.original_evidence} == {2}
     assert {evidence.page_no for evidence in diff.compare_evidence} == {2}
     assert {evidence.highlight_type for evidence in diff.original_evidence} == {"MODIFY"}

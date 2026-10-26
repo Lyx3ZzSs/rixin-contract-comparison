@@ -37,7 +37,24 @@ def next_value(
         next_lines = lines(next_block.text)
         if not next_lines:
             continue
-        if parse_labeled_line(next_lines[0]) or is_noise_line(next_lines[0]):
+        if parse_labeled_line(next_lines[0]):
+            break
+        if is_noise_line(next_lines[0]):
+            continue
+        # Reading order alone is not field ownership. A fallback value must
+        # occupy the label's row or the immediately following aligned line.
+        height = max(1.0, current_block.bbox.y1 - current_block.bbox.y0)
+        same_row = (
+            abs((next_block.bbox.y0 + next_block.bbox.y1
+                 - current_block.bbox.y0 - current_block.bbox.y1) / 2) <= max(8.0, height * 1.2)
+            and next_block.bbox.x0 >= current_block.bbox.x1 - height
+        )
+        aligned_below = (
+            0 <= next_block.bbox.y0 - current_block.bbox.y1 <= height * 1.5
+            and min(next_block.bbox.x1, current_block.bbox.x1)
+            > max(next_block.bbox.x0, current_block.bbox.x0)
+        )
+        if not (same_row or aligned_below):
             continue
         return (
             next_lines[0],

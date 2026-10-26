@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "NUOYANG",
-  "expected_case_count": 19,
+  "expected_case_count": 26,
   "review_provenance": {
     "method": "agent_visual_pdf_review",
     "authorization": "用户明确要求：加入正式GOlden",
@@ -401,6 +401,74 @@
         },
         "min_iou": 0.35
       }
+    },
+    {
+      "case_id": "NUOYANG_P1_SHARED_LOGO_MUST_NOT_EXIST",
+      "page": 1,
+      "source_type": "metadata",
+      "diff_type": "ADD",
+      "forbidden_value_pattern": "SPIC|国家电投",
+      "review_note": "两侧封面均有SPIC及国家电投标识；不能因图文来源不同新增合同内容。",
+      "assertion": "MUST_NOT_EXIST"
+    },
+    {
+      "case_id": "NUOYANG_P1_SHARED_COUNTER_MUST_NOT_EXIST",
+      "page": 1,
+      "source_type": "metadata",
+      "forbidden_value_pattern": "[-—－]\\s*1\\s*[-—－]",
+      "review_note": "两侧同一封面页码-1-，原稿拆块和扫描稿偏高不得形成封面额外文本差异。",
+      "assertion": "MUST_NOT_EXIST"
+    },
+    {
+      "case_id": "NUOYANG_P6_REVISION_FORMAT_MUST_NOT_EXIST",
+      "page": 6,
+      "forbidden_value_pattern": "字体[:：]|字体颜色|色[:：]黑色",
+      "review_note": "原稿页边修订格式批注不属于签署字段或合同正文，不得因扫描稿无批注而报删除。",
+      "assertion": "MUST_NOT_EXIST"
+    },
+    {
+      "case_id": "NUOYANG_P6_SHARED_PARTY_FIELDS_MUST_NOT_EXIST",
+      "page": 6,
+      "source_type": "signing_region",
+      "forbidden_value_pattern": "招商银行北京大屯路支行|110904199110901|911101086723891430|北京市海淀区西三旗建材城中路27号1幢2层227室",
+      "review_note": "两侧乙方地址、开户行、账号、纳税号一致，不得因委托人/承包人分栏错配形成增删。甲方真实签名、日期及印章由既有正例保护。",
+      "assertion": "MUST_NOT_EXIST"
+    },
+    {
+      "case_id": "NUOYANG_P2_CONTACT_SLASH_MUST_NOT_EXIST",
+      "page": 2,
+      "source_type": "clause",
+      "forbidden_value_pattern": "传真号码|邮箱地址",
+      "highlight_expectation": {
+        "side": "original",
+        "pattern": "[/／]"
+      },
+      "review_note": "四处传真/邮箱斜杠本侧像素核验一致，不得误报删除；许峰→吴峻真实姓名变化仍由既有正例保护。",
+      "assertion": "MUST_NOT_EXIST"
+    },
+    {
+      "case_id": "NUOYANG_P3_TAX_OCR_ORIGINAL_MUST_NOT_EXIST",
+      "page": 3,
+      "source_type": "clause",
+      "forbidden_value_pattern": "增值税金额",
+      "highlight_expectation": {
+        "side": "original",
+        "pattern": "含"
+      },
+      "review_note": "本组PDF税率调整段落原图均为含增值税金额；不得将OCR含/合混淆作为条款变化。此规则不推广至其他合同，不改第5页辖/轴已有真实差异要求。",
+      "assertion": "MUST_NOT_EXIST"
+    },
+    {
+      "case_id": "NUOYANG_P3_TAX_OCR_COMPARE_MUST_NOT_EXIST",
+      "page": 3,
+      "source_type": "clause",
+      "forbidden_value_pattern": "增值税金额",
+      "highlight_expectation": {
+        "side": "compare",
+        "pattern": "合"
+      },
+      "review_note": "本组PDF税率调整段落原图均为含增值税金额；不得将OCR含/合混淆作为条款变化。此规则不推广至其他合同，不改第5页辖/轴已有真实差异要求。",
+      "assertion": "MUST_NOT_EXIST"
     }
   ],
   "regression_coverage": {
@@ -418,5 +486,18 @@
         "invariant": "异常封面年月须从本侧原图局部复核；不允许硬编码补字或复制对照值。"
       }
     ]
+  },
+  "review_revision": {
+    "date": "2026-10-26",
+    "authorization": "用户明确要求：更新2aa339c7-fe60-4b9e-b718-e909167edcf4黄金集",
+    "source_run_id": "2aa339c7-fe60-4b9e-b718-e909167edcf4",
+    "evidence_root": "output/analysis/golden-nuoyang-2aa339c7-20261026",
+    "source_evidence": [
+      "output/analysis/nuoyang-root-fix-20261021",
+      "output/analysis/nuoyang-ocr-fix-20261022",
+      "output/analysis/nuoyang-page-counter-fix-20261022",
+      "output/analysis/nuoyang-party-fix-20261022"
+    ],
+    "scope": "保留全部19条已有规则及阈值，新增7条已验证误报负例；不把其余待复核输出整体提升为真值。"
   }
 }

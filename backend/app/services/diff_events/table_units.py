@@ -44,10 +44,13 @@ def project(result, event):
     if "cell_selection" not in event:
         return result
     cells = [result.match_score_details["cell_observations"][i] for i in event["cell_selection"]]
+    multi_source = any(len((c.get(f'{side}_cell') or {}).get('source_fragments', [])) > 1
+                       for c in cells for side in ('original', 'compare'))
     result.match_score_details = {**result.match_score_details, "cell_observations": cells}
     result.diff_type = event["direction"]
     for side in ("original", "compare"):
         values = [c[f"{side}_cell"] for c in cells if c.get(f"{side}_cell")]
+        source_evidence = getattr(result, f'{side}_evidence')
         text = "\n".join(c["text"] for c in values)
         setattr(result, f"{side}_text", text)
         setattr(
@@ -55,6 +58,20 @@ def project(result, event):
             f"{side}_change_ranges",
             [TextRange(start=0, end=len(text), highlight_type=result.diff_type)] if text else [],
         )
+        if multi_source:
+            fragments = [f for c in values for f in c.get('source_fragments', []) if f.get('bbox')]
+            selected = [e for e in source_evidence if any(
+                e.page_no == f['page_no']
+                and min(e.bbox.x1, f['bbox']['x1']) > max(e.bbox.x0, f['bbox']['x0'])
+                and min(e.bbox.y1, f['bbox']['y1']) > max(e.bbox.y0, f['bbox']['y0'])
+                for f in fragments)]
+            # Preserve changed-text locations from the comparator. A single
+            # legacy cell box cannot represent a multi-page logical field.
+            setattr(result, f'{side}_evidence', selected or [
+                EvidenceBox(page_no=f['page_no'], bbox=BBox.model_validate(f['bbox']), text=f['text'],
+                            method='table_cell_fragment', highlight_type=result.diff_type)
+                for f in fragments])
+            continue
         setattr(
             result,
             f"{side}_evidence",

@@ -1,0 +1,907 @@
+{
+  "original": {
+    "region_id": "SR-3-1",
+    "group_id": "",
+    "page_no": 3,
+    "bbox": {
+      "x0": 44.400001525878906,
+      "y0": 187.448974609375,
+      "x1": 550.8096923828125,
+      "y1": 633.0989990234375,
+      "normalized": null
+    },
+    "signing_block_id": "SB-3-1",
+    "region_role": "both_parties",
+    "confidence": 1.0,
+    "confidence_reasons": [
+      "paired_parties",
+      "seal_signature_date_cluster",
+      "terminal_business_signing_fields",
+      "bottom_signing_position",
+      "top_signing_continuation",
+      "two_column_layout"
+    ],
+    "elements": [
+      {
+        "element_id": "SB-3-1-party-甲方-d6c1a9550d60-p3:native:5-1",
+        "element_type": "party_field",
+        "page_no": 3,
+        "bbox": {
+          "x0": 62.400001525878906,
+          "y0": 195.448974609375,
+          "x1": 292.2096252441406,
+          "y1": 271.8989562988281,
+          "normalized": null
+        },
+        "text": "甲方：陕西派能中和电力科技有限公司（盖章）",
+        "confidence": 1.0,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": null,
+        "observation_reason": "",
+        "raw_ref": {
+          "party_role": "甲方",
+          "field_key": "party_name",
+          "value_roi": {
+            "x0": 62.400001525878906,
+            "y0": 195.448974609375,
+            "x1": 292.2096252441406,
+            "y1": 240.69895935058594,
+            "normalized": null
+          },
+          "source_block_ids": [
+            "d6c1a9550d60-p3:native:5",
+            "d6c1a9550d60-p3:native:6",
+            "d6c1a9550d60-p3:native:7"
+          ],
+          "field_bboxes": [
+            {
+              "x0": 62.400001525878906,
+              "y0": 195.448974609375,
+              "x1": 292.2096252441406,
+              "y1": 209.49896240234375,
+              "normalized": null
+            },
+            {
+              "x0": 62.400001525878906,
+              "y0": 226.64895629882812,
+              "x1": 76.45000457763672,
+              "y1": 240.69895935058594,
+              "normalized": null
+            },
+            {
+              "x0": 104.5199966430664,
+              "y0": 257.8489685058594,
+              "x1": 160.68955993652344,
+              "y1": 271.8989562988281,
+              "normalized": null
+            }
+          ],
+          "field_segments": [
+            "甲方：陕西派能中和电力科技有限公",
+            "司",
+            "（盖章）"
+          ]
+        }
+      },
+      {
+        "element_id": "SB-3-1-party-乙方-d6c1a9550d60-p3:native:19-1",
+        "element_type": "party_field",
+        "page_no": 3,
+        "bbox": {
+          "x0": 303.0,
+          "y0": 195.448974609375,
+          "x1": 513.8470458984375,
+          "y1": 240.69895935058594,
+          "normalized": null
+        },
+        "text": "乙方：国能日新科技股份有限公司（盖章）",
+        "confidence": 1.0,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": null,
+        "observation_reason": "",
+        "raw_ref": {
+          "party_role": "乙方",
+          "field_key": "party_name",
+          "value_roi": {
+            "x0": 345.11956787109375,
+            "y0": 195.448974609375,
+            "x1": 513.8470458984375,
+            "y1": 209.49896240234375,
+            "normalized": null
+          },
+          "source_block_ids": [
+            "d6c1a9550d60-p3:native:19",
+            "d6c1a9550d60-p3:native:20"
+          ],
+          "field_bboxes": [
+            {
+              "x0": 303.0,
+              "y0": 195.448974609375,
+              "x1": 513.8470458984375,
+              "y1": 209.49896240234375,
+              "normalized": null
+            },
+            {
+              "x0": 338.0400085449219,
+              "y0": 226.64895629882812,
+              "x1": 394.2095642089844,
+              "y1": 240.69895935058594,
+              "normalized": null
+            }
+          ],
+          "field_segments": [
+            "乙方：国能日新科技股份有限公司",
+            "（盖章）"
+          ]
+        }
+      },
+      {
+        "element_id": "SB-3-1-field-credit_code-1-15",
+        "element_type": "field",
+        "page_no": 3,
+        "bbox": {
+          "x0": 303.0,
+          "y0": 507.4490051269531,
+          "x1": 472.3794860839844,
+          "y1": 521.4990234375,
+          "normalized": null
+        },
+        "text": "911101086723891430",
+        "confidence": 1.0,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": "OBSERVED_VALUE",
+        "observation_reason": "LOCALIZED_VALUE_EVIDENCE",
+        "raw_ref": {
+          "field_key": "credit_code",
+          "field_label": "税号",
+          "party_role": "乙方",
+          "source_block_ids": [
+            "d6c1a9550d60-p3:native:29"
+          ],
+          "value_bbox": {
+            "x0": 345.239990234375,
+            "y0": 507.4490051269531,
+            "x1": 472.3794860839844,
+            "y1": 521.4990234375,
+            "normalized": null
+          },
+          "value_roi": {
+            "x0": 345.12969970703125,
+            "y0": 507.4490051269531,
+            "x1": 550.8096923828125,
+            "y1": 521.4990234375,
+            "normalized": null
+          },
+          "display_value_bbox": {
+            "x0": 345.239990234375,
+            "y0": 507.4490051269531,
+            "x1": 472.3794860839844,
+            "y1": 521.4990234375,
+            "normalized": null
+          },
+          "value_evidence": [
+            {
+              "source": "native_pdf",
+              "text": "911101086723891430",
+              "raw_text": "税号：911101086723891430",
+              "normalized_text": "911101086723891430",
+              "page_no": 3,
+              "bbox": {
+                "x0": 345.239990234375,
+                "y0": 507.4490051269531,
+                "x1": 472.3794860839844,
+                "y1": 521.4990234375,
+                "normalized": null
+              },
+              "confidence": 1.0,
+              "field_key": "credit_code",
+              "party_role": "乙方",
+              "localized": true,
+              "provenance_valid": true,
+              "localization_method": "PRIMARY_VALUE_BBOX"
+            }
+          ]
+        }
+      },
+      {
+        "element_id": "SB-3-1-field-credit_code-1-16",
+        "element_type": "field",
+        "page_no": 3,
+        "bbox": {
+          "x0": 62.400001525878906,
+          "y0": 538.64892578125,
+          "x1": 231.65924072265625,
+          "y1": 552.698974609375,
+          "normalized": null
+        },
+        "text": "91610103MABOHNNLOU",
+        "confidence": 1.0,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": "OBSERVED_VALUE",
+        "observation_reason": "LOCALIZED_VALUE_EVIDENCE",
+        "raw_ref": {
+          "field_key": "credit_code",
+          "field_label": "税号",
+          "party_role": "甲方",
+          "source_block_ids": [
+            "d6c1a9550d60-p3:native:16"
+          ],
+          "value_bbox": {
+            "x0": 104.5199966430664,
+            "y0": 538.64892578125,
+            "x1": 231.65924072265625,
+            "y1": 552.698974609375,
+            "normalized": null
+          },
+          "value_roi": {
+            "x0": 104.52970123291016,
+            "y0": 538.64892578125,
+            "x1": 292.86424999999997,
+            "y1": 552.698974609375,
+            "normalized": null
+          },
+          "display_value_bbox": {
+            "x0": 104.5199966430664,
+            "y0": 538.64892578125,
+            "x1": 231.65924072265625,
+            "y1": 552.698974609375,
+            "normalized": null
+          },
+          "value_evidence": [
+            {
+              "source": "native_pdf",
+              "text": "91610103MABOHNNLOU",
+              "raw_text": "税号：91610103MABOHNNLOU",
+              "normalized_text": "91610103MABOHNNLOU",
+              "page_no": 3,
+              "bbox": {
+                "x0": 104.5199966430664,
+                "y0": 538.64892578125,
+                "x1": 231.65924072265625,
+                "y1": 552.698974609375,
+                "normalized": null
+              },
+              "confidence": 1.0,
+              "field_key": "credit_code",
+              "party_role": "甲方",
+              "localized": true,
+              "provenance_valid": true,
+              "localization_method": "PRIMARY_VALUE_BBOX"
+            }
+          ]
+        }
+      },
+      {
+        "element_id": "SB-3-1-party-residual-d6c1a9550d60-p3:native:20",
+        "element_type": "label",
+        "page_no": 3,
+        "bbox": {
+          "x0": 338.0400085449219,
+          "y0": 226.64895629882812,
+          "x1": 394.2095642089844,
+          "y1": 240.69895935058594,
+          "normalized": null
+        },
+        "text": "（盖章）",
+        "confidence": 1.0,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": null,
+        "observation_reason": "",
+        "raw_ref": {
+          "party_role": "乙方",
+          "residual_kind": "party_suffix",
+          "source_block_ids": [
+            "d6c1a9550d60-p3:native:20"
+          ]
+        }
+      },
+      {
+        "element_id": "SB-3-1-party-residual-d6c1a9550d60-p3:native:7",
+        "element_type": "label",
+        "page_no": 3,
+        "bbox": {
+          "x0": 104.5199966430664,
+          "y0": 257.8489685058594,
+          "x1": 160.68955993652344,
+          "y1": 271.8989562988281,
+          "normalized": null
+        },
+        "text": "（盖章）",
+        "confidence": 1.0,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": null,
+        "observation_reason": "",
+        "raw_ref": {
+          "party_role": "甲方",
+          "residual_kind": "party_suffix",
+          "source_block_ids": [
+            "d6c1a9550d60-p3:native:7"
+          ]
+        }
+      }
+    ]
+  },
+  "compare": {
+    "region_id": "SR-3-1",
+    "group_id": "",
+    "page_no": 3,
+    "bbox": {
+      "x0": 44.0,
+      "y0": 176.5,
+      "x1": 591.0,
+      "y1": 625.5,
+      "normalized": null
+    },
+    "signing_block_id": "SB-3-1",
+    "region_role": "both_parties",
+    "confidence": 1.0,
+    "confidence_reasons": [
+      "paired_parties",
+      "seal_signature_date_cluster",
+      "terminal_business_signing_fields",
+      "bottom_signing_position",
+      "top_signing_continuation",
+      "two_column_layout"
+    ],
+    "elements": [
+      {
+        "element_id": "SB-3-1-party-乙方-1c7ecdb167b1-p3:ocr:0:line:5-1",
+        "element_type": "party_field",
+        "page_no": 3,
+        "bbox": {
+          "x0": 306.0,
+          "y0": 189.5,
+          "x1": 515.5,
+          "y1": 237.0,
+          "normalized": null
+        },
+        "text": "乙方：国能日新科技股份有限公司(盖章)",
+        "confidence": 0.9999808669090271,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": null,
+        "observation_reason": "",
+        "raw_ref": {
+          "party_role": "乙方",
+          "field_key": "party_name",
+          "value_roi": {
+            "x0": 349.0,
+            "y0": 189.5,
+            "x1": 515.5,
+            "y1": 202.5,
+            "normalized": null
+          },
+          "source_block_ids": [
+            "1c7ecdb167b1-p3:ocr:0:line:5",
+            "1c7ecdb167b1-p3:ocr:0:line:7"
+          ],
+          "field_bboxes": [
+            {
+              "x0": 306.0,
+              "y0": 189.5,
+              "x1": 515.5,
+              "y1": 202.5,
+              "normalized": null
+            },
+            {
+              "x0": 345.5,
+              "y0": 218.5,
+              "x1": 392.5,
+              "y1": 237.0,
+              "normalized": null
+            }
+          ],
+          "field_segments": [
+            "乙方：国能日新科技股份有限公司",
+            "(盖章)"
+          ]
+        }
+      },
+      {
+        "element_id": "SB-3-1-party-甲方-1c7ecdb167b1-p3:ocr:0:line:4-1",
+        "element_type": "party_field",
+        "page_no": 3,
+        "bbox": {
+          "x0": 65.0,
+          "y0": 192.0,
+          "x1": 151.0,
+          "y1": 268.0,
+          "normalized": null
+        },
+        "text": "甲方：陕西派(盖章",
+        "confidence": 0.9998475909233093,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": null,
+        "observation_reason": "",
+        "raw_ref": {
+          "party_role": "甲方",
+          "field_key": "party_name",
+          "value_roi": {
+            "x0": 108.5,
+            "y0": 192.0,
+            "x1": 150.0,
+            "y1": 205.0,
+            "normalized": null
+          },
+          "source_block_ids": [
+            "1c7ecdb167b1-p3:ocr:0:line:4",
+            "1c7ecdb167b1-p3:ocr:0:line:8"
+          ],
+          "field_bboxes": [
+            {
+              "x0": 65.0,
+              "y0": 192.0,
+              "x1": 150.0,
+              "y1": 205.0,
+              "normalized": null
+            },
+            {
+              "x0": 112.5,
+              "y0": 251.5,
+              "x1": 151.0,
+              "y1": 268.0,
+              "normalized": null
+            }
+          ],
+          "field_segments": [
+            "甲方：陕西派",
+            "(盖章"
+          ]
+        }
+      },
+      {
+        "element_id": "SB-3-1-field-credit_code-1-14",
+        "element_type": "field",
+        "page_no": 3,
+        "bbox": {
+          "x0": 310.0,
+          "y0": 495.5,
+          "x1": 476.0,
+          "y1": 507.0,
+          "normalized": null
+        },
+        "text": "911101086723891430",
+        "confidence": 0.9999707341194153,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": "OBSERVED_VALUE",
+        "observation_reason": "LOCALIZED_VALUE_EVIDENCE",
+        "raw_ref": {
+          "field_key": "credit_code",
+          "field_label": "税号",
+          "party_role": "乙方",
+          "source_block_ids": [
+            "1c7ecdb167b1-p3:ocr:0:line:25"
+          ],
+          "value_bbox": {
+            "x0": 355.0,
+            "y0": 495.5,
+            "x1": 476.0,
+            "y1": 507.0,
+            "normalized": null
+          },
+          "value_roi": {
+            "x0": 341.5,
+            "y0": 493.5,
+            "x1": 591.0,
+            "y1": 509.5,
+            "normalized": null
+          },
+          "display_value_bbox": {
+            "x0": 355.0,
+            "y0": 495.5,
+            "x1": 476.0,
+            "y1": 507.0,
+            "normalized": null
+          },
+          "value_evidence": [
+            {
+              "source": "PP-OCRv6",
+              "text": "911101086723891430",
+              "raw_text": "税号：911101086723891430",
+              "normalized_text": "911101086723891430",
+              "page_no": 3,
+              "bbox": {
+                "x0": 355.0,
+                "y0": 495.5,
+                "x1": 476.0,
+                "y1": 507.0,
+                "normalized": null
+              },
+              "confidence": 0.9999707341194153,
+              "field_key": "credit_code",
+              "party_role": "乙方",
+              "localized": true,
+              "provenance_valid": true,
+              "localization_method": "PRIMARY_VALUE_BBOX"
+            }
+          ]
+        }
+      },
+      {
+        "element_id": "SB-3-1-field-credit_code-1-17",
+        "element_type": "field",
+        "page_no": 3,
+        "bbox": {
+          "x0": 67.5,
+          "y0": 529.5,
+          "x1": 235.5,
+          "y1": 540.5,
+          "normalized": null
+        },
+        "text": "91610103MAB0HNNLOU",
+        "confidence": 0.9787335395812988,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": "OBSERVED_VALUE",
+        "observation_reason": "LOCALIZED_VALUE_EVIDENCE",
+        "raw_ref": {
+          "field_key": "credit_code",
+          "field_label": "税号",
+          "party_role": "甲方",
+          "source_block_ids": [
+            "1c7ecdb167b1-p3:ocr:0:line:26"
+          ],
+          "value_bbox": {
+            "x0": 114.0,
+            "y0": 529.5,
+            "x1": 235.5,
+            "y1": 540.5,
+            "normalized": null
+          },
+          "value_roi": {
+            "x0": 102.5,
+            "y0": 527.0,
+            "x1": 256.875,
+            "y1": 543.5,
+            "normalized": null
+          },
+          "display_value_bbox": {
+            "x0": 114.0,
+            "y0": 529.5,
+            "x1": 235.5,
+            "y1": 540.5,
+            "normalized": null
+          },
+          "value_evidence": [
+            {
+              "source": "PP-OCRv6",
+              "text": "91610103MAB0HNNLOU",
+              "raw_text": "税号：91610103MAB0HNNLOU",
+              "normalized_text": "91610103MAB0HNNLOU",
+              "page_no": 3,
+              "bbox": {
+                "x0": 114.0,
+                "y0": 529.5,
+                "x1": 235.5,
+                "y1": 540.5,
+                "normalized": null
+              },
+              "confidence": 0.9787335395812988,
+              "field_key": "credit_code",
+              "party_role": "甲方",
+              "localized": true,
+              "provenance_valid": true,
+              "localization_method": "PRIMARY_VALUE_BBOX"
+            }
+          ]
+        }
+      },
+      {
+        "element_id": "SB-3-1-party-residual-1c7ecdb167b1-p3:ocr:0:line:7",
+        "element_type": "label",
+        "page_no": 3,
+        "bbox": {
+          "x0": 345.5,
+          "y0": 218.5,
+          "x1": 392.5,
+          "y1": 237.0,
+          "normalized": null
+        },
+        "text": "(盖章)",
+        "confidence": 0.9891949892044067,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": null,
+        "observation_reason": "",
+        "raw_ref": {
+          "party_role": "乙方",
+          "residual_kind": "party_suffix",
+          "source_block_ids": [
+            "1c7ecdb167b1-p3:ocr:0:line:7"
+          ]
+        }
+      },
+      {
+        "element_id": "SB-3-1-party-residual-1c7ecdb167b1-p3:ocr:0:line:8",
+        "element_type": "label",
+        "page_no": 3,
+        "bbox": {
+          "x0": 112.5,
+          "y0": 251.5,
+          "x1": 151.0,
+          "y1": 268.0,
+          "normalized": null
+        },
+        "text": "(盖章",
+        "confidence": 0.9829058647155762,
+        "source": "inferred",
+        "visual_hash": "",
+        "model_name": "",
+        "observation_state": null,
+        "observation_reason": "",
+        "raw_ref": {
+          "party_role": "甲方",
+          "residual_kind": "party_suffix",
+          "source_block_ids": [
+            "1c7ecdb167b1-p3:ocr:0:line:8"
+          ]
+        }
+      },
+      {
+        "element_id": "SR-3-1-visual-model-1",
+        "element_type": "seal",
+        "page_no": 3,
+        "bbox": {
+          "x0": 143.8175182481752,
+          "y0": 175.73828647925035,
+          "x1": 263.5985401459854,
+          "y1": 292.83601070950465,
+          "normalized": null
+        },
+        "text": "seal",
+        "confidence": 0.95,
+        "source": "visual_model",
+        "visual_hash": "",
+        "model_name": "opencv",
+        "observation_state": null,
+        "observation_reason": "",
+        "raw_ref": {}
+      },
+      {
+        "element_id": "SR-3-1-visual-model-2",
+        "element_type": "seal",
+        "page_no": 3,
+        "bbox": {
+          "x0": 560.389294403893,
+          "y0": 347.39290495314594,
+          "x1": 585.676399026764,
+          "y1": 438.54283801874163,
+          "normalized": null
+        },
+        "text": "seal",
+        "confidence": 0.676,
+        "source": "visual_model",
+        "visual_hash": "",
+        "model_name": "opencv",
+        "observation_state": null,
+        "observation_reason": "",
+        "raw_ref": {}
+      }
+    ]
+  },
+  "compare_page": {
+    "page_no": 3,
+    "width": 603.0,
+    "height": 824.0,
+    "blocks": [
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:0",
+        "page_no": 3,
+        "text": "额的10%。",
+        "bbox": {
+          "x0": 61.5,
+          "y0": 64.5,
+          "x1": 121.0,
+          "y1": 80.0,
+          "normalized": null
+        },
+        "block_type": "text",
+        "source": "PP-OCRv6",
+        "confidence": 0.9998241066932678
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:1",
+        "page_no": 3,
+        "text": "五、纠纷解决",
+        "bbox": {
+          "x0": 63.5,
+          "y0": 89.0,
+          "x1": 135.5,
+          "y1": 101.5,
+          "normalized": null
+        },
+        "block_type": "paragraph_title",
+        "source": "PP-OCRv6",
+        "confidence": 0.9999203085899353
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:2",
+        "page_no": 3,
+        "text": "在执行本合同过程中发生的或与本合同有关的争议，双方应通过友好协商解决，经协",
+        "bbox": {
+          "x0": 87.0,
+          "y0": 112.0,
+          "x1": 535.0,
+          "y1": 127.0,
+          "normalized": null
+        },
+        "block_type": "text",
+        "source": "PP-OCRv6",
+        "confidence": 0.9999353289604187
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:3",
+        "page_no": 3,
+        "text": "商在30天内不能达成协议时，应提交至原告所在地人民法院裁决。",
+        "bbox": {
+          "x0": 63.0,
+          "y0": 136.0,
+          "x1": 411.5,
+          "y1": 150.0,
+          "normalized": null
+        },
+        "block_type": "text",
+        "source": "PP-OCRv6",
+        "confidence": 0.9998721480369568
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:4",
+        "page_no": 3,
+        "text": "甲方：陕西派",
+        "bbox": {
+          "x0": 64.5,
+          "y0": 190.5,
+          "x1": 150.5,
+          "y1": 206.5,
+          "normalized": null
+        },
+        "block_type": "text",
+        "source": "PP-OCRv6",
+        "confidence": 0.9998475909233093
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:9",
+        "page_no": 3,
+        "text": "合同专用章",
+        "bbox": {
+          "x0": 173.0,
+          "y0": 246.0,
+          "x1": 241.5,
+          "y1": 275.0,
+          "normalized": null
+        },
+        "block_type": "text",
+        "source": "PP-OCRv6",
+        "confidence": 0.9997676610946655
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:8",
+        "page_no": 3,
+        "text": "(盖章",
+        "bbox": {
+          "x0": 112.5,
+          "y0": 251.5,
+          "x1": 151.0,
+          "y1": 268.0,
+          "normalized": null
+        },
+        "block_type": "text",
+        "source": "PP-OCRv6",
+        "confidence": 0.9829058647155762
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:6",
+        "page_no": 3,
+        "text": "司",
+        "bbox": {
+          "x0": 62.0,
+          "y0": 221.0,
+          "x1": 80.5,
+          "y1": 239.0,
+          "normalized": null
+        },
+        "block_type": "text",
+        "source": "PP-OCRv6",
+        "confidence": 0.9999992847442627
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:11",
+        "page_no": 3,
+        "text": "地址：陕西省西安市碑林区含光路中路27号1幢2层227室",
+        "bbox": {
+          "x0": 62.0,
+          "y0": 276.0,
+          "x1": 463.0,
+          "y1": 300.0,
+          "normalized": null
+        },
+        "block_type": "text",
+        "source": "PP-OCRv6",
+        "confidence": 0.9978557825088501
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:10",
+        "page_no": 3,
+        "text": "地址：北京市海淀区西三旗建材城中",
+        "bbox": {
+          "x0": 305.0,
+          "y0": 249.0,
+          "x1": 535.5,
+          "y1": 264.5,
+          "normalized": null
+        },
+        "block_type": "text",
+        "source": "PP-OCRv6",
+        "confidence": 0.9999220371246338
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:5",
+        "page_no": 3,
+        "text": "乙方：国能日新科技股份有限公司",
+        "bbox": {
+          "x0": 297.0,
+          "y0": 188.5,
+          "x1": 515.5,
+          "y1": 203.5,
+          "normalized": null
+        },
+        "block_type": "text",
+        "source": "PP-OCRv6",
+        "confidence": 0.9999808669090271
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:ocr:0:line:7",
+        "page_no": 3,
+        "text": "(盖章)",
+        "bbox": {
+          "x0": 345.5,
+          "y0": 218.5,
+          "x1": 392.5,
+          "y1": 237.0,
+          "normalized": null
+        },
+        "block_type": "text",
+        "source": "PP-OCRv6",
+        "confidence": 0.9891949892044067
+      },
+      {
+        "block_id": "1c7ecdb167b1-p3:v3:3:visual",
+        "page_no": 3,
+        "text": "",
+        "bbox": {
+          "x0": 141.5,
+          "y0": 176.5,
+          "x1": 264.0,
+          "y1": 294.5,
+          "normalized": null
+        },
+        "block_type": "seal",
+        "source": "PP-DocLayoutV3",
+        "confidence": 0.8737010359764099
+      }
+    ],
+    "table_presence_status": "UNKNOWN",
+    "semantic_role": "unknown",
+    "semantic_confidence": 0.0,
+    "semantic_reasons": []
+  }
+}

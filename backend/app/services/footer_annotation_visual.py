@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-import re
 from typing import Any, Protocol
 
 from app.models import BBox, DiffItem, DiffType, Document, EvidenceBox, Page
+from app.services.page_number_evidence import match_page_counters, page_counters
 from app.utils.id_utils import generate_diff_id
 
 
@@ -219,6 +219,7 @@ class FooterAnnotationVisualComparator:
         compare: Document,
         *,
         start_index: int = 1,
+        page_number_matches=None,
     ) -> list[DiffItem]:
         original_pages = {page.page_no: page for page in original.pages}
         compare_pages = {page.page_no: page for page in compare.pages}
@@ -236,6 +237,7 @@ class FooterAnnotationVisualComparator:
                 start_index=1,
                 original_model=original_pages[page_no],
                 compare_model=compare_pages[page_no],
+                counter_matches=(page_number_matches.get(page_no, []) if page_number_matches is not None else None),
             )
 
         worker_count = min(self.max_inflight, len(shared_pages))
@@ -254,6 +256,9 @@ class FooterAnnotationVisualComparator:
         ocr_diffs: list[DiffItem],
         visual_diffs: list[DiffItem],
     ) -> list[DiffItem]:
+        # Unclassified ink cannot overrule text recognition, even when boxes overlap.
+        visual_diffs = [d for d in visual_diffs
+                        if d.content_recognition_reason != "VISUAL_FOOTER_CONTENT_UNVERIFIED"]
         visual_original = self._group_visual_evidences([diff.original_evidence for diff in visual_diffs])
         visual_compare = self._group_visual_evidences([diff.compare_evidence for diff in visual_diffs])
         dominant_original = [
@@ -348,16 +353,19 @@ class FooterAnnotationVisualComparator:
 
     def remove_overlapping_diffs(self, diffs: list[DiffItem]) -> list[DiffItem]:
         visual_diffs = [diff for diff in diffs if self.visual_flag in diff.review_flags]
-        if not visual_diffs:
-            return diffs
+        # Non-visual evidence consolidation must not depend on an unrelated
+        # visual candidate existing elsewhere in the document.
         non_visual_diffs = [diff for diff in diffs if self.visual_flag not in diff.review_flags]
         filtered = self.remove_overlapping_ocr_diffs(non_visual_diffs, visual_diffs)
         filtered_by_id = {diff.diff_id: diff for diff in filtered}
-        return [
+        consolidated = [
             diff if self.visual_flag in diff.review_flags else filtered_by_id[diff.diff_id]
             for diff in diffs
             if self.visual_flag in diff.review_flags or diff.diff_id in filtered_by_id
         ]
+        from app.services.footer_evidence_fusion import fuse_footer_evidence
+
+        return fuse_footer_evidence(consolidated)
 
     @staticmethod
     def _group_visual_evidences(
@@ -388,6 +396,7 @@ class FooterAnnotationVisualComparator:
         start_index: int,
         original_model: Page | None = None,
         compare_model: Page | None = None,
+        counter_matches=None,
     ) -> list[DiffItem]:
         try:
             import cv2
@@ -417,14 +426,25 @@ class FooterAnnotationVisualComparator:
         except Exception:
             return []
 
+        matches = counter_matches if counter_matches is not None else match_page_counters(original_model, compare_model)
+        compare_explained, compare_registered_counter = self._matched_counter_ink(
+            aligned_original, compare_image, registration.homography, original, compare,
+            [(m.original.bbox, m.compare.bbox) for m in matches],
+        )
+        original_explained, original_registered_counter = self._matched_counter_ink(
+            aligned_compare, original_image, inverse, compare, original,
+            [(m.compare.bbox, m.original.bbox) for m in matches],
+        )
         compare_components = self._annotation_regions(
             self._one_sided_components(
-                compare_image, aligned_original, search_region=self._footer_search_region(compare_model)
+                compare_image, aligned_original, search_region=self._footer_search_region(compare_model, include_counter=bool(matches)),
+                explained_ink=compare_explained, opposite_counter_ink=compare_registered_counter
             )
         )
         original_components = self._annotation_regions(
             self._one_sided_components(
-                original_image, aligned_compare, search_region=self._footer_search_region(original_model)
+                original_image, aligned_compare, search_region=self._footer_search_region(original_model, include_counter=bool(matches)),
+                explained_ink=original_explained, opposite_counter_ink=original_registered_counter
             )
         )
         diffs: list[DiffItem] = []
@@ -500,24 +520,15 @@ class FooterAnnotationVisualComparator:
         )
 
     @staticmethod
-    def _footer_search_region(page: Page | None) -> tuple[float, float, float, float] | None:
+    def _footer_search_region(page: Page | None, *, include_counter: bool = False) -> tuple[float, float, float, float] | None:
         if page is None or page.width <= 0 or page.height <= 0:
             return None
-        numbers = [
-            b
-            for b in page.blocks
-            if b.block_type == "number"
-            and re.fullmatch(r"\d{1,4}", b.text.strip())
-            and b.bbox.y0 >= page.height * 0.75
-            and b.bbox.y1 < page.height * 0.97
-            and 0.3 * page.width <= (b.bbox.x0 + b.bbox.x1) / 2 <= 0.7 * page.width
-            and b.bbox.y1 - b.bbox.y0 <= 25
-        ]
-        if len(numbers) == 1:
-            # The printed number marks the end of this page's body. Search
-            # all footer columns, without requiring a recognized name/label.
-            top = (numbers[0].bbox.y1 + 3) / page.height
-            return (0.025, 0.97, top, 0.995) if top < 0.98 else None
+        numbers = page_counters(page)
+        if numbers:
+            # Search both sides consistently, including strokes crossing a counter.
+            top = ((min(b.bbox.y0 for b in numbers) - 3) if include_counter
+                   else (max(b.bbox.y1 for b in numbers) + 3)) / page.height
+            return (0.025, 0.97, max(.75, top), .995) if top < .99 else None
         regions = [
             b
             for b in page.blocks
@@ -527,21 +538,87 @@ class FooterAnnotationVisualComparator:
         ]
         if regions:
             return (
-                max(0.025, min(b.bbox.x0 for b in regions) / page.width - 0.025),
-                min(0.97, max(b.bbox.x1 for b in regions) / page.width + 0.025),
+                0.025,
+                0.97,
                 max(0.85, min(b.bbox.y0 for b in regions) / page.height - 0.02),
                 0.995,
             )
         return None
 
-    def _one_sided_components(self, source: Any, aligned_opposite: Any, *, search_region=None) -> list[_InkComponent]:
+    def _matched_counter_ink(self, aligned_opposite, source_image, transform, opposite, source, pairs):
+        """Explain only matched printed pixels, never erase an entire text box.
+
+        Global registration may extrapolate badly below body text. Equal, reliable
+        counter readings supply a bounded local glyph match. Any extra strokes
+        between or beyond the explained glyphs remain candidates for review.
+        """
+        import cv2
+        import numpy as np
+
+        height, width = aligned_opposite.shape[:2]
+        explained = np.zeros((height, width), dtype=np.uint8)
+        registered = np.zeros_like(explained)
+        raw_opposite = cv2.resize(opposite.image, (width, height))
+        opposite_ink = self._ink_mask(raw_opposite, self.aligned_ink_threshold)
+        source_ink = self._ink_mask(source_image, self.aligned_ink_threshold)
+        for other, current in pairs:
+            x0 = max(0, int(other.x0 / opposite.width_points * width) - 2)
+            y0 = max(0, int(other.y0 / opposite.height_points * height) - 2)
+            x1 = min(width, int(other.x1 / opposite.width_points * width) + 3)
+            y1 = min(height, int(other.y1 / opposite.height_points * height) + 3)
+            local = np.zeros_like(explained)
+            local[y0:y1,x0:x1] = opposite_ink[y0:y1,x0:x1]
+            ys, xs = np.nonzero(local)
+            if len(xs) < self.min_ink_pixels:
+                continue
+            template = local[ys.min():ys.max()+1, xs.min():xs.max()+1]
+            target = np.float32([
+                [current.x0 / source.width_points * width, current.y0 / source.height_points * height],
+                [current.x1 / source.width_points * width, current.y1 / source.height_points * height],
+            ])
+            # Native text boxes include font ascenders/descenders; OCR boxes are
+            # usually tight. Refine within the known counter, not from box centers.
+            tx0, ty0 = np.floor(target.min(axis=0) - 5).astype(int)
+            tx1, ty1 = np.ceil(target.max(axis=0) + 5).astype(int)
+            tx0, ty0 = max(0,tx0), max(0,ty0)
+            tx1, ty1 = min(width,tx1), min(height,ty1)
+            search = source_ink[ty0:ty1,tx0:tx1]
+            best = None
+            for scale in np.linspace(.6, 2., 36):
+                for vertical_scale in (.7, .85, 1., 1.15, 1.4, 1.7):
+                    tw, th = max(2,round(template.shape[1]*scale)), max(2,round(template.shape[0]*vertical_scale))
+                    if tw > search.shape[1] or th > search.shape[0]:
+                        continue
+                    stamp = cv2.resize(template, (tw,th), interpolation=cv2.INTER_NEAREST)
+                    if np.std(stamp) < 1:
+                        continue
+                    scores = cv2.matchTemplate(search, stamp, cv2.TM_CCOEFF_NORMED)
+                    _, score, _, point = cv2.minMaxLoc(scores)
+                    if best is None or score > best[0]:
+                        best = (score,point,stamp)
+            if best is None or best[0] < .45:
+                continue
+            registered = cv2.bitwise_or(registered, cv2.warpPerspective(local, transform, (width,height)))
+            _, (dx,dy), stamp = best
+            fitted = np.zeros_like(explained)
+            sy, sx = ty0+dy, tx0+dx
+            fitted[sy:sy+stamp.shape[0],sx:sx+stamp.shape[1]] = stamp
+            explained = cv2.bitwise_or(explained, cv2.dilate(fitted, np.ones((7,7),np.uint8)))
+        return explained, registered
+
+    def _one_sided_components(self, source: Any, aligned_opposite: Any, *, search_region=None, explained_ink=None, opposite_counter_ink=None) -> list[_InkComponent]:
         try:
             import cv2
             import numpy as np
 
             source_mask = self._ink_mask(source, self.source_ink_threshold)
             source_seed_mask = self._ink_mask(source, self.source_seed_threshold)
+            if explained_ink is not None:
+                source_mask = cv2.bitwise_and(source_mask, cv2.bitwise_not(explained_ink))
+                source_seed_mask = cv2.bitwise_and(source_seed_mask, cv2.bitwise_not(explained_ink))
             opposite_mask = self._ink_mask(aligned_opposite, self.aligned_ink_threshold)
+            if opposite_counter_ink is not None:
+                opposite_mask = cv2.bitwise_and(opposite_mask, cv2.bitwise_not(opposite_counter_ink))
             opposite_mask = cv2.dilate(opposite_mask, np.ones((7, 7), dtype=np.uint8))
             candidates = self._candidate_components(source_mask, search_region=search_region)
             result: list[_InkComponent] = []
@@ -582,9 +659,13 @@ class FooterAnnotationVisualComparator:
             # Remove scan shadows before cropping the footer. Cropping first
             # detaches border ink and makes it look like an isolated pen mark.
             connected_mask = cv2.morphologyEx(ink_mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
-            _, labels = cv2.connectedComponents(connected_mask)
+            _, labels, stats, _ = cv2.connectedComponentsWithStats(connected_mask)
             edge_labels = np.unique(np.concatenate((labels[0], labels[-1], labels[:, 0], labels[:, -1])))
-            edge_labels = edge_labels[edge_labels != 0]
+            edge_labels = [label for label in edge_labels if label != 0
+                           and (stats[label, cv2.CC_STAT_HEIGHT] > height * .15
+                                or stats[label, cv2.CC_STAT_WIDTH] > width * .30)
+                           and stats[label, cv2.CC_STAT_AREA] / max(1,
+                               stats[label, cv2.CC_STAT_WIDTH] * stats[label, cv2.CC_STAT_HEIGHT]) >= .6]
             ink_mask = ink_mask.copy()
             ink_mask[np.isin(labels, edge_labels)] = 0
         left, right, top, bottom = search_region or (self.roi_left, self.roi_right, self.roi_top, self.roi_bottom)
@@ -600,7 +681,13 @@ class FooterAnnotationVisualComparator:
             self.dense_column_min_pixels,
             int((y1 - y0) * self.dense_column_ink_ratio),
         )
-        dense_columns = (column_ink_counts >= dense_column_threshold).astype(np.uint8)
+        # Border ink persists beyond the footer band. Local column density
+        # alone also matches tall pen strokes, so require vertical support
+        # above the search region before removing a column.
+        support_top = max(0, y0 - int(height * 0.08))
+        extended_counts = np.count_nonzero(ink_mask[support_top:y1, x0:x1], axis=0)
+        dense_columns = ((column_ink_counts >= dense_column_threshold)
+                         & (extended_counts >= (y1 - support_top) * 0.55)).astype(np.uint8)
         if np.any(dense_columns):
             dense_columns = cv2.dilate(
                 dense_columns.reshape(1, -1),
@@ -693,7 +780,7 @@ class FooterAnnotationVisualComparator:
         label = "新增" if diff_type == "ADD" else "删除"
         left_only = all(c.x1 <= rendered.image.shape[1] * self.roi_right for c in components)
         location = "左下角" if left_only else "页脚"
-        text = f"检测到{location}手写签注"
+        text = f"检测到{location}视觉变化（性质待确认）"
         evidences = [
             self._make_evidence(
                 component,
@@ -708,21 +795,21 @@ class FooterAnnotationVisualComparator:
         return DiffItem(
             diff_id=generate_diff_id(index),
             diff_type=diff_type,
-            title=f"第{page_no}页{location}手写签注",
+            title=f"第{page_no}页{location}视觉变化（待复核）",
             original_text=text if diff_type == "DELETE" else "",
             compare_text=text if diff_type == "ADD" else "",
             original_snippet=text if diff_type == "DELETE" else "",
             compare_snippet=text if diff_type == "ADD" else "",
-            readable_change=f"{label}{location}手写签注：第{page_no}页",
+            readable_change=f"第{page_no}页{location}疑似{label}笔迹或其他视觉内容，需复核",
             source_type="header_footer",
             review_flags=[
                 "HEADER_FOOTER_REVIEW",
-                "HANDWRITTEN_ANNOTATION_REVIEW",
+                "FOOTER_VISUAL_CHANGE_REVIEW",
                 self.visual_flag,
             ],
             quality_status="NEEDS_REVIEW",
             content_recognition_status="NEEDS_REVIEW",
-            content_recognition_reason="VISUAL_FOOTER_INK_TEXT_UNVERIFIED",
+            content_recognition_reason="VISUAL_FOOTER_CONTENT_UNVERIFIED",
             original_evidence=evidences if diff_type == "DELETE" else [],
             compare_evidence=evidences if diff_type == "ADD" else [],
         )

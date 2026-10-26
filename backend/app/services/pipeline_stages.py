@@ -40,7 +40,7 @@ from app.services.document_preparation import DocumentPreparer
 from app.services.document_understanding import DocumentUnderstandingService
 from app.services.evidence_locator import EvidenceLocator
 from app.services.evidence_validity import comparable_bbox_coordinates, has_dedupe_location
-from app.services.extractors import build_compare_document_extractor, build_document_extractor
+from app.services.extractors import build_compare_document_extractor
 from app.services.extractors.base import (
     DocumentExtractionError,
     DocumentExtractor,
@@ -50,7 +50,6 @@ from app.services.header_footer_compare import HeaderFooterComparator
 from app.services.matcher import ClauseMatcher
 from app.services.model_routing import ModelRoutingAnalyzer
 from app.services.native_heading_repair import NativeHeadingRepairService
-from app.services.native_fast_path import NativeFastPathDecision, NativeFastPathEvaluator
 from app.services.ocr_quality import OcrQualityProfiler
 from app.services.ocr_remediation import OcrRemediationPlanner
 from app.services.counterpart_text_recovery import CounterpartTextRecovery
@@ -187,34 +186,17 @@ class ExtractionStage:
     def __init__(
         self,
         extractor: DocumentExtractor | None = None,
-        structured_extractor: DocumentExtractor | None = None,
         artifact_store: ArtifactStore = default_artifact_store,
-        require_structured_ocr: bool | None = None,
         parallel_extraction_enabled: bool | None = None,
         extractor_factory: Callable[[], DocumentExtractor] | None = None,
-        native_fast_path_mode: str | None = None,
-        native_fast_path_evaluator: NativeFastPathEvaluator | None = None,
         native_heading_repair: NativeHeadingRepairService | None = None,
         repeated_overlay_filter: RepeatedOverlayFilter | None = None,
     ) -> None:
         self.artifact_store = artifact_store
-        self.require_structured_ocr = (
-            settings.compare_require_structured_ocr if require_structured_ocr is None else require_structured_ocr
-        )
         self.parallel_extraction_enabled = (
             settings.compare_parallel_extraction_enabled
             if parallel_extraction_enabled is None
             else parallel_extraction_enabled
-        )
-        self.native_fast_path_mode = (
-            settings.compare_native_fast_path_mode if native_fast_path_mode is None else native_fast_path_mode
-        )
-        if self.native_fast_path_mode not in {"off", "shadow", "enabled"}:
-            raise ValueError("native_fast_path_mode must be one of: off, shadow, enabled")
-        self.native_fast_path_evaluator = native_fast_path_evaluator or NativeFastPathEvaluator(
-            min_chars_per_page=settings.compare_native_fast_path_min_chars_per_page,
-            min_char_box_coverage=settings.compare_native_fast_path_min_char_box_coverage,
-            max_suspicious_char_ratio=settings.compare_native_fast_path_max_suspicious_char_ratio,
         )
         if extractor is None:
             self.extractor_factory = extractor_factory or (
@@ -224,7 +206,6 @@ class ExtractionStage:
         else:
             self.extractor = extractor
             self.extractor_factory = extractor_factory
-        self.structured_extractor = structured_extractor
         self.profiler = DocumentProfiler()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
         self.native_heading_repair = native_heading_repair or NativeHeadingRepairService()
@@ -232,6 +213,15 @@ class ExtractionStage:
 
     def execute(self, ctx: PipelineContext) -> None:
         task = ctx.task
+        from app.services.pdf_geometry import prepare_display_pdf
+
+        geometry = {}
+        for side in ("original", "compare"):
+            source = getattr(ctx, f"{side}_pdf")
+            destination = self.artifact_store.task_dir("compare", task.task_id, "display", side) / source.name
+            prepared, geometry[side] = prepare_display_pdf(source, destination)
+            setattr(ctx, f"{side}_pdf", prepared)
+        task.metrics["pdf_geometry"] = geometry
         recorder = PerformanceRecorder()
         side_metrics: dict[str, dict[str, Any]] = {}
         performance = task.metrics.setdefault("performance", {})
@@ -247,59 +237,11 @@ class ExtractionStage:
             "parallel_extraction_max_inflight",
             settings.compare_parallel_extraction_max_inflight,
         )
-        recorder.set_counter(
-            "native_fast_path_requested",
-            int(self.native_fast_path_mode != "off"),
-        )
         with recorder.measure("document_pair_extraction"):
-            native_pair, native_fast_path_metrics = self._try_native_fast_path(ctx)
-            performance["extraction"]["native_fast_path"] = native_fast_path_metrics
-            if native_pair is None:
-                (
-                    original_extraction,
-                    compare_extraction,
-                    extraction_mode,
-                    parallel_fallback_reason,
-                ) = self._extract_pair(
-                    ctx,
-                    side_metrics,
-                )
-            else:
-                original_extraction, compare_extraction = native_pair
-                extraction_mode = "native_fast_path"
-                parallel_fallback_reason = ""
-                self._record_native_side_metrics(
-                    side_metrics,
-                    original_extraction,
-                    native_fast_path_metrics["sides"]["original"],
-                    side="original",
-                    pdf_path=ctx.original_pdf,
-                )
-                self._record_native_side_metrics(
-                    side_metrics,
-                    compare_extraction,
-                    native_fast_path_metrics["sides"]["compare"],
-                    side="compare",
-                    pdf_path=ctx.compare_pdf,
-                )
-        recorder.set_counter(
-            "parallel_extraction_used",
-            int(extraction_mode == "parallel"),
-        )
-        recorder.set_counter(
-            "native_fast_path_hit",
-            int(extraction_mode == "native_fast_path"),
-        )
-
-        with recorder.measure("structured_alignment"):
-            original_extraction, compare_extraction = self._align_structured_extractions(
-                ctx.original_pdf,
-                ctx.compare_pdf,
-                task.task_id,
-                original_extraction,
-                compare_extraction,
+            original_extraction, compare_extraction, extraction_mode, parallel_fallback_reason = self._extract_pair(
+                ctx, side_metrics,
             )
-        _emit_progress(ctx, 32, self.name, "structured_alignment_done")
+        recorder.set_counter("parallel_extraction_used", int(extraction_mode == "parallel"))
         with recorder.measure("native_heading_repair"):
             original_heading_result = self.native_heading_repair.repair(original_extraction.document)
             compare_heading_result = self.native_heading_repair.repair(compare_extraction.document)
@@ -382,76 +324,9 @@ class ExtractionStage:
         extraction_metrics = recorder.snapshot()
         extraction_metrics["sides"] = side_metrics
         extraction_metrics["mode"] = extraction_mode
-        extraction_metrics["native_fast_path"] = native_fast_path_metrics
         if parallel_fallback_reason:
             extraction_metrics["parallel_fallback_reason"] = parallel_fallback_reason
         performance["extraction"] = extraction_metrics
-
-    def _try_native_fast_path(
-        self,
-        ctx: PipelineContext,
-    ) -> tuple[tuple[ExtractionResult, ExtractionResult] | None, dict[str, Any]]:
-        metrics: dict[str, Any] = {
-            "mode": self.native_fast_path_mode,
-            "decision": "not_evaluated",
-            "sides": {},
-        }
-        if self.native_fast_path_mode == "off":
-            return None, metrics
-
-        _emit_progress(ctx, 11, self.name, "native_fast_path_evaluation_started")
-        try:
-            original = self.native_fast_path_evaluator.evaluate(ctx.original_pdf)
-            compare = self.native_fast_path_evaluator.evaluate(ctx.compare_pdf)
-        except Exception:
-            logger.exception("Native fast-path evaluation failed; using structured OCR")
-            metrics["decision"] = "evaluation_failed"
-            _emit_progress(ctx, 12, self.name, "native_fast_path_evaluation_failed")
-            return None, metrics
-        _emit_progress(ctx, 12, self.name, "native_fast_path_evaluation_done")
-        metrics["sides"] = {
-            "original": self._native_decision_metrics(original),
-            "compare": self._native_decision_metrics(compare),
-        }
-        both_accepted = original.accepted and compare.accepted
-        if self.native_fast_path_mode == "shadow":
-            metrics["decision"] = "shadow_eligible" if both_accepted else "shadow_rejected"
-            return None, metrics
-        if not both_accepted:
-            metrics["decision"] = "rejected"
-            return None, metrics
-        if original.extraction is None or compare.extraction is None:
-            metrics["decision"] = "rejected"
-            return None, metrics
-        metrics["decision"] = "accepted"
-        _emit_progress(ctx, 30, self.name, "native_fast_path_extraction_done")
-        return (original.extraction, compare.extraction), metrics
-
-    @staticmethod
-    def _native_decision_metrics(decision: NativeFastPathDecision) -> dict[str, Any]:
-        return {
-            "accepted": decision.accepted,
-            "reasons": list(decision.reasons),
-            **decision.metrics,
-        }
-
-    @staticmethod
-    def _record_native_side_metrics(
-        side_metrics: dict[str, dict[str, Any]],
-        extraction: ExtractionResult,
-        decision_metrics: dict[str, Any],
-        *,
-        side: str,
-        pdf_path: Path,
-    ) -> None:
-        side_metrics[side] = {
-            "file_size_bytes": pdf_path.stat().st_size if pdf_path.exists() else 0,
-            "status": "SUCCEEDED",
-            "duration_seconds": decision_metrics.get("duration_seconds", 0.0),
-            "extractor_used": extraction.extractor_used,
-            "page_count": extraction.document.page_count,
-            "details": extraction.performance,
-        }
 
     def _extract_pair(
         self,
@@ -588,10 +463,8 @@ class ExtractionStage:
             result = (extractor or self.extractor).extract(pdf_path, task_id=task_id)
         except DocumentExtractionError as exc:
             raise DocumentExtractionError(f"{side_label}结构化 OCR 失败：{exc}") from exc
-        allowed = {"ppstructure_ocr_hybrid"}
-        if settings.compare_native_page_mode == "enabled":
-            allowed.add("ppstructure_ocr_hybrid_page_routing")
-        if self.require_structured_ocr and result.extractor_used not in allowed:
+        allowed = {"contract_extraction_v3"}
+        if result.extractor_used not in allowed:
             raise DocumentExtractionError(
                 f"{side_label}结构化 OCR 失败：提取器返回了非结构化结果 {result.extractor_used or 'unknown'}"
             )
@@ -640,12 +513,6 @@ class ExtractionStage:
         )
         return result
 
-    def _ensure_profile(self, extraction: ExtractionResult) -> ExtractionResult:
-        if extraction.profile is None:
-            extraction.profile = self.profiler.profile(extraction.document, extraction.extractor_used)
-            extraction.document.profile = extraction.profile
-        return extraction
-
     def _refresh_profile_after_normalization(self, extraction: ExtractionResult) -> ExtractionResult:
         extraction.profile = self.profiler.profile(extraction.document, extraction.extractor_used)
         extraction.document.profile = extraction.profile
@@ -660,70 +527,6 @@ class ExtractionStage:
     def _record_layout_quality(self, task: CompareTask, extraction: ExtractionResult) -> None:
         if extraction.layout_quality is not None:
             _append_warning_details(task, extraction.layout_quality.warnings)
-
-    def _align_structured_extractions(
-        self,
-        original_pdf: Path,
-        compare_pdf: Path,
-        task_id: str,
-        original: ExtractionResult,
-        compare: ExtractionResult,
-    ) -> tuple[ExtractionResult, ExtractionResult]:
-        if not settings.align_structured_extraction:
-            return original, compare
-
-        original_structured = self._is_structured_extractor_used(original.extractor_used)
-        compare_structured = self._is_structured_extractor_used(compare.extractor_used)
-        original_pymupdf = self._is_pymupdf_extractor_used(original.extractor_used)
-        compare_pymupdf = self._is_pymupdf_extractor_used(compare.extractor_used)
-
-        if original_structured and compare_pymupdf:
-            compare = self._upgrade_to_structured(compare_pdf, task_id, compare, "compare", original.extractor_used)
-        elif compare_structured and original_pymupdf:
-            original = self._upgrade_to_structured(original_pdf, task_id, original, "original", compare.extractor_used)
-        return original, compare
-
-    def _upgrade_to_structured(
-        self,
-        pdf_path: Path,
-        task_id: str,
-        current: ExtractionResult,
-        side: str,
-        reference_extractor_used: str,
-    ) -> ExtractionResult:
-        try:
-            extractor = self.structured_extractor or self._matching_structured_extractor(reference_extractor_used)
-            upgraded = extractor.extract(pdf_path, task_id=task_id)
-        except DocumentExtractionError as exc:
-            current.warnings.append(
-                f"为保持表格边界一致，{side} 尝试切换结构化 OCR 抽取失败，已保留 PyMuPDF 结果: {exc}"
-            )
-            return current
-        except Exception:
-            logger.exception("Structured extraction alignment failed")
-            current.warnings.append(f"为保持表格边界一致，{side} 尝试切换结构化 OCR 抽取失败，已保留 PyMuPDF 结果")
-            return current
-
-        upgraded.warnings = [
-            *current.warnings,
-            f"为保持表格边界一致，{side} 已从 PyMuPDF 切换为结构化 OCR 抽取。",
-            *upgraded.warnings,
-        ]
-        return upgraded
-
-    @staticmethod
-    def _is_pymupdf_extractor_used(extractor_used: str) -> bool:
-        return (extractor_used or "").lower() == "pymupdf"
-
-    @staticmethod
-    def _is_structured_extractor_used(extractor_used: str) -> bool:
-        name = (extractor_used or "").lower()
-        if not name or "ocr_only" in name:
-            return False
-        return "ppstructure" in name
-
-    def _matching_structured_extractor(self, extractor_used: str) -> DocumentExtractor:
-        return build_document_extractor("ppstructure_ocr_hybrid", artifact_store=self.artifact_store)
 
     @staticmethod
     def _merge_extractor_names(original: str, compare: str) -> str:
@@ -744,9 +547,14 @@ class DocumentPreparationStage:
     def __init__(self, artifact_store: ArtifactStore = default_artifact_store) -> None:
         self.preparer = DocumentPreparer(image_analysis_max_inflight=settings.compare_image_analysis_max_inflight)
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
+        from app.services.heading_recovery import HeadingPrefixOCR
+        self.heading_prefix_ocr = HeadingPrefixOCR()
 
     def execute(self, ctx: PipelineContext) -> None:
         extractions = ctx.require_extractions()
+        ctx.task.metrics["heading_prefix_ocr"] = self.heading_prefix_ocr.enrich_pair(
+            extractions.original.document, extractions.compare.document,
+        )
         result = self.preparer.prepare_pair(
             extractions.original.document,
             extractions.compare.document,
@@ -829,10 +637,13 @@ class PreClauseDiffStage:
             max_inflight=settings.compare_footer_visual_max_inflight,
         )
         self.cover_metadata = CoverMetadataComparator()
-        from app.services.cover.date_ocr import CoverDateOCR
+        from app.services.cover.date_ocr import CoverDateOCR, CoverIdentifierOCR
         self.cover_date_ocr = CoverDateOCR()
+        self.cover_identifier_ocr = CoverIdentifierOCR()
         from app.services.cover.party_ocr import CoverPartyOCR
         self.cover_party_ocr = CoverPartyOCR()
+        from app.services.cover.residual_ocr import CoverResidualOCR
+        self.cover_residual_ocr = CoverResidualOCR()
         self.table_comparator = TableComparator()
         self.debug_writer = CompareDebugWriter(artifact_store=artifact_store)
 
@@ -845,11 +656,21 @@ class PreClauseDiffStage:
         self._recognize_seals(ctx, original_doc, compare_doc)
         _emit_progress(ctx, 37, self.name, "seal_recognition_done")
 
+        identifier_diagnostics = {side: self.cover_identifier_ocr.enrich(document)
+                                  for side, document in (("original", original_doc), ("compare", compare_doc))}
         ocr_header_footer_diffs = self.header_footer.build_diffs(original_doc, compare_doc)
+        page_number_matches = self.header_footer.matched_page_numbers(original_doc, compare_doc)
+        task.metrics["footer_page_number_matches"] = [
+            {"page_no": page_no, "original_text": m.original.text, "compare_text": m.compare.text,
+             "original_bbox": m.original.bbox.model_dump(mode="json"),
+             "compare_bbox": m.compare.bbox.model_dump(mode="json")}
+            for page_no, matches in page_number_matches.items() for m in matches
+        ]
         visual_footer_diffs = self.footer_visual.build_diffs(
             original_doc,
             compare_doc,
             start_index=len(ocr_header_footer_diffs) + 1,
+            page_number_matches=page_number_matches,
         )
         ocr_header_footer_diffs = self.footer_visual.remove_overlapping_ocr_diffs(
             ocr_header_footer_diffs,
@@ -862,7 +683,7 @@ class PreClauseDiffStage:
         party_diagnostics = self.cover_party_ocr.enrich_pair(original_doc, compare_doc)
         if party_diagnostics:
             _write_debug_artifact(task, "cover_party_ocr", lambda: self.debug_writer.write_cover_party_ocr(task.task_id, party_diagnostics))
-        date_diagnostics = {side: self.cover_date_ocr.enrich(document)
+        date_diagnostics = {side: [*self.cover_date_ocr.enrich(document), *identifier_diagnostics[side]]
                             for side, document in (("original", original_doc), ("compare", compare_doc))}
         if any(date_diagnostics.values()):
             self.debug_writer.write_cover_date_ocr(task.task_id, date_diagnostics)
@@ -871,6 +692,8 @@ class PreClauseDiffStage:
             compare_doc,
             start_index=len(header_footer_diffs) + 1,
         )
+        metadata_diffs.extend(self.cover_residual_ocr.build_diffs(original_doc, compare_doc))
+        task.metrics['cover_residual_ocr'] = self.cover_residual_ocr.last_diagnostics
         from app.services.diagonal_watermark import build_watermark_diffs
         metadata_diffs.extend(build_watermark_diffs(original_doc, compare_doc,
             start_index=len(header_footer_diffs)+len(metadata_diffs)+1))
@@ -881,6 +704,7 @@ class PreClauseDiffStage:
             start_index=len(header_footer_diffs) + len(metadata_diffs) + 1,
             page_alignment=ctx.page_alignment,
         )
+        ctx.region_comparison = self.table_comparator.region_result
         _write_debug_artifact(
             task,
             "table_repair",
@@ -921,7 +745,7 @@ class PreClauseDiffStage:
             seal_blocks = [b for p in doc.pages for b in p.blocks if b.block_type == "seal"]
             if not seal_blocks:
                 continue
-            from app.services.models.layout_detector import LayoutRegion, LayoutResult
+            from app.services.layout_analysis import LayoutRegion, LayoutResult
 
             regions = LayoutResult(
                 regions=[
@@ -986,6 +810,11 @@ class SigningRegionStage:
         extractions = ctx.require_extractions()
         original_structure = self.block_detector.detect(extractions.original.document)
         compare_structure = self.block_detector.detect(extractions.compare.document)
+        from app.services.signing_region.paired_recovery import recover_paired_forms
+        paired_form_recovery = recover_paired_forms(
+            self.block_detector, extractions.original.document, extractions.compare.document,
+            original_structure, compare_structure, ctx.page_alignment,
+        )
         self._expand_detected_blocks_with_nearby_fragments(extractions.original.document, original_structure)
         self._expand_detected_blocks_with_nearby_fragments(extractions.compare.document, compare_structure)
         self._expand_detected_blocks_with_native_titles(
@@ -1098,6 +927,9 @@ class SigningRegionStage:
                     timed("missing_field_ocr", self.field_value_ocr.recover_missing_fields, pdf_path, region, peer))
                 targeted_value_ocr.extend({**item, "side": side} for item in
                     timed("disputed_date_ocr", self.field_value_ocr.enrich_disputed_dates, pdf_path, region, peer))
+                targeted_value_ocr.extend({**item, "side": side} for item in
+                    timed("disputed_identifier_ocr", self.field_value_ocr.enrich_disputed_identifiers,
+                          pdf_path, region, peer))
         from app.services.signing_region.date_visual_equivalence import reconcile_date_ink
         targeted_value_ocr.extend(reconcile_date_ink(extractions.original.document, extractions.compare.document, matches))
         from app.services.signing_region.printed_ownership import exclude_equal_signing_prose
@@ -1180,11 +1012,26 @@ class SigningRegionStage:
             )
         # A proven matched seal owns its presence decision across all routes.
         # Only seal object events qualify; never consume nearby field changes.
-        signing_region_diffs = [d for d in signing_region_diffs if not (
+        from app.services.seal_semantics import normalize_seal_source
+
+        seal_and_signing_diffs = [normalize_seal_source(d) for d in [*ctx.seal_diffs, *signing_region_diffs] if not (
             'SIGNING_SEAL_CHANGE' in d.review_flags and d.diff_type == 'ADD'
             and any(p.get('equivalent') and e.page_no == p['compare_page']
                     and SigningRegionCoverageBuilder._overlap_ratio(e.bbox, BBox.model_validate(p['compare_bbox'])) >= .65
                     for p in ctx.seal_equivalence for e in d.compare_evidence))]
+        # Fusion may have retained a signing observation and removed its former
+        # legacy owner. Do not let the frozen coverage list delete both.
+        coverage.reconcile_seal_owners(seal_and_signing_diffs)
+        # Finalize OCR ownership after all visual recall, before clause splitting.
+        # Keep original extraction intact for page, table and seal comparisons.
+        if visual_recall is not None:
+            from app.services.signing_region.text_ownership import reconcile_visual_seal_text
+            reconcile_visual_seal_text(original_clause_doc, visual_recall.original_objects,
+                                       ctx.original_pdf, ctx.page_render_cache)
+            reconcile_visual_seal_text(compare_clause_doc, visual_recall.compare_objects,
+                                       ctx.compare_pdf, ctx.page_render_cache)
+        ctx.seal_diffs = [d for d in seal_and_signing_diffs if d.source_type == "seal"]
+        signing_region_diffs = [d for d in seal_and_signing_diffs if d.source_type != "seal"]
         ctx.signing_pages_original = original_structure.pages
         ctx.signing_pages_compare = compare_structure.pages
         ctx.signing_blocks_original = original_structure.blocks
@@ -1219,6 +1066,7 @@ class SigningRegionStage:
                 "original": _jsonable(original_structure.low_confidence_candidates),
                 "compare": _jsonable(compare_structure.low_confidence_candidates),
             },
+            "paired_form_recovery": paired_form_recovery,
             "clause_exclusion": {
                 "original": _jsonable(original_clause_doc.entries),
                 "compare": _jsonable(compare_clause_doc.entries),
@@ -1254,6 +1102,7 @@ class SigningRegionStage:
             "coverage": {
                 "entries": _jsonable(coverage.entries),
                 "covered_diff_ids": sorted(coverage.covered_diff_ids),
+                "restored_seal_diff_ids": sorted(coverage.restored_seal_diff_ids),
             },
         }
         _write_debug_artifact(
@@ -2236,10 +2085,12 @@ class SplitStage:
         original_doc = ctx.clause_document_original or extractions.original.document
         compare_doc = ctx.clause_document_compare or extractions.compare.document
 
-        clauses = ctx.set_clauses(
-            self.splitter.split(original_doc, "O"),
-            self.splitter.split(compare_doc, "N"),
-        )
+        self.splitter.region_result = ctx.region_comparison
+        self.splitter.comparison_side = 'original'
+        original_clauses = self.splitter.split(original_doc, "O")
+        self.splitter.comparison_side = 'compare'
+        compare_clauses = self.splitter.split(compare_doc, "N")
+        clauses = ctx.set_clauses(original_clauses, compare_clauses)
         _emit_progress(ctx, 43, self.name, "clause_split_done")
         _write_debug_artifact(
             ctx.task,
@@ -2861,9 +2712,33 @@ class SummaryStage:
         task.metrics.setdefault("performance", {})["matrix_graphics"] = comparator.performance.snapshot()
         diffs.extend(graphics)
         task.metrics["graphic_observations"] = observations
+        from app.services.visual_impressions import reconcile_impressions
+        from app.services.footer_evidence_fusion import fuse_footer_evidence
+        diffs, impression_observations, impression_decisions = reconcile_impressions(
+            diffs, ctx.original_pdf, ctx.compare_pdf)
+        task.metrics["visual_impression_decisions"] = impression_decisions
+        from app.services.footer_annotation_objects import reconcile_footer_objects
+        extractions = ctx.require_extractions()
+        diffs = reconcile_footer_objects(diffs, extractions.original.document, extractions.compare.document)
+        from app.services.footer_ink_changes import reconcile_ink_ownership
+        diffs = reconcile_ink_ownership(diffs, ctx.original_pdf, ctx.compare_pdf)
+        diffs = fuse_footer_evidence(diffs)
         diffs, visual_remap = _reconcile_visual_signing_date_diffs(diffs)
         task.diffs, dedupe_remap = _dedupe_final_diffs(diffs)
         dedupe_remap = {**visual_remap, **dedupe_remap}
+        from app.services.comparison_observations import separate_observations
+        separate_observations(task)
+        if ctx.region_comparison is not None:
+            task.comparison_observations.extend(ctx.region_comparison.observations)
+        task.comparison_observations.extend(impression_observations)
+        from app.services.observation_reconciliation import reconcile_observations
+        reconcile_observations(task, ctx.original_pdf, ctx.compare_pdf)
+        from app.services.clause_rewrite_highlights import prepare_clause_highlights
+        prepare_clause_highlights(
+            task.diffs,
+            _clauses_for_evidence(ctx.original_clauses, [p.original for p in ctx.pairs]),
+            _clauses_for_evidence(ctx.compare_clauses, [p.compare for p in ctx.pairs]),
+        )
         ctx.diffs = task.diffs
         _remap_ocr_quality_summary_after_final_dedupe(task, dedupe_remap)
         DiffQualityStage._remap_ocr_remediation_summary(ctx, dedupe_remap)
@@ -2891,7 +2766,8 @@ def _reconcile_visual_signing_date_diffs(diffs: list[DiffItem]) -> tuple[list[Di
         diff
         for diff in diffs
         if diff.diff_type == "ADD"
-        and diff.diff_id.startswith("WHOLE-PAGE-")
+        and (diff.diff_id.startswith("WHOLE-PAGE-") or diff.source_type in {"signing_region", "table"}
+             or any(e.method == "whole_page_visual_object" for e in diff.compare_evidence))
         and (diff.match_score_details or {}).get("object_type") == SigningVisualObjectType.HANDWRITTEN_DATE.value
     ]
     if not visual_dates:
@@ -2912,7 +2788,7 @@ def _reconcile_visual_signing_date_diffs(diffs: list[DiffItem]) -> tuple[list[Di
 
     remove_ids: set[str] = set()
     remap: dict[str, str] = {}
-    for diff in diffs:
+    for diff in sorted(diffs, key=lambda item: not bool(item.compare_evidence)):
         if diff in visual_dates or diff.diff_type not in {"ADD", "MODIFY"} or not re.search(r"签[订署字].*(?:日期|时间)", diff.title):
             continue
         candidates = {
@@ -2939,9 +2815,40 @@ def _reconcile_visual_signing_date_diffs(diffs: list[DiffItem]) -> tuple[list[Di
                 for diff_id, candidate in candidates.items()
                 if diff_pages & {item.page_no for item in candidate.compare_evidence if item.page_no > 0}
             }
-        if len(candidates) != 1:
+            candidates = {key: candidate for key, candidate in candidates.items() if any(
+                a.page_no == b.page_no
+                and min(a.bbox.x1, b.bbox.x1) > max(a.bbox.x0, b.bbox.x0)
+                and min(a.bbox.y1, b.bbox.y1) > max(a.bbox.y0, b.bbox.y0)
+                for a in diff.compare_evidence for b in candidate.compare_evidence
+            )}
+        if not candidates:
             continue
         visual = next(iter(candidates.values()))
+        previous_owner = remap.get(visual.diff_id)
+        if previous_owner:
+            aligned_pages = set((diff.match_score_details.get("page_alignment") or {}).get("compare_pages", []))
+            visual_pages = {e.page_no for e in visual.compare_evidence}
+            if diff.compare_evidence or (aligned_pages and aligned_pages == visual_pages):
+                owner = next(item for item in diffs if item.diff_id == previous_owner)
+                owner.match_score_details.setdefault("merged_date_observations", []).append({
+                    "diff_id": diff.diff_id, "source_type": diff.source_type, "text": diff.compare_text,
+                    "reason": "SAME_DATE_AND_ALIGNED_PAGE_ALREADY_OWNED", "evidence": [
+                        e.model_dump(mode="json") for e in diff.compare_evidence],
+                })
+                remove_ids.add(diff.diff_id)
+                remap[diff.diff_id] = previous_owner
+            continue
+        # The same object can already have both a table and a visual projection.
+        # Coalesce these only when every projection describes the same ROI.
+        if len(candidates) > 1 and not all(any(
+            a.page_no == b.page_no
+            and max(0, min(a.bbox.x1, b.bbox.x1) - max(a.bbox.x0, b.bbox.x0))
+                * max(0, min(a.bbox.y1, b.bbox.y1) - max(a.bbox.y0, b.bbox.y0))
+                / max(1, min((a.bbox.x1-a.bbox.x0)*(a.bbox.y1-a.bbox.y0),
+                             (b.bbox.x1-b.bbox.x0)*(b.bbox.y1-b.bbox.y0))) >= .8
+            for a in candidate.compare_evidence for b in visual.compare_evidence
+        ) for candidate in candidates.values()):
+            continue
         # The text recognizer supplies the value; the visual detector supplies
         # its location. Keep both when collapsing the two observations.
         shared_dates = dates(diff) & dates(visual)
@@ -2958,14 +2865,20 @@ def _reconcile_visual_signing_date_diffs(diffs: list[DiffItem]) -> tuple[list[Di
             diff.clause_no = ""
             diff.original_clause_id = diff.compare_clause_id = None
             diff.section_path = ["签署页"]
-        remove_ids.add(visual.diff_id)
-        remap[visual.diff_id] = diff.diff_id
+        for candidate in candidates.values():
+            remove_ids.add(candidate.diff_id)
+            remap[candidate.diff_id] = diff.diff_id
         visual_details = dict(visual.match_score_details)
         if not shared_dates:
             visual_details["visual_date_ocr_conflict"] = visual.compare_text
         visual_details["change_decision"] = (diff.match_score_details or {}).get("change_decision") or "NEEDS_REVIEW"
         visual_details["decision_reason"] = "VISUAL_DATE_TEXT_DIFF_RECONCILED"
         diff.match_score_details = {**visual_details, **diff.match_score_details}
+        diff.match_score_details["merged_date_observations"] = [
+            {"diff_id": candidate.diff_id, "source_type": candidate.source_type,
+             "text": candidate.compare_text, "evidence": [e.model_dump(mode="json") for e in candidate.compare_evidence]}
+            for candidate in candidates.values()
+        ]
         diff.merged_sources = sorted({*diff.merged_sources, visual.source_type})
         diff.review_flags = list(
             dict.fromkeys(

@@ -6,11 +6,9 @@ import pytest
 
 from app.models import BBox, CharBox, Clause, Document, Page, TextBlock, TextSourceEvidence
 from app.services.extractors.base import ExtractionResult
-from app.services.extractors.page_routing import PageRoutingExtractor, remap_page
 from app.services.matcher import ClauseMatcher
 from app.services.matching.providers import RerankMatcher, SemanticMatcher
 from app.services.matching.types import MatchCandidate
-from app.services.native_fast_path import NativeFastPathDecision
 from app.services.page_alignment import PageAlignmentEntry, PageAlignmentResult, PageAlignmentStatus
 from app.services.page_render_cache import PageRenderCache
 
@@ -67,28 +65,6 @@ def test_render_cache_does_not_reuse_pixels_after_in_memory_pdf_change(tmp_path)
         doc[0].draw_rect(fitz.Rect(0, 0, 80, 80), fill=(0, 0, 0))
         after = cache.render(doc[0], scale=1)
         assert not np.array_equal(before, after)
-
-
-@pytest.mark.parametrize("mode,accepted", [("off", False), ("shadow", False), ("enabled", True)])
-def test_structured_stage_accepts_routed_result_only_when_enabled(tmp_path, monkeypatch, mode, accepted):
-    from app.config import settings
-    from app.services.extractors.base import DocumentExtractionError
-    from app.services.pipeline_stages import ExtractionStage
-
-    path = pdf(tmp_path / "routed.pdf")
-    fallback = FakeFallback()
-    result = fallback.extract(path)
-    result.extractor_used = "ppstructure_ocr_hybrid_page_routing"
-    monkeypatch.setattr(fallback, "extract", lambda *args, **kwargs: result)
-    monkeypatch.setattr(settings, "compare_native_page_mode", mode)
-    stage = object.__new__(ExtractionStage)
-    stage.extractor = fallback
-    stage.require_structured_ocr = True
-    if accepted:
-        assert stage._extract_side(path, "test", "原文") is result
-    else:
-        with pytest.raises(DocumentExtractionError, match="非结构化结果"):
-            stage._extract_side(path, "test", "原文")
 
 
 def clause(key, text):
@@ -185,57 +161,3 @@ def test_feature_cache_released_between_matches_after_input_mutation():
     actual = matcher.match([a], [b])
     expected = ClauseMatcher(feature_cache_enabled=False).match([a], [b])
     assert [p.model_dump() for p in actual] == [p.model_dump() for p in expected]
-
-
-def test_routed_page_remaps_all_typed_evidence_without_changing_coordinates():
-    box = BBox(x0=1, y0=2, x1=3, y1=4)
-    page = Page(page_no=1, width=100, height=100, blocks=[TextBlock(
-        block_id="p1_b1", page_no=1, text="1万元", bbox=box,
-        char_boxes=[CharBox(char="1", page_no=1, bbox=box)],
-        source_evidence=[TextSourceEvidence(source="ocr", raw_text="1万元", page_no=1, bbox=box)],
-    )])
-    result = remap_page(page, 7)
-    assert result.page_no == result.blocks[0].page_no == result.blocks[0].char_boxes[0].page_no == 7
-    assert result.blocks[0].source_evidence[0].page_no == 7
-    assert result.blocks[0].bbox == box
-    assert page.page_no == 1
-
-
-class FakeFallback:
-    def __init__(self, broken=False):
-        self.calls = []
-        self.broken = broken
-
-    def extract(self, path, task_id=None):
-        self.calls.append(Path(path).name)
-        with fitz.open(path) as doc:
-            count = len(doc)
-        if self.broken and "-pages-" in Path(path).stem:
-            count = 0
-        return ExtractionResult(document=Document(filename=Path(path).name, path=str(path), page_count=count,
-            pages=[Page(page_no=i + 1, width=100, height=100) for i in range(count)]), extractor_used="ppstructure_ocr_hybrid")
-
-
-class FakeEvaluator:
-    def evaluate(self, path):
-        number = int(Path(path).stem.split("-")[-1])
-        accepted = number == 1
-        result = ExtractionResult(document=Document(filename="native.pdf", path=str(path), page_count=1,
-            pages=[Page(page_no=1, width=100, height=100)]), extractor_used="pymupdf_fast_path")
-        return NativeFastPathDecision(accepted, result if accepted else None, () if accepted else ("embedded_images",), {})
-
-
-@pytest.mark.parametrize("mode,broken,expected", [
-    ("shadow", False, "shadow_only"), ("enabled", False, "routed"),
-    ("enabled", True, "whole_document_fallback"),
-])
-def test_page_routing_preserves_all_pages_and_falls_back_on_missing_pages(tmp_path, mode, broken, expected):
-    path = pdf(tmp_path / "doc.pdf", 3)
-    fallback = FakeFallback(broken)
-    router = PageRoutingExtractor(fallback, mode=mode, evaluator=FakeEvaluator())
-    result = router.extract(path)
-    assert result.document.page_count == 3
-    assert [p.page_no for p in result.document.pages] == [1, 2, 3]
-    assert result.performance["page_routing"]["decision"] == expected
-    if expected != "routed":
-        assert fallback.calls[-1] == "doc.pdf"

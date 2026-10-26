@@ -4,7 +4,7 @@ from app.models import TextRange
 
 
 def plan(raw):
-    if raw.source_type != "clause":
+    if raw.source_type != "clause" or raw.clause_display_evidence is not None:
         return None
     sides = ("original", "compare")
     ranges = [getattr(raw, f"{s}_change_ranges") for s in sides]
@@ -40,7 +40,7 @@ def plan(raw):
 
 
 def partitions(event, raw, identity, version, task_id):
-    if len(event["raw_diff_ids"]) != 1:
+    if len(event["raw_diff_ids"]) != 1 or event.get("field_selection"):
         return [event]
     units = plan(raw)
     if not units:

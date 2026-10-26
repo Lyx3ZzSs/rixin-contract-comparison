@@ -231,6 +231,8 @@ export interface SigningRegionOutlines {
 }
 
 export interface DiffItem {
+  field_display_evidence?: { unit: "field"; field_key: string; original: EvidenceBox[]; compare: EvidenceBox[] } | null;
+  clause_display_evidence?: { unit: "clause"; original: EvidenceBox[]; compare: EvidenceBox[] } | null;
   diff_id: string;
   diff_type: DiffType;
   clause_no: string;
@@ -378,6 +380,7 @@ export interface CompareQualitySummary {
 }
 
 export interface DiffEvent {
+  context?: { original_text: string; compare_text: string };
   event_id: string;
   raw_diff_ids: string[];
   direction: DiffType;
@@ -393,7 +396,21 @@ export interface PageAlignmentEntry {
   compare_pages: number[];
   alignment_score: number;
 }
+export interface ComparisonObservation extends AuditItemReview {
+  change_resolution?: 'CONFIRMED_CHANGE' | 'IMPRESSION' | null;
+  decision_evidence?: Record<string, unknown>;
+  source_type?: DiffItem["source_type"] | null;
+  observation_id: string;
+  title: string;
+  reason: string;
+  message: string;
+  original_evidence: EvidenceBox[];
+  compare_evidence: EvidenceBox[];
+}
+export type SealDecision = 'CONFIRMED_CHANGE' | 'IMPRESSION' | 'RESET';
 export interface DiffEventResponse {
+  comparison_observations?: ComparisonObservation[];
+  comparison_observation_count?: number;
   graphic_observations?: { side: "original" | "compare"; page: number; bbox: number[]; counterpart_page?: number; counterpart_bbox?: number[]; decision: string; reason: string }[];
   task_id: string;
   revision: number;

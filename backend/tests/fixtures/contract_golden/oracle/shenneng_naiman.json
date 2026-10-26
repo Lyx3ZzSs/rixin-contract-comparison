@@ -1,13 +1,19 @@
 {
   "schema_version": 1,
   "contract_key": "SHENNENG_NAIMAN",
-  "expected_case_count": 13,
+  "expected_case_count": 19,
   "review_provenance": {
     "method": "agent_visual_pdf_review",
-    "authorization": "用户明确要求：加入正式GOlden",
-    "source_run_id": "24715bf0-4f6b-4196-9483-2e26fcc9b28d",
-    "date": "2026-09-08",
-    "evidence_root": "output/analysis/golden-v3-update"
+    "authorization": "用户明确要求：更新26a31da6-e826-4f0f-9240-84cab24d2165这个比对任务的黄金集",
+    "source_run_id": "26a31da6-e826-4f0f-9240-84cab24d2165",
+    "previous_source_run_id": "24715bf0-4f6b-4196-9483-2e26fcc9b28d",
+    "date": "2026-10-20",
+    "evidence_root": "output/analysis/golden-naiman-26a31da6-20261020",
+    "visual_review_evidence_roots": [
+      "output/analysis/naiman-b6f9e92a-20261020",
+      "output/analysis/naiman-personal-seals-20261020",
+      "output/analysis/golden-naiman-26a31da6-20261020"
+    ]
   },
   "assertions": [
     {
@@ -121,8 +127,8 @@
       "assertion": "MUST_REVIEW",
       "page": 19,
       "diff_type": "ADD",
-      "source_type": "signing_region",
-      "review_note": "第19页新增个人姓名章。",
+      "source_type": "seal",
+      "review_note": "第19页新增个人姓名章。 2026-10-20复核原PDF：该图形属于独立印章对象，修订旧signing_region分类为seal；保留原判定、对象类型、定位框及IoU阈值。",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
       "object_type": "PERSONAL_NAME_SEAL",
@@ -163,8 +169,8 @@
       "assertion": "MUST_REVIEW",
       "page": 20,
       "diff_type": "ADD",
-      "source_type": "signing_region",
-      "review_note": "第20页新增个人姓名章。",
+      "source_type": "seal",
+      "review_note": "第20页新增个人姓名章。 2026-10-20复核原PDF：该图形属于独立印章对象，修订旧signing_region分类为seal；保留原判定、对象类型、定位框及IoU阈值。",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
       "object_type": "PERSONAL_NAME_SEAL",
@@ -205,8 +211,8 @@
       "assertion": "MUST_REVIEW",
       "page": 30,
       "diff_type": "ADD",
-      "source_type": "signing_region",
-      "review_note": "第30页新增甲方圆章。",
+      "source_type": "seal",
+      "review_note": "第30页新增甲方圆章。 2026-10-20复核原PDF：该图形属于独立印章对象，修订旧signing_region分类为seal；保留原判定、对象类型、定位框及IoU阈值。",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
       "object_type": "COMPANY_ROUND_SEAL",
@@ -227,8 +233,8 @@
       "assertion": "MUST_REVIEW",
       "page": 30,
       "diff_type": "ADD",
-      "source_type": "signing_region",
-      "review_note": "第30页矩形章为个人姓名章，不能仅用无类型seal文本作为业务身份。",
+      "source_type": "seal",
+      "review_note": "第30页矩形章为个人姓名章，不能仅用无类型seal文本作为业务身份。 2026-10-20复核原PDF：该图形属于独立印章对象，修订旧signing_region分类为seal；保留原判定、对象类型、定位框及IoU阈值。",
       "visual_object_type": "seal",
       "quality_status": "NEEDS_REVIEW",
       "object_type": "PERSONAL_NAME_SEAL",
@@ -249,8 +255,8 @@
       "assertion": "MUST_EXIST",
       "page": 1,
       "diff_type": "ADD",
-      "source_type": "signing_region",
-      "review_note": "第1页右边缘新增骑缝章。",
+      "source_type": "seal",
+      "review_note": "第1页右边缘新增骑缝章。 2026-10-20复核原PDF：该图形属于独立印章对象，修订旧signing_region分类为seal；保留原判定、对象类型、定位框及IoU阈值。",
       "visual_object_type": "seal",
       "object_type": "EDGE_SEAM_SEAL",
       "bbox_expectation": {
@@ -283,13 +289,69 @@
         "min_iou": 0.35
       },
       "review_note": "核对原件签署页：甲方代表处从空白变为红色方形姓名章。实际来源任务漏报；真值独立来自PDF图形。"
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_P16_UNIT_NO_FALSE_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 16,
+      "source_type": "table",
+      "diff_type": "DELETE",
+      "semantic_before": "套",
+      "review_note": "原PDF物理第16页两侧供货清单单位均为套、数量均为1，分列及分隔线均存在；不得把套误报删除或与相邻列错配/合并后的变化。包含待复核误报；该规则只约束这组冻结PDF。"
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_P16_QUANTITY_NO_FALSE_DELETE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 16,
+      "source_type": "table",
+      "diff_type": "DELETE",
+      "semantic_before": "1",
+      "review_note": "原PDF物理第16页两侧供货清单单位均为套、数量均为1，分列及分隔线均存在；不得把1误报删除或与相邻列错配/合并后的变化。包含待复核误报；该规则只约束这组冻结PDF。"
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_P16_UNIT_NO_FALSE_MERGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 16,
+      "source_type": "table",
+      "diff_type": "MODIFY",
+      "semantic_before": "套",
+      "review_note": "原PDF物理第16页两侧供货清单单位均为套、数量均为1，分列及分隔线均存在；不得把套误报删除或与相邻列错配/合并后的变化。包含待复核误报；该规则只约束这组冻结PDF。"
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_P16_QUANTITY_NO_FALSE_MERGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 16,
+      "source_type": "table",
+      "diff_type": "MODIFY",
+      "semantic_before": "1",
+      "review_note": "原PDF物理第16页两侧供货清单单位均为套、数量均为1，分列及分隔线均存在；不得把1误报删除或与相邻列错配/合并后的变化。包含待复核误报；该规则只约束这组冻结PDF。"
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_P20_PROJECT_NAME_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 20,
+      "source_type": "clause",
+      "semantic_before": "深能奈曼光伏电站光",
+      "review_note": "两侧项目名称均为深能奈曼光伏电站光功率预测设备采购，红章覆盖导致的OCR碎片不构成正文删除或修改，包含待复核误报。"
+    },
+    {
+      "case_id": "SHENNENG_NAIMAN_P27_PENALTY_RANGE_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 27,
+      "source_type": "clause",
+      "semantic_before": "乙方人员发生违章行为",
+      "review_note": "两侧安全违章条款金额均为300—1000元及500—2000元。横线误读成汉字一、单位前空白不同均不构成条款变化，包含待复核误报。"
     }
   ],
   "regression_coverage": {
-    "updated_at": "2026-09-08",
-    "authorization": "用户要求：根据根本原因优化改进，并更新Golden数据",
-    "tests": "backend/tests/test_golden_v3_root_repairs.py",
-    "verification_evidence": "output/analysis/golden-v3-root-fix/",
+    "updated_at": "2026-10-20",
+    "authorization": "用户明确要求：更新26a31da6-e826-4f0f-9240-84cab24d2165这个比对任务的黄金集",
+    "tests": [
+      "backend/tests/test_golden_v3_root_repairs.py",
+      "backend/tests/test_naiman_root_repairs.py",
+      "backend/tests/test_seal_coverage_fusion.py"
+    ],
+    "verification_evidence": "output/analysis/golden-naiman-26a31da6-20261020",
     "cases": [
       {
         "case_id": "SHENNENG_NAIMAN_P8_PERSONAL_NAME_SEAL_ADD",
@@ -298,7 +360,20 @@
       {
         "case_id": "SHENNENG_NAIMAN_E0B2F1F2AB44",
         "invariant": "保留姓名章类型，使既有seal能够按同一物理对象补齐身份。"
+      },
+      {
+        "case_id": "SHENNENG_NAIMAN_B7640E207470",
+        "invariant": "覆盖去重与视觉融合必须保留同一物理姓名章的最终对象，且定位框不得落入相邻圆章。"
       }
     ]
-  }
+  },
+  "review_history": [
+    {
+      "method": "agent_visual_pdf_review",
+      "authorization": "用户明确要求：加入正式GOlden",
+      "source_run_id": "24715bf0-4f6b-4196-9483-2e26fcc9b28d",
+      "date": "2026-09-08",
+      "evidence_root": "output/analysis/golden-v3-update"
+    }
+  ]
 }

@@ -58,8 +58,8 @@ def test_detects_added_footer_handwriting_despite_unrelated_original_footer_text
     assert len(diffs) == 1
     diff = diffs[0]
     assert diff.diff_type == "ADD"
-    assert diff.title == "第1页左下角手写签注"
-    assert "HANDWRITTEN_ANNOTATION_REVIEW" in diff.review_flags
+    assert diff.title == "第1页左下角视觉变化（待复核）"
+    assert "FOOTER_VISUAL_CHANGE_REVIEW" in diff.review_flags
     assert diff.compare_evidence[0].method == "footer_visual_registered"
     assert diff.compare_evidence[0].bbox.x0 < 30
     assert diff.compare_evidence[0].bbox.x1 < 50
@@ -108,7 +108,7 @@ def test_visual_footer_diffs_remain_page_specific_during_quality_processing() ->
     result = DiffQualityProcessor().process(diffs)
 
     assert len(result.diffs) == 2
-    assert [diff.title for diff in result.diffs] == ["第1页左下角手写签注", "第2页左下角手写签注"]
+    assert [diff.title for diff in result.diffs] == ["第1页左下角视觉变化（待复核）", "第2页左下角视觉变化（待复核）"]
     assert not any(decision.action == "cross_source_merged" for decision in result.decisions)
 
 
@@ -129,9 +129,9 @@ def test_repeated_visual_footer_annotations_remain_page_specific_diffs() -> None
 
     assert len(diffs) == 9
     assert [diff.title for diff in diffs] == [
-        f"第{page_no}页左下角手写签注" for page_no in range(1, 10)
+        f"第{page_no}页左下角视觉变化（待复核）" for page_no in range(1, 10)
     ]
-    assert all("HANDWRITTEN_ANNOTATION_REVIEW" in diff.review_flags for diff in diffs)
+    assert all("FOOTER_VISUAL_CHANGE_REVIEW" in diff.review_flags for diff in diffs)
 
 
 def test_parallel_page_processing_preserves_serial_diff_order_and_ids() -> None:
@@ -159,7 +159,7 @@ def test_parallel_page_processing_preserves_serial_diff_order_and_ids() -> None:
     assert [diff.model_dump(mode="json") for diff in parallel] == [diff.model_dump(mode="json") for diff in serial]
 
 
-def test_registered_visual_evidence_replaces_overlapping_footer_ocr_noise() -> None:
+def test_unverified_visual_evidence_does_not_erase_overlapping_footer_ocr() -> None:
     original = _blank()
     compare = _blank()
     compare[176:196, 22:38] = 0
@@ -185,7 +185,7 @@ def test_registered_visual_evidence_replaces_overlapping_footer_ocr_noise() -> N
 
     kept = comparator.remove_overlapping_ocr_diffs([ocr_diff], visual_diffs)
 
-    assert kept == []
+    assert kept == [ocr_diff]
 
 
 def test_short_footer_ocr_fragments_are_deduplicated_against_visual_or_repeated_annotation() -> None:
@@ -239,7 +239,7 @@ def test_keeps_footer_ocr_evidence_when_visual_box_only_covers_a_small_fragment(
                 page_no=1,
                 bbox=BBox(x0=22, y0=176, x1=38, y1=196),
                 method="footer_visual_registered",
-                text="检测到左下角手写签注",
+                text="检测到左下角视觉变化（待复核）",
                 highlight_type="ADD",
             )
         ],
@@ -280,7 +280,7 @@ def test_removes_footer_ocr_evidence_when_visual_box_covers_most_axes() -> None:
                 page_no=1,
                 bbox=BBox(x0=10, y0=15, x1=95, y1=45),
                 method="footer_visual_registered",
-                text="检测到左下角手写签注",
+                text="检测到左下角视觉变化（待复核）",
                 highlight_type="ADD",
             )
         ],
@@ -318,14 +318,14 @@ def test_removes_footer_ocr_evidence_covered_by_grouped_visual_boxes() -> None:
                 page_no=1,
                 bbox=BBox(x0=5, y0=10, x1=50, y1=35),
                 method="footer_visual_registered",
-                text="检测到左下角手写签注",
+                text="检测到左下角视觉变化（待复核）",
                 highlight_type="ADD",
             ),
             EvidenceBox(
                 page_no=1,
                 bbox=BBox(x0=55, y0=25, x1=95, y1=55),
                 method="footer_visual_registered",
-                text="检测到左下角手写签注",
+                text="检测到左下角视觉变化（待复核）",
                 highlight_type="ADD",
             ),
         ],
@@ -363,7 +363,7 @@ def test_removes_padded_footer_ocr_box_containing_same_tight_visual_box() -> Non
                 page_no=2,
                 bbox=BBox(x0=49.97, y0=788.0, x1=65.30, y1=814.0),
                 method="footer_visual_registered",
-                text="检测到左下角手写签注",
+                text="检测到左下角视觉变化（待复核）",
                 highlight_type="ADD",
             )
         ],
@@ -402,7 +402,7 @@ def test_does_not_group_visual_boxes_from_different_diffs_for_ocr_deduplication(
                     page_no=1,
                     bbox=BBox(x0=5, y0=10, x1=50, y1=35),
                     method="footer_visual_registered",
-                    text="检测到左下角手写签注",
+                    text="检测到左下角视觉变化（待复核）",
                     highlight_type="ADD",
                 )
             ],
@@ -417,7 +417,7 @@ def test_does_not_group_visual_boxes_from_different_diffs_for_ocr_deduplication(
                     page_no=1,
                     bbox=BBox(x0=55, y0=25, x1=95, y1=55),
                     method="footer_visual_registered",
-                    text="检测到左下角手写签注",
+                    text="检测到左下角视觉变化（待复核）",
                     highlight_type="ADD",
                 )
             ],
@@ -457,7 +457,7 @@ def test_deduplicates_misclassified_clause_evidence_after_visual_footer_detectio
                 page_no=1,
                 bbox=BBox(x0=10, y0=15, x1=95, y1=55),
                 method="footer_visual_registered",
-                text="检测到左下角手写签注",
+                text="检测到左下角视觉变化（待复核）",
                 highlight_type="ADD",
             )
         ],
@@ -495,7 +495,7 @@ def test_post_evidence_deduplication_keeps_diffs_that_never_had_evidence() -> No
                 page_no=1,
                 bbox=BBox(x0=10, y0=15, x1=95, y1=55),
                 method="footer_visual_registered",
-                text="检测到左下角手写签注",
+                text="检测到左下角视觉变化（待复核）",
                 highlight_type="ADD",
             )
         ],

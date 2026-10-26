@@ -6993,7 +6993,7 @@ def test_diff_quality_reclassifies_appendix_signing_date_and_drops_footer_pollut
     assert "奇绿" not in processed.readable_change
 
 
-def test_diff_quality_normalizes_financial_uppercase_ocr_glyphs() -> None:
+def test_diff_quality_preserves_unverified_financial_uppercase_ocr_glyphs() -> None:
     diff = DiffItem(
         diff_id="D091",
         diff_type="MODIFY",
@@ -7007,9 +7007,9 @@ def test_diff_quality_normalizes_financial_uppercase_ocr_glyphs() -> None:
 
     result = DiffQualityProcessor().process([diff])
 
-    assert [(item.original_snippet, item.compare_snippet) for item in result.diffs] == [("捌", "叁")]
+    assert [(item.original_snippet, item.compare_snippet) for item in result.diffs] == [("捌仟", "叁任")]
     assert result.diffs[0].title == "合同总价（大写）"
-    assert result.diffs[0].readable_change == "原文：捌\n修改后：叁"
+    assert result.diffs[0].readable_change == "原文：捌仟\n修改后：叁任"
 
 
 def test_diff_quality_reclassifies_scanned_participant_handwriting_without_ocr_names() -> None:

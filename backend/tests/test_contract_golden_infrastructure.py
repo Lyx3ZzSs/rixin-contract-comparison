@@ -86,6 +86,30 @@ def test_failure_injection_forbidden_false_positive_is_detected() -> None:
     assert report.failures[0].failure_type == "FALSE_POSITIVE_REGRESSION"
 
 
+def test_unchanged_signing_instruction_can_be_context_but_not_highlighted() -> None:
+    expected = {"case_id": "STAMP_LABEL_HIGHLIGHT", "assertion": "MUST_NOT_EXIST",
+                "source_type": "signing_region",
+                "highlight_expectation": {"side": "compare", "pattern": "盖章"}}
+    text = "甲方：江苏东达全智信息系统有限公司(盖章)"
+    actual = _actual(compare_text=text, quality_status="NEEDS_REVIEW",
+                     match_score_details={"change_decision": "NEEDS_REVIEW"},
+                     compare_change_ranges=[{"start": 0, "end": len(text), "highlight_type": "MODIFY"}])
+    report = SemanticGoldenMatcher().match("RETURN_CONFIRMATION", [expected], [actual])
+    assert len(report.failures) == 1
+    actual["compare_change_ranges"] = [{"start": 7, "end": 9, "highlight_type": "MODIFY"}]
+    assert not SemanticGoldenMatcher().match("RETURN_CONFIRMATION", [expected], [actual]).failures
+
+
+def test_positive_highlight_assertion_requires_real_changed_range() -> None:
+    expected = {"case_id": "INSTALLATION", "assertion": "MUST_EXIST", "source_type": "clause",
+                "highlight_expectation": {"side": "compare", "pattern": "^安装$"}}
+    actual = _actual(source_type="clause", compare_text="还包含安装调试", quality_status="NEEDS_REVIEW",
+                     match_score_details={"change_decision": "NEEDS_REVIEW"})
+    assert SemanticGoldenMatcher().match("RETURN_CONFIRMATION", [expected], [actual]).failures
+    actual["compare_change_ranges"] = [{"start": 3, "end": 5, "highlight_type": "ADD"}]
+    assert not SemanticGoldenMatcher().match("RETURN_CONFIRMATION", [expected], [actual]).failures
+
+
 def test_failure_injection_decision_regression_is_detected() -> None:
     actual = _actual()
     actual["match_score_details"]["change_decision"] = "NEEDS_REVIEW"
@@ -167,9 +191,9 @@ def _v2_cases(filename):
 
 def test_v2_aggregated_seal_still_requires_each_original_page_box():
     cases=[c for c in _v2_cases('haneng_gonghe.json') if c.get('object_type')=='EDGE_SEAM_SEAL']
-    actual=_actual(source_type='seal',title='乙方 · 骑缝章',compare_text='骑缝章',
+    actual=_actual(source_type='seal',title='疑似骑缝章',compare_text='页边印迹（骑缝章待复核）',
                    quality_status='NEEDS_REVIEW',content_recognition_status='CONFIRMED',
-                   match_score_details={'object_type':'EDGE_SEAM_SEAL'},
+                   match_score_details={'object_type':'EDGE_SEAM_SEAL','change_decision':'NEEDS_REVIEW'},
                    compare_evidence=[{'page_no':c['page'],'bbox':c['bbox_expectation']['target_bbox']} for c in cases])
     SemanticGoldenMatcher().match('HANENG_GONGHE',cases,[actual]).assert_passed()
     actual['compare_evidence'][1]['page_no']=99

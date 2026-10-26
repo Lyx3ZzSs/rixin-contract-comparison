@@ -2,7 +2,6 @@
 import pytest
 
 from app.models import BBox, Document, Page, TextBlock
-from app.services.extractors.ppstructure_ocr_hybrid import PPStructureOCRHybridExtractor
 from app.services.signing_region.block_detector import SigningBlockDetector
 from app.services.signing_region.clause_document import SigningClauseDocumentBuilder
 
@@ -15,30 +14,6 @@ def block(key, text, y, *, x=120, height=16):
 def doc(blocks):
     return Document(filename="test.pdf", path="test.pdf", page_count=1,
                     pages=[Page(page_no=1, width=600, height=820, blocks=blocks)])
-
-
-def test_layout_only_party_anchor_recovers_missing_top_line():
-    header = block("layout-head", "甲方（盖章）", 90)
-    lines = [block("rep", "法定代表人/授权代表（签字）：", 116),
-             block("date", "签订日期：", 143),
-             block("party-b", "乙方（盖章）：公司", 170)]
-    merged = PPStructureOCRHybridExtractor()._append_structure_only_regions(lines, [header])
-    assert merged[-1].text == header.text
-    assert merged[-1].bbox == header.bbox
-    detection = SigningBlockDetector().detect(doc(merged))
-    assert detection.blocks[0].bbox.y0 <= 90
-    assert header.block_id in detection.blocks[0].source_block_ids
-
-
-@pytest.mark.parametrize("text,y,x", [("普通正文",90,120), ("甲方（盖章）",30,120), ("甲方（盖章）",90,400)])
-def test_unrelated_layout_text_is_not_recovered(text,y,x):
-    lines = [block("rep", "法定代表人（签字）：", 116)]
-    assert PPStructureOCRHybridExtractor()._append_structure_only_regions(lines, [block("head",text,y,x=x)]) == lines
-
-
-def test_existing_ocr_header_is_not_duplicated():
-    lines = [block("ocr-head", "甲方（盖章）：公司",90),block("rep","法定代表人（签字）：",116)]
-    assert PPStructureOCRHybridExtractor()._append_structure_only_regions(lines,[block("head","甲方（盖章）",90)]) == lines
 
 
 @pytest.mark.parametrize("title", ["项目开工申请单","交工验收单"])

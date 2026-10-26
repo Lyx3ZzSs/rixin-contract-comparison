@@ -808,13 +808,6 @@ def _native_line_records(pdf_page, page_no: int) -> list[NativeLineRecord]:
     return result
 
 
-def _native_lines(pdf_page, page_no: int) -> list[tuple[str, BBox, list[CharBox]]]:
-    return [
-        (line.text, line.bbox, list(line.char_boxes))
-        for line in _native_line_records(pdf_page, page_no)
-    ]
-
-
 class NativeHeadingRepairService:
     def repair(self, document: Document) -> NativeHeadingRepairResult:
         result = NativeHeadingRepairResult()
@@ -856,7 +849,21 @@ class NativeHeadingRepairService:
             bare.char_boxes = list(candidate.char_boxes)
             bare.source = "+".join(part for part in [bare.source, "native_heading_repair"] if part)
             bare.semantic_reasons = [*bare.semantic_reasons, f"native_heading_repair:{number}"]
-            result.decisions.append({"action": "repaired", "page_no": page_no, "number": number, "title": candidate.title, "block_id": bare.block_id, "reason": "exact_native_heading"})
+            # Native extraction can split the number and title into two blocks.
+            # The repaired block now owns both, but identical words elsewhere
+            # (including the next paragraph) must keep their own ownership.
+            consumed = []
+            for fragment in page.blocks:
+                if fragment is bare or normalize_heading_text(fragment.text) != normalize_heading_text(candidate.title):
+                    continue
+                box, target = fragment.bbox, candidate.bbox
+                height = max(1, min(box.y1 - box.y0, target.y1 - target.y0))
+                if (min(box.y1, target.y1) - max(box.y0, target.y0) >= height * .6
+                        and box.x0 >= target.x0 - 3 and box.x1 <= target.x1 + 3):
+                    consumed.append(fragment.block_id)
+            if consumed:
+                page.blocks = [block for block in page.blocks if block.block_id not in consumed]
+            result.decisions.append({"action": "repaired", "page_no": page_no, "number": number, "title": candidate.title, "block_id": bare.block_id, "reason": "exact_native_heading", **({"consumed_block_ids": consumed} if consumed else {})})
         self._insert_missing_section_titles(document, result)
         return result
 

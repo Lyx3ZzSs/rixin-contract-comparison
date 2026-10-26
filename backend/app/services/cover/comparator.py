@@ -11,6 +11,7 @@ from app.utils.id_utils import generate_diff_id
 
 from .constants import FIELD_LABELS, FIELD_ORDER
 from .evidence import field_evidence, mark_extra_evidences
+from .display import location_display
 from .extra_text import extra_texts
 from .patterns import field_readable_change, is_title_line, normalize_extra, normalize_value, parse_labeled_line
 from .types import CoverExtraction, CoverExtraText, CoverField
@@ -159,22 +160,6 @@ def _build_preamble_field_diff(
     )
 
 
-def _preamble_field_evidence(
-    field: CoverField | None,
-    text: str,
-    highlight_type: str,
-):
-    if field is None:
-        return []
-    evidences = [
-        evidence.model_copy(update={"highlight_type": highlight_type, "method": "cover_metadata"})
-        for evidence in field.evidences
-    ]
-    if evidences:
-        evidences[0] = evidences[0].model_copy(update={"text": text})
-    return evidences
-
-
 def _build_preamble_title_diffs(
     original_extraction: CoverExtraction,
     compare_extraction: CoverExtraction,
@@ -202,6 +187,8 @@ def _build_preamble_title_diff(
     index: int,
 ) -> DiffItem:
     title = f"前置标题（第{page_no}页）"
+    # The complete multiline title is the changed field and the display unit.
+    # Its physical lines share one MODIFY event, including unchanged words.
     original_ranges = [TextRange(start=0, end=len(left.value), highlight_type="MODIFY")]
     compare_ranges = [TextRange(start=0, end=len(right.value), highlight_type="MODIFY")]
     return DiffItem(
@@ -232,6 +219,7 @@ def _build_diff(key: str, left: CoverField | None, right: CoverField | None, ind
             diff_id=generate_diff_id(index),
             diff_type="MODIFY",
             title=f"封面字段：{label}",
+            field_display_evidence=location_display(key, left, right),
             original_text=left.value,
             compare_text=right.value,
             original_snippet=original_snippet,
@@ -291,6 +279,8 @@ def _build_extra_text_diffs(
     for extra in original_extras:
         if normalize_extra(extra.value) in compare_keys:
             continue
+        if _located_cover_extra_present(extra, original, compare):
+            continue
         if _is_blank_cover_date_placeholder(extra.value) and compare_has_filled_date:
             continue
         if _title_extra_covered_by_document(extra, compare):
@@ -301,6 +291,8 @@ def _build_extra_text_diffs(
     for extra in compare_extras:
         if normalize_extra(extra.value) in original_keys:
             continue
+        if _located_cover_extra_present(extra, compare, original):
+            continue
         if _is_blank_cover_date_placeholder(extra.value) and original_has_filled_date:
             continue
         if _title_extra_covered_by_document(extra, original):
@@ -308,6 +300,41 @@ def _build_extra_text_diffs(
         diffs.append(_build_extra_add(extra, next_index))
         next_index += 1
     return diffs
+
+
+def _located_cover_extra_present(extra: CoverExtraText, source: Document, opposite: Document) -> bool:
+    """Layout roles may differ; presence needs equal text in the same cover slot."""
+    from .extractor import _cover_blocks
+
+    page_no = extra.evidence.page_no
+    left = next((p for p in source.pages if p.page_no == page_no), None)
+    right = next((p for p in opposite.pages if p.page_no == page_no), None)
+    key = normalize_extra(extra.value)
+    if not key or left is None or right is None or min(left.width, left.height, right.width, right.height) <= 0:
+        return False
+    a = extra.evidence.bbox
+    source_blocks = [b for b in _cover_blocks(source) if b.page_no == page_no]
+    peer_blocks = [b for b in _cover_blocks(opposite) if b.page_no == page_no]
+    for block in peer_blocks:
+        if block.page_no != page_no or normalize_extra(block.text) != key:
+            continue
+        if block.confidence is not None and block.confidence < 0.85:
+            continue
+        if block.block_type in {"seal", "seal_region", "watermark", "footer", "page_footer"}:
+            continue
+        b = block.bbox
+        if all(abs(x / s - y / t) <= 0.035 for x, y, s, t in (
+            (a.x0, b.x0, left.width, right.width), (a.x1, b.x1, left.width, right.width),
+            (a.y0, b.y0, left.height, right.height), (a.y1, b.y1, left.height, right.height),
+        )):
+            return True
+        # Do not infer a transform from the candidate itself. Other unique
+        # cover fields must establish its position across crop/scale changes.
+        from .alignment import aligned_cover_slot
+        if aligned_cover_slot(a, b, key, source_blocks, peer_blocks,
+                              (left.width, left.height), (right.width, right.height)):
+            return True
+    return False
 
 
 def _has_cover_metadata(extraction: CoverExtraction) -> bool:

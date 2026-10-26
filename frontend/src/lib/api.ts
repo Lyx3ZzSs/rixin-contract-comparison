@@ -2,7 +2,6 @@ import type {
   CompareRecordListResponse,
   CompareRecordQuery,
   CompareResponse,
-  CompareQualitySummary,
   CompareTask,
   TaskExecutionResponse,
 } from "../types";
@@ -84,11 +83,6 @@ export async function getCompareRecords(query: CompareRecordQuery = {}, signal?:
   return parseJsonResponse<CompareRecordListResponse>(response);
 }
 
-export async function getCompareQuality(taskId: string, signal?: AbortSignal): Promise<CompareQualitySummary> {
-  const response = await readAuthorizedFetch(`/api/compare/${taskId}/quality`, signal);
-  return parseJsonResponse<CompareQualitySummary>(response);
-}
-
 function readAuthorizedFetch(path: string, signal?: AbortSignal): Promise<Response> {
   return authorizedFetch(
     toApiUrl(path),
@@ -100,9 +94,9 @@ function readAuthorizedFetch(path: string, signal?: AbortSignal): Promise<Respon
 export async function getEvents(taskId: string, signal?: AbortSignal): Promise<import('../types').DiffEventResponse> {
   return parseJsonResponse(await readAuthorizedFetch(`/api/compare/${taskId}/events`, signal));
 }
-export async function updateEventReview(taskId: string, eventId: string, revision: number, reviewStatus: import('../types').ReviewStatus): Promise<import('../types').DiffEventResponse> {
+export async function updateEventReview(taskId: string, eventId: string, revision: number, reviewStatus: import('../types').ReviewStatus, sealDecision?: import('../types').SealDecision): Promise<import('../types').DiffEventResponse> {
   return parseJsonResponse(await authorizedFetch(toApiUrl(`/api/compare/${taskId}/events/${eventId}/review`), {
-    method: 'PUT', body: JSON.stringify({ revision, review_status: reviewStatus }), headers: { 'Content-Type': 'application/json' },
+    method: 'PUT', body: JSON.stringify({ revision, review_status: reviewStatus, ...(sealDecision ? {seal_decision:sealDecision} : {}) }), headers: { 'Content-Type': 'application/json' },
   }));
 }
 

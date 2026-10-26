@@ -31,14 +31,6 @@ def is_delivery_date_placeholder_repair(structure_text: str, ocr_text: str) -> b
     )
 
 
-def repair_delivery_date_placeholder_text(text: str) -> str:
-    return re.sub(
-        r"(交货日期\s*[:：]?\s*\d{4}\s*年\s*月\s*)[且目曰口](\s*交货)",
-        r"\1日\2",
-        text,
-    )
-
-
 def is_clause_marker_ocr_repair(structure_text: str, ocr_text: str) -> bool:
     structure = _parse_clause_marker_line(structure_text, expected_prefix="十")
     if structure is None:

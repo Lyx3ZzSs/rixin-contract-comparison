@@ -51,7 +51,7 @@ cd ../frontend && npm test && npm run build
 
 The comparison runs as a synchronous pipeline orchestrated by `CompareService`:
 
-1. **Extract** — `extractors/` pluggable system (Strategy + Factory pattern). `GLMOCRExtractor` calls the GLM layout-parsing API; `PyMuPDFExtractor` is used internally as a test fallback (not wired into the factory for production). Returns `Document` with per-page `TextBlock`s and `BBox` coordinates.
+1. **Extract** — Production comparison uses `ContractExtractionV3`: native PDF glyphs, single-page PP-DocLayoutV3, selective PP-OCRv6, verified table regions, then `Document`/`Page`/`TextBlock` adapters.
 
 2. **Split** — `ClauseSplitter` uses regex to detect Chinese/numeric clause markers (第X条, 1.1, etc.), groups text into `Clause` objects with evidence boxes. `TextNormalizer` strips page numbers, contract IDs, and normalizes whitespace/punctuation for matching.
 

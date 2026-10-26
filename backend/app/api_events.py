@@ -1,6 +1,7 @@
 """Local, versioned event API. Uses the same task access policy as /api/compare."""
 
 from __future__ import annotations
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import Field
@@ -22,6 +23,7 @@ def get_events(task_id: str, user: CurrentUser = Depends(get_current_user)):
 
 class EventReviewRequest(DiffReviewRequest):
     revision: int = Field(ge=0)
+    seal_decision: Literal['CONFIRMED_CHANGE', 'IMPRESSION', 'RESET'] | None = None
 
 
 @router.put("/{task_id}/events/{event_id}/review")
@@ -34,13 +36,32 @@ def review_event(
     def mutate(task):
         if task.status != "COMPLETED" or task.revision != request.revision:
             raise HTTPException(409, "任务或审核版本已变化，请刷新后重试。")
-        event = next((e for e in event_response(task)["events"] if e["event_id"] == event_id), None)
+        response = event_response(task)
+        if request.seal_decision is not None:
+            from app.services.seal_review import apply_seal_decision
+            try:
+                apply_seal_decision(task, event_id, request.seal_decision, response, service,
+                                    user.display_name, request.review_comment)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            task.report_revision += 1
+            return
+        observation = next((o for o in response["comparison_observations"] if o["observation_id"] == event_id), None)
+        if observation is not None:
+            task.event_reviews[event_id] = service._review(
+                request.review_status, request.review_comment, user.display_name,
+                existing=task.event_reviews.get(event_id),
+            )
+            task.report_revision += 1
+            return
+        event = next((e for e in response["events"] if e["event_id"] == event_id), None)
         if event is None:
             raise HTTPException(404, "差异事件不存在。")
         if (
             event.get("evidence_selection")
             or "cell_selection" in event
             or "text_selection" in event
+            or "field_selection" in event
             or "cell_selection_by_raw" in event
         ):
             task.event_reviews[event_id] = service._review(

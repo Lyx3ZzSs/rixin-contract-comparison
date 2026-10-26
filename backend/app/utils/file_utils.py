@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 import unicodedata
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -122,26 +121,6 @@ async def stream_upload_to_path(upload_file: UploadFile, destination: Path) -> P
         except OSError:
             logger.error("Failed to clean partial upload: path=%s", destination.name, exc_info=True)
         raise
-
-
-async def save_upload_file(
-    upload_file: UploadFile,
-    task_id: str,
-    label: str,
-    artifact_store: "ArtifactStore | None" = None,
-) -> Path:
-    store = _artifact_store(artifact_store)
-    filename = safe_filename(upload_file.filename or "contract.pdf")
-    staged = store.staging_path(task_id, uuid.uuid4().hex, label, filename)
-    await stream_upload_to_path(upload_file, staged)
-    try:
-        validate_pdf_path(staged, upload_file.filename or "")
-        return store.publish_staged(staged, store.upload_path(task_id, label, filename))
-    finally:
-        try:
-            staged.unlink(missing_ok=True)
-        except OSError:
-            logger.error("Failed to clean legacy staged upload: path=%s", staged, exc_info=True)
 
 
 def assert_path_inside_storage(path: Path) -> None:

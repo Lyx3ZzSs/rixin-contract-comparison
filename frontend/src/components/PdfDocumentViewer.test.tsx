@@ -458,3 +458,78 @@ describe("PDF diff highlights", () => {
     expect(target?.bbox).toEqual({ x0: 50, y0: 78, x1: 542, y1: 537 });
   });
 });
+
+it.each(['COMPANY_ROUND_SEAL', 'PERSONAL_NAME_SEAL', 'EDGE_SEAM_SEAL', 'OTHER_STAMP'])(
+  'renders %s as a seal regardless of recall route or review confidence', (objectType) => {
+    const recalled: DiffItem = { ...diff, source_type: 'signing_region',
+      match_score_details: { object_type: objectType },
+      compare_evidence: [{ page_no: 12, bbox: { x0: 10, y0: 20, x1: 100, y1: 110 },
+        method: 'whole_page_visual_object', confidence: 0.55 }] };
+    expect(getPageHighlights([recalled], 'compare', 12)[0].markKind).toBe('seal');
+    expect(getPageHighlights([{ ...recalled, source_type: 'seal' }], 'compare', 12)[0].markKind).toBe('seal');
+  },
+);
+
+it('does not merge two distinct adjacent seal objects into one highlight', () => {
+  const item: DiffItem = { ...diff, source_type: 'seal', compare_evidence: [
+    { page_no: 1, bbox: { x0: 10, y0: 20, x1: 100, y1: 110 }, method: 'whole_page_visual_object' },
+    { page_no: 1, bbox: { x0: 105, y0: 20, x1: 195, y1: 110 }, method: 'whole_page_visual_object' },
+  ] };
+  expect(getPageHighlights([item], 'compare', 1)).toHaveLength(2);
+});
+
+it('renders independent unverified footer ink as a review outline', () => {
+  const item: DiffItem = {
+    ...diff, diff_id: 'footer-visual', diff_type: 'ADD', source_type: 'header_footer',
+    content_recognition_reason: 'VISUAL_FOOTER_CONTENT_UNVERIFIED',
+    compare_evidence: [{ page_no: 1, bbox: { x0: 430, y0: 770, x1: 520, y1: 830 },
+      method: 'footer_visual_registered', highlight_type: 'ADD', confidence: .9 }],
+  };
+  expect(getPageHighlights([item], 'compare', 1)[0].markKind).toBe('observation');
+});
+
+it('does not render fused footer support as another primary difference', () => {
+  const evidence = { page_no: 1, bbox: { x0: 445, y0: 785, x1: 511, y1: 829 },
+    method: 'header_footer', highlight_type: 'ADD' as const, confidence: .9 };
+  const item: DiffItem = { ...diff, diff_type: 'ADD', source_type: 'header_footer',
+    compare_evidence: [evidence], match_score_details: {
+      footer_visual_evidence: [{ side: 'compare', evidence: { ...evidence, method: 'footer_visual_registered' } }],
+    } };
+  const marks = getPageHighlights([item], 'compare', 1);
+  expect(marks).toHaveLength(1);
+  expect(marks[0].evidence.method).toBe('header_footer');
+});
+
+it('keeps clause line highlights grouped without painting interline whitespace', () => {
+  const raw = { page_no: 3, bbox: { x0: 200, y0: 650, x1: 220, y1: 665 }, method: 'char_exact', highlight_type: 'DELETE' as const };
+  const full = { page_no: 3, bbox: { x0: 90, y0: 608, x1: 160, y1: 620 }, method: 'clause_rewrite_display', highlight_type: 'MODIFY' as const };
+  const lines = [full, {...full, bbox: {x0: 110, y0: 636, x1: 505, y1: 647}}, {...full, bbox: {x0: 90, y0: 664, x1: 300, y1: 675}}];
+  const diff = { diff_id: 'payment', diff_type: 'MODIFY', original_evidence: [raw], compare_evidence: [],
+    clause_display_evidence: { unit: 'clause', original: lines, compare: lines } } as DiffItem;
+  for (const side of ['original', 'compare'] as const) {
+    const highlights = getPageHighlights([diff], side, 3);
+    expect(highlights).toHaveLength(3);
+    expect(highlights.every(h => h.type === 'MODIFY' && h.diffId === 'payment')).toBe(true);
+    expect(highlights.some(h => h.evidence.bbox.y0 < 628 && h.evidence.bbox.y1 > 628)).toBe(false);
+    expect(highlights.map(h => h.evidence)).toEqual(expect.arrayContaining(lines));
+    expect(getScrollTargetEvidence(diff, side)).toEqual(full);
+    expect(getPageHighlights([diff], side, 4)).toHaveLength(0);
+  }
+  expect(diff.original_evidence).toEqual([raw]);
+  expect(getPageHighlights([{...diff, clause_display_evidence: null}], 'original', 3)[0].type).toBe('DELETE');
+});
+
+it('paints the whole location value as one MODIFY without changing raw word boxes', () => {
+  const word = {page_no: 1, bbox: {x0: 100, y0: 20, x1: 120, y1: 30}, method: 'cover_metadata', highlight_type: 'MODIFY' as const};
+  const value = {...word, bbox: {x0: 100, y0: 20, x1: 160, y1: 30}, text: '广东省广州市'};
+  const item = {...diff, diff_type: 'MODIFY' as const, original_evidence: [word, {...word,bbox: {x0: 130,y0:20,x1:150,y1:30}}],
+    field_display_evidence: {unit: 'field' as const,field_key: 'sign_place',original: [value],compare: [{...value,text: '浙江省金华市'}]}};
+  for (const side of ['original','compare'] as const) {
+    const marks=getPageHighlights([item],side,1);
+    expect(marks).toHaveLength(1);
+    expect(marks[0].type).toBe('MODIFY');
+    expect(marks[0].evidence.bbox).toEqual(value.bbox);
+    expect(getScrollTargetEvidence(item,side)?.bbox).toEqual(value.bbox);
+  }
+  expect(item.original_evidence).toHaveLength(2);
+});

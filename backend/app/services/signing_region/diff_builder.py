@@ -9,6 +9,7 @@ from app.services.signing_region.models import (
     SigningRegionComparison,
 )
 from app.utils.id_utils import generate_diff_id
+from app.services.signing_region.party_text import party_change_ranges
 
 
 READABLE_CHANGE_FIELDS = (
@@ -60,6 +61,11 @@ class SigningRegionDiffBuilder:
             if compare_text:
                 compare_text = "手写填写（姓名未可靠识别）"
         change_type = str(change.get("type") or "MODIFY")
+        original_ranges = [TextRange(start=0, end=len(original_text), highlight_type=change_type)] if original_text else []
+        compare_ranges = [TextRange(start=0, end=len(compare_text), highlight_type=change_type)] if compare_text else []
+        if change.get("element_type") == "party_field" and change_type == "MODIFY" and original_text and compare_text:
+            original_ranges, compare_ranges = party_change_ranges(original_text, compare_text)
+            change = {**change, "original_ranges": original_ranges, "compare_ranges": compare_ranges}
         role = str(change.get("party_role") or "")
         label = str(change.get("field_label") or self._change_label(changes_attr))
         prefix = f"{role} · " if role and role != "unknown" else ""
@@ -111,12 +117,8 @@ class SigningRegionDiffBuilder:
             content_candidates=content_candidates,
             original_evidence=original_evidence,
             compare_evidence=compare_evidence,
-            original_change_ranges=[TextRange(start=0, end=len(original_text), highlight_type=change_type)]
-            if original_text
-            else [],
-            compare_change_ranges=[TextRange(start=0, end=len(compare_text), highlight_type=change_type)]
-            if compare_text
-            else [],
+            original_change_ranges=original_ranges,
+            compare_change_ranges=compare_ranges,
         )
 
     @staticmethod
@@ -282,6 +284,35 @@ class SigningRegionDiffBuilder:
             evidence_texts = [text or "手写填写（内容识别需复核）"] * len(bboxes)
         if change.get("change_scope") == "field" and len(element.raw_ref.get("field_segments") or []) == len(bboxes):
             evidence_texts = [str(item) for item in element.raw_ref["field_segments"]]
+        ranges = change.get(f"{side}_ranges")
+        if ranges is not None:
+            # Physical segments are context until an actual changed span intersects
+            # them. Never spread a company-name change onto its stamp instruction.
+            if "".join(evidence_texts) != text:
+                return []  # Stale text geometry cannot locate a new reading.
+            selected = []
+            offset = 0
+            for bbox, segment in zip(bboxes, evidence_texts, strict=True):
+                end = offset + len(segment)
+                changed = [r for r in ranges if r.start < end and r.end > offset]
+                if changed:
+                    chars = element.raw_ref.get("field_char_boxes") or []
+                    wanted = {i for r in changed for i in range(max(offset, r.start), min(end, r.end))}
+                    located = [c for c in chars if c.get("text_index") in wanted]
+                    if {c["text_index"] for c in located} == wanted:
+                        for c in located:
+                            selected.append(EvidenceBox(page_no=element.page_no, bbox=BBox.model_validate(c["bbox"]),
+                                method="signing_region_element", text=c["char"],
+                                highlight_type=next(r.highlight_type for r in changed if r.start <= c["text_index"] < r.end),
+                                confidence=element.confidence))
+                    else:
+                        directions = {r.highlight_type for r in changed}
+                        selected.append(EvidenceBox(page_no=element.page_no, bbox=bbox,
+                            method="signing_region_element", text=segment,
+                            highlight_type=next(iter(directions)) if len(directions) == 1 else change_type,
+                            confidence=element.confidence))
+                offset = end
+            return selected
         return [
             EvidenceBox(
                 page_no=element.page_no,

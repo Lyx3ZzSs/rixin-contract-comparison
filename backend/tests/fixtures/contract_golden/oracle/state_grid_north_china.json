@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "STATE_GRID_NORTH_CHINA",
-  "expected_case_count": 21,
+  "expected_case_count": 25,
   "assertions": [
     {
       "case_id": "STATE_GRID_NORTH_CHINA_P1_METADATA_ADD_A5ED1AD126",
@@ -530,6 +530,33 @@
       "source_type": "seal",
       "forbidden_value_pattern": "<(?:img|div)\\b",
       "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_IDENTICAL_HEADER_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "forbidden_value_pattern": "SGTYHT\\s*/\\s*23\\s*-\\s*JS\\s*-\\s*004",
+      "review_note": "固定PDF对中的合同编号与技术服务合同页眉相同，不得因OCR分块差异报页眉新增，也不得混入正文成为条款差异；不限差异类型和页码。"
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_CONFIDENTIALITY_ENTRY_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "forbidden_value_pattern": "保密合同",
+      "review_note": "原第18页与比对第17页附件三保密合同入口正文一致；不得因doc_title/paragraph_title分类或附件边界不一致报新增、删除、修改。本断言限定正文通道，不抑制真实签章差异。"
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_SERVICE_ACCEPTANCE_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "forbidden_value_pattern": "项目服务期限及验收",
+      "review_note": "固定PDF对中的项目服务期限及验收内容一致，不得因吞入后续附件三保密合同或段落切分不一致报正文差异。"
+    },
+    {
+      "case_id": "STATE_GRID_NORTH_CHINA_ADDRESS_CONTINUATION_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "forbidden_value_pattern": "7\\s*号\\s*金\\s*隅\\s*智\\s*造\\s*工\\s*场\\s*N\\s*6",
+      "review_note": "两侧第12页乙方地址均为北京市海淀区建材城中路27号金隅智造工场N6；跨行的2与7号须归属同一地址，不得将地址续行落入正文报增删改。"
     }
   ],
   "baseline_version": "contract-golden-v2"

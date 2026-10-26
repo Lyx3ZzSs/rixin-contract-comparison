@@ -131,7 +131,7 @@ class CandidateScoringMixin:
             weighted = min(weighted, 84.0)
         if (
             SAME_NUMBER_LOW_BODY_SIMILARITY in risk_flags
-            and details["title_score"] < 80
+            and (details["title_score"] < 80 or details.get("body_length_coverage", 1.) < .5)
         ):
             weighted = min(weighted, 78.0)
         if BODY_ONLY_ALIGNMENT_RISK in risk_flags:

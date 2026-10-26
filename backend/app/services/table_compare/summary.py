@@ -475,15 +475,6 @@ class SummaryComparator:
         source_count = self._amount_occurrence_count(source_text, amount)
         return source_count >= present_count
 
-    def _rows_share_business_identity(
-        self,
-        original: StructuredTable,
-        compare: StructuredTable,
-        orig_row: int,
-        comp_row: int,
-    ) -> bool:
-        return self._rows_have_matching_business_identity(original, orig_row, compare, comp_row)
-
     def _rows_have_matching_business_identity(
         self,
         left: StructuredTable,

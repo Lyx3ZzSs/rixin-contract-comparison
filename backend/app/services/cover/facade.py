@@ -21,8 +21,3 @@ class CoverMetadataComparator:
     def consumed_block_ids(self, document: Document) -> set[str]:
         from .extractor import _extract_cover
         return set(_extract_cover(self.normalizer, document).consumed_block_ids)
-
-    # Exposed for test compatibility
-    def _normalize_extra(self, value: str) -> str:
-        from .patterns import normalize_extra
-        return normalize_extra(value)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from app.services.diff_events.counting import CONTRACT, count_changes
-from app.services.diff_events import table_units, text_units, column_units
+from app.services.diff_events import table_units, text_units, column_units, party_units
 from typing import Any
 
 from app.models import CompareTask, DiffItem, TextRange
@@ -51,6 +51,8 @@ def _projection(diff: DiffItem) -> DiffItem:
     result = diff.model_copy(deep=True)
     direction = _direction(diff)
     if diff.diff_type == "MODIFY" and direction != "MODIFY":
+        result.clause_display_evidence = None
+        result.field_display_evidence = None
         side = "compare" if direction == "ADD" else "original"
         opposite = "original" if direction == "ADD" else "compare"
         text = getattr(diff, f"{side}_text")
@@ -62,6 +64,9 @@ def _projection(diff: DiffItem) -> DiffItem:
         setattr(result, f"{opposite}_evidence", [])
         setattr(result, f"{opposite}_change_ranges", [])
         result.diff_type = direction
+        for evidence in getattr(result, f"{side}_evidence"):
+            if evidence.highlight_type is not None:
+                evidence.highlight_type = direction
     return result
 
 
@@ -223,6 +228,9 @@ def build_snapshot(
     ]
     events = column_units.aggregate(events, by_id, _identity, VERSION, task.task_id)
     counting_steps.append({"stage": "table_units", "count": len(events), "unit": "difference"})
+    events = [unit for event in events
+              for unit in party_units.partitions(event, by_id[event["raw_diff_ids"][0]], _identity, VERSION, task.task_id)]
+    counting_steps.append({"stage": "party_fields", "count": len(events), "unit": "difference"})
     events = [
         unit
         for event in events
@@ -283,16 +291,21 @@ def source_fingerprint(task: CompareTask, *, version: str | None = None) -> str:
 
 def event_response(task: CompareTask, *, merge: bool | None = None) -> dict:
     from app.services.audit_summary import build_task_audit_items
+    from app.services.seal_semantics import normalize_seal_source
 
     snapshot = task.event_snapshot
     if not snapshot or snapshot.get("source_fingerprint") != source_fingerprint(task) or merge is False:
         snapshot = build_snapshot(task, merge=False)
     by_id = {d.diff_id: d for d in task.diffs}
     audits = build_task_audit_items(task)
+    from app.services.comparison_observations import is_unresolved_change, observations_for_task
+    observations = observations_for_task(task)
     events = []
     for entry in snapshot["events"]:
+        if any(is_unresolved_change(by_id[i]) for i in entry["raw_diff_ids"]):
+            continue
         members = [by_id[i] for i in entry["raw_diff_ids"]]
-        children = [_selected_projection(d, entry) for d in members]
+        children = [normalize_seal_source(_selected_projection(d, entry).model_copy(deep=True)) for d in members]
         projection = children[0].model_copy(deep=True)
         if entry.get("cell_selection_by_raw"):
             projection.match_score_details["cell_observations"] = [
@@ -304,12 +317,17 @@ def event_response(task: CompareTask, *, merge: bool | None = None) -> dict:
             if len(members) == 1
             else f"连续{'新增' if projection.diff_type == 'ADD' else '删除'}内容"
         )
+        if entry.get("field_selection"):
+            projection.title = entry["field_title"]
         if entry.get("element_type") in {"row", "col"}:
             projection.title = (
                 "表格"
                 + {"row": "整行", "col": "整列"}[entry["element_type"]]
                 + {"ADD": "新增", "DELETE": "删除", "MODIFY": "修改"}[entry["direction"]]
             )
+            if (entry["direction"] in {"ADD", "DELETE"}
+                    and projection.match_score_details.get("change_decision") != "CONFIRMED"):
+                projection.title = "表格" + {"row": "行", "col": "列"}[entry["element_type"]] + "对应关系待复核"
         for side in ("original", "compare"):
             text, ranges, evidence = "", [], []
             for child in children:
@@ -334,6 +352,7 @@ def event_response(task: CompareTask, *, merge: bool | None = None) -> dict:
             bool(entry.get("evidence_selection"))
             or "cell_selection" in entry
             or "text_selection" in entry
+            or "field_selection" in entry
             or "cell_selection_by_raw" in entry
         )
         if split and any(status != "UNREVIEWED" for status in statuses):
@@ -349,6 +368,8 @@ def event_response(task: CompareTask, *, merge: bool | None = None) -> dict:
         events.append(
             {
                 **entry,
+                **({"context": {"original_text": members[0].original_text,
+                                "compare_text": members[0].compare_text}} if entry.get("field_selection") else {}),
                 "diff": projection.model_dump(mode="json"),
                 "children": [d.model_dump(mode="json") for d in children],
                 "audit_item_ids": [a.item_id for a in member_audits],
@@ -378,6 +399,8 @@ def event_response(task: CompareTask, *, merge: bool | None = None) -> dict:
         ],
         "page_alignment": snapshot["page_alignment"],
         "graphic_observations": task.metrics.get("graphic_observations", []),
+        "comparison_observations": [o.model_dump(mode="json") for o in observations],
+        "comparison_observation_count": len(observations),
         "coordinate_system": {"unit": "pdf_point", "page_base": 1, "orientation": "display", "origin": "top_left"},
         "events": events,
     }
@@ -392,7 +415,9 @@ def event_audit_items(task: CompareTask):
     for event in event_response(task)["events"]:
         diff = DiffItem.model_validate(event["diff"])
         item = _audit_item(
-            diff, diff.diff_type, diff.title, diff.original_evidence, diff.compare_evidence, is_fallback=True
+            diff, diff.diff_type,
+            diff.readable_change if (diff.match_score_details.get('seal_origin_decision') or diff.match_score_details.get('footer_origin_decision')) else diff.title,
+            diff.original_evidence, diff.compare_evidence, is_fallback=True
         )
         result.append(replace(item, item_id=event["event_id"], review_status=diff.review_status))
     return result
@@ -407,7 +432,15 @@ def _overlap(a, b):
 
 
 def _selected_projection(diff, event):
+    if event.get("field_selection"):
+        result = party_units.project(diff, event)
+        result.clause_display_evidence = None
+        result.field_display_evidence = None
+        return result
     result = _projection(diff)
+    if any(key in event for key in ("cell_selection_by_raw", "cell_selection", "evidence_selection", "text_selection")):
+        result.clause_display_evidence = None
+        result.field_display_evidence = None
     if event.get("cell_selection_by_raw"):
         event = {**event, "cell_selection": event["cell_selection_by_raw"][diff.diff_id]}
     for side, indices in event.get("evidence_selection", {}).items():

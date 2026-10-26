@@ -1,0 +1,29 @@
+HUANGHE_HAIXI 表格行修复后 Golden 更新（2026-10-09）
+
+授权：用户明确要求更新比对任务 f73b9b86-ffe0-443f-997d-7b8fbe5f3918 的黄金集。
+
+更新内容
+- 来源更新为 f73b9b86-ffe0-443f-997d-7b8fbe5f3918，保留此前来源历史；修复前任务 f688ade2-c25a-469a-b866-34ff88f05821 作为回归参考。
+- 原14条断言及语义、审核状态、定位阈值全部保留。
+- 新增 HUANGHE_HAIXI_P3_QUOTE_METADATA_NO_FALSE_CHANGE：本合同第3页的相同项目名称、报价单位以及印章碎字Bià，不得输出为表格差异。规则不依赖ADD类型或标题，能拦截原误报和整表结构待复核的退化结果。
+- 本合同14→15条规则，全库264→265条，仍为15份合同及30份PDF。
+- 当前任务仍为20条实际差异；15是黄金验收规则数，二者不是同一计数。
+
+验证结果
+- 当前任务15条规则：10条正例、2条负例通过，共12条通过；3条既有失败保持不变。
+- 既有失败：HUANGHE_HAIXI_P1_METADATA_ADD_544FF0BCC8（封面额外文本）、HUANGHE_HAIXI_P1_SEAL_ADD_A0DD6CF5F7（第1页印章预期）、HUANGHE_HAIXI_P2_SEAL_ADD_C3361F414A（第2页印章预期）。没有放宽原预期以消除失败。
+- 新负例在修复后任务通过，在旧任务f688及中间退化任务8bfb4c23-e231-4284-9914-3e66be921b26中均正确检出违反。
+- 当前任务输入PDF SHA256与封存Golden一致；装载器验证全部30份PDF哈希与页数、265条规则数量。
+- 原14条断言及其他14份oracle哈希不变。
+- Golden基础设施测试15 passed；用户授权的基线变更检查通过。检查以HEAD为基准，日志还包含此前已存在的其他Golden更新，本轮独立补丁另存。
+- 当前任务存在未由正例覆盖的待复核候选，未自动将其提升为黄金真值。完整警告见current-task-report.json。
+- 本次只更新Golden；没有重跑未改变的生产计算。前一轮15份合同完整验证及既有印章问题对照见 output/analysis/table-row-fix-20261008/verification-report.txt。
+
+证据
+output/analysis/golden-huanghe-f73b9b86-20261009/current-task-report.json
+output/analysis/golden-huanghe-f73b9b86-20261009/validation-summary.json
+output/analysis/golden-huanghe-f73b9b86-20261009/old-task-negative-report.json
+output/analysis/golden-huanghe-f73b9b86-20261009/whole-table-review-negative-report.json
+output/analysis/golden-huanghe-f73b9b86-20261009/baseline-update.patch
+
+未修改生产算法、原任务数据库或人工审核状态，无需重启服务。基线更新不表示本合同或全库全部通过。

@@ -258,9 +258,6 @@ class CompareDebugWriter:
         path = self.artifact_store.debug_json_path(task_id, filename)
         return self.artifact_store.write_json(path, payload)
 
-    def _debug_root(self, task_id: str) -> Path:
-        return self.artifact_store.task_dir("debug", task_id)
-
     def _dump_model(self, model: Any) -> dict[str, Any] | None:
         if model is None:
             return None

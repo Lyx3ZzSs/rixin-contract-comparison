@@ -1667,9 +1667,9 @@ def test_party_name_change_is_exposed_as_focused_signing_modify() -> None:
     assert diff.compare_snippet == "甲方：国能长源随州发电有限公司"
     assert diff.original_evidence[0].text == diff.original_snippet
     assert diff.original_evidence[0].bbox == BBox(x0=71, y0=86, x1=287, y1=137)
-    assert diff.compare_evidence[0].text == diff.compare_snippet
+    assert diff.compare_evidence == []  # The surviving company text is unchanged.
     assert len(diff.original_evidence) == 1
-    assert len(diff.compare_evidence) == 1
+    assert diff.compare_change_ranges == []
     assert diff.original_evidence[0].method == "signing_region_element"
     assert "甲方：国能长源随州发电有限公司随县分公司 → 甲方：国能长源随州发电有限公司" in diff.readable_change
     assert "SIGNING_PARTY_CHANGE" in diff.review_flags
@@ -2145,7 +2145,8 @@ def test_party_and_visual_changes_keep_focused_field_and_full_signing_region_evi
     assert "SIGNING_SEAL_CHANGE" in seal_diff.review_flags
     assert party_diff.original_evidence[0].text == "甲方：国能长源随州发电有限公司随县分公司"
     assert party_diff.original_evidence[0].bbox == BBox(x0=71, y0=86, x1=287, y1=137)
-    assert party_diff.compare_evidence[0].text == "甲方：国能长源随州发电有限公司"
+    assert party_diff.compare_evidence == []
+    assert party_diff.compare_change_ranges == []
 
 
 def test_diff_builder_add_uses_compare_side_only() -> None:

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "PO202604090100",
-  "expected_case_count": 17,
+  "expected_case_count": 19,
   "assertions": [
     {
       "case_id": "PO202604090100_P1_HEADER_FOOTER_ADD_F3064A8725",
@@ -317,7 +317,37 @@
       "source_type": "seal",
       "forbidden_value_pattern": "<(?:img|div)\\b",
       "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "PO202604090100_P1_IDENTICAL_TABLE_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 1,
+      "source_type": "table",
+      "review_note": "此固定PDF对的第1页表格业务内容一致，结构解析失败不得产生表格新增、修改或删除，也不得以整表结构待复核差异覆盖原表。来源为9ab5698b的D005及后续单元格恢复验证；本规则不禁止其他输入中的真实表格变化。"
+    },
+    {
+      "case_id": "PO202604090100_CLAUSE_22_5_NO_FOREIGN_TEXT_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "source_type": "clause",
+      "clause_identity": "本合同一式两份,双方各持一份,传真件有效。",
+      "review_note": "此固定PDF对第22.5条正文完全一致。第7页红章碎字“公技股”属于印章，第8页“国能日新科技股份有限公司”属于新增报价单抬头，均不得回挂第22.5条产生正文差异。不限差异类型或来源页，保留真实印章及第8、9页报价单新增的原有验收要求。"
     }
   ],
-  "baseline_version": "contract-golden-v2"
+  "baseline_version": "contract-golden-v3",
+  "review_revision": "2026-10-09-po-table-and-clause-verified",
+  "review_source_task_id": "10052fcf-a151-41bd-aca9-e6b928400ff7",
+  "regression_coverage": {
+    "source_task_id": "10052fcf-a151-41bd-aca9-e6b928400ff7",
+    "reference_tasks": [
+      "40c08765-fba3-402e-ad57-c1ac41eb8b2b",
+      "9ab5698b-93b4-4f02-aa4a-bfcb0d61fc34"
+    ],
+    "evidence_root": "output/analysis/golden-po-10052fcf-20261009",
+    "fix_evidence_roots": [
+      "output/analysis/ownership-fix-20261009",
+      "output/analysis/d005-fix-20261009"
+    ],
+    "approval": "用户在本任务修复及真实服务验证完成后明确要求更新该份对比任务的黄金集。",
+    "scope": "原17条断言保持不变，补充第1页相同表格及第22.5条外来文字污染两条负例；不以当前输出自动替代黄金真值，不放宽既有失败。"
+  }
 }

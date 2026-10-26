@@ -315,24 +315,6 @@ def _load_accessible_or_404(task_id: str, user: CurrentUser, *, mutate: bool = F
     return task
 
 
-def _is_task_in_created_date_range(
-    task: CompareTask,
-    *,
-    start_date: date | None,
-    end_date: date | None,
-) -> bool:
-    if start_date is None and end_date is None:
-        return True
-    task_date = _task_created_date(task)
-    if task_date is None:
-        return False
-    if start_date and task_date < start_date:
-        return False
-    if end_date and task_date > end_date:
-        return False
-    return True
-
-
 def _task_created_date(task: CompareTask) -> date | None:
     return _created_date(task.created_at, task.updated_at)
 

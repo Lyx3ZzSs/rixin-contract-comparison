@@ -201,6 +201,14 @@ class SemanticGoldenMatcher:
         forbidden = str(expected.get("forbidden_value_pattern") or "")
         if forbidden and not re.search(forbidden, self._actual_text(actual), re.IGNORECASE):
             return False
+        highlight = expected.get("highlight_expectation")
+        if highlight:
+            side = highlight["side"]
+            text = str(actual.get(f"{side}_text") or "")
+            fragments = [text[r["start"]:r["end"]] for r in actual.get(f"{side}_change_ranges") or []
+                         if 0 <= r["start"] < r["end"] <= len(text)]
+            if not any(re.search(highlight["pattern"], fragment) for fragment in fragments):
+                return False
         required_candidates = {_norm(item) for item in expected.get("content_candidates_contain") or []}
         actual_candidates = {
             _norm(item.get("text") or item.get("value") or item.get("candidate_value"))

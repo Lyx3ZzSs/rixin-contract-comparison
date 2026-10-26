@@ -35,64 +35,12 @@ def test_ensure_storage_only_precreates_tasks_directory(tmp_path: Path) -> None:
     assert list(app_settings.storage_dir.iterdir()) == [app_settings.tasks_dir]
 
 
-def test_compare_defaults_to_strict_structured_ocr() -> None:
+def test_compare_layout_defaults():
     app_settings = Settings(_env_file=None)
-
-    assert app_settings.compare_document_extractor == "ppstructure_ocr_hybrid"
-    assert app_settings.compare_require_structured_ocr is True
-    assert app_settings.compare_parallel_extraction_enabled is False
+    assert app_settings.ppdoclayout_max_inflight == 4
+    assert app_settings.ppdoclayout_title_threshold == 0.4
+    assert app_settings.ppdoclayout_default_threshold == 0.5
     assert app_settings.compare_parallel_extraction_max_inflight == 2
-    assert app_settings.compare_footer_visual_max_inflight == 4
-    assert app_settings.compare_native_fast_path_mode == "off"
-    assert app_settings.compare_native_fast_path_min_chars_per_page == 80
-    assert app_settings.compare_native_fast_path_min_char_box_coverage == 0.98
-    assert app_settings.compare_native_fast_path_max_suspicious_char_ratio == 0.01
-    assert app_settings.hybrid_component_parallel_enabled is False
-    assert app_settings.hybrid.component_parallel_enabled is False
-
-
-def test_compare_rejects_non_structured_extractor_in_strict_mode() -> None:
-    with pytest.raises(ValidationError, match="COMPARE_DOCUMENT_EXTRACTOR"):
-        Settings(
-            compare_document_extractor="pymupdf",
-            compare_require_structured_ocr=True,
-        )
-
-
-def test_compare_allows_non_structured_extractor_when_strict_mode_is_disabled() -> None:
-    app_settings = Settings(
-        compare_document_extractor="pymupdf",
-        compare_require_structured_ocr=False,
-    )
-
-    assert app_settings.compare_document_extractor == "pymupdf"
-
-
-def test_native_fast_path_mode_accepts_rollout_modes() -> None:
-    assert Settings(compare_native_fast_path_mode="shadow").compare_native_fast_path_mode == "shadow"
-    assert Settings(compare_native_fast_path_mode="ENABLED").compare_native_fast_path_mode == "enabled"
-
-
-def test_native_fast_path_mode_rejects_unknown_value() -> None:
-    with pytest.raises(ValidationError, match="COMPARE_NATIVE_FAST_PATH_MODE"):
-        Settings(compare_native_fast_path_mode="automatic")
-
-
-def test_hybrid_component_parallel_config_maps_to_nested_settings() -> None:
-    app_settings = Settings(hybrid_component_parallel_enabled=True)
-
-    assert app_settings.hybrid_component_parallel_enabled is True
-    assert app_settings.hybrid.component_parallel_enabled is True
-
-
-def test_layout_analysis_mode_rejects_unknown_value() -> None:
-    with pytest.raises(ValidationError, match="LAYOUT_ANALYSIS_MODE"):
-        Settings(layout_analysis_mode="unknown")
-
-
-def test_layout_analysis_mode_accepts_v3_rollout_modes() -> None:
-    assert Settings(layout_analysis_mode="v3_shadow").layout_analysis_mode == "v3_shadow"
-    assert Settings(layout_analysis_mode="v3").layout_analysis_mode == "v3"
 
 
 def test_diff_engine_defaults_to_diff_match_patch() -> None:

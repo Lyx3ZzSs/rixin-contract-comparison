@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 import re
 from statistics import median
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.models import (
     BBox,
@@ -15,6 +15,7 @@ from app.models import (
     TextBlock,
     TextRange,
 )
+from app.services.page_number_evidence import PAGE_NUMBER_PATTERN, page_number_key, match_page_counters
 from app.services.diff_engine import DiffEngine
 from app.utils.id_utils import generate_diff_id
 
@@ -31,6 +32,7 @@ class HeaderFooterCandidate:
     is_lower_footer_annotation: bool = False
     is_handwritten_annotation: bool = False
     confidence: float | None = None
+    source_evidences: tuple[EvidenceBox, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,7 @@ class HeaderFooterComparator:
         "vertical_text",
         "watermark",
     }
-    page_number_pattern = re.compile(r"^(?:第?\s*\d+\s*页?|共\s*\d+\s*页\s*第\s*\d+\s*页)$")
+    page_number_pattern = PAGE_NUMBER_PATTERN
     page_number_with_total_pattern = re.compile(r"^共\s*(?P<total>\d+)\s*页\s*第\s*(?P<page>\d+)\s*页$")
     fuzzy_match_flag = "FUZZY_HEADER_FOOTER_MATCH"
     footer_annotation_band = 0.90
@@ -101,6 +103,12 @@ class HeaderFooterComparator:
         retain_recognition_evidence(diffs, original, compare)
         return diffs
 
+    def matched_page_numbers(self, original: Document, compare: Document):
+        """Retain equal counter evidence even when text comparison emits no diff."""
+        right = {p.page_no: p for p in compare.pages}
+        return {p.page_no: match_page_counters(p, right.get(p.page_no))
+                for p in original.pages if p.page_no in right}
+
     def owned_footer_blocks(self, document: Document) -> set[tuple[int, str]]:
         """Route confirmed footer evidence away from the body comparison.
 
@@ -117,6 +125,49 @@ class HeaderFooterComparator:
             and len(self._compact(block.text)) <= self.footer_variant_max_characters
             and any(e.page_no == page.page_no and e.bbox == block.bbox for e in evidences)
         }
+
+    def owned_header_blocks(self, document: Document) -> set[tuple[int, str]]:
+        """Body and header comparison consume the same physical ownership evidence."""
+        evidences = [e for entry in self._entries_by_slot(document).get("header", []) for e in entry.evidences]
+        return {(p.page_no, b.block_id) for p in document.pages for b in p.blocks
+                if any(e.page_no == p.page_no and e.bbox == b.bbox for e in evidences)}
+
+    def _header_lines(self, candidates: list[HeaderFooterCandidate]) -> list[HeaderFooterCandidate]:
+        groups: list[list[HeaderFooterCandidate]] = []
+        for candidate in sorted(candidates, key=lambda c: (c.page_no, c.bbox.y0, c.bbox.x0)):
+            target = None
+            for group in reversed(groups):
+                if group[0].page_no != candidate.page_no:
+                    break
+                if candidate.is_page_number or group[0].is_page_number:
+                    continue
+                left = min(group, key=lambda c: c.bbox.x0)
+                right = max(group, key=lambda c: c.bbox.x1)
+                height = min(left.bbox.y1-left.bbox.y0, candidate.bbox.y1-candidate.bbox.y0)
+                overlap = min(left.bbox.y1,candidate.bbox.y1)-max(left.bbox.y0,candidate.bbox.y0)
+                gap = max(candidate.bbox.x0-right.bbox.x1, left.bbox.x0-candidate.bbox.x1)
+                if overlap >= height*.7 and 0 <= gap <= max(12, height*2):
+                    target = group
+                    break
+            if target is None:
+                groups.append([candidate])
+            else:
+                target.append(candidate)
+        result = []
+        for group in groups:
+            group.sort(key=lambda c: c.bbox.x0)
+            first = group[0]
+            if len(group) == 1:
+                result.append(first)
+                continue
+            result.append(replace(first, text=" ".join(c.text for c in group),
+                                  bbox=BBox(x0=min(c.bbox.x0 for c in group), y0=min(c.bbox.y0 for c in group),
+                                            x1=max(c.bbox.x1 for c in group), y1=max(c.bbox.y1 for c in group)),
+                                  explicit=any(c.explicit for c in group),
+                                  source_evidences=tuple(EvidenceBox(page_no=c.page_no,bbox=c.bbox,
+                                      text=c.text,method="header_footer",confidence=c.confidence or .8,
+                                      text_confidence=c.confidence) for c in group)))
+        return result
 
     def _entries_by_slot(self, document: Document) -> dict[str, list[HeaderFooterEntry]]:
         # A scan canvas may extend below the printed page (watermark/padding).
@@ -136,8 +187,24 @@ class HeaderFooterComparator:
                 trusted_numbers.update((lb.block_id, rb.block_id))
         candidates_by_slot: dict[str, list[HeaderFooterCandidate]] = {"header": [], "footer": []}
         for page in document.pages:
+            from app.services.page_number_evidence import page_counters
+            counters = page_counters(page)
             for block in page.blocks:
                 candidate = self._candidate(block, page.height, trusted_page_number=block.block_id in trusted_numbers)
+                # A short isolated mark below a located printed counter belongs
+                # to the footer, even when OCR mislabels it as a body fragment.
+                if (counters and len(counters) == 1 and page.height > 0
+                        and counters[0].bbox.y0 >= page.height*.85
+                        and block.bbox.y0 >= counters[0].bbox.y0-16
+                        and block.bbox.y1-block.bbox.y0 >= 20
+                        and 0 < len(self._compact(block.text)) <= 12
+                        and block.block_type not in self.excluded_types
+                        and not self._is_page_number(block.text)
+                        and not self._looks_like_clause_start(block.text)):
+                    candidate = HeaderFooterCandidate(slot="footer", text=self._clean_text(block.text),
+                        page_no=page.page_no, bbox=block.bbox, block_id=block.block_id,
+                        explicit=True, is_lower_footer_annotation=True, is_handwritten_annotation=True,
+                        confidence=block.confidence)
                 if candidate is None:
                     continue
                 candidates_by_slot[candidate.slot].append(candidate)
@@ -270,6 +337,8 @@ class HeaderFooterComparator:
         slot: str,
         candidates: list[HeaderFooterCandidate],
     ) -> list[HeaderFooterEntry]:
+        if slot == "header":
+            candidates = self._header_lines(candidates)
         grouped: dict[str, list[HeaderFooterCandidate]] = {}
         for candidate in candidates:
             if candidate.is_page_number:
@@ -447,12 +516,8 @@ class HeaderFooterComparator:
         return [candidate for index, candidate in enumerate(ordered) if index in supported_indexes]
 
     def _page_number_value(self, text: str) -> int | None:
-        compact = self._compact(text)
-        total_match = self.page_number_with_total_pattern.fullmatch(compact)
-        if total_match:
-            return int(total_match.group("page"))
-        match = re.fullmatch(r"(?:第)?(\d+)(?:页)?", compact)
-        return int(match.group(1)) if match else None
+        key = page_number_key(text)
+        return key[0] if key else None
 
     def _diff_slot(
         self,
@@ -732,8 +797,8 @@ class HeaderFooterComparator:
         if not common_pages:
             return left, right
         return (
-            self._entry_with_evidences(left, [left_by_page[page_no] for page_no in common_pages]),
-            self._entry_with_evidences(right, [right_by_page[page_no] for page_no in common_pages]),
+            self._entry_with_evidences(left, [e for e in left.evidences if e.page_no in common_pages]),
+            self._entry_with_evidences(right, [e for e in right.evidences if e.page_no in common_pages]),
         )
 
     def _entry_with_evidences(
@@ -829,6 +894,10 @@ class HeaderFooterComparator:
         for candidate in sorted(candidates, key=lambda item: (item.page_no, item.bbox.y0, item.bbox.x0)):
             if candidate.page_no in seen_pages:
                 continue
+            if candidate.source_evidences:
+                evidences.extend(candidate.source_evidences)
+                seen_pages.add(candidate.page_no)
+                continue
             evidences.append(
                 EvidenceBox(
                     page_no=candidate.page_no,
@@ -850,10 +919,10 @@ class HeaderFooterComparator:
         has_total_style = False
         for candidate in candidates:
             compact = self._compact(candidate.text)
-            match = self.page_number_with_total_pattern.fullmatch(compact)
-            if match:
+            key = page_number_key(compact)
+            if key and key[1] is not None:
                 has_total_style = True
-                totals.add(match.group("total"))
+                totals.add(str(key[1]))
         if has_total_style:
             return f"total:{','.join(sorted(totals))}"
         return "simple"

@@ -169,6 +169,11 @@ class TableMatcher:
         left_key = self._row_business_key(left_table, left_row)
         right_key = self._row_business_key(right_table, right_row)
         text_score = SequenceMatcher(None, left_text, right_text).ratio()
+        left_labels = utils.table_metadata_labels(left_text)
+        if left_labels and left_labels == utils.table_metadata_labels(right_text):
+            # Match the field identity even when the project value changes.
+            # Cell comparison still decides whether the values differ.
+            return max(text_score, 0.95)
         if left_key and right_key:
             key_score = SequenceMatcher(None, left_key, right_key).ratio()
             if left_key == right_key:

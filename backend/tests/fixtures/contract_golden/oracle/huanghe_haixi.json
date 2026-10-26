@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_key": "HUANGHE_HAIXI",
-  "expected_case_count": 14,
+  "expected_case_count": 15,
   "assertions": [
     {
       "case_id": "HUANGHE_HAIXI_P1_DATE_ADD_1DF7104CDC",
@@ -320,7 +320,28 @@
       "source_type": "seal",
       "forbidden_value_pattern": "<(?:img|div)\\b",
       "review_note": "印章识别输出中的HTML标签/图片属性是解析残留，不是这份PDF的合同变更。"
+    },
+    {
+      "case_id": "HUANGHE_HAIXI_P3_QUOTE_METADATA_NO_FALSE_CHANGE",
+      "assertion": "MUST_NOT_EXIST",
+      "page": 3,
+      "source_type": "table",
+      "forbidden_value_pattern": "项目名称|报价单位|Bi[àa]",
+      "review_note": "此固定PDF对的第3页项目名称及报价单位相同。扫描件右侧印章碎字Bià不属于表格业务内容，不得使相同表头产生新增、修改或删除；改名为整表/结构待复核且仍输出这些内容也应拦截。此规则仅约束本合同，不禁止其他输入中项目名称真实变更或真实采购行新增。"
     }
   ],
-  "baseline_version": "contract-golden-v2"
+  "baseline_version": "contract-golden-v3",
+  "review_revision": "2026-10-09-huanghe-table-row-verified",
+  "review_source_task_id": "f73b9b86-ffe0-443f-997d-7b8fbe5f3918",
+  "regression_coverage": {
+    "source_task_id": "f73b9b86-ffe0-443f-997d-7b8fbe5f3918",
+    "reference_tasks": [
+      "f688ade2-c25a-469a-b866-34ff88f05821",
+      "dc44c772-b47a-48ed-9d89-7253f875ed52"
+    ],
+    "evidence_root": "output/analysis/golden-huanghe-f73b9b86-20261009",
+    "fix_evidence_root": "output/analysis/table-row-fix-20261008",
+    "approval": "用户明确要求更新比对任务 f73b9b86-ffe0-443f-997d-7b8fbe5f3918 的黄金集。",
+    "scope": "保留原14条断言，新增第3页相同报价元信息及印章碎字不得成为表格差异的负例；原有3条失败继续保留验收要求，不将其他待复核候选直接升为黄金真值。"
+  }
 }

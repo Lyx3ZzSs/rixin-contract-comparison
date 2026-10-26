@@ -57,6 +57,8 @@ describe("PdfDocumentViewer load errors", () => {
     renderViewer();
     expect(getDocument).toHaveBeenCalledWith({
       url: "http://api.test/file.pdf",
+      cMapUrl: `${import.meta.env.BASE_URL}pdfjs/cmaps/`,
+      cMapPacked: true,
       httpHeaders: { Authorization: "Bearer test-token" },
     });
   });
@@ -64,7 +66,8 @@ describe("PdfDocumentViewer load errors", () => {
   it("loads the PDF without authorization headers in disabled mode", () => {
     getDocument.mockReturnValueOnce({ promise: new Promise(() => undefined), destroy: vi.fn() });
     renderViewerWithoutToken();
-    expect(getDocument).toHaveBeenCalledWith({ url: "http://api.test/file.pdf" });
+    expect(getDocument).toHaveBeenCalledWith({ url: "http://api.test/file.pdf",
+      cMapUrl: `${import.meta.env.BASE_URL}pdfjs/cmaps/`, cMapPacked: true });
   });
 
   it("does not reload the PDF when silent renewal replaces the access token", () => {

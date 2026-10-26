@@ -750,19 +750,6 @@ class StructuralRepairMixin:
             return False
         return True
 
-    def _looks_like_detail_not_name(self, text: str) -> bool:
-        """Check if text looks like detail/description text rather than a product name."""
-        norm = utils.normalize(text)
-        if not norm or len(norm) < 2:
-            return False
-        if norm.endswith(("。", ".")):
-            return True
-        detail_markers = ("开发", "计算", "模型开发", "预报", "预测", "维护", "服务", "建立")
-        if any(marker in norm for marker in detail_markers):
-            if len(norm) > 6:
-                return True
-        return False
-
     def _split_adjacent_sequence_detail_merged_row(
         self,
         row: _LogicalRow,
